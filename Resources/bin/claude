@@ -91,6 +91,14 @@ HOOKS_JSON='{"hooks":{"SessionStart":[{"matcher":"","hooks":[{"type":"command","
 if [[ "$SKIP_SESSION_ID" == true ]]; then
     exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"
 else
-    SESSION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-    exec "$REAL_CLAUDE" --session-id "$SESSION_ID" --settings "$HOOKS_JSON" "$@"
+    # Verify that the resolved claude binary supports --session-id.
+    # Some environments (e.g. nvm not yet initialized in a fresh tab)
+    # may resolve to an older binary that rejects this flag (#1818).
+    if "$REAL_CLAUDE" --help 2>&1 | grep -q -- '--session-id'; then
+        SESSION_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+        exec "$REAL_CLAUDE" --session-id "$SESSION_ID" --settings "$HOOKS_JSON" "$@"
+    else
+        # Fall back: inject hooks but skip session tracking.
+        exec "$REAL_CLAUDE" --settings "$HOOKS_JSON" "$@"
+    fi
 fi

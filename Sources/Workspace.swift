@@ -6595,7 +6595,8 @@ final class Workspace: Identifiable, ObservableObject {
 
     private func rememberTerminalConfigInheritanceSource(_ terminalPanel: TerminalPanel) {
         lastTerminalConfigInheritancePanelId = terminalPanel.id
-        if let sourceSurface = terminalPanel.surface.surface,
+        if terminalPanel.surface.isSurfaceLive,
+           let sourceSurface = terminalPanel.surface.surface,
            let runtimePoints = cmuxCurrentSurfaceFontSizePoints(sourceSurface) {
             let existing = terminalInheritanceFontPointsByPanelId[terminalPanel.id]
             if existing == nil || abs((existing ?? runtimePoints) - runtimePoints) > 0.05 {
@@ -6693,7 +6694,12 @@ final class Workspace: Identifiable, ObservableObject {
             preferredPanelId: preferredPanelId,
             inPane: preferredPaneId
         ) {
-            guard let sourceSurface = terminalPanel.surface.surface else { continue }
+            // Check both that the pointer is non-nil AND the surface lifecycle
+            // hasn't started teardown. Without this, we can pass a dangling
+            // pointer to ghostty_surface_inherited_config (use-after-free crash
+            // on Intel — issues #1558, #1608, #1767, #1815).
+            guard terminalPanel.surface.isSurfaceLive,
+                  let sourceSurface = terminalPanel.surface.surface else { continue }
             var config = cmuxInheritedSurfaceConfig(
                 sourceSurface: sourceSurface,
                 context: GHOSTTY_SURFACE_CONTEXT_SPLIT
@@ -7978,6 +7984,12 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     func moveFocus(direction: NavigationDirection) {
+        // If a pane is zoomed, un-zoom before navigating so the target
+        // pane becomes visible — matches tmux behavior (#1605).
+        if bonsplitController.isSplitZoomed {
+            _ = clearSplitZoom()
+        }
+
         // Unfocus the currently-focused panel before navigating.
         if let prevPanelId = focusedPanelId, let prev = panels[prevPanelId] {
             prev.unfocus()
