@@ -8060,7 +8060,23 @@ final class Workspace: Identifiable, ObservableObject {
 
     @discardableResult
     func clearSplitZoom(reason: String = "workspace.clearSplitZoom") -> Bool {
+        // Capture the zoomed pane's browser panel (if any) before clearing zoom,
+        // so we can prime its portal host replacement afterward.
+        let zoomedBrowser: (paneId: PaneID, panel: BrowserPanel)? = {
+            guard let zoomedPaneId = bonsplitController.zoomedPaneId,
+                  let tabId = bonsplitController.selectedTab(inPane: zoomedPaneId)?.id,
+                  let panelId = panelIdFromSurfaceId(tabId),
+                  let browser = browserPanel(for: panelId) else { return nil }
+            return (zoomedPaneId, browser)
+        }()
+
         guard bonsplitController.clearPaneZoom() else { return false }
+        if let zoomedBrowser {
+            zoomedBrowser.panel.preparePortalHostReplacementForNextDistinctClaim(
+                inPane: zoomedBrowser.paneId,
+                reason: reason
+            )
+        }
         reconcileTerminalPortalVisibilityForCurrentRenderedLayout()
         reconcileBrowserPortalVisibilityForCurrentRenderedLayout(reason: reason)
         beginEventDrivenLayoutFollowUp(reason: reason, includeGeometry: true)
