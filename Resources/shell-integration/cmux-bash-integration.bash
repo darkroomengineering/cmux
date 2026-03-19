@@ -99,11 +99,12 @@ _cmux_report_tty_once() {
     [[ -n "$CMUX_PANEL_ID" ]] || return 0
     [[ -n "$_CMUX_TTY_NAME" ]] || return 0
     _CMUX_TTY_REPORTED=1
-    # Use subshell ( ) instead of { } & disown to avoid bash job completion
-    # notifications — subshells are never added to the job table (#1565).
+    # Subshell for process isolation + disown to remove from bash job table,
+    # preventing "[N]+ Done" notifications at the next prompt (#1565).
     (
         _cmux_send "report_tty $_CMUX_TTY_NAME --tab=$CMUX_TAB_ID --panel=$CMUX_PANEL_ID"
     ) >/dev/null 2>&1 &
+    disown 2>/dev/null
 }
 
 _cmux_report_shell_activity_state() {
@@ -117,6 +118,7 @@ _cmux_report_shell_activity_state() {
     (
         _cmux_send "report_shell_state $state --tab=$CMUX_TAB_ID --panel=$CMUX_PANEL_ID"
     ) >/dev/null 2>&1 &
+    disown 2>/dev/null
 }
 
 _cmux_ports_kick() {
@@ -129,6 +131,7 @@ _cmux_ports_kick() {
     (
         _cmux_send "ports_kick --tab=$CMUX_TAB_ID --panel=$CMUX_PANEL_ID"
     ) >/dev/null 2>&1 &
+    disown 2>/dev/null
 }
 
 _cmux_clear_pr_for_panel() {
@@ -342,6 +345,7 @@ _cmux_start_pr_poll_loop() {
         done
     ) >/dev/null 2>&1 &
     _CMUX_PR_POLL_PID=$!
+    disown 2>/dev/null
 }
 
 _cmux_bash_cleanup() {
@@ -408,6 +412,7 @@ _cmux_prompt_command() {
             local qpwd="${pwd//\"/\\\"}"
             _cmux_send "report_pwd \"${qpwd}\" --tab=$CMUX_TAB_ID --panel=$CMUX_PANEL_ID"
         ) >/dev/null 2>&1 &
+        disown 2>/dev/null
     fi
 
     # Branch can change via aliases/tools while an older probe is still in flight.
@@ -466,6 +471,7 @@ _cmux_prompt_command() {
             fi
         ) >/dev/null 2>&1 &
         _CMUX_GIT_JOB_PID=$!
+        disown 2>/dev/null
         _CMUX_GIT_JOB_STARTED_AT=$now
     fi
 
