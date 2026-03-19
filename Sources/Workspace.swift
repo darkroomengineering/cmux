@@ -7987,7 +7987,7 @@ final class Workspace: Identifiable, ObservableObject {
         // If a pane is zoomed, un-zoom before navigating so the target
         // pane becomes visible — matches tmux behavior (#1605).
         if bonsplitController.isSplitZoomed {
-            _ = clearSplitZoom()
+            _ = clearSplitZoom(reason: "workspace.moveFocus")
         }
 
         // Unfocus the currently-focused panel before navigating.
@@ -8059,8 +8059,12 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     @discardableResult
-    func clearSplitZoom() -> Bool {
-        bonsplitController.clearPaneZoom()
+    func clearSplitZoom(reason: String = "workspace.clearSplitZoom") -> Bool {
+        guard bonsplitController.clearPaneZoom() else { return false }
+        reconcileTerminalPortalVisibilityForCurrentRenderedLayout()
+        reconcileBrowserPortalVisibilityForCurrentRenderedLayout(reason: reason)
+        beginEventDrivenLayoutFollowUp(reason: reason, includeGeometry: true)
+        return true
     }
 
     @discardableResult
@@ -8069,8 +8073,11 @@ final class Workspace: Identifiable, ObservableObject {
         guard let paneId = paneId(forPanelId: panelId) else { return false }
         guard bonsplitController.togglePaneZoom(inPane: paneId) else { return false }
         focusPanel(panelId)
-        reconcileTerminalPortalVisibilityForCurrentRenderedLayout()
-        reconcileBrowserPortalVisibilityForCurrentRenderedLayout(reason: "workspace.toggleSplitZoom")
+        if !bonsplitController.isSplitZoomed {
+            // Un-zooming: use centralized reconciliation
+            reconcileTerminalPortalVisibilityForCurrentRenderedLayout()
+            reconcileBrowserPortalVisibilityForCurrentRenderedLayout(reason: "workspace.toggleSplitZoom")
+        }
         if let browserPanel = browserPanel(for: panelId) {
             browserPanel.preparePortalHostReplacementForNextDistinctClaim(
                 inPane: paneId,

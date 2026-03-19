@@ -10145,7 +10145,7 @@ struct CMUXCLI {
             fallbackWorkspaceId = try resolveWorkspaceIdForClaudeHook(workspaceArg, client: client)
         } catch {
             // If we can't resolve the workspace, lifecycle hooks are no-ops.
-            // session-start is the only hook that truly needs a workspace;
+            // Only session-start and active require a live workspace;
             // for all others, print OK and return.
             if subcommand != "session-start" && subcommand != "active" {
                 print("OK")
@@ -10313,7 +10313,7 @@ struct CMUXCLI {
                 )
             }
 
-            let response = (try? client.send(command: "notify_target \(workspaceId) \(surfaceId) \(payload)")) ?? "OK"
+            let response = (try? sendV1Command("notify_target \(workspaceId) \(surfaceId) \(payload)", client: client)) ?? "OK"
             _ = try? setClaudeStatus(
                 client: client,
                 workspaceId: workspaceId,
@@ -10522,6 +10522,10 @@ struct CMUXCLI {
             if probe != nil {
                 return candidate
             }
+            // The specific workspace is gone. Don't fall back to
+            // workspace.current — that would target an unrelated workspace
+            // with notifications/status updates meant for this one.
+            throw CLIError(message: "Workspace no longer available: \(raw)")
         }
         return try resolveWorkspaceId(nil, client: client)
     }

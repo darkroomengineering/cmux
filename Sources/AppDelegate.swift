@@ -5361,7 +5361,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Used by titlebar accessory buttons so they affect their own window
     /// rather than the currently focused/key window (#1779).
     func toggleSidebarForWindow(_ window: NSWindow?) -> Bool {
-        if let context = contextForMainWindow(window) {
+        if let window {
+            guard let context = contextForMainTerminalWindow(window) else {
+                return false
+            }
             context.sidebarState.toggle()
             return true
         }
