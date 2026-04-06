@@ -14,6 +14,37 @@ import UserNotifications
 #endif
 
 @MainActor
+final class WindowGlassEffectTests: XCTestCase {
+    func testRemoveRestoresOriginalContentHierarchy() {
+        _ = NSApplication.shared
+
+        let originalContentView = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+        let window = NSWindow(
+            contentRect: originalContentView.bounds,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = originalContentView
+
+        WindowGlassEffect.apply(to: window, tintColor: .systemBlue)
+
+        if WindowGlassEffect.isAvailable {
+            XCTAssertFalse(window.contentView === originalContentView)
+            XCTAssertTrue(window.contentView?.subviews.contains(where: { $0 === originalContentView }) == true)
+        } else {
+            XCTAssertTrue(window.contentView === originalContentView)
+            XCTAssertTrue(originalContentView.subviews.contains(where: { $0 is NSVisualEffectView }))
+        }
+
+        WindowGlassEffect.remove(from: window)
+
+        XCTAssertTrue(window.contentView === originalContentView)
+        XCTAssertFalse(originalContentView.subviews.contains(where: { $0 is NSVisualEffectView }))
+    }
+}
+
+@MainActor
 final class AppDelegateWindowContextRoutingTests: XCTestCase {
     private func makeMainWindow(id: UUID) -> NSWindow {
         let window = NSWindow(
@@ -228,6 +259,39 @@ final class AppDelegateWindowContextRoutingTests: XCTestCase {
         let createdWorkspace = manager.tabs.first { !existingWorkspaceIds.contains($0.id) }
         XCTAssertNotNil(createdWorkspace)
         XCTAssertEqual(createdWorkspace?.currentDirectory, droppedDirectory.path)
+    }
+
+    func testApplicationOpenURLsIgnoresBundleSelfPaths() {
+        _ = NSApplication.shared
+        let app = AppDelegate()
+
+        let windowId = UUID()
+        let window = makeMainWindow(id: windowId)
+        defer { window.orderOut(nil) }
+
+        let manager = TabManager()
+        app.registerMainWindow(
+            window,
+            windowId: windowId,
+            tabManager: manager,
+            sidebarState: SidebarState(),
+            sidebarSelectionState: SidebarSelectionState()
+        )
+
+        window.makeKeyAndOrderFront(nil)
+        _ = app.synchronizeActiveMainWindowContext(preferredWindow: window)
+
+        let existingWorkspaceIds = Set(manager.tabs.map(\.id))
+        let embeddedExecutableURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/MacOS/cmux", isDirectory: false)
+
+        app.application(
+            NSApplication.shared,
+            open: [embeddedExecutableURL]
+        )
+
+        let createdWorkspace = manager.tabs.first { !existingWorkspaceIds.contains($0.id) }
+        XCTAssertNil(createdWorkspace)
     }
 }
 
@@ -1246,6 +1310,69 @@ final class MarkdownPanelPointerObserverViewTests: XCTestCase {
     func testObserverDoesNotParticipateInHitTesting() {
         let overlay = MarkdownPanelPointerObserverView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
         XCTAssertNil(overlay.hitTest(NSPoint(x: 40, y: 30)))
+    }
+}
+
+@MainActor
+final class TmuxWorkspacePaneOverlayTests: XCTestCase {
+    func testTmuxWorkspacePaneOverlayModelTracksFlashReason() {
+        let model = TmuxWorkspacePaneOverlayModel()
+        let initialState = TmuxWorkspacePaneOverlayRenderState(
+            workspaceId: UUID(),
+            unreadRects: [],
+            flashRect: CGRect(x: 10, y: 20, width: 300, height: 200),
+            flashToken: 1,
+            flashReason: .notificationArrival
+        )
+        let laterState = TmuxWorkspacePaneOverlayRenderState(
+            workspaceId: initialState.workspaceId,
+            unreadRects: [],
+            flashRect: CGRect(x: 10, y: 20, width: 300, height: 200),
+            flashToken: 2,
+            flashReason: .navigation
+        )
+
+        model.apply(initialState)
+        model.apply(laterState)
+
+        XCTAssertEqual(model.flashReason, .navigation)
+    }
+
+    func testNavigationFlashUsesNonNotificationPresentation() {
+        XCTAssertNotEqual(
+            WorkspaceAttentionCoordinator.flashStyle(for: .navigation),
+            WorkspaceAttentionCoordinator.flashStyle(for: .notificationArrival)
+        )
+    }
+
+    func testNavigationFlashUsesNonNeutralAccent() {
+        XCTAssertEqual(
+            WorkspaceAttentionCoordinator.flashStyle(for: .navigation).accent,
+            .navigationTeal
+        )
+    }
+
+    func testTmuxWorkspacePaneExactRectReturnsContentRelativeFrameForDescendantView() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+
+        guard let contentView = window.contentView else {
+            XCTFail("Expected contentView")
+            return
+        }
+
+        let targetView = NSView(frame: NSRect(x: 120, y: 48, width: 300, height: 200))
+        contentView.addSubview(targetView)
+
+        XCTAssertEqual(
+            ContentView.tmuxWorkspacePaneExactRect(for: targetView, in: contentView),
+            CGRect(x: 120, y: 48, width: 300, height: 200)
+        )
     }
 }
 #endif

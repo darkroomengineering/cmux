@@ -14,6 +14,74 @@ import UserNotifications
 #endif
 
 @MainActor
+final class AppIconSettingsTests: XCTestCase {
+    func testApplyDarkSetsRuntimeIconAndNotifiesDockTilePlugin() {
+        let expectedIcon = NSImage(size: NSSize(width: 16, height: 16))
+        var receivedRuntimeIcon: NSImage?
+        var dockTileNotificationCount = 0
+        var startObservationCallCount = 0
+        var stopObservationCallCount = 0
+
+        let environment = AppIconSettings.Environment(
+            imageForMode: { mode in
+                XCTAssertEqual(mode, .dark)
+                return expectedIcon
+            },
+            setApplicationIconImage: { icon in
+                receivedRuntimeIcon = icon
+            },
+            startAppearanceObservation: {
+                startObservationCallCount += 1
+            },
+            stopAppearanceObservation: {
+                stopObservationCallCount += 1
+            },
+            notifyDockTilePlugin: {
+                dockTileNotificationCount += 1
+            }
+        )
+
+        AppIconSettings.applyIcon(.dark, environment: environment)
+
+        XCTAssertTrue(receivedRuntimeIcon === expectedIcon)
+        XCTAssertEqual(dockTileNotificationCount, 1)
+        XCTAssertEqual(startObservationCallCount, 0)
+        XCTAssertEqual(stopObservationCallCount, 1)
+    }
+
+    func testApplyAutomaticStartsObservationAndNotifiesDockTilePlugin() {
+        var dockTileNotificationCount = 0
+        var startObservationCallCount = 0
+        var stopObservationCallCount = 0
+
+        let environment = AppIconSettings.Environment(
+            imageForMode: { mode in
+                XCTFail("Automatic mode should not request a manual icon image: \(mode.rawValue)")
+                return nil
+            },
+            setApplicationIconImage: { _ in
+                XCTFail("Automatic mode should delegate live updates to the appearance observer")
+            },
+            startAppearanceObservation: {
+                startObservationCallCount += 1
+            },
+            stopAppearanceObservation: {
+                stopObservationCallCount += 1
+            },
+            notifyDockTilePlugin: {
+                dockTileNotificationCount += 1
+            }
+        )
+
+        AppIconSettings.applyIcon(.automatic, environment: environment)
+
+        XCTAssertEqual(dockTileNotificationCount, 1)
+        XCTAssertEqual(startObservationCallCount, 1)
+        XCTAssertEqual(stopObservationCallCount, 0)
+    }
+}
+
+@MainActor
 final class NotificationDockBadgeTests: XCTestCase {
     private final class NotificationSettingsAlertSpy: NSAlert {
         private(set) var beginSheetModalCallCount = 0
@@ -754,6 +822,39 @@ final class NotificationDockBadgeTests: XCTestCase {
         XCTAssertEqual(store.unreadCount(forTabId: tab), 0)
         XCTAssertNil(store.latestNotification(forTabId: tab))
     }
+
+    func testClearLatestNotificationRemovesOnlyCurrentSidebarPreviewSource() {
+        let tab = UUID()
+        let latestSurface = UUID()
+        let previousSurface = UUID()
+        let latestNotification = TerminalNotification(
+            id: UUID(),
+            tabId: tab,
+            surfaceId: latestSurface,
+            title: "Latest",
+            subtitle: "",
+            body: "",
+            createdAt: Date(),
+            isRead: true
+        )
+        let previousNotification = TerminalNotification(
+            id: UUID(),
+            tabId: tab,
+            surfaceId: previousSurface,
+            title: "Previous",
+            subtitle: "",
+            body: "",
+            createdAt: Date().addingTimeInterval(-1),
+            isRead: true
+        )
+
+        let store = TerminalNotificationStore.shared
+        store.replaceNotificationsForTesting([latestNotification, previousNotification])
+        XCTAssertEqual(store.latestNotification(forTabId: tab)?.id, latestNotification.id)
+
+        store.clearLatestNotification(forTabId: tab)
+        XCTAssertEqual(store.latestNotification(forTabId: tab)?.id, previousNotification.id)
+    }
 }
 
 
@@ -764,6 +865,105 @@ final class MenuBarBadgeLabelFormatterTests: XCTestCase {
         XCTAssertEqual(MenuBarBadgeLabelFormatter.badgeText(for: 9), "9")
         XCTAssertEqual(MenuBarBadgeLabelFormatter.badgeText(for: 10), "9+")
         XCTAssertEqual(MenuBarBadgeLabelFormatter.badgeText(for: 47), "9+")
+    }
+}
+
+@MainActor
+final class FocusedNotificationIndicatorTests: XCTestCase {
+    func testFocusedNotificationIndicatorRemainsVisibleAfterFocusedNotificationIsRead() {
+        let appDelegate = AppDelegate.shared ?? AppDelegate()
+        let manager = TabManager()
+        let store = TerminalNotificationStore.shared
+
+        let originalTabManager = appDelegate.tabManager
+        let originalNotificationStore = appDelegate.notificationStore
+        let originalAppFocusOverride = AppFocusState.overrideIsFocused
+
+        store.replaceNotificationsForTesting([])
+        store.configureNotificationDeliveryHandlerForTesting { _, _ in }
+        appDelegate.tabManager = manager
+        appDelegate.notificationStore = store
+        AppFocusState.overrideIsFocused = true
+
+        defer {
+            store.replaceNotificationsForTesting([])
+            store.resetNotificationDeliveryHandlerForTesting()
+            appDelegate.tabManager = originalTabManager
+            appDelegate.notificationStore = originalNotificationStore
+            AppFocusState.overrideIsFocused = originalAppFocusOverride
+        }
+
+        guard let workspace = manager.selectedWorkspace,
+              let panelId = workspace.focusedPanelId else {
+            XCTFail("Expected selected workspace with focused panel")
+            return
+        }
+
+        store.addNotification(
+            tabId: workspace.id,
+            surfaceId: panelId,
+            title: "Focused",
+            subtitle: "",
+            body: ""
+        )
+
+        XCTAssertTrue(store.hasUnreadNotification(forTabId: workspace.id, surfaceId: panelId))
+        XCTAssertTrue(store.hasVisibleNotificationIndicator(forTabId: workspace.id, surfaceId: panelId))
+
+        store.markRead(forTabId: workspace.id, surfaceId: panelId)
+
+        XCTAssertFalse(store.hasUnreadNotification(forTabId: workspace.id, surfaceId: panelId))
+        XCTAssertTrue(store.hasVisibleNotificationIndicator(forTabId: workspace.id, surfaceId: panelId))
+
+        store.clearFocusedReadIndicator(forTabId: workspace.id, surfaceId: panelId)
+
+        XCTAssertFalse(store.hasVisibleNotificationIndicator(forTabId: workspace.id, surfaceId: panelId))
+    }
+
+    func testNewNotificationOnDifferentSurfaceClearsPreviousFocusedReadIndicator() {
+        let appDelegate = AppDelegate.shared ?? AppDelegate()
+        let manager = TabManager()
+        let store = TerminalNotificationStore.shared
+
+        let originalTabManager = appDelegate.tabManager
+        let originalNotificationStore = appDelegate.notificationStore
+        let originalAppFocusOverride = AppFocusState.overrideIsFocused
+
+        store.replaceNotificationsForTesting([])
+        store.configureNotificationDeliveryHandlerForTesting { _, _ in }
+        appDelegate.tabManager = manager
+        appDelegate.notificationStore = store
+        AppFocusState.overrideIsFocused = true
+
+        defer {
+            store.replaceNotificationsForTesting([])
+            store.resetNotificationDeliveryHandlerForTesting()
+            appDelegate.tabManager = originalTabManager
+            appDelegate.notificationStore = originalNotificationStore
+            AppFocusState.overrideIsFocused = originalAppFocusOverride
+        }
+
+        guard let workspace = manager.selectedWorkspace,
+              let leftPanelId = workspace.focusedPanelId,
+              let rightPanel = workspace.newTerminalSplit(from: leftPanelId, orientation: .horizontal) else {
+            XCTFail("Expected split workspace setup")
+            return
+        }
+
+        workspace.focusPanel(rightPanel.id)
+
+        store.setFocusedReadIndicator(forTabId: workspace.id, surfaceId: rightPanel.id)
+        XCTAssertTrue(store.hasVisibleNotificationIndicator(forTabId: workspace.id, surfaceId: rightPanel.id))
+
+        store.addNotification(
+            tabId: workspace.id,
+            surfaceId: leftPanelId,
+            title: "Left",
+            subtitle: "",
+            body: ""
+        )
+
+        XCTAssertFalse(store.hasVisibleNotificationIndicator(forTabId: workspace.id, surfaceId: rightPanel.id))
     }
 }
 
