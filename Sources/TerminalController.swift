@@ -54,8 +54,11 @@ class TerminalController {
     private var accessMode: SocketControlMode = .cmuxOnly
     private let myPid = getpid()
     private nonisolated(unsafe) static var socketCommandPolicyDepth: Int = 0
-    private nonisolated(unsafe) static var socketCommandFocusAllowanceStack: [Bool] = []
     private nonisolated static let socketCommandPolicyLock = NSLock()
+    // Each connection has its own handler thread. Focus intent belongs to that request,
+    // not to the process-wide activation-suppression depth shared by concurrent commands.
+    private nonisolated static let socketCommandFocusAllowanceThreadKey =
+        "com.darkroom.programa.socket-command-focus-allowance"
     private nonisolated static let socketListenBacklog: Int32 = 128
     private nonisolated static let acceptFailureBaseBackoffMs = 10
     private nonisolated static let acceptFailureMaxBackoffMs = 5_000
@@ -265,17 +268,11 @@ class TerminalController {
     }
 
     nonisolated static func socketCommandAllowsInAppFocusMutations() -> Bool {
-        allowsInAppFocusMutationsForActiveSocketCommand()
-    }
-
-    private nonisolated static func allowsInAppFocusMutationsForActiveSocketCommand() -> Bool {
-        socketCommandPolicyLock.lock()
-        defer { socketCommandPolicyLock.unlock() }
-        return socketCommandFocusAllowanceStack.last ?? false
+        (Thread.current.threadDictionary[socketCommandFocusAllowanceThreadKey] as? NSNumber)?.boolValue ?? false
     }
 
     func socketCommandAllowsInAppFocusMutations() -> Bool {
-        Self.allowsInAppFocusMutationsForActiveSocketCommand()
+        Self.socketCommandAllowsInAppFocusMutations()
     }
 
     func v2FocusAllowed(requested: Bool = true) -> Bool {
@@ -302,21 +299,34 @@ class TerminalController {
         return focusIntentV2Methods.contains(commandKey)
     }
 
+    private nonisolated static func withSocketCommandFocusAllowance<T>(
+        _ allowsFocusMutation: Bool,
+        _ body: () -> T
+    ) -> T {
+        let threadDictionary = Thread.current.threadDictionary
+        let previousValue = threadDictionary[socketCommandFocusAllowanceThreadKey]
+        threadDictionary[socketCommandFocusAllowanceThreadKey] = allowsFocusMutation
+        defer {
+            if let previousValue {
+                threadDictionary[socketCommandFocusAllowanceThreadKey] = previousValue
+            } else {
+                threadDictionary.removeObject(forKey: socketCommandFocusAllowanceThreadKey)
+            }
+        }
+        return body()
+    }
+
     private func withSocketCommandPolicy<T>(commandKey: String, isV2: Bool, _ body: () -> T) -> T {
         let allowsFocusMutation = Self.socketCommandAllowsInAppFocusMutations(commandKey: commandKey, isV2: isV2)
         Self.socketCommandPolicyLock.lock()
         Self.socketCommandPolicyDepth += 1
-        Self.socketCommandFocusAllowanceStack.append(allowsFocusMutation)
         Self.socketCommandPolicyLock.unlock()
         defer {
             Self.socketCommandPolicyLock.lock()
-            if !Self.socketCommandFocusAllowanceStack.isEmpty {
-                _ = Self.socketCommandFocusAllowanceStack.popLast()
-            }
             Self.socketCommandPolicyDepth = max(0, Self.socketCommandPolicyDepth - 1)
             Self.socketCommandPolicyLock.unlock()
         }
-        return body()
+        return Self.withSocketCommandFocusAllowance(allowsFocusMutation, body)
     }
 
 #if DEBUG
@@ -1498,8 +1508,6 @@ class TerminalController {
             return v2Error(id: id, code: "invalid_request", message: "Missing method")
         }
 
-        v2MainSync { self.v2RefreshKnownRefs() }
-
         return withSocketCommandPolicy(commandKey: method, isV2: true) {
             switch method {
         case "system.ping":
@@ -2028,7 +2036,12 @@ class TerminalController {
         if Thread.isMainThread {
             return body()
         }
-        return DispatchQueue.main.sync(execute: body)
+        // AppDelegate and Workspace focus guards run inside the main-thread closure, so carry
+        // only this request's allowance across the hop and restore the main thread afterward.
+        let allowsFocusMutation = Self.socketCommandAllowsInAppFocusMutations()
+        return DispatchQueue.main.sync {
+            Self.withSocketCommandFocusAllowance(allowsFocusMutation, body)
+        }
     }
 
     private func v2Ok(id: Any?, result: Any) -> String {
@@ -2101,6 +2114,19 @@ class TerminalController {
     }
 
     private func v2ResolveHandleRef(_ handle: String) -> UUID? {
+        if let knownUUID = v2KnownUUID(forHandle: handle) {
+            return knownUUID
+        }
+
+        // Handle refs are normally learned when they are returned to a client. Preserve
+        // support for a client presenting a valid-but-not-yet-issued ref by populating the
+        // index only on that cache miss. UUID-based commands, including the telemetry hot
+        // paths, never pay for this full-model main-thread scan.
+        v2MainSync { v2RefreshKnownRefs() }
+        return v2KnownUUID(forHandle: handle)
+    }
+
+    private func v2KnownUUID(forHandle handle: String) -> UUID? {
         v2HandleRefStateLock.lock()
         defer { v2HandleRefStateLock.unlock() }
 

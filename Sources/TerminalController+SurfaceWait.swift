@@ -7,11 +7,11 @@
 //
 // Threading: each socket connection is handled on its own detached thread (see
 // `TerminalController.handleClient`, started via `Thread.detachNewThread` in the accept loop).
-// There is no shared/serial command queue across connections -- `withSocketCommandPolicy` only
-// holds a lock briefly to push/pop a stack, not around command execution. So blocking *this*
-// connection's thread for the wait's duration is safe: it does not stall the main thread, does
-// not stall other connections, and does not steal focus (surface.wait never mutates in-app
-// focus/selection, matching the "read-only" socket focus policy).
+// There is no shared/serial command queue across connections, and each request carries its own
+// focus allowance. So blocking *this* connection's thread for the wait's duration is safe: it
+// does not stall the main thread, does not stall other connections, and does not steal focus
+// (surface.wait never mutates in-app focus/selection, matching the "read-only" socket focus
+// policy).
 import Foundation
 
 /// Registry of pending `exit`-condition waiters for `surface.wait`, keyed by terminal surface id.

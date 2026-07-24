@@ -135,7 +135,7 @@ extension TerminalController {
     func v2DebugToggleCommandPalette(params: [String: Any]) -> V2CallResult {
         let requestedWindowId = v2UUID(params, "window_id")
         var result: V2CallResult = .ok([:])
-        DispatchQueue.main.sync {
+        v2MainSync {
             let targetWindow: NSWindow?
             if let requestedWindowId {
                 guard let window = AppDelegate.shared?.mainWindow(for: requestedWindowId) else {
@@ -773,7 +773,7 @@ extension TerminalController {
     }
 
     private func activateApp() -> String {
-        DispatchQueue.main.sync {
+        v2MainSync {
             NSApp.activate(ignoringOtherApps: true)
             NSApp.unhide(nil)
             let hasMainTerminalWindow = NSApp.windows.contains { window in
@@ -1186,7 +1186,7 @@ extension TerminalController {
         let surfaceArg = parts.count > 1 ? parts[1] : ""
 
         var result = "OK"
-        DispatchQueue.main.sync {
+        v2MainSync {
             guard let tab = resolveTab(from: tabArg, tabManager: tabManager) else {
                 result = "ERROR: Tab not found"
                 return
