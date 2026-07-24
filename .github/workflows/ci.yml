@@ -148,6 +148,9 @@ jobs:
       - name: Validate release asset guard
         run: node scripts/release_asset_guard.test.js
 
+      - name: Validate Sparkle enclosure naming and pruning
+        run: node --test scripts/sparkle_enclosure.test.js
+
   remote-daemon-tests:
     needs: change-detection
     if: needs.change-detection.outputs.run_remote_daemon_jobs == 'true'

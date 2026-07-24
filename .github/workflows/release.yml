@@ -95,7 +95,10 @@ jobs:
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
-            const { evaluateReleaseAssetGuard } = require('./scripts/release_asset_guard');
+            const {
+              enclosureAssetFromAppcast,
+              evaluateReleaseAssetGuard,
+            } = require('./scripts/release_asset_guard');
             const tag = process.env.RELEASE_TAG;
             core.setOutput('skip_all', 'false');
             core.setOutput('skip_upload', 'false');
@@ -106,14 +109,62 @@ jobs:
                 repo: context.repo.repo,
                 tag,
               });
-              const existingAssetNames = (release.data.assets || []).map((asset) => asset.name);
+              const existingAssets = release.data.assets || [];
+              const existingAssetNames = existingAssets.map((asset) => asset.name);
+
+              // A published appcast names the exact DMG Sparkle will fetch. Read it so the
+              // guard requires that per-build asset too — otherwise a partial upload
+              // (appcast present, versioned DMG missing) looks "complete" on rerun and the
+              // release ships pointing at a 404.
+              //
+              // Fail closed: if an appcast exists but its enclosure can't be read, we can't
+              // tell a healthy release from a broken one. Skipping the build on that
+              // uncertainty is the exact failure this guard exists to prevent, so stop and
+              // make a human look instead.
+              let appcastXml = null;
+              const appcastAsset = existingAssets.find((asset) => asset.name === 'appcast.xml');
+              if (appcastAsset) {
+                let readError = null;
+                try {
+                  // Must be the typed endpoint: `github.request('GET {url}', ...)` would
+                  // percent-encode the asset url as an RFC 6570 simple expansion and 404.
+                  const response = await github.rest.repos.getReleaseAsset({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    asset_id: appcastAsset.id,
+                    headers: { accept: 'application/octet-stream' },
+                  });
+                  appcastXml = Buffer.from(response.data).toString('utf8');
+                } catch (error) {
+                  readError = error.message;
+                }
+
+                if (readError !== null) {
+                  core.setFailed(
+                    `Release ${tag} has a published appcast.xml that could not be read (${readError}). ` +
+                    'Cannot verify its Sparkle enclosure is uploaded; refusing to skip the build. ' +
+                    'Re-run once the asset is readable, or resolve release assets manually.'
+                  );
+                  return;
+                }
+
+                if (!enclosureAssetFromAppcast(appcastXml)) {
+                  core.setFailed(
+                    `Release ${tag} has an appcast.xml with no per-build Sparkle enclosure ` +
+                    '(expected programa-macos-<build>.dmg). It predates the immutable-enclosure fix ' +
+                    'or is malformed. Resolve release assets manually before rerunning.'
+                  );
+                  return;
+                }
+              }
+
               const {
                 conflicts,
                 missingImmutableAssets,
                 guardState,
                 hasPartialConflict,
                 shouldSkipBuildAndUpload,
-              } = evaluateReleaseAssetGuard({ existingAssetNames });
+              } = evaluateReleaseAssetGuard({ existingAssetNames, appcastXml });
 
               core.setOutput('release_state', guardState);
 
@@ -411,6 +462,14 @@ jobs:
           fi
           xcrun stapler staple "$DMG_RELEASE"
           xcrun stapler validate "$DMG_RELEASE"
+          # Publish the same bytes twice: programa-macos.dmg is the stable README
+          # download button, and programa-macos-<build>.dmg is what Sparkle's appcast
+          # points at. The versioned name is never overwritten by a later ship, so the
+          # EdDSA signature always matches whatever that url returns. See
+          # scripts/sparkle_enclosure.js for why (SUSparkleErrorDomain 4005, 2026-07-24).
+          ENCLOSURE_DMG="$(node scripts/sparkle_enclosure.js name "$EFFECTIVE_BUILD")"
+          cp "$DMG_RELEASE" "$ENCLOSURE_DMG"
+          echo "ENCLOSURE_DMG=${ENCLOSURE_DMG}" >> "$GITHUB_ENV"
 
       - name: Generate Sparkle appcast
         if: steps.guard_release_assets.outputs.skip_all != 'true'
@@ -421,7 +480,7 @@ jobs:
             echo "Missing SPARKLE_PRIVATE_KEY secret" >&2
             exit 1
           fi
-          ./scripts/sparkle_generate_appcast.sh programa-macos.dmg "$RELEASE_TAG" appcast.xml
+          ./scripts/sparkle_generate_appcast.sh programa-macos.dmg "$RELEASE_TAG" appcast.xml "$ENCLOSURE_DMG"
 
       - name: Attest remote daemon release assets
         if: steps.guard_release_assets.outputs.skip_all != 'true'
@@ -442,6 +501,7 @@ jobs:
           name: programa-release-dry-run
           path: |
             programa-macos.dmg
+            programa-macos-*.dmg
             appcast.xml
             remote-daemon-assets/programad-remote-*
           if-no-files-found: error
@@ -491,9 +551,19 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.IS_AUTO_SHIP == 'true' && 'Rolling (latest main)' || env.RELEASE_TAG }}
           make_latest: true
+          # Sequential upload, and this order specifically:
+          #   1. programa-macos-<build>.dmg — up before anything references it, so the new
+          #      appcast's enclosure is never briefly a 404.
+          #   2. appcast.xml — now points at an asset that already exists.
+          #   3. programa-macos.dmg — overwritten LAST. Until this moment a client holding
+          #      the PREVIOUS appcast (which still names the unversioned dmg) is served the
+          #      previous bytes, matching the signature it has. Overwriting it first would
+          #      recreate the 4005 mismatch during the upload window.
+          preserve_order: true
           files: |
-            programa-macos.dmg
+            programa-macos-*.dmg
             appcast.xml
+            programa-macos.dmg
             remote-daemon-assets/programad-remote-darwin-arm64
             remote-daemon-assets/programad-remote-darwin-amd64
             remote-daemon-assets/programad-remote-linux-arm64
@@ -506,6 +576,34 @@ jobs:
           body: ${{ steps.rolling_notes.outputs.body }}
           generate_release_notes: ${{ env.IS_AUTO_SHIP != 'true' }}
           overwrite_files: true
+
+      - name: Prune superseded Sparkle enclosures
+        if: steps.guard_release_assets.outputs.skip_upload != 'true' && github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Housekeeping only: the ship already succeeded by this point, so a failure here
+        # must not fail the run. Worst case a stale DMG lingers, costing storage.
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # Versioned DMGs are never overwritten (that is the whole point), so they
+          # accumulate ~21MB per ship on the reused rolling release. The keep window is
+          # deliberately generous — see DEFAULT_KEEP_BUILDS in scripts/sparkle_enclosure.js
+          # for why deleting one is a real (if mild) auto-update failure.
+          if ! ASSETS=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'); then
+            echo "Could not list release assets; skipping prune."
+            exit 0
+          fi
+          STALE=$(node scripts/sparkle_enclosure.js prune --current "$EFFECTIVE_BUILD" <<< "$ASSETS")
+          if [ -z "$STALE" ]; then
+            echo "No superseded enclosures to prune."
+            exit 0
+          fi
+          while IFS= read -r asset; do
+            echo "Pruning $asset"
+            # Best-effort: a failed delete leaves a stale asset, which is harmless.
+            gh release delete-asset "$RELEASE_TAG" "$asset" --yes || true
+          done <<< "$STALE"
 
       - name: Cleanup keychain
         if: always()

@@ -2,13 +2,19 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "Usage: $0 <dmg-path> <tag> [output-path]" >&2
+  echo "Usage: $0 <dmg-path> <tag> [output-path] [enclosure-filename]" >&2
   exit 1
 fi
 
 DMG_PATH="$1"
 TAG="$2"
 OUT_PATH="${3:-appcast.xml}"
+# The enclosure filename is what Sparkle downloads. It must be unique per build:
+# the rolling release reuses one tag and overwrites its assets, so a fixed name is a
+# mutable url carrying a content-bound signature, and a client that reads the new
+# appcast but is served the previous (still-cached) DMG fails validation with
+# SUSparkleErrorDomain 4005. Defaults to the DMG's own name for local/manual runs.
+ENCLOSURE_FILENAME="${4:-${ENCLOSURE_FILENAME:-$(basename "$DMG_PATH")}}"
 
 if [[ -z "${SPARKLE_PRIVATE_KEY:-}" ]]; then
   echo "SPARKLE_PRIVATE_KEY is required (exported from Sparkle generate_keys)." >&2
@@ -60,7 +66,10 @@ fi
 
 archives_dir="$work_dir/archives"
 mkdir -p "$archives_dir"
-cp "$DMG_PATH" "$archives_dir/$(basename "$DMG_PATH")"
+# generate_appcast builds the enclosure url from the archive's filename, so staging the
+# DMG under the enclosure name is what pins the url to this build.
+cp "$DMG_PATH" "$archives_dir/$ENCLOSURE_FILENAME"
+echo "Enclosure: ${DOWNLOAD_URL_PREFIX}${ENCLOSURE_FILENAME}"
 
 key_file="$work_dir/sparkle_ed_key"
 # Ensure base64 padding (keys may be stored without trailing '=')
@@ -125,5 +134,16 @@ if grep -q 'sparkle:edSignature' "$OUT_PATH"; then
   echo "Verified: appcast contains sparkle:edSignature"
 else
   echo "ERROR: appcast is missing sparkle:edSignature!" >&2
+  exit 1
+fi
+
+# The signature is bound to these exact bytes, so the enclosure must point at the
+# per-build filename we staged. If it silently fell back to another name, the url
+# would be overwritable by the next ship and clients would hit signature mismatches.
+if grep -q "url=\"${DOWNLOAD_URL_PREFIX}${ENCLOSURE_FILENAME}\"" "$OUT_PATH"; then
+  echo "Verified: enclosure url pins the per-build filename"
+else
+  echo "ERROR: appcast enclosure does not reference ${ENCLOSURE_FILENAME}" >&2
+  grep -o 'url="[^"]*"' "$OUT_PATH" >&2 || true
   exit 1
 fi
