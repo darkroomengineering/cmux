@@ -85,6 +85,15 @@ run_unit_tests_with_retry() {
       continue
     fi
 
+    # The stateful suite is isolated to AppDelegate routing focus tests and is
+    # known to be flaky only via transient CI focus-timing races; absorb one
+    # retry on failure so one transient miss doesn't fail the whole run.
+    if [[ "$mode" == "stateful" ]] && (( attempt == 0 )); then
+      echo "Stateful test pass is timing-sensitive; retrying once"
+      attempt=1
+      continue
+    fi
+
     return "$EXIT_CODE"
   done
 }

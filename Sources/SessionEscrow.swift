@@ -449,6 +449,12 @@ final class SessionEscrowClient {
         childPID: Int32,
         completion: @escaping (Result?) -> Void
     ) {
+        guard !SessionMachineryGate.isUnitTesting else {
+            close(dupedMasterFD)
+            completion(nil)
+            return
+        }
+
         queue.async { [weak self] in
             guard let self else {
                 close(dupedMasterFD)

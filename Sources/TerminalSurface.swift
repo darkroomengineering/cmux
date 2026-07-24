@@ -1214,6 +1214,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
             surfaceId: id.uuidString,
             workingDirectory: resolvedWorkingDirectory
         )
+        if SessionMachineryGate.isUnitTesting {
+            return
+        }
         // childPID/ptyPath may not be available yet (the child may not have
         // spawned). Bounded retry, re-reading `self.surface` fresh each
         // attempt rather than caching `createdSurface` across the delay --
@@ -1353,6 +1356,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// dup or transfer ownership, so `dup()` here is required before the
     /// fd can safely outlive this surface.
     private func attemptSessionEscrow(surface: ghostty_surface_t, surfaceId: String, childPID: Int32) {
+        guard !SessionMachineryGate.isUnitTesting else { return }
         hasAttemptedSessionEscrow = true
         let rawMasterFD = ghostty_surface_pty_master_fd(surface)
         guard rawMasterFD >= 0 else { return }

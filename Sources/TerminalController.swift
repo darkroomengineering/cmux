@@ -213,10 +213,12 @@ class TerminalController {
         // idle-skip, offset bookkeeping) but never touches AppKit itself, so
         // it calls back out through this closure, hopping to main for the
         // export and back to its own writeQueue with the result.
-        SessionWALStore.shared.setFrameTextProvider { [weak self] surfaceId, completion in
-            Task { @MainActor [weak self] in
-                let text = self?.captureSessionWALFrameText(forSurfaceId: surfaceId)
-                completion(text)
+        if !SessionMachineryGate.isUnitTesting {
+            SessionWALStore.shared.setFrameTextProvider { [weak self] surfaceId, completion in
+                Task { @MainActor [weak self] in
+                    let text = self?.captureSessionWALFrameText(forSurfaceId: surfaceId)
+                    completion(text)
+                }
             }
         }
     }

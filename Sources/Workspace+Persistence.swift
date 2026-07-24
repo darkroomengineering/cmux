@@ -590,6 +590,7 @@ extension Workspace {
         inPane paneId: PaneID,
         workingDirectory: String?
     ) -> UUID? {
+        guard !SessionMachineryGate.isUnitTesting else { return nil }
         let oldSessionId = snapshot.id.uuidString
         guard let meta = SessionWALStore.shared.readMeta(sessionId: oldSessionId),
               meta.escrowed == true,

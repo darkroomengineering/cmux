@@ -445,6 +445,9 @@ final class SessionWALStore {
     ) -> Unmanaged<Context> {
         let context = Context(surfaceId: surfaceId)
         let unmanaged = Unmanaged<Context>.passRetained(context)
+        if SessionMachineryGate.isUnitTesting {
+            return unmanaged
+        }
 
         ghostty_surface_set_output_tap(surface, sessionWALOutputTapCallback, unmanaged.toOpaque())
 

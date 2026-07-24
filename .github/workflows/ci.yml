@@ -308,7 +308,7 @@ jobs:
 
       - name: Run unit tests
         env:
-          PROGRAMA_UNIT_TEST_SCOPE: serial
+          PROGRAMA_UNIT_TEST_SCOPE: split-stateful
           PROGRAMA_SKIP_ZIG_BUILD: "1"
         run: ./scripts/ci-run-unit-tests.sh
 
