@@ -99,10 +99,17 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
                 "print -r -- \"$HISTFILE\"",
             ],
             // Real /bin/zsh subprocess spawn + shell startup, not a fixed in-test dispatch
-            // delay. Under a full serial suite run with heavy CPU contention from
+            // delay. Under a full parallel suite run with heavy CPU contention from
             // hundreds of prior tests (some spawning their own subprocesses), process
             // scheduling and shell startup can legitimately take longer than 5s.
-            timeout: 20
+            //
+            // This is a ceiling, not a sleep: the wait returns the moment the process
+            // exits, so a generous value costs nothing when the test passes and only
+            // affects how long a genuinely hung process takes to report. It was 20s and
+            // still timed out at 21.2s on a loaded runner (CI run 30122626927), taking a
+            // release with it — so size it far past plausible contention rather than
+            // just past the last observed failure.
+            timeout: 90
         )
 
         XCTAssertFalse(result.timedOut, result.stderr)
@@ -142,7 +149,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
             ],
             // See timeout comment in runRelayZshHistfile above: real subprocess spawn,
             // not a fixed dispatch delay — needs headroom under full-suite CPU load.
-            timeout: 20
+            timeout: 90
         )
 
         XCTAssertFalse(result.timedOut, result.stderr)
@@ -179,7 +186,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
             ],
             // See timeout comment in runRelayZshHistfile above: real subprocess spawn,
             // not a fixed dispatch delay — needs headroom under full-suite CPU load.
-            timeout: 20
+            timeout: 90
         )
 
         XCTAssertFalse(result.timedOut, result.stderr)
