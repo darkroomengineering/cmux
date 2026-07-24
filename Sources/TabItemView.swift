@@ -85,9 +85,8 @@ struct TabItemView: View, Equatable {
     @State private var isHovering = false
     @State private var rowHeight: CGFloat = 1
     // Cached results of the expensive bonsplit tree walk + branch/dir/PR snapshot.
-    // Updated only by the debounced publisher, onAppear, and settings changes —
-    // NOT by the immediate publisher (title keystrokes). This prevents the tree
-    // walk from running on every keystroke in single-panel workspaces.
+    // Updated only by the debounced detail-data publisher, onAppear, and settings
+    // changes — NOT by immediate title changes or lightweight render telemetry.
     @State private var cachedOrderedPanelIds: [UUID]? = nil
     @State private var cachedBranchDirectoryLines: [VerticalBranchDirectoryLine] = []
     @State private var cachedPullRequestRows: [PullRequestDisplay] = []
@@ -205,10 +204,10 @@ struct TabItemView: View, Equatable {
     // (Claude Code / Codex / OpenCode) via `Workspace.panelAgentStates` — no in-body
     // subscription needed: `tab` is read directly (same pattern as `tab.progress` /
     // `tab.isPinned` above), and `panelAgentStates` is already wired into
-    // `sidebarObservationPublisher` (Workspace.swift), so `.onReceive` below already
-    // triggers the re-render this relies on. No change to TabItemView's Equatable
-    // conformance or precomputed `let` parameters is needed or should be made — see
-    // CLAUDE.md typing-latency-sensitive paths.
+    // `sidebarRenderStateObservationPublisher` (Workspace.swift), so `.onReceive`
+    // below already triggers the re-render this relies on. No change to
+    // TabItemView's Equatable conformance or precomputed `let` parameters is
+    // needed or should be made — see CLAUDE.md typing-latency-sensitive paths.
     private var agentActivityState: AgentActivityState? {
         tab.aggregateAgentState
     }
@@ -743,26 +742,44 @@ struct TabItemView: View, Equatable {
             workspaceObservationGeneration &+= 1
         }
         .onReceive(
-            tab.sidebarObservationPublisher
+            tab.sidebarRenderStateObservationPublisher
                 .receive(on: RunLoop.main)
-                // Prompt-time sidebar telemetry can arrive as a short burst
-                // (pwd, branch, PR, shell state). Coalesce that burst so the
-                // row redraws once with the settled state instead of blinking.
+                // Sidebar telemetry can arrive as a short burst. Coalesce it so
+                // the row redraws once with the settled state instead of blinking.
                 .debounce(for: Self.workspaceObservationCoalesceInterval, scheduler: RunLoop.main)
         ) { _ in
 #if DEBUG
             let description = tab.customDescription ?? ""
             dlog(
                 "sidebar.row.invalidate workspace=\(tab.id.uuidString.prefix(8)) " +
-                "source=debounced " +
+                "source=render-state " +
+                "title=\"\(debugCommandPaletteTextPreview(tab.title))\" " +
+                "descLen=\((description as NSString).length) " +
+                "desc=\"\(debugCommandPaletteTextPreview(description))\""
+            )
+#endif
+            workspaceObservationGeneration &+= 1
+        }
+        .onReceive(
+            tab.sidebarDetailDataObservationPublisher
+                .receive(on: RunLoop.main)
+                // Directory, branch, PR, and panel-topology updates often settle
+                // together at prompt time. Rebuild their shared snapshot once.
+                .debounce(for: Self.workspaceObservationCoalesceInterval, scheduler: RunLoop.main)
+        ) { _ in
+#if DEBUG
+            let description = tab.customDescription ?? ""
+            dlog(
+                "sidebar.row.invalidate workspace=\(tab.id.uuidString.prefix(8)) " +
+                "source=detail-data " +
                 "title=\"\(debugCommandPaletteTextPreview(tab.title))\" " +
                 "descLen=\((description as NSString).length) " +
                 "desc=\"\(debugCommandPaletteTextPreview(description))\""
             )
 #endif
             // Refresh expensive caches (tree walk, branch/dir/PR) before
-            // signalling a redraw. The immediate publisher intentionally does
-            // NOT call this so that title keystrokes skip the tree walk.
+            // signalling a redraw. Immediate title changes and lightweight
+            // render telemetry intentionally skip this work.
             recomputeSidebarDetailCache()
             workspaceObservationGeneration &+= 1
         }
@@ -1431,8 +1448,9 @@ struct TabItemView: View, Equatable {
 
     /// Recomputes the expensive sidebar detail caches (bonsplit tree walk,
     /// branch/directory lines, PR snapshot) and writes them into @State.
-    /// Must be called only from the debounced publisher, onAppear, and
-    /// settings-change handlers — never from the immediate (title) publisher.
+    /// Must be called only from the debounced detail-data publisher, onAppear,
+    /// and settings-change handlers — never from immediate title changes or
+    /// lightweight render telemetry.
     private func recomputeSidebarDetailCache() {
         let detail = visibleAuxiliaryDetails
         let needsDetail = detail.showsBranchDirectory || detail.showsPullRequests

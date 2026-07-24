@@ -207,7 +207,24 @@ final class Workspace: Identifiable, ObservableObject {
         return Publishers.MergeMany(publishers).eraseToAnyPublisher()
     }()
 
-    lazy var sidebarObservationPublisher: AnyPublisher<Void, Never> = {
+    lazy var sidebarRenderStateObservationPublisher: AnyPublisher<Void, Never> = {
+        let publishers: [AnyPublisher<Void, Never>] = [
+            sidebarObservationSignal($statusEntries),
+            sidebarObservationSignal($metadataBlocks),
+            sidebarObservationSignal($logEntries),
+            sidebarObservationSignal($progress),
+            sidebarObservationSignal($panelAgentStates),
+            sidebarObservationSignal($panelAgentStateSources),
+            sidebarObservationSignal($remoteConnectionState),
+            sidebarObservationSignal($remoteConnectionDetail),
+            sidebarObservationSignal($activeRemoteTerminalSessionCount),
+            sidebarObservationSignal($listeningPorts),
+        ]
+
+        return Publishers.MergeMany(publishers).eraseToAnyPublisher()
+    }()
+
+    lazy var sidebarDetailDataObservationPublisher: AnyPublisher<Void, Never> = {
         let publishers: [AnyPublisher<Void, Never>] = [
             sidebarObservationSignal($currentDirectory),
             $panels
@@ -217,24 +234,25 @@ final class Workspace: Identifiable, ObservableObject {
                 .map { _ in () }
                 .eraseToAnyPublisher(),
             sidebarObservationSignal($panelDirectories),
-            sidebarObservationSignal($statusEntries),
-            sidebarObservationSignal($metadataBlocks),
-            sidebarObservationSignal($logEntries),
-            sidebarObservationSignal($progress),
             sidebarObservationSignal($gitBranch),
             sidebarObservationSignal($panelGitBranches),
             sidebarObservationSignal($pullRequest),
             sidebarObservationSignal($panelPullRequests),
-            sidebarObservationSignal($panelAgentStates),
-            sidebarObservationSignal($panelAgentStateSources),
             sidebarObservationSignal($remoteConfiguration),
-            sidebarObservationSignal($remoteConnectionState),
-            sidebarObservationSignal($remoteConnectionDetail),
-            sidebarObservationSignal($activeRemoteTerminalSessionCount),
-            sidebarObservationSignal($listeningPorts),
         ]
 
         return Publishers.MergeMany(publishers).eraseToAnyPublisher()
+    }()
+
+    // Compatibility aggregate for non-rendering observers. Sidebar rows subscribe
+    // to the split publishers above so render-only telemetry cannot trigger a
+    // detail-cache rebuild.
+    lazy var sidebarObservationPublisher: AnyPublisher<Void, Never> = {
+        Publishers.Merge(
+            sidebarRenderStateObservationPublisher,
+            sidebarDetailDataObservationPublisher
+        )
+        .eraseToAnyPublisher()
     }()
 
     static func isProxyOnlyRemoteError(_ detail: String) -> Bool {

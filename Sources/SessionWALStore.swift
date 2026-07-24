@@ -12,22 +12,23 @@ import Bonsplit
 /// an agent without filesystem move/delete tools; the type names below are
 /// renamed. A follow-up `git mv` + pbxproj path/name tweak is cosmetic only.
 ///
-/// ## Threading path, tap callback to fsync
+/// ## Threading path, tap callback to WAL
 /// 1. `ghostty_surface_set_output_tap`'s C callback fires on ghostty's
 ///    io-reader thread, under the surface's renderer_state mutex. Per
 ///    `ghostty/include/ghostty.h`, it must be cheap: copy bytes out, no
-///    allocation, no calls back into `ghostty_surface_*`, no blocking.
+///    allocation, no calls back into `ghostty_surface_*`, no waiting.
 /// 2. The callback (`sessionWALOutputTapCallback`) does exactly one thing:
 ///    `SessionWALRingBuffer.append` — a bounded memcpy into a fixed-capacity
 ///    buffer preallocated at registration time (never in the callback).
 /// 3. A single shared background queue (`SessionWALStore.writeQueue`, a
 ///    serial `DispatchQueue`) runs a periodic timer every ~100ms
 ///    (`SessionWALPolicy.drainInterval`) that drains every registered
-///    surface's ring buffer, appends the bytes to that session's `wal.log`,
-///    and calls `FileHandle.synchronizeFile()` (fsync) — so a SIGKILL loses
-///    at most one drain interval (~100ms) of output.
-/// 4. `meta.json` (the fact file) is refreshed on the same tick, throttled
-///    to at most once/second per session unless new bytes were written.
+///    surface's ring buffer and appends the bytes to that session's
+///    `wal.log`. WAL fsync is batched separately at
+///    `SessionWALPolicy.walSyncInterval`, avoiding one serial fsync per
+///    output-bearing tick and writer.
+/// 4. `meta.json` (the fact file) is refreshed only at the heartbeat cadence
+///    or immediately when identity/escrow/generation changes.
 ///
 /// ## Ring buffer lock, a disclosed pragmatic tradeoff
 /// The callback must not allocate or block. A textbook wait-free SPSC ring
@@ -35,13 +36,12 @@ import Bonsplit
 /// the macOS 14 deployment target (see project.pbxproj) predates Swift's
 /// built-in `Synchronization.Atomic` (macOS 15+). Adding a new dependency is
 /// out of scope for this slice. `SessionWALRingBuffer` instead uses
-/// `os_unfair_lock` around index bookkeeping + one bounded memcpy — no
-/// syscalls, no allocation, single-digit-nanosecond uncontended cost. The
-/// only other thread that ever touches the lock is the background drain
-/// timer, briefly, once per ~100ms, so contention is negligible relative to
-/// a keystroke-latency budget. This is the same category of tradeoff the
-/// original spike made explicitly for its own counter; see git history for
-/// that comment if useful context.
+/// two buffers preallocated at registration time. The callback uses
+/// `os_unfair_lock_trylock`, so it never waits: in the rare instant that the
+/// drain queue is swapping buffers, that callback chunk is dropped rather
+/// than blocking Ghostty while its renderer mutex is held. The drain side
+/// holds the lock only long enough to swap the active buffer index and byte
+/// counters; allocation and the up-to-64 KiB copy happen after unlock.
 ///
 /// ## WAL cap / rotation
 /// Each session's `wal.log` is capped at `SessionWALPolicy.walCapBytes` (8
@@ -156,7 +156,13 @@ enum SessionWALPolicy {
     /// Per-session wal.log cap before rotating to wal.log.1.
     static let walCapBytes: Int64 = 8 * 1024 * 1024
     static let drainInterval: TimeInterval = 0.1
-    static let metaRefreshInterval: TimeInterval = 1.0
+    /// WAL durability is intentionally batched instead of issuing a serial
+    /// fsync for every 100ms drain tick. Rotation and final writer teardown
+    /// still force an immediate sync.
+    static let walSyncInterval: TimeInterval = 1.0
+    /// Fact-file heartbeat cadence. Identity, escrow, and generation changes
+    /// bypass this throttle and are persisted immediately.
+    static let metaRefreshInterval: TimeInterval = 5.0
     static let orphanSweepDelay: TimeInterval = 5.0
     /// Minimum spacing between successful/attempted frame captures for a
     /// single session. Deliberately slow (20-30s) since capture is
@@ -175,33 +181,39 @@ enum SessionWALPolicy {
     static let orphanDirectoryMaxAge: TimeInterval = 24 * 60 * 60
 }
 
-/// Fixed-size circular byte buffer. `append` is called only from ghostty's
-/// io-reader thread (the tap callback); `drain` is called only from
-/// `SessionWALStore.writeQueue`. See the type-level doc comment above for
-/// the `os_unfair_lock` tradeoff.
+/// Fixed-size double-buffered circular byte buffer. `append` is called only
+/// from ghostty's io-reader thread (the tap callback); `drain` is called only
+/// from `SessionWALStore.writeQueue`.
 final class SessionWALRingBuffer {
     private let capacity: Int
-    private let storage: UnsafeMutablePointer<UInt8>
+    private let firstStorage: UnsafeMutablePointer<UInt8>
+    private let secondStorage: UnsafeMutablePointer<UInt8>
+    private var activeStorageIndex = 0
     private var head = 0
     private var count = 0
     private var lock = os_unfair_lock()
 
     init(capacity: Int) {
         self.capacity = capacity
-        self.storage = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
+        self.firstStorage = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
+        self.secondStorage = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
     }
 
     deinit {
-        storage.deallocate()
+        firstStorage.deallocate()
+        secondStorage.deallocate()
     }
 
     /// Tap-callback hot path: copy `len` bytes in, dropping the oldest
     /// buffered bytes first if `len` would overflow capacity. No allocation,
-    /// no syscalls, bounded memcpy only.
+    /// no syscalls, no waiting, bounded memcpy only. If the drain queue is
+    /// in its tiny index-swap critical section, drop this chunk rather than
+    /// waiting while Ghostty holds its renderer mutex.
     func append(_ buf: UnsafePointer<UInt8>, _ len: Int) {
         guard len > 0 else { return }
-        os_unfair_lock_lock(&lock)
+        guard os_unfair_lock_trylock(&lock) else { return }
         defer { os_unfair_lock_unlock(&lock) }
+        let storage = storage(at: activeStorageIndex)
 
         if len >= capacity {
             let src = buf.advanced(by: len - capacity)
@@ -227,23 +239,42 @@ final class SessionWALRingBuffer {
         }
     }
 
-    /// Background-queue only: copies out and clears everything currently
-    /// buffered. Returns nil if there was nothing to drain.
+    /// Background-queue only: swaps the active preallocated buffer while
+    /// holding the lock, then allocates and copies after unlocking. Returns
+    /// nil if there was nothing to drain.
     func drain() -> [UInt8]? {
         os_unfair_lock_lock(&lock)
-        defer { os_unfair_lock_unlock(&lock) }
-        guard count > 0 else { return nil }
-        var out = [UInt8](repeating: 0, count: count)
-        out.withUnsafeMutableBytes { dst in
-            let firstChunk = min(count, capacity - head)
-            memcpy(dst.baseAddress!, storage.advanced(by: head), firstChunk)
-            if firstChunk < count {
-                memcpy(dst.baseAddress!.advanced(by: firstChunk), storage, count - firstChunk)
-            }
+        guard count > 0 else {
+            os_unfair_lock_unlock(&lock)
+            return nil
         }
+        let drainingStorageIndex = activeStorageIndex
+        let drainingHead = head
+        let drainingCount = count
+        activeStorageIndex = 1 - activeStorageIndex
         head = 0
         count = 0
+        os_unfair_lock_unlock(&lock)
+
+        let storage = storage(at: drainingStorageIndex)
+        var out = [UInt8](repeating: 0, count: drainingCount)
+        out.withUnsafeMutableBytes { dst in
+            let firstChunk = min(drainingCount, capacity - drainingHead)
+            memcpy(dst.baseAddress!, storage.advanced(by: drainingHead), firstChunk)
+            if firstChunk < drainingCount {
+                memcpy(
+                    dst.baseAddress!.advanced(by: firstChunk),
+                    storage,
+                    drainingCount - firstChunk
+                )
+            }
+        }
         return out
+    }
+
+    @inline(__always)
+    private func storage(at index: Int) -> UnsafeMutablePointer<UInt8> {
+        index == 0 ? firstStorage : secondStorage
     }
 }
 
@@ -305,6 +336,9 @@ struct SessionWALPaths {
     let walURL: URL
     let walRotatedURL: URL
     let metaURL: URL
+    /// Stable inode used with `flock(2)` to serialize app/holder filesystem
+    /// mutations across process boundaries.
+    let lockURL: URL
     /// Committed frame: a VT-formatted dump of the current screen, written
     /// atomically via `frameNextURL` + fsync + `rename(2)`.
     let frameURL: URL
@@ -313,6 +347,17 @@ struct SessionWALPaths {
     let frameNextURL: URL
     /// WAL offset + rotation generation recorded at frame capture time.
     let frameMetaURL: URL
+
+    init(sessionDirectory: URL) {
+        self.sessionDirectory = sessionDirectory
+        self.walURL = sessionDirectory.appendingPathComponent("wal.log", isDirectory: false)
+        self.walRotatedURL = sessionDirectory.appendingPathComponent("wal.log.1", isDirectory: false)
+        self.metaURL = sessionDirectory.appendingPathComponent("meta.json", isDirectory: false)
+        self.lockURL = sessionDirectory.appendingPathComponent("wal.lock", isDirectory: false)
+        self.frameURL = sessionDirectory.appendingPathComponent("frame.vt", isDirectory: false)
+        self.frameNextURL = sessionDirectory.appendingPathComponent("frame.vt.next", isDirectory: false)
+        self.frameMetaURL = sessionDirectory.appendingPathComponent("frame.meta.json", isDirectory: false)
+    }
 
     static func sessionsRootURL(appSupportDirectory: URL? = nil) -> URL? {
         guard let snapshotFileURL = SessionPersistenceStore.defaultSnapshotFileURL(
@@ -326,20 +371,268 @@ struct SessionWALPaths {
     static func make(sessionId: String, appSupportDirectory: URL? = nil) -> SessionWALPaths? {
         guard let root = sessionsRootURL(appSupportDirectory: appSupportDirectory) else { return nil }
         let directory = root.appendingPathComponent(sessionId, isDirectory: true)
-        return SessionWALPaths(
-            sessionDirectory: directory,
-            walURL: directory.appendingPathComponent("wal.log", isDirectory: false),
-            walRotatedURL: directory.appendingPathComponent("wal.log.1", isDirectory: false),
-            metaURL: directory.appendingPathComponent("meta.json", isDirectory: false),
-            frameURL: directory.appendingPathComponent("frame.vt", isDirectory: false),
-            frameNextURL: directory.appendingPathComponent("frame.vt.next", isDirectory: false),
-            frameMetaURL: directory.appendingPathComponent("frame.meta.json", isDirectory: false)
+        return SessionWALPaths(sessionDirectory: directory)
+    }
+}
+
+/// Pure, process-safe filesystem core shared by the app writer and escrow
+/// holder. Every append takes the session's stable `wal.lock` with
+/// `flock(LOCK_EX)`, checks the on-disk size, and performs rotation when
+/// needed. Rotation first atomically persists `walGeneration + 1` into the
+/// existing fact file and only then renames `wal.log`; a crash between those
+/// steps can invalidate an otherwise usable frame, but can never leave a
+/// stale generation that accepts an offset from the wrong WAL incarnation.
+enum SessionWALCore {
+    struct AppendResult {
+        let currentWalSize: Int64
+        let walGeneration: Int
+        let didRotate: Bool
+        let didSynchronize: Bool
+    }
+
+    private enum CoreError: Error {
+        case cannotOpenLock
+        case cannotLock
+        case cannotOpenWAL
+        case cannotCommitMeta
+    }
+
+    private static let metaEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return encoder
+    }()
+
+    private static let metaDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
+    /// The single WAL append+rotation primitive. It is deliberately
+    /// stateless: reopening under the process lock means neither the app nor
+    /// holder can retain a file handle to an inode the other process rotated.
+    static func append(
+        _ data: Data,
+        to paths: SessionWALPaths,
+        walCapBytes: Int64 = SessionWALPolicy.walCapBytes,
+        synchronize: Bool
+    ) throws -> AppendResult {
+        try withProcessLock(paths: paths) {
+            try FileManager.default.createDirectory(
+                at: paths.sessionDirectory,
+                withIntermediateDirectories: true
+            )
+            if !FileManager.default.fileExists(atPath: paths.walURL.path) {
+                _ = FileManager.default.createFile(atPath: paths.walURL.path, contents: nil)
+            }
+
+            var currentSize = fileSize(at: paths.walURL)
+            var meta = readMetaUnlocked(paths: paths)
+            var generation = meta?.walGeneration ?? 0
+            var didRotate = false
+
+            if !data.isEmpty, currentSize + Int64(data.count) > walCapBytes {
+                // Sync the outgoing incarnation before its pathname changes.
+                try synchronizeWALUnlocked(paths: paths)
+
+                generation += 1
+                if meta == nil {
+                    meta = SessionWALMeta(
+                        sessionId: paths.sessionDirectory.lastPathComponent,
+                        childPID: nil,
+                        ptyPath: nil,
+                        workingDirectory: nil,
+                        lastHeartbeatAt: Date(),
+                        walGeneration: generation,
+                        escrowed: nil,
+                        escrowSocketPath: nil,
+                        escrowToken: nil
+                    )
+                } else {
+                    meta?.walGeneration = generation
+                    meta?.lastHeartbeatAt = Date()
+                }
+                guard let meta else { throw CoreError.cannotCommitMeta }
+
+                // Persisting first makes either crash ordering conservative:
+                // new generation + old WAL rejects the frame; old generation
+                // + new WAL is impossible.
+                try persistMetaUnlocked(meta, paths: paths)
+
+                if FileManager.default.fileExists(atPath: paths.walRotatedURL.path) {
+                    try FileManager.default.removeItem(at: paths.walRotatedURL)
+                }
+                try FileManager.default.moveItem(at: paths.walURL, to: paths.walRotatedURL)
+                _ = FileManager.default.createFile(atPath: paths.walURL.path, contents: nil)
+                currentSize = 0
+                didRotate = true
+            }
+
+            if !data.isEmpty {
+                guard let handle = try? FileHandle(forWritingTo: paths.walURL) else {
+                    throw CoreError.cannotOpenWAL
+                }
+                handle.seekToEndOfFile()
+                handle.write(data)
+                if synchronize || didRotate {
+                    handle.synchronizeFile()
+                }
+                handle.closeFile()
+                currentSize += Int64(data.count)
+            }
+
+            return AppendResult(
+                currentWalSize: currentSize,
+                walGeneration: generation,
+                didRotate: didRotate,
+                didSynchronize: synchronize || didRotate
+            )
+        }
+    }
+
+    /// Persists fact-file changes under the same process lock as rotation.
+    /// A writer with stale in-memory state may not lower a generation already
+    /// advanced by another process.
+    @discardableResult
+    static func persistMeta(_ proposedMeta: SessionWALMeta, to paths: SessionWALPaths) throws -> SessionWALMeta {
+        try withProcessLock(paths: paths) {
+            var mergedMeta = proposedMeta
+            let onDiskGeneration = readMetaUnlocked(paths: paths)?.walGeneration ?? 0
+            mergedMeta.walGeneration = max(proposedMeta.walGeneration ?? 0, onDiskGeneration)
+            try persistMetaUnlocked(mergedMeta, paths: paths)
+            return mergedMeta
+        }
+    }
+
+    static func synchronizeWAL(at paths: SessionWALPaths) throws {
+        try withProcessLock(paths: paths) {
+            try synchronizeWALUnlocked(paths: paths)
+        }
+    }
+
+    static func readMeta(at paths: SessionWALPaths) -> SessionWALMeta? {
+        try? withProcessLock(paths: paths) {
+            readMetaUnlocked(paths: paths)
+        }
+    }
+
+    /// Pure frame + current-WAL delta replay used by production restore and
+    /// by behavioral core tests. A generation mismatch always rejects the
+    /// frame, even when the new WAL has regrown beyond the old byte offset.
+    static func readFrameAndDelta(
+        at paths: SessionWALPaths,
+        walCapBytes: Int64 = SessionWALPolicy.walCapBytes
+    ) -> String? {
+        try? withProcessLock(paths: paths) {
+            guard let frameMetaData = try? Data(contentsOf: paths.frameMetaURL),
+                  let frameMeta = try? metaDecoder.decode(SessionFrameMeta.self, from: frameMetaData),
+                  let frameData = try? Data(contentsOf: paths.frameURL),
+                  !frameData.isEmpty else {
+                return nil
+            }
+            let currentGeneration = readMetaUnlocked(paths: paths)?.walGeneration ?? 0
+            guard frameMeta.walGeneration == currentGeneration else { return nil }
+
+            let frameText = String(decoding: frameData, as: UTF8.self)
+            guard let currentWalData = try? Data(contentsOf: paths.walURL) else {
+                return frameText
+            }
+            guard frameMeta.walOffset >= 0,
+                  Int64(currentWalData.count) >= frameMeta.walOffset else {
+                return nil
+            }
+            var delta = currentWalData.subdata(in: Int(frameMeta.walOffset)..<currentWalData.count)
+            if delta.count > walCapBytes {
+                delta = delta.suffix(Int(walCapBytes))
+            }
+            guard !delta.isEmpty else { return frameText }
+            return frameText + String(decoding: delta, as: UTF8.self)
+        }
+    }
+
+    /// Test/production helper for committing frame metadata with the same
+    /// date encoding as restore.
+    static func writeFrame(
+        _ text: String,
+        meta: SessionFrameMeta,
+        to paths: SessionWALPaths
+    ) throws {
+        try withProcessLock(paths: paths) {
+            try Data(text.utf8).write(to: paths.frameURL)
+            let data = try metaEncoder.encode(meta)
+            try data.write(to: paths.frameMetaURL, options: .atomic)
+        }
+    }
+
+    private static func withProcessLock<T>(
+        paths: SessionWALPaths,
+        _ body: () throws -> T
+    ) throws -> T {
+        try FileManager.default.createDirectory(
+            at: paths.sessionDirectory,
+            withIntermediateDirectories: true
         )
+        let fd = paths.lockURL.path.withCString {
+            Darwin.open($0, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        }
+        guard fd >= 0 else { throw CoreError.cannotOpenLock }
+        defer { Darwin.close(fd) }
+        guard flock(fd, LOCK_EX) == 0 else { throw CoreError.cannotLock }
+        defer { _ = flock(fd, LOCK_UN) }
+        return try body()
+    }
+
+    private static func readMetaUnlocked(paths: SessionWALPaths) -> SessionWALMeta? {
+        guard let data = try? Data(contentsOf: paths.metaURL) else { return nil }
+        return try? metaDecoder.decode(SessionWALMeta.self, from: data)
+    }
+
+    private static func persistMetaUnlocked(_ meta: SessionWALMeta, paths: SessionWALPaths) throws {
+        let data = try metaEncoder.encode(meta)
+        let nextURL = paths.sessionDirectory.appendingPathComponent("meta.json.next")
+        _ = FileManager.default.createFile(atPath: nextURL.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: nextURL) else {
+            throw CoreError.cannotCommitMeta
+        }
+        handle.truncateFile(atOffset: 0)
+        handle.write(data)
+        handle.synchronizeFile()
+        handle.closeFile()
+        guard atomicRename(from: nextURL, to: paths.metaURL) else {
+            throw CoreError.cannotCommitMeta
+        }
+    }
+
+    private static func synchronizeWALUnlocked(paths: SessionWALPaths) throws {
+        guard FileManager.default.fileExists(atPath: paths.walURL.path) else { return }
+        guard let handle = try? FileHandle(forWritingTo: paths.walURL) else {
+            throw CoreError.cannotOpenWAL
+        }
+        handle.synchronizeFile()
+        handle.closeFile()
+    }
+
+    private static func fileSize(at url: URL) -> Int64 {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber else {
+            return 0
+        }
+        return size.int64Value
+    }
+
+    private static func atomicRename(from sourceURL: URL, to destinationURL: URL) -> Bool {
+        sourceURL.path.withCString { source in
+            destinationURL.path.withCString { destination in
+                Darwin.rename(source, destination) == 0
+            }
+        }
     }
 }
 
 /// writeQueue-confined per-session state: the tap `Context` (shared with the
-/// live ghostty tap), resolved paths, and the open file handle/size/heartbeat
+/// live ghostty tap), resolved paths, and the size/durability/heartbeat
 /// bookkeeping needed to append and rotate. A class (not a struct) so the
 /// periodic drain tick can mutate fields in place without dictionary
 /// reassignment.
@@ -354,9 +647,10 @@ private final class SessionWALWriter {
     var childPID: Int32?
     /// Resolved the same way as `childPID`, see above.
     var ptyPath: String?
-    var fileHandle: FileHandle?
     var currentWalSize: Int64 = 0
     var lastMetaWriteAt: Date = .distantPast
+    var lastWALSyncAt: Date = .distantPast
+    var hasUnsynchronizedWALWrites = false
     /// Incremented every time `wal.log` is rotated to `wal.log.1`. Recorded
     /// alongside a captured frame's WAL offset so restore can tell whether a
     /// rotation happened after the frame was captured (see the file-level
@@ -602,43 +896,7 @@ final class SessionWALStore {
     /// there's no writeQueue state to coordinate with.
     private func readFrameAndDeltaScrollbackText(sessionId: String) -> String? {
         guard let paths = SessionWALPaths.make(sessionId: sessionId) else { return nil }
-        guard let frameMetaData = try? Data(contentsOf: paths.frameMetaURL),
-              let frameMeta = try? Self.metaDecoder.decode(SessionFrameMeta.self, from: frameMetaData) else {
-            return nil
-        }
-        guard let frameData = try? Data(contentsOf: paths.frameURL), !frameData.isEmpty else {
-            return nil
-        }
-        let frameText = String(decoding: frameData, as: UTF8.self)
-
-        let currentGeneration: Int
-        if let sessionMetaData = try? Data(contentsOf: paths.metaURL),
-           let sessionMeta = try? Self.metaDecoder.decode(SessionWALMeta.self, from: sessionMetaData) {
-            currentGeneration = sessionMeta.walGeneration ?? 0
-        } else {
-            currentGeneration = 0
-        }
-        guard frameMeta.walGeneration == currentGeneration else {
-            // wal.log rotated after this frame was captured -- the recorded
-            // offset no longer points into the right file. Too old.
-            return nil
-        }
-
-        guard let currentWalData = try? Data(contentsOf: paths.walURL) else {
-            // No current wal.log at all; the frame alone is still a valid
-            // (if slightly stale) screen state.
-            return frameText
-        }
-        guard frameMeta.walOffset >= 0, Int64(currentWalData.count) >= frameMeta.walOffset else {
-            // Inconsistent bookkeeping -- don't guess, fall back to the plain tail.
-            return nil
-        }
-        var deltaData = currentWalData.subdata(in: Int(frameMeta.walOffset)..<currentWalData.count)
-        guard !deltaData.isEmpty else { return frameText }
-        if deltaData.count > SessionWALPolicy.walCapBytes {
-            deltaData = deltaData.suffix(Int(SessionWALPolicy.walCapBytes))
-        }
-        return frameText + String(decoding: deltaData, as: UTF8.self)
+        return SessionWALCore.readFrameAndDelta(at: paths)
     }
 
     /// Deletes one specific old session's directory once its restore
@@ -686,11 +944,11 @@ final class SessionWALStore {
 
     private func stopWriter(surfaceId: String, deleteDirectory: Bool) {
         guard let writer = writersBySurfaceId.removeValue(forKey: surfaceId) else { return }
-        drain(writer: writer, forceMetaWrite: false)
-        writer.fileHandle?.closeFile()
+        drain(writer: writer, forceMetaWrite: false, forceWALSync: true)
         if deleteDirectory {
             try? FileManager.default.removeItem(at: writer.paths.sessionDirectory)
         }
+        stopTimersIfIdle()
     }
 
     private func ensureDrainTimerStarted() {
@@ -717,33 +975,65 @@ final class SessionWALStore {
         frameCaptureTimer = timer
     }
 
-    /// Fires every `frameCaptureCheckInterval`; for each writer that's due
-    /// (spaced by `frameCaptureInterval`, not already mid-capture, and has
-    /// produced new WAL bytes since its last captured frame) reserves the
-    /// current WAL offset/generation *before* handing off to the
-    /// main-thread VT export, so the reservation can never be ahead of what
-    /// the export actually sees (see file-level doc comment).
+    private func stopTimersIfIdle() {
+        guard writersBySurfaceId.isEmpty else { return }
+        // Dispatch sources cannot be safely reconfigured after cancellation;
+        // clear them here and the next registration lazily recreates/resumes
+        // both sweeps.
+        drainTimer?.cancel()
+        drainTimer = nil
+        frameCaptureTimer?.cancel()
+        frameCaptureTimer = nil
+    }
+
+    /// Fires every `frameCaptureCheckInterval`; writers that are due
+    /// (`frameCaptureInterval` elapsed, not already mid-capture, and with
+    /// new WAL bytes) are assigned evenly spaced launch slots across the
+    /// full capture interval. Each slot reserves the current WAL
+    /// offset/generation *before* handing off to the main-thread VT export,
+    /// so the reservation can never be ahead of what the export actually
+    /// sees (see file-level doc comment).
     private func considerFrameCaptureTick() {
         guard let frameTextProvider else { return }
         let now = Date()
-        for writer in writersBySurfaceId.values {
-            guard Self.shouldAttemptFrameCapture(writer: writer, now: now) else { continue }
+        let dueWriters = writersBySurfaceId.values
+            .filter { Self.shouldAttemptFrameCapture(writer: $0, now: now) }
+            .sorted { $0.context.surfaceId < $1.context.surfaceId }
+        guard !dueWriters.isEmpty else { return }
+
+        let spacing = SessionWALPolicy.frameCaptureInterval / Double(dueWriters.count)
+        for (index, writer) in dueWriters.enumerated() {
+            // Mark scheduled captures as in-flight immediately so the next
+            // sweep cannot enqueue the same writer again before its slot.
             writer.frameCaptureInFlight = true
-            writer.lastFrameCaptureAttemptAt = now
-            let surfaceId = writer.context.surfaceId
-            let reservedOffset = writer.currentWalSize
-            let reservedGeneration = writer.walGeneration
-            let reservedTotalBytes = writer.totalBytesWrittenEver
-            frameTextProvider(surfaceId) { [weak self] text in
-                self?.writeQueue.async {
-                    self?.finishFrameCapture(
-                        writer: writer,
-                        text: text,
-                        reservedOffset: reservedOffset,
-                        reservedGeneration: reservedGeneration,
-                        reservedTotalBytes: reservedTotalBytes
-                    )
+            writeQueue.asyncAfter(deadline: .now() + spacing * Double(index)) { [weak self] in
+                guard let self,
+                      self.writersBySurfaceId[writer.context.surfaceId] === writer else {
+                    writer.frameCaptureInFlight = false
+                    return
                 }
+                self.beginFrameCapture(writer: writer, provider: frameTextProvider)
+            }
+        }
+    }
+
+    private func beginFrameCapture(
+        writer: SessionWALWriter,
+        provider: @escaping (String, @escaping (String?) -> Void) -> Void
+    ) {
+        writer.lastFrameCaptureAttemptAt = Date()
+        let reservedOffset = writer.currentWalSize
+        let reservedGeneration = writer.walGeneration
+        let reservedTotalBytes = writer.totalBytesWrittenEver
+        provider(writer.context.surfaceId) { [weak self] text in
+            self?.writeQueue.async {
+                self?.finishFrameCapture(
+                    writer: writer,
+                    text: text,
+                    reservedOffset: reservedOffset,
+                    reservedGeneration: reservedGeneration,
+                    reservedTotalBytes: reservedTotalBytes
+                )
             }
         }
     }
@@ -818,53 +1108,58 @@ final class SessionWALStore {
 
     private func drainAllWriters() {
         for writer in writersBySurfaceId.values {
-            drain(writer: writer, forceMetaWrite: false)
+            drain(writer: writer, forceMetaWrite: false, forceWALSync: false)
         }
     }
 
-    private func drain(writer: SessionWALWriter, forceMetaWrite: Bool) {
+    private func drain(
+        writer: SessionWALWriter,
+        forceMetaWrite: Bool,
+        forceWALSync: Bool
+    ) {
         let bytes = writer.context.ringBuffer.drain()
         let hadBytes = (bytes?.isEmpty == false)
-        if let bytes, hadBytes {
-            appendToWAL(bytes, writer: writer)
-        }
         let now = Date()
-        if forceMetaWrite || hadBytes
+        if let bytes, hadBytes {
+            appendToWAL(bytes, writer: writer, at: now, forceSync: forceWALSync)
+        } else if writer.hasUnsynchronizedWALWrites,
+                  forceWALSync
+                    || now.timeIntervalSince(writer.lastWALSyncAt) >= SessionWALPolicy.walSyncInterval {
+            if (try? SessionWALCore.synchronizeWAL(at: writer.paths)) != nil {
+                writer.hasUnsynchronizedWALWrites = false
+                writer.lastWALSyncAt = now
+            }
+        }
+        if forceMetaWrite
             || now.timeIntervalSince(writer.lastMetaWriteAt) >= SessionWALPolicy.metaRefreshInterval {
             writeMeta(writer: writer, at: now)
             writer.lastMetaWriteAt = now
         }
     }
 
-    private func appendToWAL(_ bytes: [UInt8], writer: SessionWALWriter) {
-        if writer.fileHandle == nil {
-            if !FileManager.default.fileExists(atPath: writer.paths.walURL.path) {
-                FileManager.default.createFile(atPath: writer.paths.walURL.path, contents: nil)
-            }
-            writer.fileHandle = try? FileHandle(forWritingTo: writer.paths.walURL)
-            writer.fileHandle?.seekToEndOfFile()
-            let attributes = try? FileManager.default.attributesOfItem(atPath: writer.paths.walURL.path)
-            writer.currentWalSize = (attributes?[.size] as? Int64) ?? 0
-        }
-        guard let handle = writer.fileHandle else { return }
-
-        if writer.currentWalSize + Int64(bytes.count) > SessionWALPolicy.walCapBytes {
-            handle.closeFile()
-            try? FileManager.default.removeItem(at: writer.paths.walRotatedURL)
-            try? FileManager.default.moveItem(at: writer.paths.walURL, to: writer.paths.walRotatedURL)
-            FileManager.default.createFile(atPath: writer.paths.walURL.path, contents: nil)
-            writer.fileHandle = try? FileHandle(forWritingTo: writer.paths.walURL)
-            writer.currentWalSize = 0
-            // Bookkeeping only for the frame-capture restore path (see the
-            // file-level "Periodic frame capture" doc comment); does not
-            // change rotation behavior itself.
-            writer.walGeneration += 1
-        }
-
+    private func appendToWAL(
+        _ bytes: [UInt8],
+        writer: SessionWALWriter,
+        at date: Date,
+        forceSync: Bool
+    ) {
         let data = Data(bytes)
-        writer.fileHandle?.write(data)
-        writer.fileHandle?.synchronizeFile()
-        writer.currentWalSize += Int64(data.count)
+        let shouldSynchronize = forceSync
+            || date.timeIntervalSince(writer.lastWALSyncAt) >= SessionWALPolicy.walSyncInterval
+        guard let result = try? SessionWALCore.append(
+            data,
+            to: writer.paths,
+            synchronize: shouldSynchronize
+        ) else { return }
+
+        writer.currentWalSize = result.currentWalSize
+        writer.walGeneration = result.walGeneration
+        if result.didSynchronize {
+            writer.lastWALSyncAt = date
+            writer.hasUnsynchronizedWALWrites = false
+        } else {
+            writer.hasUnsynchronizedWALWrites = true
+        }
         writer.totalBytesWrittenEver += Int64(data.count)
     }
 
@@ -880,8 +1175,8 @@ final class SessionWALStore {
             escrowSocketPath: writer.escrowSocketPath,
             escrowToken: writer.escrowToken
         )
-        guard let data = try? Self.metaEncoder.encode(meta) else { return }
-        try? data.write(to: writer.paths.metaURL, options: .atomic)
+        guard let persisted = try? SessionWALCore.persistMeta(meta, to: writer.paths) else { return }
+        writer.walGeneration = persisted.walGeneration ?? writer.walGeneration
     }
 
     private func scheduleOrphanSweepIfNeeded() {

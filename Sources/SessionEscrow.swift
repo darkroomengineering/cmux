@@ -1175,20 +1175,11 @@ enum SessionEscrowHolder {
             return
         }
         try? FileManager.default.createDirectory(at: paths.sessionDirectory, withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: paths.walURL.path) {
-            FileManager.default.createFile(atPath: paths.walURL.path, contents: nil)
-        }
-        guard var handle = try? FileHandle(forWritingTo: paths.walURL) else {
-            #if DEBUG
-            dlog("session.escrow.holder.drain.fail session=\(session.sessionId.prefix(8)) reason=no_handle path=\(paths.walURL.path)")
-            #endif
-            endDraining(session: session, stoppedForRetrieve: false)
-            return
-        }
-        handle.seekToEndOfFile()
         var currentSize = (try? FileManager.default.attributesOfItem(atPath: paths.walURL.path))
             .flatMap { $0[.size] as? Int64 } ?? 0
         var totalDrained: Int64 = 0
+        var lastWALSyncAt = Date.distantPast
+        var hasUnsynchronizedWrites = false
 
         // ghostty runs its own event loop against this fd with O_NONBLOCK
         // set, and that flag lives on the shared open file description --
@@ -1234,6 +1225,13 @@ enum SessionEscrowHolder {
             guard pollResult > 0 else {
                 // Timed out with nothing readable -- loop back to
                 // re-check `stopRequested` rather than blocking further.
+                let now = Date()
+                if hasUnsynchronizedWrites,
+                   now.timeIntervalSince(lastWALSyncAt) >= SessionWALPolicy.walSyncInterval,
+                   (try? SessionWALCore.synchronizeWAL(at: paths)) != nil {
+                    lastWALSyncAt = now
+                    hasUnsynchronizedWrites = false
+                }
                 continue readLoop
             }
 
@@ -1272,23 +1270,29 @@ enum SessionEscrowHolder {
                 break readLoop
             }
             let chunk = Data(buffer.prefix(n))
-
-            if currentSize + Int64(chunk.count) > SessionWALPolicy.walCapBytes {
-                handle.closeFile()
-                try? FileManager.default.removeItem(at: paths.walRotatedURL)
-                try? FileManager.default.moveItem(at: paths.walURL, to: paths.walRotatedURL)
-                FileManager.default.createFile(atPath: paths.walURL.path, contents: nil)
-                guard let rotatedHandle = try? FileHandle(forWritingTo: paths.walURL) else { break }
-                handle = rotatedHandle
-                currentSize = 0
+            let now = Date()
+            let shouldSynchronize =
+                now.timeIntervalSince(lastWALSyncAt) >= SessionWALPolicy.walSyncInterval
+            guard let appendResult = try? SessionWALCore.append(
+                chunk,
+                to: paths,
+                synchronize: shouldSynchronize
+            ) else {
+                #if DEBUG
+                dlog("session.escrow.holder.drain.end session=\(session.sessionId.prefix(8)) reason=wal_append_failed totalDrained=\(totalDrained)")
+                #endif
+                break readLoop
             }
-
-            handle.write(chunk)
-            handle.synchronizeFile()
-            currentSize += Int64(chunk.count)
+            currentSize = appendResult.currentWalSize
+            if appendResult.didSynchronize {
+                lastWALSyncAt = now
+                hasUnsynchronizedWrites = false
+            } else {
+                hasUnsynchronizedWrites = true
+            }
             totalDrained += Int64(chunk.count)
             #if DEBUG
-            dlog("session.escrow.holder.drain.chunk session=\(session.sessionId.prefix(8)) bytes=\(chunk.count) totalDrained=\(totalDrained)")
+            dlog("session.escrow.holder.drain.chunk session=\(session.sessionId.prefix(8)) bytes=\(chunk.count) totalDrained=\(totalDrained) walSize=\(currentSize) walGeneration=\(appendResult.walGeneration) rotated=\(appendResult.didRotate)")
             #endif
 
             // Check again right after finishing this chunk so a retrieval
@@ -1298,7 +1302,9 @@ enum SessionEscrowHolder {
                 break readLoop
             }
         }
-        handle.closeFile()
+        if hasUnsynchronizedWrites {
+            try? SessionWALCore.synchronizeWAL(at: paths)
+        }
         endDraining(session: session, stoppedForRetrieve: stoppedForRetrieve)
     }
 

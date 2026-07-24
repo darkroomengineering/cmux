@@ -1141,31 +1141,6 @@ class TerminalController {
         return v2Error(id: id, code: "auth_required", message: message)
     }
 
-    private func passwordLoginV1ResponseIfNeeded(for command: String, authenticated: inout Bool) -> String? {
-        let lowered = command.lowercased()
-        guard lowered == "auth" || lowered.hasPrefix("auth ") else {
-            return nil
-        }
-        guard SocketControlPasswordStore.hasConfiguredPassword(allowLazyKeychainFallback: true) else {
-            return "ERROR: Password mode is enabled but no socket password is configured in Settings."
-        }
-
-        let provided: String
-        if lowered == "auth" {
-            provided = ""
-        } else {
-            provided = String(command.dropFirst(5))
-        }
-        guard !provided.isEmpty else {
-            return "ERROR: Missing password. Usage: auth <password>"
-        }
-        guard SocketControlPasswordStore.verify(password: provided, allowLazyKeychainFallback: true) else {
-            return "ERROR: Invalid password"
-        }
-        authenticated = true
-        return "OK: Authenticated"
-    }
-
     private func passwordLoginV2ResponseIfNeeded(for command: String, authenticated: inout Bool) -> String? {
         guard command.hasPrefix("{"),
               let data = command.data(using: .utf8),
@@ -1204,9 +1179,6 @@ class TerminalController {
         }
         if let v2Response = passwordLoginV2ResponseIfNeeded(for: command, authenticated: &authenticated) {
             return v2Response
-        }
-        if let v1Response = passwordLoginV1ResponseIfNeeded(for: command, authenticated: &authenticated) {
-            return v1Response
         }
         if !authenticated {
             return passwordAuthRequiredResponse(for: command)
