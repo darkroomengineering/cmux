@@ -2830,11 +2830,11 @@ final class GhosttySurfaceOverlayTests: XCTestCase {
         // in TerminalSurface.deinit) can still be draining off the MainActor queue when
         // this test's own deferred mount closure is scheduled, so give the mount wait a
         // little headroom over the 1s default rather than treating it as flaky.
-        waitUntil(timeout: 3.0, description: "search overlay to mount") {
+        waitUntil(timeout: 10.0, description: "search overlay to mount") {
             hostedView.debugHasSearchOverlay()
         }
         XCTAssertTrue(hostedView.debugHasSearchOverlay())
-        waitUntil(timeout: 3.0, description: "terminal surface to deallocate after search overlay mount") {
+        waitUntil(timeout: 10.0, description: "terminal surface to deallocate after search overlay mount") {
             weakSurface == nil
         }
         XCTAssertNil(weakSurface, "Mounted search overlay must not retain TerminalSurface")

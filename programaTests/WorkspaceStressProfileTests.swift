@@ -67,7 +67,20 @@ final class WorkspaceStressProfileTests: XCTestCase {
         }
     }
 
-    func testWorkspaceCreationAndSwitchingStressProfile() {
+    func testWorkspaceCreationAndSwitchingStressProfile() throws {
+        // This is a local performance-profiling tool, not a correctness gate. With the
+        // default config it builds ~480 real ghostty surfaces (48 workspaces x 10 tabs)
+        // and measures create/switch p95 timings. On CI no p95 budgets are configured
+        // (PROGRAMA_WORKSPACE_STRESS_*_P95_BUDGET_MS unset), so it asserts nothing
+        // meaningful there while routinely exhausting the shared runner and crashing the
+        // test host (a ghostty-sentry death that surfaces as a bare exit 65). Skip it on
+        // CI; run it locally with `xcodebuild ... -only-testing:.../testWorkspace...` when
+        // profiling workspace churn. CI is forwarded into the test host as TEST_RUNNER_CI
+        // -> CI (see scripts/ci-run-unit-tests.sh), so this env check fires on runners.
+        try XCTSkipIf(
+            ProcessInfo.processInfo.environment["CI"] != nil,
+            "Workspace stress profile is a local profiling tool; skipped on CI (no p95 budgets, crashes the shared runner)."
+        )
         let config = StressConfig.current()
         let welcomeWasShown = UserDefaults.standard.object(forKey: WelcomeSettings.shownKey)
         UserDefaults.standard.set(true, forKey: WelcomeSettings.shownKey)
