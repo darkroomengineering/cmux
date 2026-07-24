@@ -16,6 +16,20 @@ OUT_PATH="${3:-appcast.xml}"
 # SUSparkleErrorDomain 4005. Defaults to the DMG's own name for local/manual runs.
 ENCLOSURE_FILENAME="${4:-${ENCLOSURE_FILENAME:-$(basename "$DMG_PATH")}}"
 
+# Refuse to sign an appcast whose enclosure is a mutable filename. The check below only
+# verifies the appcast points at whatever name it was handed — passing the unversioned
+# programa-macos.dmg would satisfy it and silently reintroduce SUSparkleErrorDomain 4005.
+# Set PROGRAMA_ALLOW_MUTABLE_ENCLOSURE=1 only for local experiments that never publish.
+if [[ "${PROGRAMA_ALLOW_MUTABLE_ENCLOSURE:-}" != "1" ]]; then
+  if [[ ! "$ENCLOSURE_FILENAME" =~ ^programa-macos-[0-9]+\.dmg$ ]]; then
+    echo "ERROR: enclosure '$ENCLOSURE_FILENAME' is not a per-build filename." >&2
+    echo "       Sparkle signatures are content-bound, so the enclosure url must never be" >&2
+    echo "       overwritten by a later ship. Expected programa-macos-<build>.dmg — pass it" >&2
+    echo "       as argument 4 (see scripts/sparkle_enclosure.js)." >&2
+    exit 1
+  fi
+fi
+
 if [[ -z "${SPARKLE_PRIVATE_KEY:-}" ]]; then
   echo "SPARKLE_PRIVATE_KEY is required (exported from Sparkle generate_keys)." >&2
   exit 1
