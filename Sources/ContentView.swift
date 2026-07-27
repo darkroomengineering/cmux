@@ -4365,6 +4365,22 @@ struct ContentView: View {
             )
         }
 
+        for recipe in programaConfigStore.loadedRecipes {
+            let recipeName = sanitizeProgramaConfigPaletteText(recipe.name)
+            let subtitle = recipe.description
+                .map { sanitizeProgramaConfigPaletteText($0) }
+                .flatMap { $0.isEmpty ? nil : constant($0) }
+                ?? programaConfigDefaultSubtitle
+            contributions.append(
+                CommandPaletteCommandContribution(
+                    commandId: recipe.id,
+                    title: constant(String(localized: "command.cmuxConfig.recipeTitle", defaultValue: "Recipe: \(recipeName)")),
+                    subtitle: subtitle,
+                    keywords: recipe.keywords ?? []
+                )
+            )
+        }
+
         let layoutSubtitle = constant(String(localized: "command.applyLayout.subtitle", defaultValue: "Layout"))
         for savedLayout in programaLayoutStore.savedLayouts {
             contributions.append(
@@ -4763,6 +4779,20 @@ struct ContentView: View {
                     command: captured,
                     tabManager: tabManager,
                     baseCwd: baseCwd,
+                    configSourcePath: sourcePath,
+                    globalConfigPath: globalPath
+                )
+            }
+        }
+
+        for recipe in programaConfigStore.loadedRecipes {
+            let captured = recipe
+            let sourcePath = programaConfigStore.recipeSourcePaths[recipe.id]
+            let globalPath = programaConfigStore.globalConfigPath
+            registry.register(commandId: recipe.id) {
+                ProgramaConfigExecutor.executeRecipe(
+                    recipe: captured,
+                    tabManager: tabManager,
                     configSourcePath: sourcePath,
                     globalConfigPath: globalPath
                 )

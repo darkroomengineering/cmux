@@ -4,6 +4,22 @@ import Foundation
 
 struct ProgramaConfigFile: Codable, Sendable {
     var commands: [ProgramaCommandDefinition]
+    var recipes: [ProgramaRecipeDefinition]?
+}
+
+/// A named, reusable input to a `command` template or a recipe `prompt`, referenced as
+/// `{{name}}`. `prompt` is the label shown when asking the user for a value (defaults to
+/// `name` when absent); `default` pre-fills the text field.
+struct ProgramaParameterDefinition: Codable, Sendable {
+    var name: String
+    var prompt: String?
+    var `default`: String?
+
+    init(name: String, prompt: String? = nil, default: String? = nil) {
+        self.name = name
+        self.prompt = prompt
+        self.default = `default`
+    }
 }
 
 struct ProgramaCommandDefinition: Codable, Sendable, Identifiable {
@@ -14,6 +30,7 @@ struct ProgramaCommandDefinition: Codable, Sendable, Identifiable {
     var workspace: ProgramaWorkspaceDefinition?
     var command: String?
     var confirm: Bool?
+    var parameters: [ProgramaParameterDefinition]?
 
     var id: String {
         "cmux.config.command." + (name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? name)
@@ -26,7 +43,8 @@ struct ProgramaCommandDefinition: Codable, Sendable, Identifiable {
         restart: ProgramaRestartBehavior? = nil,
         workspace: ProgramaWorkspaceDefinition? = nil,
         command: String? = nil,
-        confirm: Bool? = nil
+        confirm: Bool? = nil,
+        parameters: [ProgramaParameterDefinition]? = nil
     ) {
         self.name = name
         self.description = description
@@ -35,6 +53,7 @@ struct ProgramaCommandDefinition: Codable, Sendable, Identifiable {
         self.workspace = workspace
         self.command = command
         self.confirm = confirm
+        self.parameters = parameters
     }
 
     init(from decoder: Decoder) throws {
@@ -46,6 +65,7 @@ struct ProgramaCommandDefinition: Codable, Sendable, Identifiable {
         workspace = try container.decodeIfPresent(ProgramaWorkspaceDefinition.self, forKey: .workspace)
         command = try container.decodeIfPresent(String.self, forKey: .command)
         confirm = try container.decodeIfPresent(Bool.self, forKey: .confirm)
+        parameters = try container.decodeIfPresent([ProgramaParameterDefinition].self, forKey: .parameters)
 
         if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw DecodingError.dataCorrupted(
@@ -78,6 +98,63 @@ struct ProgramaCommandDefinition: Codable, Sendable, Identifiable {
                 DecodingError.Context(
                     codingPath: decoder.codingPath,
                     debugDescription: "Command '\(name)' must define either 'workspace' or 'command'"
+                )
+            )
+        }
+    }
+}
+
+/// A named prompt template for the command palette. Unlike `ProgramaCommandDefinition`,
+/// selecting a recipe never runs anything by itself -- after parameter substitution and the
+/// same trust gate every config entry goes through, the substituted `prompt` is typed into the
+/// focused terminal WITHOUT a trailing newline, so the user reviews it and presses Return
+/// themselves. See `ProgramaConfigExecutor.executeRecipe`.
+struct ProgramaRecipeDefinition: Codable, Sendable, Identifiable {
+    var name: String
+    var description: String?
+    var keywords: [String]?
+    var prompt: String
+    var parameters: [ProgramaParameterDefinition]?
+
+    var id: String {
+        "cmux.config.recipe." + (name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? name)
+    }
+
+    init(
+        name: String,
+        description: String? = nil,
+        keywords: [String]? = nil,
+        prompt: String,
+        parameters: [ProgramaParameterDefinition]? = nil
+    ) {
+        self.name = name
+        self.description = description
+        self.keywords = keywords
+        self.prompt = prompt
+        self.parameters = parameters
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        keywords = try container.decodeIfPresent([String].self, forKey: .keywords)
+        prompt = try container.decode(String.self, forKey: .prompt)
+        parameters = try container.decodeIfPresent([ProgramaParameterDefinition].self, forKey: .parameters)
+
+        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Recipe name must not be blank"
+                )
+            )
+        }
+        if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Recipe '\(name)' must not define a blank 'prompt'"
                 )
             )
         }
@@ -259,10 +336,16 @@ enum ProgramaSurfaceType: String, Codable, Sendable {
 @MainActor
 final class ProgramaConfigStore: ObservableObject {
     @Published private(set) var loadedCommands: [ProgramaCommandDefinition] = []
+    @Published private(set) var loadedRecipes: [ProgramaRecipeDefinition] = []
     @Published private(set) var configRevision: UInt64 = 0
 
     /// Which config file each command came from, keyed by command id.
     private(set) var commandSourcePaths: [String: String] = [:]
+    /// Which config file each recipe came from, keyed by recipe id -- same invariant as
+    /// `commandSourcePaths`: every loaded recipe must be traceable so `confirmIfUntrusted` never
+    /// mistakes an untrusted recipe for the trusted global config. See
+    /// `ProgramaConfigSourceTrackingTests`.
+    private(set) var recipeSourcePaths: [String: String] = [:]
 
     // `internal` (not `private(set)`) rather than fully public: production code only ever
     // mutates these through `updateLocalConfigPath`/the computed default below, but tests in
@@ -368,6 +451,10 @@ final class ProgramaConfigStore: ObservableObject {
         var seenNames = Set<String>()
         var sourcePaths: [String: String] = [:]
 
+        var recipes: [ProgramaRecipeDefinition] = []
+        var seenRecipeNames = Set<String>()
+        var recipeSources: [String: String] = [:]
+
         // Local config takes precedence
         if let localPath = localConfigPath {
             if let localConfig = parseConfig(at: localPath) {
@@ -376,6 +463,13 @@ final class ProgramaConfigStore: ObservableObject {
                         commands.append(command)
                         seenNames.insert(command.name)
                         sourcePaths[command.id] = localPath
+                    }
+                }
+                for recipe in localConfig.recipes ?? [] {
+                    if !seenRecipeNames.contains(recipe.name) {
+                        recipes.append(recipe)
+                        seenRecipeNames.insert(recipe.name)
+                        recipeSources[recipe.id] = localPath
                     }
                 }
             }
@@ -390,10 +484,19 @@ final class ProgramaConfigStore: ObservableObject {
                     sourcePaths[command.id] = globalConfigPath
                 }
             }
+            for recipe in globalConfig.recipes ?? [] {
+                if !seenRecipeNames.contains(recipe.name) {
+                    recipes.append(recipe)
+                    seenRecipeNames.insert(recipe.name)
+                    recipeSources[recipe.id] = globalConfigPath
+                }
+            }
         }
 
         loadedCommands = commands
         commandSourcePaths = sourcePaths
+        loadedRecipes = recipes
+        recipeSourcePaths = recipeSources
         configRevision &+= 1
     }
 

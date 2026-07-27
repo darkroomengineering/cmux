@@ -4390,6 +4390,23 @@
         }
       }
     },
+    "command.cmuxConfig.recipeTitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recipe: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "レシピ: %@"
+          }
+        }
+      }
+    },
     "command.cmuxConfig.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -6886,6 +6903,57 @@
         }
       }
     },
+    "dialog.cmuxConfig.confirmRecipe.insert": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Insert"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "挿入"
+          }
+        }
+      }
+    },
+    "dialog.cmuxConfig.confirmRecipe.messageWithPrompt": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This will insert the following prompt into the focused terminal (it will not be sent until you press Return):\n\n%@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "フォーカスされたターミナルに次のプロンプトを挿入します(Returnキーを押すまで送信されません):\n\n%@"
+          }
+        }
+      }
+    },
+    "dialog.cmuxConfig.confirmRecipe.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Insert Prompt"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "プロンプトを挿入"
+          }
+        }
+      }
+    },
     "dialog.cmuxConfig.confirmRestart.cancel": {
       "extractionState": "manual",
       "localizations": {
@@ -6926,6 +6994,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "Workspace Already Exists"
+          }
+        }
+      }
+    },
+    "dialog.cmuxConfig.parameter.continue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "続ける"
+          }
+        }
+      }
+    },
+    "dialog.cmuxConfig.parameter.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a value for \"%@\"."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「%@」の値を入力してください。"
           }
         }
       }

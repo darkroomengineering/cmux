@@ -508,6 +508,83 @@ final class ProgramaConfigDecodingTests: XCTestCase {
         """
         XCTAssertThrowsError(try decode(json))
     }
+
+    // MARK: Recipes
+
+    func testDecodeSimpleRecipe() throws {
+        let json = """
+        {
+          "commands": [],
+          "recipes": [{
+            "name": "Fix a bug",
+            "description": "Ask the agent to fix a bug in a file",
+            "keywords": ["bug", "fix"],
+            "prompt": "Please fix the bug in {{file}}: {{description}}",
+            "parameters": [
+              { "name": "file", "prompt": "File path" },
+              { "name": "description", "prompt": "What's wrong", "default": "it crashes" }
+            ]
+          }]
+        }
+        """
+        let config = try decode(json)
+        XCTAssertEqual(config.recipes?.count, 1)
+        let recipe = try XCTUnwrap(config.recipes?.first)
+        XCTAssertEqual(recipe.name, "Fix a bug")
+        XCTAssertEqual(recipe.description, "Ask the agent to fix a bug in a file")
+        XCTAssertEqual(recipe.keywords, ["bug", "fix"])
+        XCTAssertEqual(recipe.prompt, "Please fix the bug in {{file}}: {{description}}")
+        XCTAssertEqual(recipe.parameters?.count, 2)
+        XCTAssertEqual(recipe.parameters?[0].name, "file")
+        XCTAssertEqual(recipe.parameters?[0].prompt, "File path")
+        XCTAssertNil(recipe.parameters?[0].default)
+        XCTAssertEqual(recipe.parameters?[1].default, "it crashes")
+    }
+
+    func testDecodeMissingRecipesKeyStillDecodes() throws {
+        let json = """
+        { "commands": [{ "name": "Build", "command": "make build" }] }
+        """
+        let config = try decode(json)
+        XCTAssertNil(config.recipes)
+    }
+
+    func testDecodeRecipeWhitespaceOnlyNameThrows() {
+        let json = """
+        {
+          "commands": [],
+          "recipes": [{ "name": "   ", "prompt": "do something" }]
+        }
+        """
+        XCTAssertThrowsError(try decode(json))
+    }
+
+    func testDecodeRecipeWhitespaceOnlyPromptThrows() {
+        let json = """
+        {
+          "commands": [],
+          "recipes": [{ "name": "test", "prompt": "   " }]
+        }
+        """
+        XCTAssertThrowsError(try decode(json))
+    }
+
+    func testDecodeCommandWithParameters() throws {
+        let json = """
+        {
+          "commands": [{
+            "name": "Checkout branch",
+            "command": "git checkout {{branch}}",
+            "parameters": [{ "name": "branch", "prompt": "Branch name", "default": "main" }]
+          }]
+        }
+        """
+        let config = try decode(json)
+        let cmd = config.commands[0]
+        XCTAssertEqual(cmd.parameters?.count, 1)
+        XCTAssertEqual(cmd.parameters?[0].name, "branch")
+        XCTAssertEqual(cmd.parameters?[0].default, "main")
+    }
 }
 
 // MARK: - JSONC (comments + trailing commas) config parsing
@@ -931,9 +1008,15 @@ final class ProgramaConfigSourceTrackingTests: XCTestCase {
         let localConfigURL = localDir.appendingPathComponent("programa.json")
         let globalConfigURL = globalDir.appendingPathComponent("programa.json")
 
-        try #"{ "commands": [{ "name": "Local Command", "command": "echo local" }] }"#
+        try #"""
+        { "commands": [{ "name": "Local Command", "command": "echo local" }],
+          "recipes": [{ "name": "Local Recipe", "prompt": "do the local thing" }] }
+        """#
             .write(to: localConfigURL, atomically: true, encoding: .utf8)
-        try #"{ "commands": [{ "name": "Global Command", "command": "echo global" }] }"#
+        try #"""
+        { "commands": [{ "name": "Global Command", "command": "echo global" }],
+          "recipes": [{ "name": "Global Recipe", "prompt": "do the global thing" }] }
+        """#
             .write(to: globalConfigURL, atomically: true, encoding: .utf8)
 
         let store = ProgramaConfigStore()
@@ -948,6 +1031,16 @@ final class ProgramaConfigSourceTrackingTests: XCTestCase {
                 "Command '\(command.name)' has no recorded source path -- confirmIfUntrusted " +
                 "treats a missing source path as the trusted global config, so this would make " +
                 "the command run without confirmation regardless of which directory it came from."
+            )
+        }
+
+        XCTAssertEqual(store.loadedRecipes.map(\.name).sorted(), ["Global Recipe", "Local Recipe"])
+        for recipe in store.loadedRecipes {
+            XCTAssertNotNil(
+                store.recipeSourcePaths[recipe.id],
+                "Recipe '\(recipe.name)' has no recorded source path -- confirmIfUntrusted " +
+                "treats a missing source path as the trusted global config, so this would make " +
+                "the recipe run without confirmation regardless of which directory it came from."
             )
         }
     }
@@ -987,6 +1080,24 @@ final class ProgramaConfigConsentDisclosureTests: XCTestCase {
         """)
 
         XCTAssertTrue(ProgramaConfigExecutor.describeForConfirmation(command).contains("/tmp/elsewhere"))
+    }
+
+    /// A parameterised `command:` entry must disclose the substituted value, not the raw
+    /// `{{name}}` template -- same principle as the recipe path, applied to plain commands.
+    func testParameterisedCommandDisclosesSubstitutedValueNotTemplate() throws {
+        let command = try decodeCommand("""
+        {"commands":[{"name":"Checkout branch","command":"git checkout {{branch}}",
+        "parameters":[{"name":"branch","prompt":"Branch name"}]}]}
+        """)
+
+        let substituted = ProgramaConfigExecutor.substituteParameters(
+            in: try XCTUnwrap(command.command),
+            values: ["branch": "release/9.0"]
+        )
+        let summary = ProgramaConfigExecutor.describeForConfirmation(command, resolvedCommand: substituted)
+
+        XCTAssertEqual(summary, "git checkout release/9.0")
+        XCTAssertFalse(summary.contains("{{branch}}"))
     }
 
     func testEverySurfaceInASplitIsDisclosed() throws {
@@ -1029,5 +1140,160 @@ final class ProgramaConfigConsentDisclosureTests: XCTestCase {
 
         XCTAssertFalse(blankRun, "a single value must not inject blank lines, got:\n\(summary)")
         XCTAssertTrue(summary.contains("real-cmd"))
+    }
+}
+
+// MARK: - Parameter substitution
+
+@MainActor
+final class ProgramaConfigParameterSubstitutionTests: XCTestCase {
+    func testSubstitutesDeclaredParameters() {
+        let result = ProgramaConfigExecutor.substituteParameters(
+            in: "git checkout {{branch}}",
+            values: ["branch": "feature/thing"]
+        )
+        XCTAssertEqual(result, "git checkout feature/thing")
+    }
+
+    func testSubstitutesMultipleOccurrencesOfSameParameter() {
+        let result = ProgramaConfigExecutor.substituteParameters(
+            in: "echo {{name}} && echo {{name}} again",
+            values: ["name": "hi"]
+        )
+        XCTAssertEqual(result, "echo hi && echo hi again")
+    }
+
+    func testUndeclaredPlaceholderIsLeftLiteral() {
+        // {{name}} is declared and substituted; {{other}} is not declared anywhere and must
+        // survive untouched, braces and all -- not stripped, not errored.
+        let result = ProgramaConfigExecutor.substituteParameters(
+            in: "hello {{name}}, unresolved: {{other}}",
+            values: ["name": "world"]
+        )
+        XCTAssertEqual(result, "hello world, unresolved: {{other}}")
+    }
+
+    func testNoParametersLeavesTemplateUnchanged() {
+        let result = ProgramaConfigExecutor.substituteParameters(
+            in: "no placeholders here",
+            values: [:]
+        )
+        XCTAssertEqual(result, "no placeholders here")
+    }
+
+    func testEmptyValuesDictLeavesAllPlaceholdersLiteral() {
+        let result = ProgramaConfigExecutor.substituteParameters(
+            in: "run {{task}}",
+            values: [:]
+        )
+        XCTAssertEqual(result, "run {{task}}")
+    }
+}
+
+// MARK: - Recipe disclosure
+//
+// Mirrors `ProgramaConfigConsentDisclosureTests` for the recipe path: the dialog must show the
+// fully parameter-substituted prompt (what actually gets typed into the terminal), never the
+// recipe's name and never its raw `{{name}}` template -- that would let a config author (or an
+// attacker who controls a cloned repo's programa.json) hide the real payload behind an
+// innocuous-looking recipe name.
+@MainActor
+final class ProgramaConfigRecipeDisclosureTests: XCTestCase {
+    private func decodeRecipe(_ json: String) throws -> ProgramaRecipeDefinition {
+        let file = try JSONDecoder().decode(ProgramaConfigFile.self, from: Data(json.utf8))
+        return try XCTUnwrap(file.recipes?.first)
+    }
+
+    func testDescribeForConfirmationShowsSubstitutedPromptNotTemplate() throws {
+        let recipe = try decodeRecipe("""
+        {"commands":[],"recipes":[{"name":"Refactor helper","prompt":"Refactor {{file}} to use hooks",
+        "parameters":[{"name":"file","prompt":"File"}]}]}
+        """)
+
+        let substituted = ProgramaConfigExecutor.substituteParameters(
+            in: recipe.prompt,
+            values: ["file": "Sources/Widget.swift"]
+        )
+        let summary = ProgramaConfigExecutor.describeForConfirmation(recipe, resolvedPrompt: substituted)
+
+        XCTAssertTrue(
+            summary.contains("Sources/Widget.swift"),
+            "the substituted value must be visible, got:\n\(summary)"
+        )
+        XCTAssertFalse(
+            summary.contains("{{file}}"),
+            "the raw template must never reach the dialog, got:\n\(summary)"
+        )
+        XCTAssertFalse(
+            summary.contains("Refactor helper"),
+            "the recipe's name must not stand in for its actual payload, got:\n\(summary)"
+        )
+    }
+
+    func testDescribeForConfirmationDoesNotLeakUnsubstitutedTemplateWhenNoValuesGiven() throws {
+        // Even if a caller forgot to substitute (which should never happen given `execute`'s
+        // ordering), the disclosure text is driven entirely by the caller-supplied
+        // `resolvedPrompt` argument -- there is no path back to the raw recipe definition once
+        // this is called with a resolved string that has already had substitution applied.
+        let recipe = try decodeRecipe("""
+        {"commands":[],"recipes":[{"name":"x","prompt":"do {{thing}}"}]}
+        """)
+        let substituted = ProgramaConfigExecutor.substituteParameters(in: recipe.prompt, values: ["thing": "the work"])
+
+        XCTAssertEqual(
+            ProgramaConfigExecutor.describeForConfirmation(recipe, resolvedPrompt: substituted),
+            "do the work"
+        )
+    }
+}
+
+/// What gets typed into the terminal and what gets drawn in the confirmation dialog are two
+/// different jobs, and conflating them shipped a real bug: `sanitizeForDisplay` grew newline
+/// collapsing and a 200-character cap to stop a crafted value flooding the alert, but `execute`
+/// was also running it over the command on its way to the shell. From 3f97866968 until the
+/// split, any programa.json command longer than 200 characters was silently truncated and
+/// executed with "… (truncated)" glued onto the end of it.
+@MainActor
+final class ProgramaConfigExecutionSanitizerTests: XCTestCase {
+    /// The regression. A long-but-ordinary command has to survive intact.
+    func testLongCommandIsNotTruncatedOnItsWayToTheShell() {
+        let command = "echo " + String(repeating: "x", count: 500)
+
+        let sent = ProgramaConfigExecutor.sanitizeForExecution(command)
+
+        XCTAssertEqual(sent, command, "a 505-char command must reach the shell whole")
+        XCTAssertFalse(sent.contains("truncated"), "the display truncation marker must never be executed")
+    }
+
+    /// Multi-line values are legitimate for recipe prompts and heredocs alike.
+    func testNewlinesSurviveExecutionSanitizing() {
+        let text = "line one\nline two\nline three"
+
+        XCTAssertEqual(ProgramaConfigExecutor.sanitizeForExecution(text), text)
+    }
+
+    /// The one thing it must still do: strip scalars that make text misrepresent itself.
+    func testBidiAndZeroWidthScalarsAreStillStripped() {
+        let sneaky = "rm -rf /\u{202E}\u{200B} harmless"
+
+        let sent = ProgramaConfigExecutor.sanitizeForExecution(sneaky)
+
+        XCTAssertFalse(sent.unicodeScalars.contains("\u{202E}"), "bidi override must be stripped")
+        XCTAssertFalse(sent.unicodeScalars.contains("\u{200B}"), "zero-width space must be stripped")
+    }
+
+    /// The display path keeps its bound -- the split must not have loosened it.
+    func testDisplayPathStillTruncates() throws {
+        let padding = String(repeating: "A", count: 5000)
+        let file = try JSONDecoder().decode(
+            ProgramaConfigFile.self,
+            from: Data("""
+            {"commands":[{"name":"x","workspace":{"name":"dev",
+            "layout":{"pane":{"surfaces":[{"type":"terminal","command":"\(padding)"}]}}}}]}
+            """.utf8)
+        )
+        let command = try XCTUnwrap(file.commands.first)
+
+        XCTAssertLessThan(ProgramaConfigExecutor.describeForConfirmation(command).count, 1000)
     }
 }

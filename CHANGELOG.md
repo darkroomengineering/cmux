@@ -8,6 +8,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 
 ### Added
 - `programa race "<prompt>" [--n <count>] [--agent claude|opencode|codex] [--base <ref>] [--prefix <slug>] [--layout <name>]`: fans one prompt across N agents (default 3, max 8), each in its own isolated git worktree/workspace on branch `<prefix>/<index>` (default prefix `race`), then types the agent's launch command with the prompt into that workspace's terminal. v1 spawns the fleet only -- comparing and merging results is manual for now. Never steals focus; a failed index (branch/worktree collision) is reported and skipped without aborting the rest of the fleet.
+- `programa.json` recipes: a `recipes` array alongside `commands` lets you share a library of prompt templates for your coding agent via git, reachable from the command palette. A recipe fills in any declared `{{name}}` parameters (prompted one at a time) and types the result into the focused terminal for you to review -- it never auto-submits, so you add your own instruction and press Return. Commands can now declare `parameters` too, substituted into `command` the same way. Both go through the same trust confirmation as every other `programa.json` entry, showing the fully substituted text before anything happens. See `docs/programa-json.md`.
 
 ## [0.3.0] - 2026-07-24
 
