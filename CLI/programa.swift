@@ -2138,7 +2138,9 @@ struct ProgramaCLI {
                                      racing needs for a trustworthy idle signal.
                   --base <ref>       Git ref to branch from. Default: HEAD (see 'worktree create').
                   --prefix <slug>    Branch-name prefix. Default 'race'. Branches are
-                                     <prefix>/1, <prefix>/2, ... <prefix>/N.
+                                     <prefix>/<n>, continuing after any that already
+                                     exist, so racing twice gives you race/1, race/2
+                                     then race/3, race/4 rather than a collision.
                   --layout <name>    Saved layout to apply into each new workspace (see
                                      'programa layout').
 
@@ -5278,6 +5280,46 @@ struct ProgramaCLI {
         return root
     }
 
+    /// Every branch name already present in `repo` that looks like `<prefix>/<number>`, as the
+    /// set of those trailing numbers. Used by `race` to pick a starting index that does not
+    /// collide, so racing twice in a row works instead of failing on every index.
+    ///
+    /// Returns an empty set when git fails for any reason -- a listing failure should degrade
+    /// to "start at 1 and let worktree.create report the real collision", not abort the run.
+    private func existingRaceIndexes(repo: String, prefix: String) -> Set<Int> {
+        let process = Process()
+        let stdout = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [
+            "git", "-C", repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/\(prefix)/"
+        ]
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            return []
+        }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return [] }
+
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+
+        var indexes: Set<Int> = []
+        for line in output.split(separator: "\n") {
+            let name = line.trimmingCharacters(in: .whitespaces)
+            // Only `<prefix>/<number>` counts. `race/my-thing` or `race/1/nested` are somebody
+            // else's branches and must not shift our numbering.
+            guard name.hasPrefix("\(prefix)/") else { continue }
+            let tail = String(name.dropFirst(prefix.count + 1))
+            guard let value = Int(tail), value > 0 else { continue }
+            indexes.insert(value)
+        }
+        return indexes
+    }
+
     private func gitTopLevelDirectory(at directory: String) -> String? {
         let process = Process()
         let stdout = Pipe()
@@ -5375,10 +5417,17 @@ struct ProgramaCLI {
         // Fail immediately, before creating anything, if the cwd isn't inside a git repo.
         let repo = try resolveWorktreeRepoRoot(explicit: nil)
 
+        // Racing twice in a row used to collide on every index, because the branches were
+        // always `<prefix>/1...<prefix>/N`. Start after whatever `<prefix>/<number>` branches
+        // already exist so a second run just continues the numbering.
+        let taken = existingRaceIndexes(repo: repo, prefix: prefix)
+        let firstIndex = (taken.max() ?? 0) + 1
+        let indexes = Array(firstIndex..<(firstIndex + n))
+
         var succeededCount = 0
         var failedIndexes: [Int] = []
 
-        for index in 1...n {
+        for index in indexes {
             let branch = "\(prefix)/\(index)"
             do {
                 var params: [String: Any] = ["repo": repo, "branch": branch]
@@ -5412,7 +5461,10 @@ struct ProgramaCLI {
 
         print("")
         if failedIndexes.isEmpty {
-            print("race: started \(succeededCount)/\(n) agents on branches \(prefix)/1..\(prefix)/\(n). Watch with: programa list-workspaces (or check each workspace's status badge in the sidebar).")
+            let range = n == 1
+                ? "\(prefix)/\(firstIndex)"
+                : "\(prefix)/\(firstIndex)..\(prefix)/\(firstIndex + n - 1)"
+            print("race: started \(succeededCount)/\(n) agents on branches \(range). Watch with: programa list-workspaces (or check each workspace's status badge in the sidebar).")
         } else {
             let failedList = failedIndexes.map(String.init).joined(separator: ", ")
             print("race: started \(succeededCount)/\(n) agents; failed indexes: \(failedList). Watch the succeeded ones with: programa list-workspaces")
