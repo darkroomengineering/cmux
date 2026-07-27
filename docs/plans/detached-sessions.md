@@ -1,6 +1,6 @@
 # Detached Sessions / Process Survival
 
-Status: DRAFT (planning only, no code changes made). Modeled on herdr.dev's detached-session
+Status: shipped in 0.3.0 (2026-07-24) as "Detached sessions". Modeled on herdr.dev's detached-session
 UX. Companion doc to `docs/remote-daemon-spec.md` (SSH remote path) — this plan is the **local**
 counterpart and explicitly reuses/extends that spec's `session.*` naming and resize semantics
 rather than inventing a parallel scheme.

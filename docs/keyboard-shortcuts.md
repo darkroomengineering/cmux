@@ -78,6 +78,8 @@ Browser developer-tool shortcuts follow Safari defaults.
 | ⌘ V | Paste |
 | ⌘ + / ⌘ - | Increase / decrease font size |
 | ⌘ 0 | Reset font size |
+| ⌘ ⇧ M | Toggle terminal copy mode |
+| { / } (in copy mode) | Jump to previous / next prompt |
 
 ## Window
 

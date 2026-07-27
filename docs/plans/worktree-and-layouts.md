@@ -1,6 +1,6 @@
 # Native git worktree workflow + named layout configs
 
-Status: planning only, no code written yet.
+Status: shipped in 0.3.0 (2026-07-24) as "Native git worktree workflow" and "Named layout configs".
 Scope: two independently shippable halves (A: worktrees, B: layout configs) with one
 integration point (`worktree create --layout`).
 

@@ -39,7 +39,7 @@ Roadmap tracking: #141 (Phase 1 P0s #131-#134, Phase 2 upstream port round #135,
 - [x] Expand end-user skill docs with deep-linkable programa-browser references/templates plus a new core `skills/programa/` topology skill.
 
 ## Command Palette
-- [ ] Add cmd+shift+p palette with all commands (#136)
+- [x] Add cmd+shift+p palette with all commands (#136)
 
 ## Feature Requests
 - [ ] Warm pool of Claude Code instances mapped to a keyboard shortcut (#137)

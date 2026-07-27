@@ -1,6 +1,6 @@
 # Screen-manifest agent detection — implementation plan
 
-Status: planning only, nothing implemented yet.
+Status: shipped in 0.3.0 (2026-07-24) as "Screen-Based Agent Detection".
 Scope: infer agent activity state (`working`/`blocked`/`idle`) for terminal agents that
 don't have lifecycle hooks installed, by pattern-matching the visible screen buffer
 against per-agent declarative manifests (herdr.dev tier-2 model). Feeds the same
