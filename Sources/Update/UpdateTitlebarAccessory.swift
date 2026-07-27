@@ -7,6 +7,32 @@ final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 
+/// macOS traffic lights are 12pt circles laid out on a 20pt pitch — an 8pt visual gap
+/// between adjacent lights. We mirror that same 8pt gap for the inter-icon spacing in the
+/// titlebar row (classic preset) and for the leading inset between the last traffic light
+/// and the first titlebar icon, so the whole row reads as one continuous rhythm instead of
+/// two different tempos. Do not "tidy" this back into a rounder-looking magic number — 8 is
+/// the traffic-light gap, not an arbitrary pick.
+private enum TitlebarControlsRhythm {
+    static let trafficLightGap: CGFloat = 8
+
+    /// Relative tightness preserved from the original hand-tuned spacing values
+    /// (classic=10, compact=6, roomy=14, pillGroup/softButtons=8), re-expressed as
+    /// multiples of the traffic-light gap so every preset derives from the same rule
+    /// instead of its own magic number.
+    enum ScaleFactor {
+        static let classic: CGFloat = 1.0
+        static let compact: CGFloat = 0.625
+        static let roomy: CGFloat = 1.375
+        static let pillGroup: CGFloat = 0.75
+        static let softButtons: CGFloat = 0.75
+    }
+
+    static func spacing(_ scale: CGFloat) -> CGFloat {
+        trafficLightGap * scale
+    }
+}
+
 enum TitlebarControlsStyle: Int, CaseIterable, Identifiable {
     case classic
     case compact
@@ -35,50 +61,42 @@ enum TitlebarControlsStyle: Int, CaseIterable, Identifiable {
         switch self {
         case .classic:
             return TitlebarControlsStyleConfig(
-                spacing: 10,
+                spacing: TitlebarControlsRhythm.spacing(TitlebarControlsRhythm.ScaleFactor.classic),
                 iconSize: 15,
                 buttonSize: 24,
-                badgeSize: 14,
-                badgeOffset: CGSize(width: 2, height: -2),
                 groupBackground: false,
                 groupPadding: EdgeInsets(),
                 buttonBackground: false,
                 buttonCornerRadius: 8,
-                hoverBackground: false
+                hoverBackground: true
             )
         case .compact:
             return TitlebarControlsStyleConfig(
-                spacing: 6,
+                spacing: TitlebarControlsRhythm.spacing(TitlebarControlsRhythm.ScaleFactor.compact),
                 iconSize: 13,
                 buttonSize: 20,
-                badgeSize: 12,
-                badgeOffset: CGSize(width: 1, height: -1),
                 groupBackground: false,
                 groupPadding: EdgeInsets(),
                 buttonBackground: false,
                 buttonCornerRadius: 6,
-                hoverBackground: false
+                hoverBackground: true
             )
         case .roomy:
             return TitlebarControlsStyleConfig(
-                spacing: 14,
+                spacing: TitlebarControlsRhythm.spacing(TitlebarControlsRhythm.ScaleFactor.roomy),
                 iconSize: 16,
                 buttonSize: 28,
-                badgeSize: 16,
-                badgeOffset: CGSize(width: 3, height: -3),
                 groupBackground: false,
                 groupPadding: EdgeInsets(),
                 buttonBackground: false,
                 buttonCornerRadius: 10,
-                hoverBackground: false
+                hoverBackground: true
             )
         case .pillGroup:
             return TitlebarControlsStyleConfig(
-                spacing: 8,
+                spacing: TitlebarControlsRhythm.spacing(TitlebarControlsRhythm.ScaleFactor.pillGroup),
                 iconSize: 14,
                 buttonSize: 24,
-                badgeSize: 14,
-                badgeOffset: CGSize(width: 2, height: -2),
                 groupBackground: false,
                 groupPadding: EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4),
                 buttonBackground: false,
@@ -87,16 +105,14 @@ enum TitlebarControlsStyle: Int, CaseIterable, Identifiable {
             )
         case .softButtons:
             return TitlebarControlsStyleConfig(
-                spacing: 8,
+                spacing: TitlebarControlsRhythm.spacing(TitlebarControlsRhythm.ScaleFactor.softButtons),
                 iconSize: 15,
                 buttonSize: 26,
-                badgeSize: 14,
-                badgeOffset: CGSize(width: 2, height: -2),
                 groupBackground: false,
                 groupPadding: EdgeInsets(),
                 buttonBackground: true,
                 buttonCornerRadius: 8,
-                hoverBackground: false
+                hoverBackground: true
             )
         }
     }
@@ -106,8 +122,6 @@ struct TitlebarControlsStyleConfig {
     let spacing: CGFloat
     let iconSize: CGFloat
     let buttonSize: CGFloat
-    let badgeSize: CGFloat
-    let badgeOffset: CGSize
     let groupBackground: Bool
     let groupPadding: EdgeInsets
     let buttonBackground: Bool
@@ -209,6 +223,25 @@ struct ShortcutHintHorizontalPlanner {
     }
 }
 
+/// SF Symbols at an identical point size are NOT optically equal — perceived size depends on
+/// the glyph's bounding box and ink coverage, not just the numeric point size. These per-symbol
+/// correction factors are judged by eye (not arbitrary tuning): `sidebar.left` is a wide,
+/// filled-ish shape that reads larger than its point size, `plus` is a thin cross with little
+/// ink that reads smaller, and `bell` / `bell.fill` sit in between as the reference. Unknown
+/// symbols default to 1.0, i.e. today's unscaled behavior.
+private let titlebarIconOpticalScale: [String: CGFloat] = [
+    "sidebar.left": 0.94,
+    "bell": 1.0,
+    "bell.fill": 1.0,
+    "plus": 1.10,
+]
+
+/// Rendered glyph point size after applying the optical correction for `systemName`. Only the
+/// glyph scales — the tappable hit target (`config.buttonSize`) is unaffected.
+func titlebarIconRenderSize(for systemName: String, config: TitlebarControlsStyleConfig) -> CGFloat {
+    config.iconSize * (titlebarIconOpticalScale[systemName] ?? 1.0)
+}
+
 func titlebarShortcutHintHeight(for config: TitlebarControlsStyleConfig) -> CGFloat {
     max(14, config.iconSize + 1)
 }
@@ -220,19 +253,18 @@ func titlebarShortcutHintVerticalOffset(for config: TitlebarControlsStyleConfig)
 struct TitlebarControlButton<Content: View>: View {
     let config: TitlebarControlsStyleConfig
     let action: () -> Void
-    @ViewBuilder let content: () -> Content
+    @ViewBuilder let content: (Bool) -> Content
     @State private var isHovering = false
 
     var body: some View {
         let baseButton = Button(action: action) {
-            content()
+            content(isHovering)
                 .frame(width: config.buttonSize, height: config.buttonSize)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TitlebarControlButtonStyle(config: config, isHovering: isHovering))
         .frame(width: config.buttonSize, height: config.buttonSize)
         .contentShape(Rectangle())
-        .background(hoverBackground)
 
         if titlebarControlsShouldTrackButtonHover(config: config) {
             baseButton.onHover { isHovering = $0 }
@@ -240,13 +272,27 @@ struct TitlebarControlButton<Content: View>: View {
             baseButton
         }
     }
+}
 
-    @ViewBuilder
-    private var hoverBackground: some View {
-        if config.hoverBackground && isHovering {
-            RoundedRectangle(cornerRadius: config.buttonCornerRadius, style: .continuous)
-                .fill(Color.primary.opacity(0.08))
-        }
+private struct TitlebarControlButtonStyle: ButtonStyle {
+    let config: TitlebarControlsStyleConfig
+    let isHovering: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(
+                RoundedRectangle(cornerRadius: config.buttonCornerRadius, style: .continuous)
+                    .fill(Color.primary.opacity(backgroundOpacity(isPressed: configuration.isPressed)))
+            )
+            .animation(.easeOut(duration: 0.12), value: isHovering)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+    }
+
+    private func backgroundOpacity(isPressed: Bool) -> Double {
+        guard config.hoverBackground else { return 0 }
+        if isPressed { return 0.16 }
+        if isHovering { return 0.08 }
+        return 0
     }
 }
 
@@ -256,15 +302,6 @@ struct TitlebarControlsView: View {
     let onToggleSidebar: () -> Void
     let onToggleNotifications: () -> Void
     let onNewTab: () -> Void
-    // Defaulted (rather than required) so the pre-existing fullscreen titlebar-controls call
-    // site in ContentView.swift (out of this change's file territory) keeps compiling unchanged
-    // while still getting the same working "open Keyboard Shortcuts settings" behavior.
-    let onOpenShortcutsHelp: () -> Void = {
-        _ = AppDelegate.shared?.openPreferencesWindow(
-            debugSource: "shortcutsHelpButton",
-            navigationTarget: .keyboardShortcuts
-        )
-    }
     let visibilityMode: TitlebarControlsVisibilityMode
     @AppStorage("titlebarControlsStyle") private var styleRawValue = TitlebarControlsStyle.classic.rawValue
     @AppStorage(ShortcutHintDebugSettings.titlebarHintXKey) private var titlebarShortcutHintXOffset = ShortcutHintDebugSettings.defaultTitlebarHintX
@@ -321,7 +358,10 @@ struct TitlebarControlsView: View {
         let style = TitlebarControlsStyle(rawValue: styleRawValue) ?? .classic
         let config = style.config
         controlsGroup(config: config)
-            .padding(.leading, 4)
+            // Leading inset mirrors the inter-icon spacing (see TitlebarControlsRhythm) so the
+            // gap between the last traffic light and the first titlebar icon matches the gap
+            // between the icons themselves — one rhythm, not two.
+            .padding(.leading, config.spacing)
             .padding(.trailing, titlebarHintTrailingInset)
             .contentShape(Rectangle())
             .opacity(shouldShowControls ? 1 : 0)
@@ -371,8 +411,8 @@ struct TitlebarControlsView: View {
                 dlog("titlebar.toggleSidebar")
                 #endif
                 onToggleSidebar()
-            }) {
-                iconLabel(systemName: "sidebar.left", config: config)
+            }) { isHovering in
+                iconLabel(systemName: "sidebar.left", config: config, isHovering: isHovering)
             }
             .accessibilityIdentifier("titlebarControl.toggleSidebar")
             .accessibilityLabel(String(localized: "titlebar.sidebar.accessibilityLabel", defaultValue: "Toggle Sidebar"))
@@ -383,19 +423,14 @@ struct TitlebarControlsView: View {
                 dlog("titlebar.notifications")
                 #endif
                 onToggleNotifications()
-            }) {
-                ZStack(alignment: .topTrailing) {
-                    iconLabel(systemName: "bell", config: config)
-
+            }) { isHovering in
+                Group {
                     if notificationStore.unreadCount > 0 {
-                        Text("\(min(notificationStore.unreadCount, 99))")
-                            .font(.system(size: max(8, config.badgeSize - 5), weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: config.badgeSize, height: config.badgeSize)
-                            .background(
-                                Circle().fill(programaAccentColor())
-                            )
-                            .offset(x: config.badgeOffset.width, y: config.badgeOffset.height)
+                        Image(systemName: "bell.fill")
+                            .font(.system(size: titlebarIconRenderSize(for: "bell.fill", config: config), weight: .regular))
+                            .foregroundColor(programaAccentColor())
+                    } else {
+                        iconLabel(systemName: "bell", config: config, isHovering: isHovering)
                     }
                 }
                 .frame(width: config.buttonSize, height: config.buttonSize)
@@ -410,24 +445,12 @@ struct TitlebarControlsView: View {
                 dlog("titlebar.newTab")
                 #endif
                 onNewTab()
-            }) {
-                iconLabel(systemName: "plus", config: config)
+            }) { isHovering in
+                iconLabel(systemName: "plus", config: config, isHovering: isHovering)
             }
             .accessibilityIdentifier("titlebarControl.newTab")
             .accessibilityLabel(String(localized: "titlebar.newWorkspace.accessibilityLabel", defaultValue: "New Workspace"))
             .safeHelp(KeyboardShortcutSettings.Action.newTab.tooltip(String(localized: "titlebar.newWorkspace.tooltip", defaultValue: "New workspace")))
-
-            TitlebarControlButton(config: config, action: {
-                #if DEBUG
-                dlog("titlebar.shortcutsHelp")
-                #endif
-                onOpenShortcutsHelp()
-            }) {
-                iconLabel(systemName: "questionmark.circle", config: config)
-            }
-            .accessibilityIdentifier("titlebarControl.shortcutsHelp")
-            .accessibilityLabel(String(localized: "shortcuts.help.tooltip", defaultValue: "Keyboard Shortcuts"))
-            .safeHelp(String(localized: "shortcuts.help.tooltip", defaultValue: "Keyboard Shortcuts"))
         }
 
         let paddedContent = content.padding(config.groupPadding)
@@ -551,9 +574,10 @@ struct TitlebarControlsView: View {
     }
 
     @ViewBuilder
-    private func iconLabel(systemName: String, config: TitlebarControlsStyleConfig) -> some View {
+    private func iconLabel(systemName: String, config: TitlebarControlsStyleConfig, isHovering: Bool) -> some View {
         let icon = Image(systemName: systemName)
-            .font(.system(size: config.iconSize, weight: .semibold))
+            .font(.system(size: titlebarIconRenderSize(for: systemName, config: config), weight: .regular))
+            .foregroundColor(isHovering ? Color(nsColor: .labelColor) : Color(nsColor: .secondaryLabelColor))
             .frame(width: config.buttonSize, height: config.buttonSize)
 
         if config.buttonBackground {
@@ -572,8 +596,8 @@ struct HiddenTitlebarSidebarControlsView: View {
     @ObservedObject var notificationStore: TerminalNotificationStore
     @StateObject private var viewModel = TitlebarControlsViewModel()
 
-    // Widened from 124 to fit the fourth (shortcuts help) button across all
-    // TitlebarControlsStyle configs (roomy needs ~154pt for 4 buttons + spacing).
+    // Sized to fit all 3 titlebar buttons (sidebar toggle, notifications, new tab)
+    // plus spacing/insets across every TitlebarControlsStyle config, including roomy.
     private let hostWidth: CGFloat = 170
     private let hostHeight: CGFloat = 28
 
