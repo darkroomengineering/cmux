@@ -19,14 +19,21 @@ STATEFUL_TEST_CLASS="programaTests/AppDelegateShortcutRoutingTests"
 STATEFUL_TEST_SKIP="${STATEFUL_TEST_CLASS}/testCmdWClosesWindowWhenClosingLastSurfaceInLastWorkspace"
 
 RESULT_BUNDLE_ROOT="${PROGRAMA_RESULT_BUNDLE_ROOT:-/tmp/programa-unit-xcresults}"
-RESULT_BUNDLE_SEQ=0
 
 run_unit_tests() {
   local mode="${1:-serial}"
   # Pin the result bundle to a known location so CI can upload it on failure;
   # xcodebuild refuses to overwrite an existing bundle, so each invocation
   # (mode x retry attempt) gets its own sequence-numbered path.
-  RESULT_BUNDLE_SEQ=$((RESULT_BUNDLE_SEQ + 1))
+  #
+  # The sequence is passed in rather than incremented here on purpose. This
+  # function is always invoked on the left-hand side of a `| tee`, which bash
+  # runs in a subshell, so a variable incremented in here is discarded when the
+  # subshell exits. When the counter lived here every retry recomputed the same
+  # path, xcodebuild bailed with "Existing file at -resultBundlePath" (exit 64)
+  # before running a single test, and the retry that exists to absorb a flaky
+  # stateful pass instead turned it into a hard failure.
+  local seq="${2:-1}"
   mkdir -p "$RESULT_BUNDLE_ROOT"
   local -a xcode_args=(
     "$XCODEBUILD_COMMAND"
@@ -36,7 +43,7 @@ run_unit_tests() {
     -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR"
     -disableAutomaticPackageResolution
     -destination "platform=macOS"
-    -resultBundlePath "$RESULT_BUNDLE_ROOT/${mode}-${RESULT_BUNDLE_SEQ}.xcresult"
+    -resultBundlePath "$RESULT_BUNDLE_ROOT/${mode}-${seq}.xcresult"
   )
 
   case "$mode" in
@@ -61,10 +68,14 @@ run_unit_tests() {
 run_unit_tests_with_retry() {
   local mode="${1:-serial}"
   local attempt=0
+  # Lives here, in the parent shell, so it actually survives across retries --
+  # see the note in run_unit_tests about the `| tee` subshell.
+  local seq=0
 
   while true; do
+    seq=$((seq + 1))
     set +e
-    run_unit_tests "$mode" | tee "$OUTPUT_FILE"
+    run_unit_tests "$mode" "$seq" | tee "$OUTPUT_FILE"
     EXIT_CODE=${PIPESTATUS[0]}
     OUTPUT="$(cat "$OUTPUT_FILE")"
     set -e
