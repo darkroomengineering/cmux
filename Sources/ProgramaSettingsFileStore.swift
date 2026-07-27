@@ -531,6 +531,9 @@ final class ProgramaSettingsFileStore {
             let clamped = min(max(value, 0), 1)
             snapshot.managedUserDefaults["sidebarTintOpacity"] = .double(clamped)
         }
+        if let value = jsonBool(section["showClaudeQuota"]) {
+            snapshot.managedUserDefaults["sidebarShowClaudeQuota"] = .bool(value)
+        }
     }
 
     private func parseAutomationSection(

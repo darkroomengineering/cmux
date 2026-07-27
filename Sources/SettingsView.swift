@@ -68,6 +68,7 @@ struct SettingsView: View {
     @AppStorage("sidebarTintHexDark") private var sidebarTintHexDark: String?
     @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = SidebarTintDefaults.opacity
     @AppStorage("sidebarMatchTerminalBackground") private var sidebarMatchTerminalBackground = false
+    @AppStorage("sidebarShowClaudeQuota") private var showClaudeQuota = true
 
     @ObservedObject private var notificationStore = TerminalNotificationStore.shared
     @StateObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
@@ -1126,6 +1127,21 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(
+                String(localized: "settings.sidebarAppearance.showClaudeQuota", defaultValue: "Show Claude Quota"),
+                subtitle: String(localized: "settings.sidebarAppearance.showClaudeQuota.subtitle", defaultValue: "Show remaining Claude Code usage quota in the sidebar footer.")
+            ) {
+                Toggle("", isOn: $showClaudeQuota)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .accessibilityLabel(
+                        String(localized: "settings.sidebarAppearance.showClaudeQuota", defaultValue: "Show Claude Quota")
+                    )
+            }
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
                 String(localized: "settings.sidebarAppearance.tintColorLight", defaultValue: "Light Mode Tint"),
                 subtitle: String(localized: "settings.sidebarAppearance.tintColorLight.subtitle", defaultValue: "Sidebar tint color when using light appearance.")
             ) {
@@ -1757,6 +1773,7 @@ struct SettingsView: View {
         sidebarTintHexDark = nil
         sidebarTintOpacity = SidebarTintDefaults.opacity
         sidebarMatchTerminalBackground = false
+        showClaudeQuota = true
         showOpenAccessConfirmation = false
         pendingOpenAccessMode = nil
         socketPasswordDraft = ""

@@ -24,9 +24,12 @@
 			AMDT000001 /* AgentManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000002 /* AgentManifest.swift */; };
 			AMDT000003 /* AgentManifestLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000004 /* AgentManifestLoader.swift */; };
 			AMDT000005 /* AgentScreenDetectionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000006 /* AgentScreenDetectionEngine.swift */; };
+			CQTA000001 /* ClaudeQuotaMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CQTA000002 /* ClaudeQuotaMonitor.swift */; };
+			CQTA000003 /* SidebarQuotaFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CQTA000004 /* SidebarQuotaFooter.swift */; };
 			LCMD000001 /* LastCommandOutcome.swift in Sources */ = {isa = PBXBuildFile; fileRef = LCMD000002 /* LastCommandOutcome.swift */; };
 			AMDT000007 /* AgentDetection in Resources */ = {isa = PBXBuildFile; fileRef = AMDT000008 /* AgentDetection */; };
 			AMDT000009 /* AgentManifestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000010 /* AgentManifestTests.swift */; };
+			CQTT000001 /* ClaudeQuotaSnapshotParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CQTT000002 /* ClaudeQuotaSnapshotParserTests.swift */; };
 			NRSP0072A1B2C3D4E5F60719 /* Workspace+Remote.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0071A1B2C3D4E5F60719 /* Workspace+Remote.swift */; };
 			NRSP0070A1B2C3D4E5F60719 /* Workspace+FocusGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0069A1B2C3D4E5F60719 /* Workspace+FocusGeometry.swift */; };
 			NRSP0068A1B2C3D4E5F60719 /* WindowTerminalHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0067A1B2C3D4E5F60719 /* WindowTerminalHostView.swift */; };
@@ -388,9 +391,12 @@
 			AMDT000002 /* AgentManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentManifest.swift; sourceTree = "<group>"; };
 			AMDT000004 /* AgentManifestLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentManifestLoader.swift; sourceTree = "<group>"; };
 			AMDT000006 /* AgentScreenDetectionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentScreenDetectionEngine.swift; sourceTree = "<group>"; };
+			CQTA000002 /* ClaudeQuotaMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeQuotaMonitor.swift; sourceTree = "<group>"; };
+			CQTA000004 /* SidebarQuotaFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarQuotaFooter.swift; sourceTree = "<group>"; };
 			LCMD000002 /* LastCommandOutcome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LastCommandOutcome.swift; sourceTree = "<group>"; };
 			AMDT000008 /* AgentDetection */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AgentDetection; sourceTree = "<group>"; };
 			AMDT000010 /* AgentManifestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentManifestTests.swift; sourceTree = "<group>"; };
+			CQTT000002 /* ClaudeQuotaSnapshotParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeQuotaSnapshotParserTests.swift; sourceTree = "<group>"; };
 			NRSP0071A1B2C3D4E5F60719 /* Workspace+Remote.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+Remote.swift"; sourceTree = "<group>"; };
 			NRSP0069A1B2C3D4E5F60719 /* Workspace+FocusGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+FocusGeometry.swift"; sourceTree = "<group>"; };
 			NRSP0067A1B2C3D4E5F60719 /* WindowTerminalHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowTerminalHostView.swift; sourceTree = "<group>"; };
@@ -805,6 +811,8 @@
 					AMDT000002 /* AgentManifest.swift */,
 					AMDT000004 /* AgentManifestLoader.swift */,
 					AMDT000006 /* AgentScreenDetectionEngine.swift */,
+					CQTA000002 /* ClaudeQuotaMonitor.swift */,
+					CQTA000004 /* SidebarQuotaFooter.swift */,
 					LCMD000002 /* LastCommandOutcome.swift */,
 					NRSP0071A1B2C3D4E5F60719 /* Workspace+Remote.swift */,
 					NRSP0069A1B2C3D4E5F60719 /* Workspace+FocusGeometry.swift */,
@@ -1098,6 +1106,7 @@
 					14A7DC53B9CA33BE2A421711 /* WorkspacePullRequestSidebarTests.swift */,
 					8B7B486518E6CD0E6F36894B /* AgentActivityStateTests.swift */,
 					AMDT000010 /* AgentManifestTests.swift */,
+					CQTT000002 /* ClaudeQuotaSnapshotParserTests.swift */,
 					1D301919B10F22B8708E8883 /* WorkspaceManualUnreadTests.swift */,
 					EE0171AF1F49F7547191CEE5 /* SidebarWidthPolicyTests.swift */,
 					491751CE2321474474F27DCF /* TerminalControllerSocketSecurityTests.swift */,
@@ -1272,6 +1281,8 @@
 					AMDT000001 /* AgentManifest.swift in Sources */,
 					AMDT000003 /* AgentManifestLoader.swift in Sources */,
 					AMDT000005 /* AgentScreenDetectionEngine.swift in Sources */,
+					CQTA000001 /* ClaudeQuotaMonitor.swift in Sources */,
+					CQTA000003 /* SidebarQuotaFooter.swift in Sources */,
 					LCMD000001 /* LastCommandOutcome.swift in Sources */,
 					NRSP0072A1B2C3D4E5F60719 /* Workspace+Remote.swift in Sources */,
 					NRSP0070A1B2C3D4E5F60719 /* Workspace+FocusGeometry.swift in Sources */,
@@ -1528,6 +1539,7 @@
 					DCC935C5F55C1DCB33E25521 /* WorkspacePullRequestSidebarTests.swift in Sources */,
 					08F8EF4F188B4E255A7C813B /* AgentActivityStateTests.swift in Sources */,
 					AMDT000009 /* AgentManifestTests.swift in Sources */,
+					CQTT000001 /* ClaudeQuotaSnapshotParserTests.swift in Sources */,
 					0F2C25F9170130F8DC09DD1B /* WorkspaceManualUnreadTests.swift in Sources */,
 					CA39C0304FE351A21C372429 /* SidebarWidthPolicyTests.swift in Sources */,
 					8C4BBF2DEF6DF93F395A9EE7 /* TerminalControllerSocketSecurityTests.swift in Sources */,

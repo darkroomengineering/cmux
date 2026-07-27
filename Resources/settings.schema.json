@@ -193,6 +193,11 @@
           "maximum": 1,
           "default": 0.03,
           "description": "Sidebar tint opacity from 0 to 1."
+        },
+        "showClaudeQuota": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Claude Code rate-limit headroom (5h/7d windows) in the sidebar footer, read from ~/.claude/tmp/rate-limits.json when present."
         }
       }
     },

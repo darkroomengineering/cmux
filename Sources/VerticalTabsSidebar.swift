@@ -318,6 +318,8 @@ struct VerticalTabsSidebar: View {
             }
             SidebarFooter(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            SidebarQuotaFooter()
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("Sidebar")
         .ignoresSafeArea()
