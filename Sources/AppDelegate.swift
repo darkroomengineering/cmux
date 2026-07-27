@@ -1504,6 +1504,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         }
         stopSessionAutosaveTimer()
         TerminalController.shared.stop()
+        MobileBridgeListener.shared.stop()
         VSCodeServeWebController.shared.stop()
         BrowserProfileStore.shared.flushPendingSaves()
         notificationStore?.clearAll()

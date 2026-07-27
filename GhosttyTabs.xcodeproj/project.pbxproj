@@ -227,8 +227,13 @@
 		NRPA00001 /* FileWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRPA00002 /* FileWatcher.swift */; };
 		A5001654 /* ProgramaDirectoryTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001655 /* ProgramaDirectoryTrust.swift */; };
 		A5001660 /* JSONCParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001661 /* JSONCParser.swift */; };
+		MOBB0001 /* MobileBridgeSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0002 /* MobileBridgeSettings.swift */; };
+		MOBB0003 /* MobileBridgeStreamSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0004 /* MobileBridgeStreamSupport.swift */; };
+		MOBB0005 /* MobileBridgeListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0006 /* MobileBridgeListener.swift */; };
+		MOBB0007 /* MobileBridgeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0008 /* MobileBridgeSession.swift */; };
 		A5001100 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A5001101 /* Assets.xcassets */; };
 		A5001230 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A5001231 /* Sparkle */; };
+		MOBB1003 /* IrohLib in Frameworks */ = {isa = PBXBuildFile; productRef = MOBB1002 /* IrohLib */; };
 		B9000002A1B2C3D4E5F60719 /* programa.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000001A1B2C3D4E5F60719 /* programa.swift */; };
 		B9000031A1B2C3D4E5F60719 /* CLI+Markdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000030A1B2C3D4E5F60719 /* CLI+Markdown.swift */; };
 		B9000033A1B2C3D4E5F60719 /* CLI+SSH.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000032A1B2C3D4E5F60719 /* CLI+SSH.swift */; };
@@ -595,6 +600,10 @@
 		A5001653 /* ProgramaConfigExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramaConfigExecutor.swift; sourceTree = "<group>"; };
 		NRPA00002 /* FileWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileWatcher.swift; sourceTree = "<group>"; };
 		A5001655 /* ProgramaDirectoryTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramaDirectoryTrust.swift; sourceTree = "<group>"; };
+		MOBB0002 /* MobileBridgeSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeSettings.swift; sourceTree = "<group>"; };
+		MOBB0004 /* MobileBridgeStreamSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeStreamSupport.swift; sourceTree = "<group>"; };
+		MOBB0006 /* MobileBridgeListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeListener.swift; sourceTree = "<group>"; };
+		MOBB0008 /* MobileBridgeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeSession.swift; sourceTree = "<group>"; };
 		A5001661 /* JSONCParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONCParser.swift; sourceTree = "<group>"; };
 		A5001641 /* RemoteRelayZshBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteRelayZshBootstrap.swift; sourceTree = "<group>"; };
 		818DBCD4AB69EB72573E8138 /* SidebarResizeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarResizeUITests.swift; sourceTree = "<group>"; };
@@ -681,6 +690,7 @@
 					A5001006 /* GhosttyKit.xcframework in Frameworks */,
 					A5001230 /* Sparkle in Frameworks */,
 					A5001290 /* MarkdownUI in Frameworks */,
+					MOBB1003 /* IrohLib in Frameworks */,
 				);
 				runOnlyForDeploymentPostprocessing = 0;
 			};
@@ -1001,6 +1011,10 @@
 				NRPA00002 /* FileWatcher.swift */,
 				A5001655 /* ProgramaDirectoryTrust.swift */,
 				A5001661 /* JSONCParser.swift */,
+				MOBB0002 /* MobileBridgeSettings.swift */,
+				MOBB0004 /* MobileBridgeStreamSupport.swift */,
+				MOBB0006 /* MobileBridgeListener.swift */,
+				MOBB0008 /* MobileBridgeSession.swift */,
 				RVPN00000000000000000001 /* ReviewComment.swift */,
 				RVPN00000000000000000003 /* ReviewCommentSerializer.swift */,
 				RVPN00000000000000000005 /* ReviewDiffParser.swift */,
@@ -1152,6 +1166,7 @@
 					A5001231 /* Sparkle */,
 					A5001261 /* Bonsplit */,
 					A5001291 /* MarkdownUI */,
+					MOBB1002 /* IrohLib */,
 				);
 			name = GhosttyTabs;
 			productName = GhosttyTabs;
@@ -1250,6 +1265,7 @@
 				A5001232 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				A5001292 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 				A5001260 /* XCLocalSwiftPackageReference "bonsplit" */,
+				MOBB1001 /* XCRemoteSwiftPackageReference "iroh-ffi" */,
 			);
 			productRefGroup = A5001042 /* Products */;
 			projectDirPath = "";
@@ -1480,6 +1496,10 @@
 				NRPA00001 /* FileWatcher.swift in Sources */,
 			A5001654 /* ProgramaDirectoryTrust.swift in Sources */,
 				A5001660 /* JSONCParser.swift in Sources */,
+				MOBB0001 /* MobileBridgeSettings.swift in Sources */,
+				MOBB0003 /* MobileBridgeStreamSupport.swift in Sources */,
+				MOBB0005 /* MobileBridgeListener.swift in Sources */,
+				MOBB0007 /* MobileBridgeSession.swift in Sources */,
 		);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1930,6 +1950,14 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = vendor/bonsplit;
 		};
+		MOBB1001 /* XCRemoteSwiftPackageReference "iroh-ffi" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/manaflow-ai/iroh-ffi.git";
+			requirement = {
+				kind = exactVersion;
+				version = "1.0.2-cmux.3";
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1947,6 +1975,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A5001292 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
+		};
+		MOBB1002 /* IrohLib */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = MOBB1001 /* XCRemoteSwiftPackageReference "iroh-ffi" */;
+			productName = IrohLib;
 		};
 /* End XCSwiftPackageProductDependency section */
 

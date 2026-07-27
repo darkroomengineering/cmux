@@ -1387,7 +1387,13 @@ class TerminalController {
         }
     }
 
-    private func handleClient(_ socket: Int32, peerPid: pid_t? = nil) {
+    /// `ignoresListenerState: true` decouples this connection's lifetime from
+    /// the Unix-socket listener. The mobile bridge feeds sessions in over a
+    /// socketpair and is gated independently by `MobileBridgeMode`, so a user
+    /// who sets Socket Control Mode to Off must not silently break their paired
+    /// phone -- previously the read loop exited immediately and the phone
+    /// connected to a session that accepted nothing.
+    func handleClient(_ socket: Int32, peerPid: pid_t? = nil, ignoresListenerState: Bool = false) {
         // Owns this connection's writes (both ordinary v2 responses and any #167 subscription
         // event pushes) and its subscription lifecycle. `teardown()` (which tears down any
         // attached subscription) must run before the fd is closed -- defers unwind LIFO, so the
@@ -1430,7 +1436,7 @@ class TerminalController {
         var pending = ""
         var authenticated = false
 
-        while withListenerState({ isRunning }) {
+        while ignoresListenerState || withListenerState({ isRunning }) {
             let bytesRead = read(socket, &buffer, buffer.count - 1)
             guard bytesRead > 0 else { break }
 

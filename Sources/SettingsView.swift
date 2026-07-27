@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage(WorkspacePresentationModeSettings.modeKey)
     private var workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
     @AppStorage(SocketControlSettings.appStorageKey) private var socketControlMode = SocketControlSettings.defaultMode.rawValue
+    @AppStorage(MobileBridgeSettings.appStorageKey) private var mobileBridgeMode = MobileBridgeSettings.defaultMode.rawValue
     @AppStorage(ClaudeCodeIntegrationSettings.hooksEnabledKey)
     private var claudeCodeHooksEnabled = ClaudeCodeIntegrationSettings.defaultHooksEnabled
     @AppStorage(ClaudeCodeIntegrationSettings.customClaudePathKey)
@@ -91,6 +92,11 @@ struct SettingsView: View {
     @State private var notificationCustomSoundErrorAlertMessage = ""
     @State private var workspaceTabPaletteEntries = WorkspaceTabColorSettings.palette()
     @State private var trustedDirectoriesDraft: String = ProgramaDirectoryTrust.shared.allTrustedPaths.joined(separator: "\n")
+    @State private var mobileBridgePairedDevices: [MobileBridgeTrustedDevice] = []
+    @State private var mobileBridgePairingTicket: String?
+    @State private var mobileBridgePairingToken: String?
+    @State private var mobileBridgePairingErrorMessage: String?
+    @State private var isPairingMobileBridgeDevice = false
 
     private var selectedWorkspacePlacement: NewWorkspacePlacement {
         NewWorkspacePlacement(rawValue: newWorkspacePlacement) ?? WorkspacePlacementSettings.defaultPlacement
@@ -510,6 +516,7 @@ struct SettingsView: View {
                     workspaceColorsSection
                     sidebarAppearanceSection
                     automationSection
+                    phoneSection
                     customCommandsSection
                     browserSection
                     keyboardShortcutsSection
@@ -608,6 +615,7 @@ struct SettingsView: View {
             refreshDetectedImportBrowsers()
             reloadWorkspaceTabColorSettings()
             refreshNotificationCustomSoundStatus()
+            Task { await refreshMobileBridgePairedDevices() }
         }
         .onChange(of: notificationSound) { _, _ in
             refreshNotificationCustomSoundStatus()
@@ -1351,6 +1359,161 @@ struct SettingsView: View {
             SettingsCardNote(String(localized: "settings.automation.port.note", defaultValue: "Each workspace gets PROGRAMA_PORT and PROGRAMA_PORT_END env vars with a dedicated port range. New terminals inherit these values."))
         }
 
+    }
+
+    private var selectedMobileBridgeMode: MobileBridgeMode {
+        MobileBridgeSettings.mode(for: mobileBridgeMode)
+    }
+
+    private var mobileBridgeModeSelection: Binding<String> {
+        Binding(
+            get: { mobileBridgeMode },
+            set: { mobileBridgeMode = $0 }
+        )
+    }
+
+    private func beginMobileBridgePairing() {
+        isPairingMobileBridgeDevice = true
+        mobileBridgePairingErrorMessage = nil
+        Task {
+            if let pairing = await MobileBridgeListener.shared.beginPairing() {
+                mobileBridgePairingTicket = pairing.ticket
+                mobileBridgePairingToken = pairing.token
+            } else {
+                mobileBridgePairingTicket = nil
+                mobileBridgePairingToken = nil
+                mobileBridgePairingErrorMessage = String(
+                    localized: "settings.phone.pair.error",
+                    defaultValue: "Could not start pairing. The phone companion may still be connecting — try again in a moment."
+                )
+            }
+            isPairingMobileBridgeDevice = false
+        }
+    }
+
+    private func revokeMobileBridgeDevice(_ device: MobileBridgeTrustedDevice) {
+        Task {
+            await MobileBridgeListener.shared.revoke(endpointId: device.endpointId)
+            await refreshMobileBridgePairedDevices()
+        }
+    }
+
+    private func refreshMobileBridgePairedDevices() async {
+        mobileBridgePairedDevices = await MobileBridgeTrustedDeviceStore.shared.allDevices()
+    }
+
+    private func mobileBridgePairedOnSubtitle(_ device: MobileBridgeTrustedDevice) -> String {
+        let formattedDate = device.pairedAt.formatted(date: .abbreviated, time: .shortened)
+        return String(localized: "settings.phone.devices.pairedOn", defaultValue: "Paired \(formattedDate)")
+    }
+
+    @ViewBuilder
+    private var phoneSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.phone", defaultValue: "Phone"))
+        SettingsCard {
+            SettingsPickerRow(
+                String(localized: "settings.phone.mode", defaultValue: "Mobile Companion"),
+                subtitle: selectedMobileBridgeMode == .pairedDevicesOnly
+                    ? String(localized: "settings.phone.mode.subtitleOn", defaultValue: "Paired iPhones can reach this Mac over a private peer-to-peer connection.")
+                    : String(localized: "settings.phone.mode.subtitleOff", defaultValue: "The phone companion is off. No device can connect."),
+                controlWidth: pickerColumnWidth,
+                selection: mobileBridgeModeSelection,
+                accessibilityId: "MobileBridgeModePicker"
+            ) {
+                ForEach(MobileBridgeMode.uiCases) { mode in
+                    Text(mode.displayName).tag(mode.rawValue)
+                }
+            }
+
+            if selectedMobileBridgeMode == .pairedDevicesOnly {
+                SettingsCardDivider()
+
+                SettingsCardRow(
+                    String(localized: "settings.phone.pair.title", defaultValue: "Pair a Device"),
+                    subtitle: String(localized: "settings.phone.pair.subtitle", defaultValue: "Opens a single-use, 5-minute pairing window. Enter the payload and token in the Programa iOS app.")
+                ) {
+                    Button(String(localized: "settings.phone.pair.button", defaultValue: "Pair a Device…")) {
+                        beginMobileBridgePairing()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isPairingMobileBridgeDevice)
+                    .accessibilityIdentifier("MobileBridgePairButton")
+                }
+
+                if let ticket = mobileBridgePairingTicket, let token = mobileBridgePairingToken {
+                    SettingsCardDivider()
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(String(localized: "settings.phone.pair.ticketLabel", defaultValue: "Pairing Payload"))
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(ticket)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                            )
+
+                        Text(String(localized: "settings.phone.pair.tokenLabel", defaultValue: "Pairing Token"))
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(token)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                            )
+
+                        Text(String(localized: "settings.phone.pair.expiry", defaultValue: "Single use. Expires in 5 minutes."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                }
+
+                if let mobileBridgePairingErrorMessage {
+                    SettingsCardDivider()
+                    Text(mobileBridgePairingErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                }
+
+                SettingsCardDivider()
+
+                SettingsCardNote(String(localized: "settings.phone.note", defaultValue: "Programa runs no server. Your phone connects directly to this Mac over a private peer-to-peer link, and only a small allow-list of methods can be sent over it."))
+            }
+        }
+
+        if selectedMobileBridgeMode == .pairedDevicesOnly {
+            SettingsCard {
+                SettingsCardRow(String(localized: "settings.phone.devices.title", defaultValue: "Paired Devices")) {
+                    EmptyView()
+                }
+
+                if mobileBridgePairedDevices.isEmpty {
+                    SettingsCardDivider()
+                    SettingsCardNote(String(localized: "settings.phone.devices.empty", defaultValue: "No devices paired yet."))
+                } else {
+                    ForEach(mobileBridgePairedDevices) { device in
+                        SettingsCardDivider()
+                        SettingsCardRow(device.label, subtitle: mobileBridgePairedOnSubtitle(device)) {
+                            Button(String(localized: "settings.phone.devices.revoke", defaultValue: "Remove")) {
+                                revokeMobileBridgeDevice(device)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
