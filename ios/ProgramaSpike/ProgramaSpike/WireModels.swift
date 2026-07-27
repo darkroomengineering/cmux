@@ -52,11 +52,13 @@ enum BridgeError: Error, CustomStringConvertible, Sendable {
     case disconnected
     case encodingFailed
     case malformedResponse
+    case timedOut
     case rpc(code: String, message: String?)
 
     var description: String {
         switch self {
         case .notConnected: "not connected to the bridge"
+        case .timedOut: "the Mac did not respond in time"
         case .invalidTicket: "could not parse the pairing ticket"
         case .disconnected: "connection closed"
         case .encodingFailed: "failed to encode request"

@@ -54,6 +54,7 @@ actor BridgeConnection {
     private var readBuffer = Data()
 
     private var readLoopTask: Task<Void, Never>?
+    private var heartbeatTask: Task<Void, Never>?
     private var pathLoopTask: Task<Void, Never>?
 
     private var nextRequestId = 1
@@ -190,7 +191,9 @@ actor BridgeConnection {
         // Programa's socket is up, and Programa answered. Only then is
         // "connected" true in any sense the user cares about.
         do {
-            _ = try await performRequest(method: "system.ping", params: [:])
+            _ = try await withRequestTimeout(seconds: 15) {
+                try await self.performRequestUnchecked(method: "system.ping", params: [:])
+            }
         } catch {
             await teardownConnection()
             setPhase(.failed("not admitted by the Mac: \(error)"))
@@ -198,6 +201,7 @@ actor BridgeConnection {
         }
 
         setPhase(.connected)
+        startHeartbeat()
     }
 
     func disconnect() async {
@@ -244,6 +248,55 @@ actor BridgeConnection {
     private func setPhase(_ newPhase: Phase) {
         phase = newPhase
         phaseContinuation.yield(newPhase)
+    }
+
+    /// Races an operation against a deadline. Needed because a request whose
+    /// reply never arrives would otherwise park its continuation forever --
+    /// which is what left the app wedged on "Connecting". Teardown resumes any
+    /// still-pending continuation, so a timed-out request cannot leak.
+    private func withRequestTimeout<T: Sendable>(
+        seconds: Double,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw BridgeError.timedOut
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw BridgeError.timedOut }
+            return first
+        }
+    }
+
+    /// A subscribed dashboard sends nothing and may receive nothing for long
+    /// stretches -- no agent changing state means no event frames. QUIC closes
+    /// an idle connection, which showed up in the bridge log as repeated
+    /// `ConnectionLost(TimedOut)` shortly after every `subscribe`. A cheap
+    /// periodic ping keeps the path warm and doubles as liveness detection.
+    private func startHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                if Task.isCancelled { return }
+                await self?.sendHeartbeat()
+            }
+        }
+    }
+
+    private func sendHeartbeat() async {
+        guard case .connected = phase else { return }
+        do {
+            _ = try await withRequestTimeout(seconds: 15) {
+                try await self.performRequestUnchecked(method: "system.ping", params: [:])
+            }
+        } catch {
+            // The read loop owns disconnect handling; surface the phase here so
+            // a silently dead connection doesn't keep looking healthy.
+            setPhase(.failed("connection lost: \(error)"))
+        }
     }
 
     private func startReadLoop() {
@@ -366,6 +419,8 @@ actor BridgeConnection {
     }
 
     private func teardownConnection() async {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         readLoopTask?.cancel()
         readLoopTask = nil
         pathLoopTask?.cancel()
@@ -401,6 +456,14 @@ actor BridgeConnection {
 
     private func performRequest(method: String, params: [String: RPCParam]) async throws -> Data {
         guard case .connected = phase else { throw BridgeError.notConnected }
+        return try await performRequestUnchecked(method: method, params: params)
+    }
+
+    /// Same as `performRequest` but without the `.connected` phase guard, so
+    /// the admission ping issued during `connect()` -- which by definition runs
+    /// before the phase is `.connected` -- can use the normal request/response
+    /// machinery. Everything else must go through `performRequest`.
+    private func performRequestUnchecked(method: String, params: [String: RPCParam]) async throws -> Data {
         let id = nextRequestId
         nextRequestId += 1
         let request = RPCRequest(id: id, method: method, params: params)
