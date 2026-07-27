@@ -19,6 +19,8 @@ targets:
         product: CmuxIrohTransport
       - package: iroh-ffi
         product: IrohLib
+      - target: ProgramaSpikeWidgets
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.darkroom.programa.spike
@@ -29,8 +31,39 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: "Programa Spike"
+        # Black-and-white treatment of the macOS Programa mark.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Without this, iOS silently denies the app any local-network access
         # and iroh cannot reach the Mac's LAN address from the pairing ticket,
         # so the connection falls back to a relay even on the same Wi-Fi.
         # Measured: phone reported `relay` until this key was added.
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Programa connects directly to your Mac on the same network instead of routing through a relay."
+        # Required for ActivityKit -- without this the app can request a Live
+        # Activity but the system silently refuses to start it.
+        INFOPLIST_KEY_NSSupportsLiveActivities: YES
+
+  ProgramaSpikeWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: ProgramaSpikeWidgets
+      - path: ProgramaSpike/Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.darkroom.programa.spike.widgets
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # An app extension must ship a real nested NSExtension dictionary.
+        # INFOPLIST_KEY_* only synthesises a documented allowlist of flat keys,
+        # so NSExtensionPointIdentifier never nests and iOS refuses to install
+        # the .appex ("does not define an NSExtension dictionary").
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: ProgramaSpikeWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Programa Spike Widgets
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
