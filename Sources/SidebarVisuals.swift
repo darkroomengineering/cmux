@@ -62,7 +62,7 @@ private struct SidebarHelpMenuButton: View {
     private let changelogURL = URL(string: "https://github.com/darkroomengineering/programa/blob/main/CHANGELOG.md")
     private let githubURL = URL(string: "https://github.com/darkroomengineering/programa")
     private let githubIssuesURL = URL(string: "https://github.com/darkroomengineering/programa/issues")
-    private let twitterURL = URL(string: "https://x.com/darkroomengineering")
+    private let twitterURL = URL(string: "https://x.com/darkroomdevs")
     private let websiteURL = URL(string: "https://darkroom.engineering")
     private let helpTitle = String(localized: "sidebar.help.button", defaultValue: "Help")
     private let buttonSize: CGFloat = 22

@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://x.com/darkroomengineering"><img src="https://img.shields.io/badge/@darkroomengineering-555?logo=x" alt="X / Twitter" /></a>
+  <a href="https://x.com/darkroomdevs"><img src="https://img.shields.io/badge/@darkroomdevs-555?logo=x" alt="X / Twitter" /></a>
   <a href="https://darkroom.engineering"><img src="https://img.shields.io/badge/darkroom.engineering-555" alt="Darkroom Engineering" /></a>
   <a href="https://github.com/darkroomengineering/programa"><img src="https://img.shields.io/github/stars/darkroomengineering/programa?style=flat&logo=github&label=stars&color=4c71f2" alt="GitHub stars" /></a>
 </p>
@@ -65,7 +65,7 @@ Agents running inside programa (Claude Code, Codex, OpenCode) can drive the app 
 
 ## Community
 
-[darkroom.engineering](https://darkroom.engineering) · [Issues](https://github.com/darkroomengineering/programa/issues) · [Discussions](https://github.com/darkroomengineering/programa/discussions) · [@darkroomengineering](https://x.com/darkroomengineering)
+[darkroom.engineering](https://darkroom.engineering) · [Issues](https://github.com/darkroomengineering/programa/issues) · [Discussions](https://github.com/darkroomengineering/programa/discussions) · [@darkroomdevs](https://x.com/darkroomdevs)
 
 ## License
 

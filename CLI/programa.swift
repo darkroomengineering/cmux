@@ -7364,7 +7364,7 @@ struct ProgramaCLI {
         print(shortcuts)
         print()
         print("  \(bold)Docs\(reset)\(subdued)                https://github.com/darkroomengineering/programa/tree/main/docs\(reset)")
-        print("  \(bold)X\(reset)\(subdued)                   https://x.com/darkroomengineering\(reset)")
+        print("  \(bold)X\(reset)\(subdued)                   https://x.com/darkroomdevs\(reset)")
         print("  \(bold)GitHub\(reset)\(subdued)              https://github.com/darkroomengineering/programa (please leave a star ⭐)\(reset)")
         print("  \(bold)Issues\(reset)\(subdued)              https://github.com/darkroomengineering/programa/issues\(reset)")
         print()
