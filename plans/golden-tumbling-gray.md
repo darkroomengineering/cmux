@@ -127,7 +127,55 @@ Not a live SPM dependency on the fork: `CmuxIrohTransport` is nested inside cmux
 not a standalone repo, and every future upstream commit risks silently reintroducing
 broker/`StackAuth` coupling we are deliberately deleting.
 
-### Revised after M0 spike: inject an offline broker, don't delete files
+### Revised again at M1: build on `IrohLib` directly, keep the package as reference
+
+The kill criterion "admission is welded to cmux's world → write fresh against bare `iroh-ffi`"
+**fired.** Investigation findings:
+
+- **No cmux key material is hardcoded.** `CmxIrohGrantVerifier.publicKey(id:keySet:)`
+  (`CmxIrohGrantVerifier.swift:247-278`) only checks structural shape — version, key count,
+  valid Ed25519 SPKI DER. Keys are runtime values. So a self-signing broker is *possible*.
+- **But the format contract is not injectable, only the keys are.** Conforming means
+  reimplementing cmux's exact JWT-like claim sets, base64url/SPKI-DER encodings and lifetime
+  windows, with no ability to simplify.
+- **`CmxIrohHostRuntime.start()` has no broker-free path.** It unconditionally calls
+  `register` (`+PolicyRefresh.swift:107`), `discover` (`:121`) and `issueEndpointAttestation`
+  (`:145`) before `endpointServer.start()` accepts anything. The cached-policy fallback
+  (`:161-195`) requires a *prior successful* round trip. Even offline-paired peers keep hitting
+  `broker.discover()` every 30s via `CmxIrohOnlineAdmissionRegistry.authorizeOfflinePair`
+  (`:117-134`, `:338`). There is no partial-conformance shortcut.
+- **What the runtime adds is mostly inapplicable to us**: managed-relay credential rotation
+  (dead unless `managedRelayURLs` is non-empty, `CmxIrohHostRuntime.swift:218-220`), LAN
+  rendezvous rotation, fleet-scale revalidation. M0 already connects over LAN *and* cellular
+  with none of it.
+
+**Decision: the Mac listener is built directly on `IrohLib`**, exactly as the proven M0 spike
+is (`tools/mobile-spike/Sources/iroh-spike/App.swift`). The vendored package stays in the tree
+as **reference**, not as a compiled dependency — deleting it is easy later and reversible;
+re-extracting it is not free. Worth rereading when needed: `CmxIrohStreamHeader*` (lane framing
+for when one control channel isn't enough), `CmxIrohAdmittedConnectionSupervisor`
+(control/application lane race-and-close), and `CmxIrohGrantVerifierTests.swift` as an
+attack-case checklist if pairing ever grows into signed grants.
+
+### v1 pairing: the EndpointID *is* the credential
+
+iroh's EndpointID is an Ed25519 public key, and QUIC mutually authenticates it. So
+authorization is **set membership**, with nothing forgeable:
+
+1. Mac generates one long-lived `SecretKey` on first launch, stored in the Keychain. That is
+   its identity — no separate broker key.
+2. Pairing shows a QR/ticket: the Mac's EndpointID plus a random, memory-only, single-use
+   token that expires in ~5 minutes.
+3. Phone dials the EndpointID and presents the token on the first control message.
+4. Mac verifies the window is open, the token matches (constant-time) and is unconsumed, then
+   persists the phone's EndpointID to a trusted-device store and closes the pairing window.
+5. Every later connection is authorized purely by "is this EndpointID in the store".
+6. Revocation is removing the entry and dropping open connections — local and immediate.
+
+An unpaired peer cannot enter the allowlist except through a deliberate, time-boxed ceremony,
+and there is no signed artifact it could forge to talk its way in.
+
+### Superseded: inject an offline broker, don't delete files
 
 The original plan assumed we'd delete ~12 broker files and untangle the 29 that reference
 them. **Reading the code showed that's wrong and unnecessary.**
@@ -185,33 +233,41 @@ New flat directory `Sources/MobileBridge/`, matching Programa's convention
 - `MobileBridgeSession.swift` — one per admitted peer; owns the frame relay.
 - `MobileBridgeSettings.swift` — pairing mode + device revocation list.
 
-### It's a relay, not a translator
+### It's a relay, not a translator — via a socketpair
 
 Phone and Mac already speak identical newline-delimited JSON-RPC. Upstream needed a
 translation layer only because their Mac side moved to a typed
-`ControlCallResult`/`ControlCommandCoordinator`; Programa's did not. So:
+`ControlCallResult`/`ControlCommandCoordinator`; Programa's did not.
 
-1. Read newline-delimited bytes off the admitted peer's control lane.
-2. Dispatch each line **in-process** via `processV2Command` (currently `private` at
-   `Sources/TerminalController.swift:1477` — bump to `internal`), rather than opening a second
-   `AF_UNIX` connection per session.
-3. Write the response line back over the same lane.
-4. For subscribed connections, relay `SocketEventBroadcaster` push frames back over the lane.
-   `MobileBridgeSession` should construct a real `SocketConnection` wrapping its Iroh lane, so
-   subscription semantics come for free.
+**Revised after reading the code.** The original plan said `MobileBridgeSession` should
+"construct a real `SocketConnection` wrapping its Iroh lane." That is not possible:
+`SocketConnection` is a concrete `final class` holding a raw fd (`private let socket: Int32`,
+`Sources/TerminalController+Subscriptions.swift:37-46`) and writing to it directly. It cannot
+wrap anything that is not a file descriptor. Making it protocol-based would mean refactoring
+the subscription machinery.
 
-In-process dispatch is safe because Programa's socket handlers were already built for it:
-CLAUDE.md's "Socket command threading policy" mandates handlers assume an arbitrary
-non-main thread and hop to main via `v2MainSync` — exactly what an Iroh callback thread
-provides.
+There is a much cheaper path. `handleClient(_ socket: Int32, peerPid: pid_t? = nil)`
+(`Sources/TerminalController.swift:1390`) already takes an arbitrary fd and an *injectable*
+peer PID. So per admitted phone:
 
-This means **`agent.prompt` becomes the phone's entire answer/approve action with zero new
+1. `socketpair(AF_UNIX, SOCK_STREAM, 0, &fds)` — two connected fds, no filesystem, no listener.
+2. `Thread.detachNewThread { handleClient(fds[0], peerPid: getpid()) }` — the existing read
+   loop, v2 dispatch, subscription lifecycle, event pushes and backpressure all run untouched.
+3. Pump bytes both ways between `fds[1]` and the peer's Iroh bidirectional stream.
+4. Enforce the method allow-list on lines read from the phone *before* they reach `fds[1]`.
+
+**Nothing in `SocketConnection`, `processV2Command`, or the subscription code changes.** The
+only edit to existing Programa code is bumping `handleClient` from `private` to `internal` —
+one line. Subscription push frames flow back to the phone automatically because, as far as
+Programa is concerned, this is just another socket client.
+
+This also means **`agent.prompt` is the phone's entire answer/approve action with zero new
 Mac-side logic** — the same call the CLI's `prompt-agent` already uses.
 
-*Fallback if in-process dispatch proves unsafe:* a genuinely long-lived connection to
-`programa.sock` per peer. Note `WorkspaceRemoteCLIRelayServer.Session` is intentionally
-one-shot (connect → write → `SHUT_WR` → drain → close), which is the wrong shape for a session
-that must keep receiving push frames.
+Note the socketpair deliberately does *not* rely on `cmuxOnly` ancestry checks for security
+(`Sources/TerminalController.swift:1400-1425`). The phone's authorization boundary is the
+Iroh admission handshake plus the bridge's own method allow-list, both entirely upstream of
+this fd. The socketpair is a plumbing convenience, not a trust boundary.
 
 ### Keep pairing orthogonal to `SocketControlSettings` — do not add a sixth access mode
 
