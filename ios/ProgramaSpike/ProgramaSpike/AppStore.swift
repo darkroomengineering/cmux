@@ -68,6 +68,10 @@ final class AppStore {
     private var pendingActivityContentState: AgentActivityAttributes.ContentState?
     private var pendingActivityUpdateTask: Task<Void, Never>?
     private var mostRecentBlockedWorkspaceID: String?
+    /// Name of the paired Mac, shown in the Live Activity. Learned from the
+    /// pairing response and persisted, since trusted reconnects never resend it.
+    private var pairedMacName: String = PairingStore.loadMacName()
+        ?? String(localized: "liveActivity.macName", defaultValue: "your Mac")
     // `nonisolated(unsafe)` because `deinit` on a @MainActor type runs
     // nonisolated and must still unregister this. Written exactly once during
     // init and read once in deinit, never concurrently, so the unsafe opt-out
@@ -188,6 +192,10 @@ final class AppStore {
                 pairingToken: token,
                 deviceLabel: deviceLabel.isEmpty ? nil : deviceLabel
             )
+            if let learned = await connection.lastPairedMacName, !learned.isEmpty {
+                pairedMacName = learned
+                PairingStore.saveMacName(learned)
+            }
         } catch {
             lastSyncError = "\(error)"
         }
@@ -356,7 +364,7 @@ final class AppStore {
             // name today (only an opaque pairing ticket) -- this is a
             // placeholder until a future milestone plumbs one through, e.g.,
             // `system.ping`.
-            macName: String(localized: "liveActivity.macName", defaultValue: "your Mac")
+            macName: pairedMacName
         )
         let initialState = deriveActivityContentState()
         let content = ActivityContent(

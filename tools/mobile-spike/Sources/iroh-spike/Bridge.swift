@@ -172,7 +172,18 @@ private func admit(
                 .description
             let resolvedLabel = (label?.isEmpty == false) ? label! : "paired-device"
             try await store.add(endpointId: idString, label: resolvedLabel)
-            try await writer.writeLine(Data(#"{"ok":true,"paired":true}"#.utf8))
+            // Include this Mac's name so the phone can show "Franco's MacBook"
+            // instead of a placeholder. Only sent here, on the pairing frame --
+            // a trusted reconnect sends no pair frame at all, so the phone
+            // persists this value rather than expecting it every time.
+            let pairedReply: [String: Any] = [
+                "ok": true,
+                "paired": true,
+                "macName": localMacName(),
+            ]
+            let replyData = (try? JSONSerialization.data(withJSONObject: pairedReply))
+                ?? Data(#"{"ok":true,"paired":true}"#.utf8)
+            try await writer.writeLine(replyData)
             print("Bridge: paired new device \(idString) as \"\(resolvedLabel)\"")
             return true
         } else {
@@ -267,4 +278,17 @@ private func errorFrame(id: Any?, code: String, message: String? = nil) -> Data 
         return data
     }
     return Data(#"{"ok":false,"error":{"code":"\#(code)"}}"#.utf8)
+}
+
+
+/// The Mac's user-facing computer name ("Franco's MacBook Pro"), falling back
+/// to the network hostname and finally a generic label. `Host.current()
+/// .localizedName` is what System Settings shows, which is what a person
+/// recognises on their phone.
+func localMacName() -> String {
+    if let localized = Host.current().localizedName, !localized.isEmpty {
+        return localized
+    }
+    let hostName = ProcessInfo.processInfo.hostName
+    return hostName.isEmpty ? "Mac" : hostName
 }

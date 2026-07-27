@@ -38,6 +38,8 @@ actor BridgeConnection {
 
     private(set) var phase: Phase = .disconnected
     private(set) var observedPath: ObservedPath = .unavailable
+    /// Set when a pairing frame is answered; nil on trusted reconnects.
+    private(set) var lastPairedMacName: String?
 
     nonisolated let phaseStream: AsyncStream<Phase>
     nonisolated let pathStream: AsyncStream<ObservedPath>
@@ -164,6 +166,10 @@ actor BridgeConnection {
                 let reply = try JSONDecoder().decode(PairResponse.self, from: replyLine)
                 guard reply.ok else {
                     throw BridgeError.rpc(code: reply.error?.code ?? "pairing_failed", message: reply.error?.message)
+                }
+                if let macName = reply.macName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !macName.isEmpty {
+                    lastPairedMacName = macName
                 }
             } catch {
                 await teardownConnection()
@@ -521,6 +527,10 @@ private struct PairRequest: Encodable {
 private struct PairResponse: Decodable {
     let ok: Bool
     let paired: Bool?
+    /// The Mac's own computer name, sent only on the pairing frame. A trusted
+    /// reconnect sends no pair frame, so the caller persists this rather than
+    /// expecting it on every connect.
+    let macName: String?
     let error: WireErrorPayload?
 }
 

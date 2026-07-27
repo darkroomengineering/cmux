@@ -16,6 +16,18 @@ enum PairingStore {
         UserDefaults.standard.set(ticket, forKey: ticketKey)
     }
 
+    private static let macNameKey = "pairedMacName"
+
+    /// Persisted because the Mac only sends its name on the pairing frame;
+    /// every later connection is a trusted reconnect that sends none.
+    static func loadMacName() -> String? {
+        UserDefaults.standard.string(forKey: macNameKey)
+    }
+
+    static func saveMacName(_ name: String) {
+        UserDefaults.standard.set(name, forKey: macNameKey)
+    }
+
     static func clearTicket() {
         UserDefaults.standard.removeObject(forKey: ticketKey)
     }
