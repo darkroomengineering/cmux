@@ -44,15 +44,31 @@ func runDialRPC(ticket ticketString: String, token: String?, requestJSON: String
     let requestLine = Data(requestJSON.utf8) + Data("\n".utf8)
     try await sendStream.writeAll(buf: requestLine)
 
-    switch try await withTimeout(seconds: 10, operation: { try await reader.nextLine() }) {
-    case let .value(line):
-        if let line {
-            print("Response: \(describe(line))")
-        } else {
-            print("Response: <connection closed without a reply>")
+    // Unsolicited event frames ("event" key, no "id") share this stream and can
+    // arrive before the reply -- the bridge greets every admitted peer with
+    // `bridge_hello` immediately. Skip them while waiting for the response, the
+    // same way the iOS client routes by frame shape rather than arrival order.
+    var responseLine: Data?
+    var streamClosed = false
+    while responseLine == nil, !streamClosed {
+        switch try await withTimeout(seconds: 10, operation: { try await reader.nextLine() }) {
+        case let .value(line):
+            guard let line else {
+                print("Response: <connection closed without a reply>")
+                streamClosed = true
+                continue
+            }
+            if isEventFrame(line) {
+                print("Event: \(describe(line))")
+                continue
+            }
+            responseLine = line
+        case .timedOut:
+            throw SpikeError(message: "timed out waiting for response from bridge")
         }
-    case .timedOut:
-        throw SpikeError(message: "timed out waiting for response from bridge")
+    }
+    if let responseLine {
+        print("Response: \(describe(responseLine))")
     }
 
     // With PROGRAMA_SPIKE_FOLLOW=<seconds>, keep reading after the reply so
@@ -114,4 +130,15 @@ private func withTimeout<T: Sendable>(
         group.cancelAll()
         return first
     }
+}
+
+
+/// True for unsolicited server-pushed frames: they carry an "event" key and no
+/// "id", which is how both this helper and the iOS client tell them apart from
+/// replies without depending on arrival order.
+func isEventFrame(_ line: Data) -> Bool {
+    guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+        return false
+    }
+    return object["event"] != nil && object["id"] == nil
 }

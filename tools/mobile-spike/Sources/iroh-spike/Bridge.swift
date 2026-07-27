@@ -114,6 +114,15 @@ private func handleBridgeConnection(
             return
         }
 
+        // Greet on EVERY admission, not just pairing. Shaped as an event frame
+        // ("event" key, no "id") so it rides the existing demux the phone
+        // already has for unsolicited frames -- no protocol change, and the
+        // name stays correct if the Mac is renamed.
+        let hello: [String: Any] = ["event": "bridge_hello", "mac_name": localMacName()]
+        if let helloData = try? JSONSerialization.data(withJSONObject: hello) {
+            try? await writer.writeLine(helloData)
+        }
+
         print("Bridge: relaying \(idString) <-> \(socketPath)")
         let socket = try UnixSocketPipe(path: socketPath)
         defer { socket.close() }
@@ -172,18 +181,7 @@ private func admit(
                 .description
             let resolvedLabel = (label?.isEmpty == false) ? label! : "paired-device"
             try await store.add(endpointId: idString, label: resolvedLabel)
-            // Include this Mac's name so the phone can show "Franco's MacBook"
-            // instead of a placeholder. Only sent here, on the pairing frame --
-            // a trusted reconnect sends no pair frame at all, so the phone
-            // persists this value rather than expecting it every time.
-            let pairedReply: [String: Any] = [
-                "ok": true,
-                "paired": true,
-                "macName": localMacName(),
-            ]
-            let replyData = (try? JSONSerialization.data(withJSONObject: pairedReply))
-                ?? Data(#"{"ok":true,"paired":true}"#.utf8)
-            try await writer.writeLine(replyData)
+            try await writer.writeLine(Data(#"{"ok":true,"paired":true}"#.utf8))
             print("Bridge: paired new device \(idString) as \"\(resolvedLabel)\"")
             return true
         } else {

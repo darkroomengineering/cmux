@@ -194,7 +194,18 @@ struct WireDroppedEvent: Decodable, Sendable {
     let count: Int
 }
 
+/// Sent by the bridge on every admission (pairing and trusted reconnect
+/// alike), so the Mac's display name stays correct even if it is renamed.
+struct WireBridgeHelloEvent: Decodable, Sendable {
+    let macName: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case macName = "mac_name"
+    }
+}
+
 enum BridgeEvent: Sendable {
+    case bridgeHello(WireBridgeHelloEvent)
     case agentState(WireAgentStateEvent)
     case output(WireOutputEvent)
     case workspaceLifecycle(WireWorkspaceLifecycleEvent)

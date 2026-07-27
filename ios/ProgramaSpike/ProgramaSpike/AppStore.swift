@@ -192,10 +192,6 @@ final class AppStore {
                 pairingToken: token,
                 deviceLabel: deviceLabel.isEmpty ? nil : deviceLabel
             )
-            if let learned = await connection.lastPairedMacName, !learned.isEmpty {
-                pairedMacName = learned
-                PairingStore.saveMacName(learned)
-            }
         } catch {
             lastSyncError = "\(error)"
         }
@@ -232,6 +228,15 @@ final class AppStore {
     private func consumeEvents() async {
         for await event in connection.events {
             switch event {
+            case let .bridgeHello(payload):
+                // Arrives on every admission, so a renamed Mac corrects itself
+                // on the next connect rather than staying stale until re-pair.
+                if let name = payload.macName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !name.isEmpty, name != pairedMacName {
+                    pairedMacName = name
+                    PairingStore.saveMacName(name)
+                    recomputeLiveActivity()
+                }
             case let .agentState(payload):
                 applyAgentState(payload)
             case .workspaceLifecycle:
