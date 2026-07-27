@@ -5,7 +5,7 @@ import IrohLib
 /// Duplicated (not shared) from `tools/mobile-spike/Sources/iroh-spike`; see
 /// that copy's doc comment for why this reimplements — rather than reuses —
 /// `CmuxIrohTransport`'s internal path classification.
-enum ObservedPath: CustomStringConvertible {
+enum ObservedPath: CustomStringConvertible, Equatable, Sendable {
     case direct
     case privateNetwork
     case relay(url: String)
