@@ -29,3 +29,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: "Programa Spike"
+        # Without this, iOS silently denies the app any local-network access
+        # and iroh cannot reach the Mac's LAN address from the pairing ticket,
+        # so the connection falls back to a relay even on the same Wi-Fi.
+        # Measured: phone reported `relay` until this key was added.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Programa connects directly to your Mac on the same network instead of routing through a relay."

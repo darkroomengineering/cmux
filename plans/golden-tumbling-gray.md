@@ -355,14 +355,41 @@ Each has a concrete tripwire, discoverable at a named milestone.
 - ~~**Admission crypto lives inside the Rust layer in a cmux-specific way.**~~ **Retired.**
   Admission is Swift-side and seam-injected; the Rust layer is generic iroh.
 
+- ~~**Real-device reachability across networks.**~~ **Retired — M0 passed on hardware.**
+  A real iPhone 16 Pro connected to the Mac and echoed the probe byte-exact on both networks:
+  `private network` on shared Wi-Fi, and **`direct` on cellular with Wi-Fi off** — hole-punched
+  through carrier NAT to a home router, no relay, no server. Confirmed from both ends
+  independently. **The "P2P, no server we host" transport choice is validated as specified.**
+
 ### Still open
 
-- **Real-device reachability across networks.** The passing round-trip test is loopback. The
-  remaining M0 question is whether a real iPhone on cellular reaches a real Mac behind home
-  NAT. *Tripwire:* two-device field test. → Still the go/no-go for the transport choice;
-  the tempting fix (self-host a relay) walks back the core decision, so surface it before M1.
 - **Xcode version skew.** We're on 26.3; upstream pinned 26.0 (`.xcode-version`). Everything
   builds today, but the vendored code was never CI-tested against 26.3. *Tripwire:* CI.
+- **Direct-path reliability, not just possibility.** M0 proves hole-punching *can* work on this
+  carrier and router. It says nothing about how often it fails on other networks (symmetric
+  NAT, corporate Wi-Fi, CGNAT). The app must treat `relay` as a normal outcome and stay
+  correct on it — only latency should change. Worth instrumenting the direct-vs-relay ratio
+  once real devices are in use.
+
+### Traps M0 surfaced — read before M1
+
+Three separate settings each produced a green-looking result that proved the *opposite* of
+what we wanted. All three are inherited from cmux and are wrong for a broker-less deployment:
+
+1. **`presetMinimal()`** — iroh documents it as "no external dependencies; good for tests /
+   offline". cmux uses it because their hosted broker supplies discovery. With it, a connection
+   *never* leaves the relay: two processes on the same machine stayed relayed at 385 ms.
+   `presetN0()` (relays **and** discovery) took the identical exchange to 1.1 ms peer-to-peer.
+2. **Missing `NSLocalNetworkUsageDescription`** — iOS silently denies all LAN access without
+   it, so the phone could not reach the Mac's `192.168.1.33` and fell back to relay *on the
+   same Wi-Fi*. A missing Info.plist key is indistinguishable from "NAT traversal failed"
+   unless you know to look.
+3. **Path classifier returning the first path** — iroh always relays first and upgrades after
+   hole-punching, so reporting the first selected path reads `relay` essentially always. The
+   classifier must wait for the settled path or the measurement is meaningless.
+
+The common thread: **a relayed connection looks identical to a working one unless you measure
+the path.** Any M1 diagnostics must surface direct-vs-relay prominently, not bury it.
 - **Relay fallback doesn't reliably bridge cellular-to-home-WiFi.** *Tripwire:* M0 field test.
   → Go/no-go moment for the whole transport choice, not a bug to fix later. Surface before
   committing to M1, because the tempting fix (self-host a relay) walks back the core decision.
