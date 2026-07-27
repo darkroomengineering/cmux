@@ -1,0 +1,31 @@
+name: ProgramaSpike
+options:
+  bundleIdPrefix: com.darkroom.programa
+packages:
+  CmuxIrohTransport:
+    path: ../../vendor/CmuxIrohTransport
+  iroh-ffi:
+    url: https://github.com/manaflow-ai/iroh-ffi.git
+    exactVersion: 1.0.2-cmux.3
+targets:
+  ProgramaSpike:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: ProgramaSpike
+    dependencies:
+      - package: CmuxIrohTransport
+        product: CmuxIrohTransport
+      - package: iroh-ffi
+        product: IrohLib
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.darkroom.programa.spike
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: "Programa Spike"
