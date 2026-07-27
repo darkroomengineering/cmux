@@ -21,6 +21,14 @@ struct IrohSpike {
         // useless for a listener that runs until Ctrl-C and prints the
         // pairing payload up front. Line-buffer so captured runs stream.
         setvbuf(stdout, nil, _IOLBF, 0)
+
+        // Writing to a socket whose peer has hung up raises SIGPIPE, whose
+        // default disposition kills the process (observed: bridge died with
+        // exit 141 the moment a client disconnected). A relay has two sockets
+        // per session and peers disconnect constantly, so this must be ignored
+        // and surfaced as an EPIPE write error instead.
+        signal(SIGPIPE, SIG_IGN)
+
         do {
             try await run()
         } catch {
@@ -45,6 +53,20 @@ struct IrohSpike {
                 exit(1)
             }
             try await runDial(payload: arguments[1])
+        case "bridge":
+            let pair = arguments.dropFirst().contains("--pair")
+            try await runBridge(options: BridgeOptions(pair: pair))
+        case "dial-rpc":
+            let rest = Array(arguments.dropFirst())
+            switch rest.count {
+            case 2:
+                try await runDialRPC(ticket: rest[0], token: nil, requestJSON: rest[1])
+            case 3:
+                try await runDialRPC(ticket: rest[0], token: rest[1], requestJSON: rest[2])
+            default:
+                printUsage()
+                exit(1)
+            }
         default:
             printUsage()
             exit(1)
@@ -56,12 +78,18 @@ struct IrohSpike {
         Usage:
           iroh-spike listen
           iroh-spike dial <pairing-payload>
+          iroh-spike bridge [--pair]
+          iroh-spike dial-rpc <pairing-payload> [<pairing-token>] <json-request>
 
         Env:
           PROGRAMA_SPIKE_HOME   Override the identity storage directory
                                  (default: ~/.programa/mobile-spike). Set this
-                                 to distinct paths when running listen/dial
-                                 as two identities on one machine.
+                                 to distinct paths when running listen/dial/
+                                 bridge/dial-rpc as distinct identities on one
+                                 machine.
+          PROGRAMA_SOCKET_PATH  Programa control socket to bridge to
+                                 (default: ~/Library/Application Support/
+                                 programa/programa.sock).
         """)
     }
 }

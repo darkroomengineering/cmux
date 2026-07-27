@@ -13,7 +13,7 @@ enum SecretKeyStore {
     /// this is what lets `listen` and `dial` run as two distinct identities
     /// from the same machine during local verification.
     static func loadOrCreate() throws -> Data {
-        let directory = homeDirectory()
+        let directory = SpikeHome.directory()
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
@@ -30,13 +30,5 @@ enum SecretKeyStore {
             ofItemAtPath: file.path
         )
         return bytes
-    }
-
-    private static func homeDirectory() -> URL {
-        if let override = ProcessInfo.processInfo.environment["PROGRAMA_SPIKE_HOME"] {
-            return URL(fileURLWithPath: override, isDirectory: true)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".programa/mobile-spike", isDirectory: true)
     }
 }
