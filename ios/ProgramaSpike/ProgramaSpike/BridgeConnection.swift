@@ -79,7 +79,7 @@ actor BridgeConnection {
     /// the first time a device pairs — pass `nil` on later connections and
     /// the phone's already-allowlisted EndpointID skips the pairing frame
     /// entirely, per the wire contract.
-    func connect(pairingPayload: String, pairingToken: String?) async throws {
+    func connect(pairingPayload: String, pairingToken: String?, deviceLabel: String? = nil) async throws {
         await teardownConnection()
         setPhase(.connecting)
 
@@ -155,7 +155,7 @@ actor BridgeConnection {
         if let pairingToken, !pairingToken.isEmpty {
             setPhase(.pairing)
             do {
-                let pairPayload = try JSONEncoder().encode(PairRequest(pair: pairingToken))
+                let pairPayload = try JSONEncoder().encode(PairRequest(pair: pairingToken, label: deviceLabel))
                 try await writeLine(pairPayload)
                 guard let replyLine = try await nextBufferedLine() else {
                     throw BridgeError.disconnected
@@ -175,9 +175,29 @@ actor BridgeConnection {
         observedPath = initialPath
         pathContinuation.yield(initialPath)
 
-        setPhase(.connected)
         startReadLoop()
         startPathLoop()
+
+        // Do NOT report `.connected` merely because the QUIC stream opened.
+        // On the already-trusted path no pairing frame is sent, so an
+        // unrecognised device would sit here looking "connected" while the
+        // bridge had actually answered `not_paired` -- the failure only
+        // surfaced later, on the first real request. That false positive cost
+        // real debugging time.
+        //
+        // A round-trip `system.ping` proves the whole chain in one call: the
+        // stream works, the bridge admitted this device, the relay to
+        // Programa's socket is up, and Programa answered. Only then is
+        // "connected" true in any sense the user cares about.
+        do {
+            _ = try await performRequest(method: "system.ping", params: [:])
+        } catch {
+            await teardownConnection()
+            setPhase(.failed("not admitted by the Mac: \(error)"))
+            throw error
+        }
+
+        setPhase(.connected)
     }
 
     func disconnect() async {
@@ -429,6 +449,10 @@ private struct ResponseEnvelope<R: Decodable>: Decodable {
 
 private struct PairRequest: Encodable {
     let pair: String
+    /// Human-readable device name so the Mac's paired-device list can show
+    /// "Franco's iPhone" instead of a 64-char hex EndpointID. Optional on the
+    /// wire -- the bridge falls back to a placeholder when absent.
+    let label: String?
 }
 
 private struct PairResponse: Decodable {

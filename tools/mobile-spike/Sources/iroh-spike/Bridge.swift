@@ -161,9 +161,19 @@ private func admit(
 
         let matched = await pairingWindow.attemptConsume(Data(presentedToken.utf8))
         if matched {
-            try await store.add(endpointId: idString, label: "paired-device")
+            // The phone may send a human-readable name alongside the token so
+            // the device list reads "Franco's iPhone" rather than 64 hex
+            // characters. Optional on the wire — older clients and the
+            // dial-rpc test helper send only `pair`. Trim and bound it: this
+            // string comes from a remote peer and gets persisted and displayed.
+            let label = (object["label"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .prefix(64)
+                .description
+            let resolvedLabel = (label?.isEmpty == false) ? label! : "paired-device"
+            try await store.add(endpointId: idString, label: resolvedLabel)
             try await writer.writeLine(Data(#"{"ok":true,"paired":true}"#.utf8))
-            print("Bridge: paired new device \(idString)")
+            print("Bridge: paired new device \(idString) as \"\(resolvedLabel)\"")
             return true
         } else {
             try? await writer.writeLine(errorFrame(id: nil, code: "pairing_failed"))

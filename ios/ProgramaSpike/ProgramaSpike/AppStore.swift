@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 /// The single `@Observable` store the views read. Owns the `BridgeConnection`
 /// actor and keeps iroh types entirely out of the views: everything the UI
@@ -128,7 +129,16 @@ final class AppStore {
         lastSyncError = nil
         defer { isConnecting = false }
         do {
-            try await connection.connect(pairingPayload: ticket, pairingToken: token)
+            // Sent only on the pairing frame, so the Mac's device list can
+            // show a name instead of a 64-char hex EndpointID. Read here
+            // rather than inside the connection actor because UIDevice is
+            // main-actor bound and this store already is.
+            let deviceLabel = UIDevice.current.name
+            try await connection.connect(
+                pairingPayload: ticket,
+                pairingToken: token,
+                deviceLabel: deviceLabel.isEmpty ? nil : deviceLabel
+            )
         } catch {
             lastSyncError = "\(error)"
         }
