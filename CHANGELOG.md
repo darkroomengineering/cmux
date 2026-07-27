@@ -6,6 +6,9 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 
 ## [Unreleased]
 
+### Added
+- `programa race "<prompt>" [--n <count>] [--agent claude|opencode|codex] [--base <ref>] [--prefix <slug>] [--layout <name>]`: fans one prompt across N agents (default 3, max 8), each in its own isolated git worktree/workspace on branch `<prefix>/<index>` (default prefix `race`), then types the agent's launch command with the prompt into that workspace's terminal. v1 spawns the fleet only -- comparing and merging results is manual for now. Never steals focus; a failed index (branch/worktree collision) is reported and skipped without aborting the rest of the fleet.
+
 ## [0.3.0] - 2026-07-24
 
 ### Added

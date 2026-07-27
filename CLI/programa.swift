@@ -2117,6 +2117,46 @@ struct ProgramaCLI {
             ),
 
             CommandDescriptor(
+                names: ["race"],
+                helpLines: ["race <prompt> [--n <count>] [--agent <name>] [--base <ref>] [--prefix <slug>] [--layout <name>]"],
+                detailedUsage: """
+                Usage: programa race <prompt> [flags]
+
+                Fan one prompt across N agents, each in its own isolated git worktree, so you
+                can compare their approaches and pick a winner. v1: spawns the fleet only --
+                comparison/merge is manual (open each workspace, review its diff, merge the one
+                you like via 'programa worktree remove' for the rest).
+
+                For each index 1...N: creates a worktree + workspace on branch <prefix>/<index>
+                (via 'programa worktree create', never stealing focus), then types the agent's
+                launch command with your prompt into that workspace's focused terminal.
+
+                Flags:
+                  --n <count>        Number of parallel agents. Default 3. Must be 1-8.
+                  --agent <name>     Agent to launch: claude, opencode, or codex. Default claude.
+                                     Only these three report state via lifecycle hooks, which
+                                     racing needs for a trustworthy idle signal.
+                  --base <ref>       Git ref to branch from. Default: HEAD (see 'worktree create').
+                  --prefix <slug>    Branch-name prefix. Default 'race'. Branches are
+                                     <prefix>/1, <prefix>/2, ... <prefix>/N.
+                  --layout <name>    Saved layout to apply into each new workspace (see
+                                     'programa layout').
+
+                If a branch or worktree path already exists for one index, that index is
+                reported as failed and the rest of the fleet still spawns; the command exits
+                non-zero if any index failed.
+
+                Example:
+                  programa race "fix the failing test"
+                  programa race "add dark mode" --n 5 --agent codex
+                  programa race "refactor the parser" --n 2 --base main --prefix spike
+                """,
+                execute: { ctx in
+                    try self.runRaceCommand(commandArgs: ctx.commandArgs, client: ctx.client, jsonOutput: ctx.jsonOutput, idFormat: ctx.idFormat)
+                }
+            ),
+
+            CommandDescriptor(
                 names: ["layout"],
                 helpLines: ["layout <save|apply|list> ..."],
                 detailedUsage: """
@@ -5260,6 +5300,126 @@ struct ProgramaCLI {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    // MARK: - Race command (fan one prompt across N agents in isolated worktrees, v1: spawn only)
+
+    /// The only agents `race` supports: the three that report state via lifecycle hooks
+    /// (Claude Code, OpenCode, Codex). Racing needs a trustworthy idle signal, which
+    /// screen-pattern detection (used for Gemini CLI/Copilot/Cursor Agent/Aider) cannot
+    /// provide, so those are deliberately excluded here even though they're supported
+    /// elsewhere in the app for status badges.
+    private static let raceSupportedAgents: [String] = ["claude", "opencode", "codex"]
+
+    /// Builds the shell command line that starts an agent with `prompt` as its initial task.
+    /// Reuses the same bare binary names Programa already invokes elsewhere for these agents
+    /// (`initialTerminalInput: "claude\n"` for the "New Claude Code Workspace" shortcut in
+    /// AppDelegate.swift, and the `process_names` in Resources/AgentDetection/*.json), just
+    /// with the prompt appended as a shell-quoted positional argument so the agent starts
+    /// working immediately instead of sitting at its own empty prompt. No prior art exists in
+    /// this codebase for "agent + initial prompt argument" specifically, so this is a new,
+    /// minimal one-place mapping rather than an existing construction being reused verbatim.
+    private func raceAgentLaunchCommand(agent: String, prompt: String) -> String {
+        "\(agent) \(shellSingleQuote(prompt))"
+    }
+
+    /// Shell-quotes arbitrary text for safe inclusion in a POSIX shell command line typed into
+    /// a terminal via `surface.send_text`. Wraps in single quotes and escapes embedded single
+    /// quotes as '\'' (close quote, literal escaped quote, reopen quote) -- the standard
+    /// technique, safe against every other shell metacharacter (double quotes, backticks, $,
+    /// *, newlines, etc.) since nothing but a literal `'` is special inside single quotes.
+    private func shellSingleQuote(_ raw: String) -> String {
+        "'" + raw.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func runRaceCommand(
+        commandArgs: [String],
+        client: SocketClient,
+        jsonOutput: Bool,
+        idFormat: CLIIDFormat
+    ) throws {
+        let (nOpt, rem0) = parseOption(commandArgs, name: "--n")
+        let (agentOpt, rem1) = parseOption(rem0, name: "--agent")
+        let (baseOpt, rem2) = parseOption(rem1, name: "--base")
+        let (prefixOpt, rem3) = parseOption(rem2, name: "--prefix")
+        let (layoutOpt, rem4) = parseOption(rem3, name: "--layout")
+
+        var positional = rem4
+        if positional.first == "--" {
+            positional.removeFirst()
+        }
+        if let unknown = positional.first(where: { $0.hasPrefix("--") }) {
+            throw CLIError(message: "race: unknown flag '\(unknown)'")
+        }
+
+        let prompt = positional.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            throw CLIError(message: "race requires a <prompt>")
+        }
+
+        let n: Int
+        if let nOpt {
+            guard let parsed = Int(nOpt), parsed >= 1, parsed <= 8 else {
+                throw CLIError(message: "race: --n must be between 1 and 8")
+            }
+            n = parsed
+        } else {
+            n = 3
+        }
+
+        let agent = (agentOpt ?? "claude").lowercased()
+        guard Self.raceSupportedAgents.contains(agent) else {
+            throw CLIError(message: "race: --agent must be one of claude, opencode, codex")
+        }
+
+        let prefix = prefixOpt ?? "race"
+
+        // Fail immediately, before creating anything, if the cwd isn't inside a git repo.
+        let repo = try resolveWorktreeRepoRoot(explicit: nil)
+
+        var succeededCount = 0
+        var failedIndexes: [Int] = []
+
+        for index in 1...n {
+            let branch = "\(prefix)/\(index)"
+            do {
+                var params: [String: Any] = ["repo": repo, "branch": branch]
+                if let baseOpt { params["base"] = baseOpt }
+                if let layoutOpt { params["layout"] = layoutOpt }
+                // Deliberately no "focus" key: worktree.create defaults focus to false, and
+                // `race` is not a focus-intent command per the socket focus policy in
+                // CLAUDE.md, so every worktree after the first (and the first) stays
+                // unfocused -- the user's current focus is never stolen.
+
+                let payload = try client.sendV2(method: "worktree.create", params: params)
+                guard let workspaceId = payload["workspace_id"] as? String else {
+                    throw CLIError(message: "worktree.create did not return a workspace_id")
+                }
+                let workspaceRef = formatHandle(payload, kind: "workspace", idFormat: idFormat) ?? workspaceId
+
+                let launchCommand = raceAgentLaunchCommand(agent: agent, prompt: prompt)
+                _ = try client.sendV2(method: "surface.send_text", params: [
+                    "workspace_id": workspaceId,
+                    "text": launchCommand + "\n"
+                ])
+
+                succeededCount += 1
+                print("[\(index)] branch=\(branch) workspace=\(workspaceRef)")
+            } catch {
+                failedIndexes.append(index)
+                let message = (error as? CLIError)?.message ?? "\(error)"
+                print("[\(index)] branch=\(branch) FAILED: \(message)")
+            }
+        }
+
+        print("")
+        if failedIndexes.isEmpty {
+            print("race: started \(succeededCount)/\(n) agents on branches \(prefix)/1..\(prefix)/\(n). Watch with: programa list-workspaces (or check each workspace's status badge in the sidebar).")
+        } else {
+            let failedList = failedIndexes.map(String.init).joined(separator: ", ")
+            print("race: started \(succeededCount)/\(n) agents; failed indexes: \(failedList). Watch the succeeded ones with: programa list-workspaces")
+            throw CLIError(message: "race: \(failedIndexes.count) of \(n) agent(s) failed to start")
+        }
+    }
+
     // MARK: - Layout commands (docs/plans/worktree-and-layouts.md)
 
     private func runLayoutCommand(
@@ -6094,6 +6254,24 @@ struct ProgramaCLI {
             )
             guard ["create", "open", "remove", "list"].contains(parsed.positional[0].lowercased()) else {
                 throw CLIError(message: "worktree: unknown subcommand \(parsed.positional[0])")
+            }
+
+        case "race":
+            let parsed = try parse(
+                values: ["n", "agent", "base", "prefix", "layout"],
+                minPositionals: 1,
+                maxPositionals: nil,
+                allowEquals: true
+            )
+            if let rawN = parsed.options["n"] {
+                guard let n = Int(rawN), n >= 1, n <= 8 else {
+                    throw CLIError(message: "race: --n must be between 1 and 8")
+                }
+            }
+            if let rawAgent = parsed.options["agent"] {
+                guard ["claude", "opencode", "codex"].contains(rawAgent.lowercased()) else {
+                    throw CLIError(message: "race: --agent must be one of claude, opencode, codex")
+                }
             }
 
         case "layout":
