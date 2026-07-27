@@ -865,3 +865,169 @@ final class ProgramaLayoutEncodingTests: XCTestCase {
         }
     }
 }
+
+/// A `programa.json` can arrive by cloning somebody else's repo, so the decision to run what it
+/// contains has to belong to the app, not to the file. It did not always: the confirmation gate
+/// ran only when the file itself set `confirm: true`, so any config could opt out of being
+/// checked by leaving the key off, and `workspace`-type commands were never gated at all.
+///
+/// These pin the corrected truth table. The first case is the one that used to execute
+/// arbitrary shell with no prompt at all.
+@MainActor
+final class ProgramaConfigTrustGateTests: XCTestCase {
+    func testUntrustedDirectoryPromptsEvenWhenConfigDoesNotAskForIt() {
+        XCTAssertTrue(
+            ProgramaConfigExecutor.requiresConfirmation(confirmFlag: false, isTrusted: false),
+            "A config from an untrusted directory must be confirmed even though it never set confirm: true"
+        )
+    }
+
+    func testUntrustedDirectoryPromptsWhenConfigAsksForIt() {
+        XCTAssertTrue(ProgramaConfigExecutor.requiresConfirmation(confirmFlag: true, isTrusted: false))
+    }
+
+    func testTrustedDirectoryRunsWithoutPrompting() {
+        XCTAssertFalse(ProgramaConfigExecutor.requiresConfirmation(confirmFlag: false, isTrusted: true))
+    }
+
+    func testTrustedDirectoryStillHonoursExplicitConfirm() {
+        XCTAssertTrue(
+            ProgramaConfigExecutor.requiresConfirmation(confirmFlag: true, isTrusted: true),
+            "confirm: true stays meaningful in a trusted folder as an author's ask-me-anyway marker"
+        )
+    }
+
+    func testTrustIsTheOnlyThingThatCanSuppressAPrompt() {
+        for confirmFlag in [true, false] {
+            XCTAssertTrue(
+                ProgramaConfigExecutor.requiresConfirmation(confirmFlag: confirmFlag, isTrusted: false),
+                "No value of confirm may suppress the prompt for an untrusted directory"
+            )
+        }
+    }
+}
+
+/// `confirmIfUntrusted` treats a nil `configSourcePath` as trusted, on the assumption that nil
+/// only ever means the user's own global config -- `loadAll()` is expected to populate
+/// `commandSourcePaths[command.id]` for every command it loads, local and global alike, so a
+/// missing entry never actually reaches that code path today. Nothing in the type system
+/// enforces that, though: a future refactor that drops one of the two assignments in `loadAll()`
+/// would silently reopen the original hole where an untrusted command runs unconfirmed.
+///
+/// This pins the invariant directly against the real `loadAll()` path (JSONC parsing included),
+/// with both a local and a global config file present, rather than against the trust-gate logic
+/// in isolation.
+@MainActor
+final class ProgramaConfigSourceTrackingTests: XCTestCase {
+    func testEveryLoadedCommandHasATraceableSourcePath() throws {
+        let fm = FileManager.default
+        let tempRoot = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let localDir = tempRoot.appendingPathComponent("local")
+        let globalDir = tempRoot.appendingPathComponent("global")
+        try fm.createDirectory(at: localDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: globalDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempRoot) }
+
+        let localConfigURL = localDir.appendingPathComponent("programa.json")
+        let globalConfigURL = globalDir.appendingPathComponent("programa.json")
+
+        try #"{ "commands": [{ "name": "Local Command", "command": "echo local" }] }"#
+            .write(to: localConfigURL, atomically: true, encoding: .utf8)
+        try #"{ "commands": [{ "name": "Global Command", "command": "echo global" }] }"#
+            .write(to: globalConfigURL, atomically: true, encoding: .utf8)
+
+        let store = ProgramaConfigStore()
+        store.localConfigPath = localConfigURL.path
+        store.globalConfigPath = globalConfigURL.path
+        store.loadAll()
+
+        XCTAssertEqual(store.loadedCommands.map(\.name).sorted(), ["Global Command", "Local Command"])
+        for command in store.loadedCommands {
+            XCTAssertNotNil(
+                store.commandSourcePaths[command.id],
+                "Command '\(command.name)' has no recorded source path -- confirmIfUntrusted " +
+                "treats a missing source path as the trusted global config, so this would make " +
+                "the command run without confirmation regardless of which directory it came from."
+            )
+        }
+    }
+}
+
+/// The trust gate only buys anything if the dialog actually says what will happen. It did not
+/// at first: the summary listed a surface's `command` and nothing else, so a surface carrying
+/// only `env` contributed no line at all. Since `env` reaches the spawned shell unfiltered
+/// (`Workspace+Layout.swift` passes it as `startupEnvironment`, and only Programa's own
+/// `PROGRAMA_*` keys are protected), a config could set `ZDOTDIR` or `BASH_ENV` to a file in
+/// its own repo and get code execution behind a dialog that read "Open workspace" and listed
+/// nothing. These pin the disclosure.
+@MainActor
+final class ProgramaConfigConsentDisclosureTests: XCTestCase {
+    private func decodeCommand(_ json: String) throws -> ProgramaCommandDefinition {
+        let file = try JSONDecoder().decode(ProgramaConfigFile.self, from: Data(json.utf8))
+        return try XCTUnwrap(file.commands.first)
+    }
+
+    /// The original bypass payload: no `command` anywhere, execution smuggled via ZDOTDIR.
+    func testEnvOnlySurfaceIsDisclosed() throws {
+        let command = try decodeCommand("""
+        {"commands":[{"name":"Totally Normal Dev Setup","workspace":{"name":"dev",
+        "layout":{"pane":{"surfaces":[{"type":"terminal","env":{"ZDOTDIR":"/tmp/evil"}}]}}}}]}
+        """)
+
+        let summary = ProgramaConfigExecutor.describeForConfirmation(command)
+
+        XCTAssertTrue(summary.contains("ZDOTDIR"), "env key must be visible, got:\n\(summary)")
+        XCTAssertTrue(summary.contains("/tmp/evil"), "env value must be visible, got:\n\(summary)")
+    }
+
+    func testCwdOnlySurfaceIsDisclosed() throws {
+        let command = try decodeCommand("""
+        {"commands":[{"name":"x","workspace":{"name":"dev",
+        "layout":{"pane":{"surfaces":[{"type":"terminal","cwd":"/tmp/elsewhere"}]}}}}]}
+        """)
+
+        XCTAssertTrue(ProgramaConfigExecutor.describeForConfirmation(command).contains("/tmp/elsewhere"))
+    }
+
+    func testEverySurfaceInASplitIsDisclosed() throws {
+        let command = try decodeCommand("""
+        {"commands":[{"name":"x","workspace":{"name":"dev","layout":{"direction":"horizontal","children":[
+        {"pane":{"surfaces":[{"type":"terminal","command":"first-thing"}]}},
+        {"pane":{"surfaces":[{"type":"terminal","env":{"BASH_ENV":"/tmp/second-thing"}}]}}]}}}]}
+        """)
+
+        let summary = ProgramaConfigExecutor.describeForConfirmation(command)
+
+        XCTAssertTrue(summary.contains("first-thing"), "got:\n\(summary)")
+        XCTAssertTrue(summary.contains("BASH_ENV"), "a nested branch must not be skipped, got:\n\(summary)")
+        XCTAssertTrue(summary.contains("/tmp/second-thing"), "got:\n\(summary)")
+    }
+
+    /// A crafted value must not be able to push the real payload out of the alert's
+    /// non-scrolling text area.
+    func testLongValueIsTruncated() throws {
+        let padding = String(repeating: "A", count: 5000)
+        let command = try decodeCommand("""
+        {"commands":[{"name":"x","workspace":{"name":"dev",
+        "layout":{"pane":{"surfaces":[{"type":"terminal","command":"\(padding)"}]}}}}]}
+        """)
+
+        let summary = ProgramaConfigExecutor.describeForConfirmation(command)
+
+        XCTAssertLessThan(summary.count, 1000, "a 5000-char value must not reach the dialog whole")
+    }
+
+    /// Newlines inside one value must be collapsed, or a value can fake extra dialog lines.
+    func testNewlinesInsideAValueAreCollapsed() throws {
+        let command = try decodeCommand("""
+        {"commands":[{"name":"x","workspace":{"name":"dev","layout":{"pane":{"surfaces":
+        [{"type":"terminal","command":"real-cmd\\n\\n\\n\\n\\n\\n\\n\\n\\n\\nCancel to continue"}]}}}}]}
+        """)
+
+        let summary = ProgramaConfigExecutor.describeForConfirmation(command)
+        let blankRun = summary.contains("\n\n\n")
+
+        XCTAssertFalse(blankRun, "a single value must not inject blank lines, got:\n\(summary)")
+        XCTAssertTrue(summary.contains("real-cmd"))
+    }
+}

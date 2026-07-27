@@ -264,8 +264,12 @@ final class ProgramaConfigStore: ObservableObject {
     /// Which config file each command came from, keyed by command id.
     private(set) var commandSourcePaths: [String: String] = [:]
 
-    private(set) var localConfigPath: String?
-    let globalConfigPath: String = {
+    // `internal` (not `private(set)`) rather than fully public: production code only ever
+    // mutates these through `updateLocalConfigPath`/the computed default below, but tests in
+    // this module need to point `loadAll()` at real temp files without a home-directory
+    // dependent global config, and there is no other injectable seam on this store.
+    var localConfigPath: String?
+    var globalConfigPath: String = {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let newPath = (home as NSString).appendingPathComponent(".config/programa/programa.json")
         let legacyPath = (home as NSString).appendingPathComponent(".config/cmux/cmux.json")

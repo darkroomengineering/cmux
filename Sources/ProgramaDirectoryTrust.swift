@@ -1,9 +1,20 @@
 import Foundation
 
 /// Manages trusted directories for programa.json command execution.
-/// When a directory (or its git repo root) is trusted, `confirm: true` commands
-/// from that directory's programa.json skip the confirmation dialog.
+///
+/// Trust is the only thing that lets a `programa.json` entry run without asking first. In an
+/// untrusted directory every entry is confirmed, whatever the config file itself says; in a
+/// trusted one entries run straight away unless the author marked them `confirm: true`. See
+/// `ProgramaConfigExecutor.requiresConfirmation` for the full table.
+///
+/// (This used to read "`confirm: true` commands skip the dialog", which described the older
+/// behaviour where the config file decided whether it got checked at all. It no longer does.)
+///
 /// Global config (~/.config/programa/programa.json) is always trusted.
+///
+/// Known limitation: trust is granted per directory (or git repo root) and is not pinned to the
+/// file's contents, so a later edit to an already-trusted programa.json runs without re-asking.
+/// Tracked in https://github.com/darkroomengineering/programa/issues/188.
 final class ProgramaDirectoryTrust {
     static let shared = ProgramaDirectoryTrust()
     static let didChangeNotification = Notification.Name("programa.directoryTrustDidChange")
