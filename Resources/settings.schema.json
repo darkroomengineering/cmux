@@ -104,6 +104,11 @@
           "type": "string",
           "default": "",
           "description": "Optional shell command to run alongside notification delivery."
+        },
+        "longCommandThresholdSeconds": {
+          "type": "integer",
+          "default": 30,
+          "description": "Minimum duration, in seconds, a command must run before a finish notification is posted for a pane the user isn't looking at. 0 disables this notification entirely."
         }
       }
     },

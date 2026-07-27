@@ -384,6 +384,13 @@ final class ProgramaSettingsFileStore {
         if let raw = jsonString(section["command"]) {
             snapshot.managedUserDefaults[NotificationSoundSettings.customCommandKey] = .string(raw)
         }
+        if let value = jsonInt(section["longCommandThresholdSeconds"]) {
+            if value >= 0 {
+                snapshot.managedUserDefaults[LongCommandNotificationSettings.thresholdSecondsKey] = .int(value)
+            } else {
+                logInvalid("notifications.longCommandThresholdSeconds", sourcePath: sourcePath)
+            }
+        }
     }
 
 

@@ -8275,6 +8275,91 @@
         }
       }
     },
+    "settings.notifications.longCommandThreshold.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Long Command Notification"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "長時間コマンドの通知"
+          }
+        }
+      }
+    },
+    "settings.notifications.longCommandThreshold.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notify when a command finishes in a pane you're not looking at, if it ran at least this long. Set to 0 to disable."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "見ていないペインでコマンドが完了したとき、実行時間がこの秒数以上であれば通知します。0にすると無効になります。"
+          }
+        }
+      }
+    },
+    "settings.notifications.longCommandThreshold.unit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "sec"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "秒"
+          }
+        }
+      }
+    },
+    "notification.longCommand.succeeded": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finished in %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ で完了しました"
+          }
+        }
+      }
+    },
+    "notification.longCommand.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Failed (exit %@) after %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "失敗しました (終了コード %@) - %@ 経過"
+          }
+        }
+      }
+    },
     "settings.preset.hudGlass": {
       "extractionState": "manual",
       "localizations": {

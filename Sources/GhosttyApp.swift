@@ -1760,6 +1760,70 @@ class GhosttyApp {
                 }
             }
             return true
+        case GHOSTTY_ACTION_COMMAND_FINISHED:
+            // OSC 133 semantic prompt tracking. Plumbing-only: stores exit code + duration on
+            // `Workspace.lastCommand`; no UI reads this yet.
+            guard let tabId = surfaceView.tabId,
+                  let surfaceId = surfaceView.terminalSurface?.id else { return true }
+            let commandFinished = action.action.command_finished
+            let exitCode = commandFinished.exit_code
+            let durationNanoseconds = commandFinished.duration
+            #if DEBUG
+            dlog("command.finished exitCode=\(exitCode) durationNs=\(durationNanoseconds)")
+            #endif
+            DispatchQueue.main.async {
+                guard let owningManager = AppDelegate.shared?.tabManagerFor(tabId: tabId),
+                      let workspace = owningManager.tabs.first(where: { $0.id == tabId }) else { return }
+                let outcome = LastCommandOutcome.from(
+                    exitCode: exitCode,
+                    durationNanoseconds: durationNanoseconds,
+                    sourcePanelId: surfaceId
+                )
+                workspace.lastCommand = outcome
+
+                // Experimental: notify when a long-running command finishes in a pane the
+                // user isn't looking at. Default-ON with a conservative threshold; 0 disables.
+                let threshold = LongCommandNotificationSettings.thresholdSeconds()
+                guard threshold > 0, outcome.duration >= threshold else { return }
+                guard !workspace.hasHookManagedAgent else { return }
+
+                let isActiveTab = owningManager.selectedTabId == tabId
+                let focusedSurfaceId = owningManager.focusedSurfaceId(for: tabId)
+                let isFocusedSurface = focusedSurfaceId == surfaceId
+                guard !(isActiveTab && isFocusedSurface && AppFocusState.isAppFocused()) else { return }
+
+                let tabTitle = owningManager.titleForTab(tabId) ?? "Terminal"
+                let formattedDuration = LastCommandOutcome.formattedDuration(outcome.duration)
+                let body: String
+                if let exitCode = outcome.exitCode, exitCode != 0 {
+                    body = String.localizedStringWithFormat(
+                        String(
+                            localized: "notification.longCommand.failed",
+                            defaultValue: "Failed (exit %@) after %@"
+                        ),
+                        String(exitCode),
+                        formattedDuration
+                    )
+                } else {
+                    body = String.localizedStringWithFormat(
+                        String(
+                            localized: "notification.longCommand.succeeded",
+                            defaultValue: "Finished in %@"
+                        ),
+                        formattedDuration
+                    )
+                }
+                TerminalNotificationStore.shared.addNotification(
+                    tabId: tabId,
+                    surfaceId: surfaceId,
+                    title: tabTitle,
+                    subtitle: "",
+                    body: body,
+                    cooldownKey: "long-command-\(surfaceId.uuidString)",
+                    cooldownInterval: 5
+                )
+            }
+            return true
         case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
             guard let tabId = surfaceView.tabId else { return true }
             let surfaceId = surfaceView.terminalSurface?.id

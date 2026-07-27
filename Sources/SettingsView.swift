@@ -41,6 +41,8 @@ struct SettingsView: View {
     private var notificationSoundCustomFilePath = NotificationSoundSettings.defaultCustomFilePath
     @AppStorage(NotificationSoundSettings.customCommandKey) private var notificationCustomCommand = NotificationSoundSettings.defaultCustomCommand
     @AppStorage(MenuBarExtraSettings.showInMenuBarKey) private var showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
+    @AppStorage(LongCommandNotificationSettings.thresholdSecondsKey)
+    private var longCommandThresholdSeconds = LongCommandNotificationSettings.defaultThresholdSeconds
     @AppStorage(QuitWarningSettings.warnBeforeQuitKey) private var warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
     @AppStorage(ScrollbackPersistenceSettings.persistScrollbackKey) private var sessionPersistScrollback = ScrollbackPersistenceSettings.defaultPersistScrollback
     @AppStorage(CommandPaletteRenameSelectionSettings.selectAllOnFocusKey)
@@ -874,6 +876,30 @@ struct SettingsView: View {
                 TextField("say \"done\"", text: $notificationCustomCommand)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 200)
+            }
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.notifications.longCommandThreshold.title", defaultValue: "Long Command Notification"),
+                subtitle: String(
+                    localized: "settings.notifications.longCommandThreshold.subtitle",
+                    defaultValue: "Notify when a command finishes in a pane you're not looking at, if it ran at least this long. Set to 0 to disable."
+                ),
+                controlWidth: pickerColumnWidth
+            ) {
+                HStack(spacing: 4) {
+                    TextField("", value: $longCommandThresholdSeconds, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 60)
+                        .accessibilityLabel(
+                            String(localized: "settings.notifications.longCommandThreshold.title", defaultValue: "Long Command Notification")
+                        )
+                    Text(String(localized: "settings.notifications.longCommandThreshold.unit", defaultValue: "sec"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             SettingsCardDivider()
