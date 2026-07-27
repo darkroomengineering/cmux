@@ -1093,6 +1093,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             name: .reactGrabDidCopySelection,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleDesignModeDidCapture(_:)),
+            name: .designModeDidCapture,
+            object: nil
+        )
 
 #if DEBUG
         // UI tests run on a shared VM user profile, so persisted shortcuts can drift and make
@@ -5495,6 +5501,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             "focusedAfterRequest=\(Self.debugShortId(workspace.focusedPanelId))"
         )
 #endif
+        sendTextWhenReady(content, to: workspace, preferredPanelId: returnPanelId)
+    }
+
+    @objc private func handleDesignModeDidCapture(_ notification: Notification) {
+        guard let workspaceId = notification.userInfo?[DesignModeNotificationKey.workspaceId] as? UUID,
+              let returnPanelId = notification.userInfo?[DesignModeNotificationKey.returnPanelId] as? UUID,
+              let payload = notification.userInfo?[DesignModeNotificationKey.payload] as? DesignModePickPayload else {
+            return
+        }
+        let screenshotData = notification.userInfo?[DesignModeNotificationKey.screenshotData] as? Data
+
+        guard let manager = tabManagerFor(tabId: workspaceId),
+              let workspace = manager.tabs.first(where: { $0.id == workspaceId }),
+              let returnTerminalPanel = workspace.terminalPanel(for: returnPanelId) else {
+            return
+        }
+
+        var screenshotPath: String?
+        if let screenshotData {
+            screenshotPath = DesignModeFileWriter.write(
+                screenshotData,
+                selector: payload.selector,
+                workingDirectory: returnTerminalPanel.requestedWorkingDirectory
+            )
+        }
+
+        let content = DesignModeTextComposer.compose(payload: payload, screenshotPath: screenshotPath)
+        manager.focusTab(workspaceId, surfaceId: returnPanelId, suppressFlash: true)
         sendTextWhenReady(content, to: workspace, preferredPanelId: returnPanelId)
     }
 

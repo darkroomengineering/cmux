@@ -2047,6 +2047,23 @@
         }
       }
     },
+    "command.browserDesignMode.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Toggle Design Mode"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デザインモードを切り替え"
+          }
+        }
+      }
+    },
     "command.browserDuplicateRight.subtitle": {
       "extractionState": "manual",
       "localizations": {

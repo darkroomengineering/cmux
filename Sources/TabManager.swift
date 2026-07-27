@@ -2523,6 +2523,12 @@ class TabManager: ObservableObject {
         return true
     }
 
+    @discardableResult
+    func toggleDesignModeFromCurrentFocus() -> Bool {
+        guard let workspace = selectedWorkspace else { return false }
+        return activateDesignModeRoute(in: workspace)
+    }
+
     /// Backwards compatibility: returns the focused surface ID
     func focusedSurfaceId(for tabId: UUID) -> UUID? {
         focusedPanelId(for: tabId)

@@ -144,6 +144,7 @@
 		NRBR0017 /* WebViewRepresentable.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRBR0018 /* WebViewRepresentable.swift */; };
 		A5FF0013 /* BrowserDataImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5FF0003 /* BrowserDataImport.swift */; };
 		A500RG01 /* ReactGrab.swift in Sources */ = {isa = PBXBuildFile; fileRef = A500RG00 /* ReactGrab.swift */; };
+		DSGN000001 /* DesignMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = DSGN000002 /* DesignMode.swift */; };
 		A5001403 /* TerminalPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001413 /* TerminalPanelView.swift */; };
 		A5001404 /* BrowserPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001414 /* BrowserPanelView.swift */; };
 		A5007420 /* BrowserPopupWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5007421 /* BrowserPopupWindowController.swift */; };
@@ -513,6 +514,7 @@
 		NRBR0018 /* WebViewRepresentable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/WebViewRepresentable.swift; sourceTree = "<group>"; };
 		A5FF0003 /* BrowserDataImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserDataImport.swift; sourceTree = "<group>"; };
 		A500RG00 /* ReactGrab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/ReactGrab.swift; sourceTree = "<group>"; };
+		DSGN000002 /* DesignMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/DesignMode.swift; sourceTree = "<group>"; };
 		A5001413 /* TerminalPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/TerminalPanelView.swift; sourceTree = "<group>"; };
 		A5001414 /* BrowserPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserPanelView.swift; sourceTree = "<group>"; };
 		A5007421 /* BrowserPopupWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserPopupWindowController.swift; sourceTree = "<group>"; };
@@ -964,6 +966,7 @@
 				NRBR0018 /* WebViewRepresentable.swift */,
 				A5FF0003 /* BrowserDataImport.swift */,
 				A500RG00 /* ReactGrab.swift */,
+				DSGN000002 /* DesignMode.swift */,
 				A5001413 /* TerminalPanelView.swift */,
 				A5001414 /* BrowserPanelView.swift */,
 				A5007421 /* BrowserPopupWindowController.swift */,
@@ -1434,6 +1437,7 @@
 				NRBR0017 /* WebViewRepresentable.swift in Sources */,
 				A5FF0013 /* BrowserDataImport.swift in Sources */,
 				A500RG01 /* ReactGrab.swift in Sources */,
+				DSGN000001 /* DesignMode.swift in Sources */,
 				A5001403 /* TerminalPanelView.swift in Sources */,
 				A5001404 /* BrowserPanelView.swift in Sources */,
 				A5007420 /* BrowserPopupWindowController.swift in Sources */,

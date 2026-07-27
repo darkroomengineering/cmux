@@ -207,6 +207,7 @@ enum V2CommandCatalog {
         "browser.input_mouse",
         "browser.input_keyboard",
         "browser.input_touch",
+        "browser.design_mode.toggle",
     ]
 
     /// Methods only available in DEBUG builds, appended after `baseMethods`.

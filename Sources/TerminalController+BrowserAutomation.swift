@@ -2126,6 +2126,28 @@ extension TerminalController {
         return result
     }
 
+    /// Toggles Design Mode using the same focused-panel routing rule as the React Grab keyboard
+    /// shortcut (`resolveReactGrabShortcutRoute` / `activateDesignModeRoute`): no `surface_id`
+    /// required, targets the focused browser panel directly, or the workspace's single browser
+    /// panel when a terminal is focused.
+    func v2BrowserDesignModeToggle(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        var result: V2CallResult = .err(
+            code: "not_found",
+            message: "No browser panel available for Design Mode",
+            data: nil
+        )
+        v2MainSync {
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else { return }
+            if activateDesignModeRoute(in: ws) {
+                result = .ok(["toggled": true])
+            }
+        }
+        return result
+    }
+
     func v2BrowserIsWebViewFocused(params: [String: Any]) -> V2CallResult {
         guard let tabManager = v2ResolveTabManager(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)

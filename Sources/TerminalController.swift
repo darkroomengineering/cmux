@@ -11,6 +11,7 @@ extension Notification.Name {
     static let mainWindowContextsDidChange = Notification.Name("programa.mainWindowContextsDidChange")
     static let browserDownloadEventDidArrive = Notification.Name("programa.browserDownloadEventDidArrive")
     static let reactGrabDidCopySelection = Notification.Name("programa.reactGrabDidCopySelection")
+    static let designModeDidCapture = Notification.Name("programa.designModeDidCapture")
 }
 
 /// Unix socket-based controller for programmatic terminal control
@@ -1909,6 +1910,8 @@ class TerminalController {
             return v2Result(id: id, self.v2BrowserInputKeyboard(params: params))
         case "browser.input_touch":
             return v2Result(id: id, self.v2BrowserInputTouch(params: params))
+        case "browser.design_mode.toggle":
+            return v2Result(id: id, self.v2BrowserDesignModeToggle(params: params))
 
         // Markdown
         case "markdown.open":

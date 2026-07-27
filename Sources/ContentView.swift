@@ -4125,6 +4125,15 @@ struct ContentView: View {
         )
         contributions.append(
             CommandPaletteCommandContribution(
+                commandId: "palette.browserDesignMode",
+                title: constant(String(localized: "command.browserDesignMode.title", defaultValue: "Toggle Design Mode")),
+                subtitle: browserPanelSubtitle,
+                keywords: ["browser", "design", "mode", "inspect", "element", "screenshot", "html", "css"],
+                when: { $0.bool(CommandPaletteContextKeys.panelIsBrowser) }
+            )
+        )
+        contributions.append(
+            CommandPaletteCommandContribution(
                 commandId: "palette.browserZoomIn",
                 title: constant(String(localized: "command.browserZoomIn.title", defaultValue: "Zoom In")),
                 subtitle: browserPanelSubtitle,
@@ -4650,6 +4659,11 @@ struct ContentView: View {
         }
         registry.register(commandId: "palette.browserReactGrab") {
             if !tabManager.toggleReactGrabFromCurrentFocus() {
+                NSSound.beep()
+            }
+        }
+        registry.register(commandId: "palette.browserDesignMode") {
+            if !tabManager.toggleDesignModeFromCurrentFocus() {
                 NSSound.beep()
             }
         }

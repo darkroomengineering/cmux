@@ -542,6 +542,9 @@ final class BrowserPanel: Panel, ObservableObject {
     var pendingReactGrabReturnTargetPanelId: UUID?
     var pendingReactGrabRoundTripToken: String?
     let reactGrabBridgeSessionUpdaterName = "__programaReactGrabBridgeSync_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+    @Published var isDesignModeActive: Bool = false
+    var designModeMessageHandler: DesignModeMessageHandler?
+    var pendingDesignModeReturnTargetPanelId: UUID?
     var preferredDeveloperToolsPresentation: DeveloperToolsPresentation = .unknown
     var forceDeveloperToolsRefreshOnNextAttach: Bool = false
     var developerToolsRestoreRetryWorkItem: DispatchWorkItem?
@@ -852,6 +855,7 @@ final class BrowserPanel: Panel, ObservableObject {
         webView.uiDelegate = uiDelegate
         setupObservers(for: webView)
         setupReactGrabMessageHandler(for: webView)
+        setupDesignModeMessageHandler(for: webView)
         setupIMECompositionTracking(for: webView)
     }
 
