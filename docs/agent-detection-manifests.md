@@ -13,11 +13,46 @@ format itself.
 
 ## Location and precedence
 
-- **Bundled**: `Resources/AgentDetection/<agent>.json`, shipped inside the app bundle.
+- **Bundled**: `Resources/AgentDetection/<agent>.json`, shipped inside the app bundle. Programa
+  deliberately ships only the agents the team can actually run and verify against — it does not
+  add more bundled manifests for agents nobody here uses.
 - **User override**: `~/.config/programa/agent-detection/<agent>.json`. If present, it **fully
   replaces** the bundled manifest for that `agent` id — no field-level merge. This keeps the
   mental model simple: either you're using Programa's manifest for an agent, or your own,
   never a partial mix of both.
+
+## Authoring your own with `programa agent-detection`
+
+For any agent programa doesn't ship a bundled manifest for, `programa agent-detection` scaffolds
+and verifies a user override without hand-writing JSON from scratch:
+
+1. Run the target agent in a pane, in whatever state you want to capture, then
+   `programa agent-detection scaffold <agent-id>` — it captures that pane's current screen and
+   writes a starter manifest to `~/.config/programa/agent-detection/<agent-id>.json`, with the
+   captured screen embedded as reference text in each state's `source_notes` (JSON has no
+   comments). All three `states[].patterns` arrays start empty — safe by construction (an empty
+   list matches nothing, never everything — see `AgentManifest.classify(text:)`), but useless
+   until you fill them in.
+2. Edit the generated file: write real regex patterns for `blocked`/`working`/`idle` (and
+   `recognize.screen_patterns`, left empty by the scaffold too) using the reference screen text
+   in each state's `source_notes` and the authoring guidance below.
+3. Re-run the agent into the state you just wrote a pattern for, then
+   `programa agent-detection test <agent-id>` to classify the live screen through the real
+   `classify(text:)` path and confirm it lands in the bucket you expect. Repeat per bucket.
+4. `programa agent-detection test` (no agent id) runs the real Phase A recognition too — useful
+   once `recognize.screen_patterns` is filled in, to confirm programa would actually promote this
+   surface as a candidate for your manifest during live detection, not just when explicitly named.
+5. `programa agent-detection list` shows every currently loaded manifest (bundled + overrides)
+   with its source, to confirm your override is actually being picked up. If an override is
+   shadowing a bundled manifest, `list` marks it as `[shadows bundled manifest]`.
+
+**`scaffold` refuses to touch one of the seven bundled agent ids** (`claude-code`, `codex`,
+`gemini-cli`, `opencode`, `copilot-cli`, `cursor-agent`, `aider`) unless you pass `--force`.
+Since an override *fully replaces* the bundled manifest and a fresh scaffold starts with empty
+`patterns`, scaffolding one of these without `--force` would silently kill working screen-based
+detection for that agent — you'd get no error, detection would just stop. Passing `--force`
+seeds the new file with the bundled manifest's own patterns (fetched live, not re-typed) instead
+of starting blank, so you're editing a copy of what already worked.
 
 ## Schema (v1)
 

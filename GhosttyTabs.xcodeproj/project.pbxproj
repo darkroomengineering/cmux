@@ -24,6 +24,7 @@
 			AMDT000001 /* AgentManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000002 /* AgentManifest.swift */; };
 			AMDT000003 /* AgentManifestLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000004 /* AgentManifestLoader.swift */; };
 			AMDT000005 /* AgentScreenDetectionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000006 /* AgentScreenDetectionEngine.swift */; };
+			ADET000001 /* TerminalController+AgentDetection.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADET000002 /* TerminalController+AgentDetection.swift */; };
 			CQTA000001 /* ClaudeQuotaMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = CQTA000002 /* ClaudeQuotaMonitor.swift */; };
 			CQTA000003 /* SidebarQuotaFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CQTA000004 /* SidebarQuotaFooter.swift */; };
 			LCMD000001 /* LastCommandOutcome.swift in Sources */ = {isa = PBXBuildFile; fileRef = LCMD000002 /* LastCommandOutcome.swift */; };
@@ -392,6 +393,7 @@
 			AMDT000002 /* AgentManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentManifest.swift; sourceTree = "<group>"; };
 			AMDT000004 /* AgentManifestLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentManifestLoader.swift; sourceTree = "<group>"; };
 			AMDT000006 /* AgentScreenDetectionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentScreenDetectionEngine.swift; sourceTree = "<group>"; };
+			ADET000002 /* TerminalController+AgentDetection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+AgentDetection.swift"; sourceTree = "<group>"; };
 			CQTA000002 /* ClaudeQuotaMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeQuotaMonitor.swift; sourceTree = "<group>"; };
 			CQTA000004 /* SidebarQuotaFooter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarQuotaFooter.swift; sourceTree = "<group>"; };
 			LCMD000002 /* LastCommandOutcome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LastCommandOutcome.swift; sourceTree = "<group>"; };
@@ -813,6 +815,7 @@
 					AMDT000002 /* AgentManifest.swift */,
 					AMDT000004 /* AgentManifestLoader.swift */,
 					AMDT000006 /* AgentScreenDetectionEngine.swift */,
+					ADET000002 /* TerminalController+AgentDetection.swift */,
 					CQTA000002 /* ClaudeQuotaMonitor.swift */,
 					CQTA000004 /* SidebarQuotaFooter.swift */,
 					LCMD000002 /* LastCommandOutcome.swift */,
@@ -1284,6 +1287,7 @@
 					AMDT000001 /* AgentManifest.swift in Sources */,
 					AMDT000003 /* AgentManifestLoader.swift in Sources */,
 					AMDT000005 /* AgentScreenDetectionEngine.swift in Sources */,
+					ADET000001 /* TerminalController+AgentDetection.swift in Sources */,
 					CQTA000001 /* ClaudeQuotaMonitor.swift in Sources */,
 					CQTA000003 /* SidebarQuotaFooter.swift in Sources */,
 					LCMD000001 /* LastCommandOutcome.swift in Sources */,

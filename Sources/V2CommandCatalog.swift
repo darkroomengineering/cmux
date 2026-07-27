@@ -92,6 +92,8 @@ enum V2CommandCatalog {
         "surface.clear_ports",
         "surface.report_agent_state",
         "surface.clear_agent_state",
+        "agent.detection.list",
+        "agent.detection.classify",
         "pane.list",
         "pane.focus",
         "pane.surfaces",

@@ -28,9 +28,24 @@ final class AgentManifestLoader: @unchecked Sendable {
         "aider",
     ]
 
+    /// Where a loaded manifest came from -- exposed so callers (e.g. the `agent-detection list`
+    /// CLI command via `agent.detection.list`) can report bundled-vs-override without
+    /// reimplementing this loader's file discovery.
+    enum ManifestSource: String, Sendable {
+        case bundled
+        case override
+    }
+
+    /// A loaded manifest paired with where it came from. See `ManifestSource`.
+    struct ManifestEntry: Sendable {
+        let manifest: AgentManifest
+        let source: ManifestSource
+    }
+
     private let lock = NSLock()
     private var manifestsByAgent: [String: AgentManifest] = [:]
     private var manifestsByProcessName: [String: AgentManifest] = [:]
+    private var sourceByAgent: [String: ManifestSource] = [:]
     private var isLoaded = false
 
     private init() {}
@@ -47,6 +62,7 @@ final class AgentManifestLoader: @unchecked Sendable {
         isLoaded = true
 
         var byAgent: [String: AgentManifest] = [:]
+        var bySource: [String: ManifestSource] = [:]
         let decoder = JSONDecoder()
 
         for agentId in Self.bundledAgentIds {
@@ -59,6 +75,7 @@ final class AgentManifestLoader: @unchecked Sendable {
                 continue
             }
             byAgent[manifest.agent] = manifest
+            bySource[manifest.agent] = .bundled
         }
 
         let overrideDirectory = Self.userOverrideDirectory
@@ -75,6 +92,7 @@ final class AgentManifestLoader: @unchecked Sendable {
                     continue
                 }
                 byAgent[manifest.agent] = manifest
+                bySource[manifest.agent] = .override
 #if DEBUG
                 dlog("agentManifest.override.loaded agent=\(manifest.agent) path=\(url.path)")
 #endif
@@ -82,6 +100,7 @@ final class AgentManifestLoader: @unchecked Sendable {
         }
 
         manifestsByAgent = byAgent
+        sourceByAgent = bySource
         var byProcessName: [String: AgentManifest] = [:]
         for manifest in byAgent.values {
             for processName in manifest.recognize.processNames {
@@ -120,6 +139,39 @@ final class AgentManifestLoader: @unchecked Sendable {
         return Array(manifestsByAgent.values)
     }
 
+    /// All loaded manifests paired with their source (bundled vs. user override), for
+    /// `agent.detection.list` -- lets that socket method report provenance without duplicating
+    /// this loader's file discovery.
+    func allManifestEntries() -> [ManifestEntry] {
+        loadIfNeeded()
+        lock.lock()
+        defer { lock.unlock() }
+        return manifestsByAgent.map { agentId, manifest in
+            ManifestEntry(manifest: manifest, source: sourceByAgent[agentId] ?? .bundled)
+        }
+    }
+
+    /// Drops the cache so the next access re-reads bundled manifests and the user override
+    /// directory from disk.
+    ///
+    /// Manifests are otherwise loaded exactly once per app launch, which is right for the
+    /// detection engine's hot sampling path but wrong for authoring: `programa agent-detection
+    /// scaffold` writes a new override file, and without this the running app would not see it
+    /// until relaunch -- so `agent-detection test`, whose whole job is to check the patterns you
+    /// just edited, would report "no manifest loaded" for a file sitting right there on disk.
+    ///
+    /// Called only from the user-initiated `agent.detection.*` socket handlers, never from the
+    /// sampling loop.
+    func reloadFromDisk() {
+        lock.lock()
+        isLoaded = false
+        manifestsByAgent = [:]
+        manifestsByProcessName = [:]
+        sourceByAgent = [:]
+        lock.unlock()
+        loadIfNeeded()
+    }
+
 #if DEBUG
     /// Test-only: forces a reload on next access. `programaTests/AgentManifestTests.swift` uses
     /// this to exercise loader behavior without cross-test caching.
@@ -128,6 +180,7 @@ final class AgentManifestLoader: @unchecked Sendable {
         isLoaded = false
         manifestsByAgent = [:]
         manifestsByProcessName = [:]
+        sourceByAgent = [:]
         lock.unlock()
     }
 #endif

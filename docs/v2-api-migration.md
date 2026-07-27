@@ -63,6 +63,10 @@ Layouts (new in v2, no v1 predecessor -- see "worktree.* / layout.*" below):
 - (no v1 equivalent) -> `layout.apply`
 - (no v1 equivalent) -> `layout.list`
 
+Agent detection (new in v2, no v1 predecessor -- see "agent.detection.*" below):
+- (no v1 equivalent) -> `agent.detection.list`
+- (no v1 equivalent) -> `agent.detection.classify`
+
 Surfaces / Splits:
 - list_surfaces -> `surface.list`
 - focus_surface / focus_surface_by_panel -> `surface.focus`
@@ -518,6 +522,38 @@ against the new workspace's root. Errors: `not_found`.
 ### `layout.list`
 
 `{}` -> `{"layouts": [{"name", "saved_at"}]}`.
+
+## `agent.detection.*` (docs/plans/screen-manifest-detection.md)
+
+Backs the `programa agent-detection` CLI command (`list`/`scaffold`/`test`), which lets users
+author their own screen-manifest for an agent programa doesn't ship a bundled manifest for.
+`AgentManifestLoader` loads bundled manifests (`Resources/AgentDetection/*.json`) plus any user
+override at `~/.config/programa/agent-detection/<agent-id>.json`; an override fully replaces the
+bundled manifest for that agent id -- no field merge. `scaffold` itself has no dedicated method
+-- it reuses `surface.read_text` for the screen capture and writes the starter file client-side,
+but calls `agent.detection.list` first when scaffolding one of the seven bundled agent ids (see
+below), to seed the new file from the bundled manifest's own patterns.
+
+### `agent.detection.list`
+
+`{}` -> `{"manifests": [{"agent", "display_name", "source", "process_names", "shadows_bundled", "states"}]}`.
+`source` is `"bundled"` or `"override"`. `shadows_bundled` is `true` when an override exists for
+one of the seven ids in `AgentManifestLoader.bundledAgentIds` -- i.e. this entry silently
+replaced a working bundled manifest. `states` is the full state-rule list (`bucket`, `priority`,
+`anchor_last_n_lines`, `patterns`, `confidence`, `source_notes`), included so `agent-detection
+scaffold --force` can seed a forced override from what's currently loaded instead of writing a
+blank manifest over a working one.
+
+### `agent.detection.classify`
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `workspace_id` / `surface_id` | string | no | Same resolution as `surface.read_text`; defaults to the focused surface. |
+| `agent` | string | no | Test one manifest's state patterns directly, bypassing recognition -- the authoring shortcut right after `scaffold`, before `recognize.screen_patterns` is filled in. Omit to run the real recognition path (checks every loaded manifest's `recognize.screen_patterns` against the current screen, first match wins) the same way live detection would. |
+
+Result: `{"requested_agent", "recognized_via" ("explicit"|"screen_pattern"|null), "agent", "display_name", "bucket", "confidence", "matched_pattern", "workspace_id"?, "surface_id"?}` (all
+null when nothing was recognized/classified). Errors: `not_found` (unknown `agent`), plus
+whatever `surface.read_text` can return for the target surface.
 
 ## Tests
 
