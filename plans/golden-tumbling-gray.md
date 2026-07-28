@@ -522,6 +522,48 @@ Two traps worth recording, both of which cost time here:
    auto-ship), install it, and confirm the app actually launches and CloudKit initializes
    before that commit is allowed to reach `main`.
 
+### The schema does not exist yet, and Production will not create it for you
+
+Verified 2026-07-28 in CloudKit Console: container `iCloud.com.darkroom.programa` contains
+exactly one record type, `Users`, in **both** the Development and Production environments.
+`AgentStatus` does not exist anywhere. That single fact explains the phone's runtime errors:
+querying or subscribing to a record type that has never been defined is rejected with
+`CKError 15/2000 "Server Rejected Request"`, which reads like an entitlement or auth problem
+and is not one.
+
+Why it will not fix itself once the Mac starts writing:
+
+- **Development auto-creates record types on first save. Production never does.** Production
+  schema only ever arrives via *Deploy Schema Changes* from Development. So the Mac's first
+  write does not bootstrap it.
+- **The Mac writes to Production.** Its Developer ID profile pins
+  `com.apple.developer.icloud-container-environment = Production` (confirmed in the embedded
+  profile of the notarized dry-run build). So the Mac will hit the same rejection the phone
+  does, for the same reason.
+- **A Debug phone build reads Development.** Even with the schema deployed, a locally-built
+  companion and a Developer-ID Mac are pointed at two different databases and will never see
+  each other's records. End-to-end verification needs a Release/TestFlight build of the
+  companion, or a deliberately dev-signed Mac writer.
+
+**Required, and deliberately left for a human — deploying schema to Production is not
+reversible in the way normal config is.** In CloudKit Console, Development environment,
+create record type `AgentStatus` with the fields `MobileBridgePush.performSave` actually
+writes (`Sources/MobileBridge/MobileBridgePush.swift:209-221`):
+
+| field | type |
+|---|---|
+| `blockedCount` | Int64 |
+| `workingCount` | Int64 |
+| `mostRecentBlockedWorkspaceTitle` | String |
+
+The record name is fixed at `agent-status-summary` (a record ID, not a field). The
+`CKQuerySubscription` needs the type queryable, so add the queryable index CloudKit prompts
+for. Then *Deploy Schema Changes…* to Production.
+
+Until that is done, no amount of correct entitlement or provisioning makes a notification
+arrive. This was invisible before now because `releaseProvisioningComplete` kept the Mac
+writer dark, so nothing had ever attempted the first write.
+
 **Known limit — this is an iOS-only bet.** CloudKit cannot serve an Android companion. If
 Android happens (plausible if Programa reaches Windows), push gets rebuilt around a relay that
 fans out to APNs and FCM. The *transport* generalizes fine — `iroh-ffi` is uniffi-based, so
