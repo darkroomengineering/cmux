@@ -431,6 +431,43 @@ only found path that gets both.
 Activity is a bonus that refreshes when the silent push gets through. It is iOS-only and its
 freshness rides the least reliable channel Apple offers, so it gets no further investment.
 
+### Provisioning-profile groundwork done now, entitlement flip still gated
+
+The release pipeline can embed a Developer ID provisioning profile
+(`scripts/sign-release-app.sh` copies `$PROGRAMA_PROVISION_PROFILE` to
+`Contents/embedded.provisionprofile` before the app is signed, wired through
+`.github/workflows/release.yml` via an optional `APPLE_PROVISION_PROFILE_BASE64` secret,
+verified with `scripts/verify-provision-profile.sh`). None of this enables CloudKit by
+itself — `programa.entitlements` still carries no iCloud keys, and
+`MobileBridgePush.releaseProvisioningComplete` stays `false` until the steps below are done.
+**Still required, in order, before the iCloud entitlement can be added:**
+
+1. **Apple Developer portal, one-time:** register the iCloud container (e.g.
+   `iCloud.com.darkroom.programa`), enable the iCloud capability (CloudKit) on the app ID
+   `com.darkroom.programa`, then generate a **Developer ID with CloudKit** provisioning
+   profile for that app ID. This is a manual portal action — there is no CLI/API path scripted
+   here, and it must be redone whenever the container or app ID's capabilities change.
+2. **Export and store the profile:** download the `.provisionprofile`, base64-encode it
+   (`base64 -i profile.provisionprofile | pbcopy`), and add it as the
+   `APPLE_PROVISION_PROFILE_BASE64` GitHub secret. Treat it like the existing signing
+   secrets — it is not sensitive in the same way as the `.p12` password, but it is
+   team/account-specific and should not be committed.
+3. **Add the entitlement** to `programa.entitlements`
+   (`com.apple.developer.icloud-services`, `com.apple.developer.icloud-container-identifiers`)
+   in the same change that flips `MobileBridgePush.releaseProvisioningComplete` to `true` —
+   not before. Confirm `scripts/verify-provision-profile.sh` reports the profile as present,
+   unexpired, and granting exactly those entitlements.
+4. **Mandatory launch-test of the *notarized* build before shipping to `main`.** Notarization
+   only checks the code signature and scans for malware — it does **not** evaluate whether a
+   restricted entitlement matches an embedded profile. AMFI does that check at launch time,
+   on-device, every time. A profile/entitlement mismatch signs cleanly, notarizes cleanly,
+   staples cleanly, and then the app is silently killed the moment it launches (POSIX 163 —
+   this project has hit exactly this failure before, see
+   `restricted-entitlements-brick-app` memory). So: download the actual notarized,
+   stapled `.dmg` from a **dry-run** workflow_dispatch run (never test straight off `main`'s
+   auto-ship), install it, and confirm the app actually launches and CloudKit initializes
+   before that commit is allowed to reach `main`.
+
 **Known limit — this is an iOS-only bet.** CloudKit cannot serve an Android companion. If
 Android happens (plausible if Programa reaches Windows), push gets rebuilt around a relay that
 fans out to APNs and FCM. The *transport* generalizes fine — `iroh-ffi` is uniffi-based, so

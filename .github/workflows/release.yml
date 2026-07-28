@@ -393,6 +393,24 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
           security list-keychains -d user -s build.keychain
 
+      - name: Import provisioning profile
+        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        env:
+          APPLE_PROVISION_PROFILE_BASE64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
+        run: |
+          # Optional secret: only set once a Developer ID provisioning profile exists for
+          # a restricted entitlement (e.g. CloudKit). See plans/golden-tumbling-gray.md M3
+          # for the one-time Developer portal setup this unblocks. Absent today by design —
+          # when unset, this step is a no-op and the release pipeline (and the signing
+          # script it feeds) behaves exactly as it does today: no profile, no iCloud.
+          if [ -z "$APPLE_PROVISION_PROFILE_BASE64" ]; then
+            echo "No APPLE_PROVISION_PROFILE_BASE64 secret set; skipping profile embedding."
+            echo "PROGRAMA_PROVISION_PROFILE=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "$APPLE_PROVISION_PROFILE_BASE64" | base64 --decode > /tmp/programa.provisionprofile
+          echo "PROGRAMA_PROVISION_PROFILE=/tmp/programa.provisionprofile" >> "$GITHUB_ENV"
+
       - name: Codesign app
         if: steps.guard_release_assets.outputs.skip_all != 'true'
         env:
@@ -407,6 +425,7 @@ jobs:
           HELPER_PATH="$APP_PATH/Contents/Resources/bin/ghostty"
           ./scripts/sign-release-app.sh "$APP_PATH" "$APPLE_SIGNING_IDENTITY" programa.entitlements
           ./scripts/verify-release-entitlements.sh "$APP_PATH" "$CLI_PATH" "$HELPER_PATH"
+          ./scripts/verify-provision-profile.sh "$APP_PATH"
 
       - name: Verify embedded Sparkle artifact
         if: steps.guard_release_assets.outputs.skip_all != 'true'
@@ -610,3 +629,4 @@ jobs:
         run: |
           security delete-keychain build.keychain >/dev/null 2>&1 || true
           rm -f /tmp/cert.p12
+          rm -f /tmp/programa.provisionprofile
