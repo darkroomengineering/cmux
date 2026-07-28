@@ -30,7 +30,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_CFBundleDisplayName: "Programa Spike"
+        INFOPLIST_KEY_CFBundleDisplayName: "Programa"
         # Export-compliance declaration required by App Store Connect. The app
         # uses only standard QUIC/TLS (via iroh) and Apple's own CloudKit --
         # no proprietary or non-standard cryptography -- which is the exempt
@@ -87,6 +87,6 @@ targets:
     info:
       path: ProgramaSpikeWidgets/Info.plist
       properties:
-        CFBundleDisplayName: Programa Spike Widgets
+        CFBundleDisplayName: Programa Widgets
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
