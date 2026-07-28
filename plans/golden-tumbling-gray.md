@@ -383,9 +383,59 @@ Pairing flow, workspace list with state badges from `surface.list` + live `subsc
 detail with `agent.prompt` entry, Live Activity updating while connected.
 *Touches:* new iOS app target, new small Swift package consuming only the vendored transport.
 
-**M3 — Remote push. 1–2 weeks, gated on the decision above.**
-Device-token registration, Mac-side trigger wired to the existing `blocked` transition (reuse
-the classifier — no new detection), NSE with encrypted payload.
+**M3 — Remote push via CloudKit. 1–2 weeks.** Decided 2026-07-28 after research.
+
+**Why CloudKit, and why not the obvious alternatives.** APNs tokens are bound to the app's
+bundle ID and Team ID, so there is no per-user key: any provider pushing to our companion must
+hold *our* `.p8`. Programa is publicly distributed, so shipping that key makes it extractable.
+CloudKit escapes this entirely — each user's Mac writes to *their own* iCloud private database,
+their own phone is subscribed, Apple delivers. No key distributed, no infrastructure we run,
+per-user isolation by construction.
+
+Research findings that settled it:
+
+- **Happy Coder** claims "encrypted, we can't see the content" but
+  `packages/happy-server/sources/app/push/pushSend.ts` POSTs **plaintext** title/body to Expo's
+  public API. Expo holds the APNs key — including for self-hosters, since the push token is
+  minted by Expo. Their E2E encryption covers message content, not notifications.
+- **Home Assistant** — the closest analogue (thousands of self-hosted servers, one public iOS
+  app) — routes through a **centrally-operated relay**. `homeassistant/components/mobile_app/
+  notify.py` POSTs plaintext title/body to a `push_url`; HA core holds no APNs key. Free,
+  500/day/target, not gated behind Nabu Casa. Notably `push_notification.py` tries a *local*
+  channel first and only falls back to cloud push after ~10s — the same p2p-first shape we have.
+- **Orca** does **no real push**: `mobile/src/notifications/` uses
+  `scheduleNotificationAsync(trigger: nil)` — local only, while a live RPC connection exists.
+  Their "no cloud relay" claim is true because a backgrounded phone is never woken.
+
+**Nobody solves this without a relay or without giving up backgrounded wake.** CloudKit is the
+only found path that gets both.
+
+**Design:**
+
+1. One `CKRecord` in the user's **private** database holding current blocked-agent summaries.
+2. `CKQuerySubscription` created by the iOS app at pairing, with **both**
+   `alertBody` (no `soundName`) **and** `shouldSendContentAvailable = true`. The alert promotes
+   the push to the reliable high-priority channel and shows a lock-screen line without buzzing;
+   the same delivery wakes the app to refresh its Live Activity locally.
+3. **Alert text stays generic** ("An agent needs you"). Workspace names live only in the record,
+   inside the user's own private DB — so the payload transiting Apple carries nothing
+   meaningful. Stronger than Happy, which sends full plaintext to a third party.
+4. **Foreground reconciliation is mandatory.** Silent pushes are coalesced to the latest,
+   throttled ("two or three per hour"), and **discarded entirely after a force-quit**. The app
+   must re-read the record and rebuild Live Activity state on every foreground.
+5. **Gate on `CKContainer.accountStatus == .available`** and check both devices share an Apple
+   ID during pairing. Mismatched accounts deliver nothing and raise **no error** — a silent
+   failure mode.
+
+**Live Activities are demoted, not deleted.** The notification is the contract; the Live
+Activity is a bonus that refreshes when the silent push gets through. It is iOS-only and its
+freshness rides the least reliable channel Apple offers, so it gets no further investment.
+
+**Known limit — this is an iOS-only bet.** CloudKit cannot serve an Android companion. If
+Android happens (plausible if Programa reaches Windows), push gets rebuilt around a relay that
+fans out to APNs and FCM. The *transport* generalizes fine — `iroh-ffi` is uniffi-based, so
+Kotlin bindings are achievable — only push is platform-locked. Accepted deliberately: pay for
+the second path when it is real.
 
 **M4 — Hardening. 1–2 weeks.**
 Resync discipline, background-refresh tuning, multi-device pairing, App Store prep.
