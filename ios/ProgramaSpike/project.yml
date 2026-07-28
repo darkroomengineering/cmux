@@ -28,32 +28,60 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_CFBundleDisplayName: "Programa"
+        # Black-and-white treatment of the macOS Programa mark.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    # Every Info.plist key is declared here, explicitly, rather than via
+    # INFOPLIST_KEY_* build settings. Two reasons, both learned the hard way:
+    #
+    # 1. Xcode synthesises only a fixed allow-list of INFOPLIST_KEY_* names.
+    #    UIBackgroundModes is NOT on it: the setting is accepted silently and the
+    #    key never reaches the built plist. Verified on device -- the key was
+    #    absent from ProgramaSpike.app/Info.plist and iOS logged "you still need
+    #    to add "remote-notification" to the list of your supported
+    #    UIBackgroundModes". Same trap as INFOPLIST_KEY_NSExtensionPointIdentifier.
+    # 2. Declaring `info.path` sets INFOPLIST_FILE, which turns the INFOPLIST_KEY_*
+    #    synthesis off entirely -- so mixing the two styles silently DROPS every
+    #    key still expressed the old way. That is how NSLocalNetworkUsageDescription
+    #    briefly went missing here, which does not fail the build; it just makes
+    #    iOS deny local-network access and forces every connection onto a relay.
+    #
+    # Both failure modes are silent. After changing anything below, verify against
+    # the built app, not the source:
+    #   plutil -extract UIBackgroundModes json -o - <app>/Info.plist
+    info:
+      path: ProgramaSpike/Info.plist
+      properties:
+        CFBundleDisplayName: "Programa"
+        UILaunchScreen: {}
         # Export-compliance declaration required by App Store Connect. The app
         # uses only standard QUIC/TLS (via iroh) and Apple's own CloudKit --
         # no proprietary or non-standard cryptography -- which is the exempt
         # case. This is a legal declaration by the publisher: confirm it before
         # the first upload rather than treating it as a build setting.
-        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: false
-        # Black-and-white treatment of the macOS Programa mark.
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ITSAppUsesNonExemptEncryption: false
         # Without this, iOS silently denies the app any local-network access
         # and iroh cannot reach the Mac's LAN address from the pairing ticket,
         # so the connection falls back to a relay even on the same Wi-Fi.
         # Measured: phone reported `relay` until this key was added.
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Programa connects directly to your Mac on the same network instead of routing through a relay."
+        NSLocalNetworkUsageDescription: "Programa connects directly to your Mac on the same network instead of routing through a relay."
         # Required for ActivityKit -- without this the app can request a Live
         # Activity but the system silently refuses to start it.
-        INFOPLIST_KEY_NSSupportsLiveActivities: YES
+        NSSupportsLiveActivities: true
         # M3: lets a silent (content-available) CloudKit push wake the app in the
-        # background to refresh the Live Activity. Space-separated is Xcode's
-        # synthesis format for array-valued Info.plist keys via INFOPLIST_KEY_*.
-        INFOPLIST_KEY_UIBackgroundModes: "remote-notification"
+        # background to refresh the Live Activity.
+        UIBackgroundModes:
+          - remote-notification
     entitlements:
       path: ProgramaSpike/ProgramaSpike.entitlements
       properties:
+        # Required for registerForRemoteNotifications() to succeed at all, which
+        # CloudKit needs before it can deliver a CKQuerySubscription push. Without
+        # it the app launches fine and fails at runtime with NSCocoaErrorDomain
+        # 3000 "no valid aps-environment entitlement string found for
+        # application", and no push ever arrives. Also requires Push Notifications
+        # enabled on App ID com.darkroom.programa.spike in the Developer portal.
+        # Xcode rewrites this to "production" when signing for distribution.
+        aps-environment: development
         com.apple.developer.icloud-container-identifiers:
           # Shared with the macOS app so the Mac can write and the phone can
           # read the same records. Requires a one-time Developer portal step:
