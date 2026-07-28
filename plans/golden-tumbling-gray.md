@@ -105,6 +105,41 @@ Three screens. Anything beyond this is out of scope for v1.
 Explicitly deferred: live terminal mode, file browser, source control / diff review, browser
 session view, workspace creation.
 
+### Tappable answers instead of a free-text box (scoped 2026-07-28, not built)
+
+Requested after using the app: when an agent is blocked, the phone should show the agent's
+actual question and its choices as buttons, rather than only offering a text field. Answering
+"1" to a question you cannot see is the current experience.
+
+**The two blocked cases are not equally ready, and that is the whole finding.**
+
+*AskUserQuestion — the options already exist, structured.* `describeAskUserQuestion`
+(`CLI/CLI+Hooks.swift:725-748`) already reads `tool_input.questions[].question` and
+`options[].label` out of the `PreToolUse` payload. It then **flattens them into one display
+string** (`"[Label A] [Label B]"`, line 742) and stores that as `lastBody` in the session
+store. So the structure is captured and immediately thrown away. Making these tappable is
+plumbing, not new capture: keep the array, carry it through the session store, expose it on
+the v2 surface/agent-state payload, render buttons.
+
+*Permission prompts — no structured options exist.* This is the far more common blocked case,
+and `summarizeClaudeHookNotification` (`CLI/CLI+Hooks.swift:1225-1250`) only ever sees free
+text: it scrapes `message`/`body`/`text`/`prompt` and truncates to 180 chars. Claude Code does
+not hand the hook a choice list here. The realistic move is **not** to parse the prompt text
+but to model the fixed, known set of permission answers as actions, and accept that the
+button labels are ours rather than the agent's.
+
+**Sending the answer back is the risky half.** The bridge allow-list already carries
+`surface.send_key` and `surface.send_text`, so a tap becomes a key sequence into the TUI.
+That is fire-and-forget into a live terminal: if the prompt has already been answered at the
+desk, or the agent moved on, those keystrokes land somewhere arbitrary — potentially
+selecting an unrelated menu item. Any implementation needs a staleness guard: carry an
+identifier for the exact prompt the buttons were rendered from, and have the Mac reject the
+tap if the surface's pending prompt is no longer that one. Without it this feature can
+silently take destructive actions, which is strictly worse than the text box it replaces.
+
+**Order of work:** AskUserQuestion first (structure already exists, low risk), the staleness
+guard second, permission prompts last. Do not ship any of it before the guard.
+
 ---
 
 ## Layer strategy
