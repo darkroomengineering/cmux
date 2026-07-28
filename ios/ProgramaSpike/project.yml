@@ -31,6 +31,12 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_CFBundleDisplayName: "Programa Spike"
+        # Export-compliance declaration required by App Store Connect. The app
+        # uses only standard QUIC/TLS (via iroh) and Apple's own CloudKit --
+        # no proprietary or non-standard cryptography -- which is the exempt
+        # case. This is a legal declaration by the publisher: confirm it before
+        # the first upload rather than treating it as a build setting.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: false
         # Black-and-white treatment of the macOS Programa mark.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Without this, iOS silently denies the app any local-network access
