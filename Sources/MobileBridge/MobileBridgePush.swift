@@ -61,8 +61,20 @@ final class MobileBridgePush: @unchecked Sendable {
     private var coalesceScheduled = false
     private var didLogAccountUnavailable = false
 
-    /// **Hard build-time kill switch -- must stay `false` until the release pipeline can
-    /// safely ship the CloudKit entitlement.**
+    /// **Hard build-time kill switch for the CloudKit entitlement. Set to `true` on
+    /// 2026-07-28, together with the entitlement itself, once the release pipeline could
+    /// actually carry a provisioning profile that grants it.**
+    ///
+    /// What made it safe to flip: App ID `com.darkroom.programa` was registered with the
+    /// iCloud capability and container `iCloud.com.darkroom.programa`, a Developer ID
+    /// Application profile (`Programa Developer ID CloudKit`) was generated against it, and
+    /// that profile is supplied to CI as `APPLE_PROVISION_PROFILE_BASE64` and embedded by
+    /// `scripts/sign-release-app.sh` before the app is signed. Verify with
+    /// `scripts/verify-provision-profile.sh <app>`.
+    ///
+    /// If the entitlement is ever removed from `programa.entitlements`, or the profile secret
+    /// is dropped, set this back to `false` in the same change -- the two must move together.
+    /// The historical reason, still the reason:
     ///
     /// Adding `com.apple.developer.icloud-container-identifiers` /
     /// `com.apple.developer.icloud-services` to `programa.entitlements` is *not* done as part
@@ -79,11 +91,8 @@ final class MobileBridgePush: @unchecked Sendable {
     /// `CKContainer.accountStatus`) that keeps this file inert in a shipped build even though
     /// it already compiles and links against CloudKit: `CKContainer.accountStatus` alone would
     /// still report `.available` on any Mac signed into iCloud, entitlement or not, so relying
-    /// on that gate alone is not sufficient to keep this dark. Flip to `true` only after the
-    /// release pipeline embeds a provisioning profile carrying the iCloud capability (see this
-    /// milestone's report for exactly what that requires) and a real Developer-ID-signed,
-    /// notarized build has been launch-tested outside CI with the entitlement present.
-    static let releaseProvisioningComplete = false
+    /// on that gate alone is not sufficient to keep this dark.
+    static let releaseProvisioningComplete = true
 
     private init(container: CKContainer = CKContainer(identifier: MobileBridgePush.containerIdentifier)) {
         self.container = container
