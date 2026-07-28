@@ -48,6 +48,24 @@ struct PairConnectView: View {
                             .font(.footnote)
                     }
                 }
+
+                Section("Notifications") {
+                    if let message = store.iCloudStatusMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("iCloud is signed in on this iPhone.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    // CloudKit has no API to detect this, so the app cannot warn about it
+                    // directly -- it can only ever report "signed in" or "not signed in" on
+                    // this device. A mismatch delivers nothing and raises no error.
+                    Text("This iPhone and your Mac must be signed into the same iCloud account for background notifications to arrive. Programa can't detect a mismatch — check the Apple ID on both devices if notifications never show up.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             .navigationTitle("Connect to Programa")
         }

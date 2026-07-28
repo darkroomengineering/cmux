@@ -231,6 +231,7 @@
 		MOBB0003 /* MobileBridgeStreamSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0004 /* MobileBridgeStreamSupport.swift */; };
 		MOBB0005 /* MobileBridgeListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0006 /* MobileBridgeListener.swift */; };
 		MOBB0007 /* MobileBridgeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0008 /* MobileBridgeSession.swift */; };
+		MOBB0009 /* MobileBridgePush.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0010 /* MobileBridgePush.swift */; };
 		A5001100 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A5001101 /* Assets.xcassets */; };
 		A5001230 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A5001231 /* Sparkle */; };
 		MOBB1003 /* IrohLib in Frameworks */ = {isa = PBXBuildFile; productRef = MOBB1002 /* IrohLib */; };
@@ -604,6 +605,7 @@
 		MOBB0004 /* MobileBridgeStreamSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeStreamSupport.swift; sourceTree = "<group>"; };
 		MOBB0006 /* MobileBridgeListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeListener.swift; sourceTree = "<group>"; };
 		MOBB0008 /* MobileBridgeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeSession.swift; sourceTree = "<group>"; };
+		MOBB0010 /* MobileBridgePush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgePush.swift; sourceTree = "<group>"; };
 		A5001661 /* JSONCParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONCParser.swift; sourceTree = "<group>"; };
 		A5001641 /* RemoteRelayZshBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteRelayZshBootstrap.swift; sourceTree = "<group>"; };
 		818DBCD4AB69EB72573E8138 /* SidebarResizeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarResizeUITests.swift; sourceTree = "<group>"; };
@@ -1015,6 +1017,7 @@
 				MOBB0004 /* MobileBridgeStreamSupport.swift */,
 				MOBB0006 /* MobileBridgeListener.swift */,
 				MOBB0008 /* MobileBridgeSession.swift */,
+				MOBB0010 /* MobileBridgePush.swift */,
 				RVPN00000000000000000001 /* ReviewComment.swift */,
 				RVPN00000000000000000003 /* ReviewCommentSerializer.swift */,
 				RVPN00000000000000000005 /* ReviewDiffParser.swift */,
@@ -1500,6 +1503,7 @@
 				MOBB0003 /* MobileBridgeStreamSupport.swift in Sources */,
 				MOBB0005 /* MobileBridgeListener.swift in Sources */,
 				MOBB0007 /* MobileBridgeSession.swift in Sources */,
+				MOBB0009 /* MobileBridgePush.swift in Sources */,
 		);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

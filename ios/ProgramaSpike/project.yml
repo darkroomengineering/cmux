@@ -41,6 +41,23 @@ targets:
         # Required for ActivityKit -- without this the app can request a Live
         # Activity but the system silently refuses to start it.
         INFOPLIST_KEY_NSSupportsLiveActivities: YES
+        # M3: lets a silent (content-available) CloudKit push wake the app in the
+        # background to refresh the Live Activity. Space-separated is Xcode's
+        # synthesis format for array-valued Info.plist keys via INFOPLIST_KEY_*.
+        INFOPLIST_KEY_UIBackgroundModes: "remote-notification"
+    entitlements:
+      path: ProgramaSpike/ProgramaSpike.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          # Shared with the macOS app so the Mac can write and the phone can
+          # read the same records. Requires a one-time Developer portal step:
+          # the container must exist and iCloud must be enabled on BOTH App IDs
+          # (com.darkroom.programa and com.darkroom.programa.spike). Xcode's
+          # automatic signing cannot create a container whose name does not
+          # match the bundle id, so `-allowProvisioningUpdates` will not do it.
+          - iCloud.com.darkroom.programa
+        com.apple.developer.icloud-services:
+          - CloudKit
 
   ProgramaSpikeWidgets:
     type: app-extension
