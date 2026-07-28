@@ -465,11 +465,36 @@ extension ProgramaCLI {
             // case that leaves them stuck on.
             do {
                 let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
-                let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+
+                // Deliberately not `try`, for the same reason as the surfaceId resolution
+                // further down -- and this was the remaining half of that bug. A throw here
+                // aborted the hook before any of the three clears below, and the catch at the
+                // bottom treats teardown-shaped errors as benign: it prints "OK", so Claude
+                // Code sees a perfectly healthy hook while the red "blocked" badge stays lit
+                // with nothing left to turn it off.
+                //
+                // Nothing recovers from that. There is no TTL or watchdog on agent state, and
+                // AgentScreenDetectionEngine deliberately refuses to touch a surface a hook has
+                // claimed (its `hooksOwned` guard), so the terminal can be visibly running a
+                // command while the sidebar still reads "Claude needs your permission" until the
+                // session ends.
+                //
+                // Falling back to the identifiers the Notification hook recorded is the whole
+                // point: those are the exact workspace and surface it marked blocked, so they
+                // are the right things to clear even when a live re-resolution is unavailable.
+                let resolvedWorkspaceId = (try? resolvePreferredWorkspaceIdForClaudeHook(
                     preferred: mappedSession?.workspaceId,
                     fallback: workspaceArg,
                     client: client
-                )
+                ))
+                    ?? nonEmptyClaudeHookIdentifier(mappedSession?.workspaceId).flatMap { isUUID($0) ? $0 : nil }
+                    ?? nonEmptyClaudeHookIdentifier(workspaceArg).flatMap { isUUID($0) ? $0 : nil }
+
+                // Only when there is genuinely no workspace to name is there nothing to clear.
+                guard let workspaceId = resolvedWorkspaceId else {
+                    print("OK")
+                    return
+                }
                 let claudePid = mappedSession?.pid
 
                 // AskUserQuestion means Claude is about to ask the user something.
