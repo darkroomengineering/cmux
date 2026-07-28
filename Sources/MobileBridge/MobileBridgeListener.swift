@@ -149,7 +149,13 @@ final class MobileBridgeListener: @unchecked Sendable {
             stateLock.unlock()
 
 #if DEBUG
-            dlog("mobileBridge.listening node=\(ep.id())")
+            // Log the dialable ticket, not just the node id: without it there is
+            // no way to reach this bridge except by opening Settings and
+            // starting a pairing window, which makes the bridge untestable from
+            // a script. The ticket is an address, not a secret -- admission
+            // still requires the pairing token or an allowlisted device.
+            let debugTicket = (try? EndpointTicket.fromAddr(addr: ep.addr()))?.description ?? "<unavailable>"
+            dlog("mobileBridge.listening node=\(ep.id()) ticket=\(debugTicket)")
 #endif
 
             let task = Task { [weak self] in

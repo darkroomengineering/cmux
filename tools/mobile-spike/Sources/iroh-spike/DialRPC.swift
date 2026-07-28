@@ -17,7 +17,7 @@ func runDialRPC(ticket ticketString: String, token: String?, requestJSON: String
     let endpoint = try await bindEndpoint()
 
     print("Dialing \(targetAddress.id())...")
-    let connection = try await endpoint.connect(addr: targetAddress, alpn: spikeALPN)
+    let connection = try await endpoint.connect(addr: targetAddress, alpn: bridgeALPN)
     try connection.setMaxConcurrentBiStreams(count: 1)
     try connection.setMaxConcurrentUniStreams(count: 0)
     try await connection.authorizeNatTraversal()

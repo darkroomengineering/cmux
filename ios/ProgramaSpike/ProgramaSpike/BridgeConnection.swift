@@ -33,7 +33,12 @@ actor BridgeConnection {
     // Bridge.swift, `spikeALPN`) currently listens on. Duplicated rather
     // than imported -- separate build graphs, same convention already used
     // by this target's `SpikeError`/`PathClassifier` duplication.
-    private static let alpn = Data("programa/spike/1".utf8)
+    // Must match the in-app bridge's ALPN exactly
+    // (Sources/MobileBridge/MobileBridgeListener.swift). A mismatch is not a
+    // soft failure: iroh aborts the handshake with "peer doesn't support any
+    // known protocol", which reads like a transport fault rather than a
+    // version skew between the two halves of this feature.
+    private static let alpn = Data("programa/mobile-bridge/1".utf8)
     private static let pathPollInterval: Duration = .seconds(3)
 
     private(set) var phase: Phase = .disconnected

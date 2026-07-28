@@ -212,9 +212,22 @@ final class AppStore {
                 reconnectTask = nil
                 await handleConnected()
             case let .failed(reason):
-                connectionBanner = .reconnecting
                 lastSyncError = reason
-                scheduleReconnect()
+                if Self.isPairingRejection(reason) {
+                    // Permanent, not transient: this device is not on the Mac's
+                    // allowlist, so reconnecting with the same (tokenless)
+                    // ticket will be refused every time. Worse, while the retry
+                    // loop runs the Connect button stays disabled, so the user
+                    // cannot enter the token that would actually fix it. Stop,
+                    // and put them back on the pairing screen.
+                    reconnectTask?.cancel()
+                    reconnectTask = nil
+                    connectionBanner = .disconnected
+                    stage = .pairing
+                } else {
+                    connectionBanner = .reconnecting
+                    scheduleReconnect()
+                }
             }
         }
     }
@@ -316,6 +329,13 @@ final class AppStore {
         }
         workspaces = newWorkspaces
         surfacesByWorkspace = newSurfaces
+    }
+
+    /// `not_paired` / `pairing_failed` from the bridge, in whatever wrapping
+    /// the error arrives with. Matched on substring because the reason reaches
+    /// here as an interpolated error description rather than a typed code.
+    private nonisolated static func isPairingRejection(_ reason: String) -> Bool {
+        reason.contains("not_paired") || reason.contains("pairing_failed")
     }
 
     private func scheduleReconnect() {

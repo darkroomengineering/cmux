@@ -5,6 +5,12 @@ import IrohLib
 /// other iroh ALPN (including cmux's own `cmux/direct-transport-gate/1`).
 let spikeALPN = Data("programa/spike/1".utf8)
 
+/// The bridge protocol the shipped in-app bridge listens on
+/// (`Sources/MobileBridge/MobileBridgeListener.swift`). `bridge`/`dial-rpc`
+/// must use this; `listen`/`dial` keep `spikeALPN` since they are a bare
+/// transport probe with no bridge on either end.
+let bridgeALPN = Data("programa/mobile-bridge/1".utf8)
+
 /// The exact bytes `dial` sends and expects to see echoed back verbatim.
 let probeMessage = Data("programa-spike-probe".utf8)
 

@@ -82,7 +82,7 @@ private func handleBridgeConnection(
     do {
         let accepting = try await incoming.accept()
         let remoteALPN = try await accepting.alpn()
-        guard remoteALPN == spikeALPN else {
+        guard remoteALPN == bridgeALPN else {
             FileHandle.standardError.write(Data("bridge: rejected connection: unexpected ALPN\n".utf8))
             return
         }
