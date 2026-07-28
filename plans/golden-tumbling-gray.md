@@ -440,18 +440,37 @@ The release pipeline can embed a Developer ID provisioning profile
 verified with `scripts/verify-provision-profile.sh`). None of this enables CloudKit by
 itself — `programa.entitlements` still carries no iCloud keys, and
 `MobileBridgePush.releaseProvisioningComplete` stays `false` until the steps below are done.
-**Still required, in order, before the iCloud entitlement can be added:**
+**Steps 1 and 2 were completed on 2026-07-28.** What exists at Apple now:
 
-1. **Apple Developer portal, one-time:** register the iCloud container (e.g.
-   `iCloud.com.darkroom.programa`), enable the iCloud capability (CloudKit) on the app ID
-   `com.darkroom.programa`, then generate a **Developer ID with CloudKit** provisioning
-   profile for that app ID. This is a manual portal action — there is no CLI/API path scripted
-   here, and it must be redone whenever the container or app ID's capabilities change.
-2. **Export and store the profile:** download the `.provisionprofile`, base64-encode it
-   (`base64 -i profile.provisionprofile | pbcopy`), and add it as the
-   `APPLE_PROVISION_PROFILE_BASE64` GitHub secret. Treat it like the existing signing
-   secrets — it is not sensitive in the same way as the `.p12` password, but it is
-   team/account-specific and should not be committed.
+- iCloud container `iCloud.com.darkroom.programa` — Active.
+- App ID `Programa` / `com.darkroom.programa` — registered with the iCloud capability
+  (CloudKit) and the container attached. It did **not** exist before: the Mac app is
+  Developer-ID-signed with no provisioning, so nothing had ever needed one.
+- Provisioning profile `Programa Developer ID CloudKit` — Developer ID Application, platform
+  `OSX`, `ProvisionsAllDevices: true`, expires 2044-07-23. Verified to carry
+  `com.apple.application-identifier = ZNHHMX2RP6.com.darkroom.programa`,
+  `com.apple.developer.icloud-services = *`, and
+  `com.apple.developer.icloud-container-identifiers = [iCloud.com.darkroom.programa]`.
+  Stored as the `APPLE_PROVISION_PROFILE_BASE64` GitHub secret.
+- iOS App ID `com.darkroom.programa.spike` already had the same container attached, so it
+  needed no change — but its profiles were minted *before* the attachment and carry no
+  containers. Xcode regenerates them on the next companion build; verify before assuming
+  the phone can subscribe.
+
+Two traps worth recording, both of which cost time here:
+
+- **Xcode's Signing & Capabilities editor cannot finish this.** Setting a team on the
+  `GhosttyTabs` target makes Xcode attempt an automatic *Development* profile, which fails
+  with "Device … isn't registered in your developer account". That error is a dead end, not a
+  blocker to solve: Developer ID profiles set `ProvisionsAllDevices`, so no device
+  registration is involved. The editor also rewrites ~2,700 lines of `project.pbxproj`, adds
+  `CODE_SIGN_ENTITLEMENTS`, and reformats every shared scheme — all of which conflicts with
+  this project's post-build `codesign --entitlements` approach and must be reverted.
+- **Registering the App ID must happen before the profile.** The profile wizard only lists
+  existing App IDs, and `com.darkroom.programa` was not among them.
+
+**Still required, in order:**
+
 3. **Add the entitlement** to `programa.entitlements`
    (`com.apple.developer.icloud-services`, `com.apple.developer.icloud-container-identifiers`)
    in the same change that flips `MobileBridgePush.releaseProvisioningComplete` to `true` —
