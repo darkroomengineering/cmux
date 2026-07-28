@@ -522,7 +522,7 @@ Two traps worth recording, both of which cost time here:
    auto-ship), install it, and confirm the app actually launches and CloudKit initializes
    before that commit is allowed to reach `main`.
 
-### The schema does not exist yet, and Production will not create it for you
+### The schema had to be deployed by hand — Production will not create it for you
 
 Verified 2026-07-28 in CloudKit Console: container `iCloud.com.darkroom.programa` contains
 exactly one record type, `Users`, in **both** the Development and Production environments.
@@ -545,10 +545,9 @@ Why it will not fix itself once the Mac starts writing:
   each other's records. End-to-end verification needs a Release/TestFlight build of the
   companion, or a deliberately dev-signed Mac writer.
 
-**Required, and deliberately left for a human — deploying schema to Production is not
-reversible in the way normal config is.** In CloudKit Console, Development environment,
-create record type `AgentStatus` with the fields `MobileBridgePush.performSave` actually
-writes (`Sources/MobileBridge/MobileBridgePush.swift:209-221`):
+**Resolved 2026-07-28.** `AgentStatus` was created in Development and deployed to Production,
+with the fields `MobileBridgePush.performSave` actually writes
+(`Sources/MobileBridge/MobileBridgePush.swift:209-221`):
 
 | field | type |
 |---|---|
@@ -556,13 +555,20 @@ writes (`Sources/MobileBridge/MobileBridgePush.swift:209-221`):
 | `workingCount` | Int64 |
 | `mostRecentBlockedWorkspaceTitle` | String |
 
-The record name is fixed at `agent-status-summary` (a record ID, not a field). The
-`CKQuerySubscription` needs the type queryable, so add the queryable index CloudKit prompts
-for. Then *Deploy Schema Changes…* to Production.
+The record name is fixed at `agent-status-summary` — a record ID, not a field, so it is not
+part of the schema. The `CKQuerySubscription` uses `NSPredicate(value: true)`
+(`ios/ProgramaSpike/ProgramaSpike/CloudKitPush.swift:46-51`), which requires the type to be
+queryable, so a QUERYABLE single-field index on `recordName` was added alongside it.
 
-Until that is done, no amount of correct entitlement or provisioning makes a notification
-arrive. This was invisible before now because `releaseProvisioningComplete` kept the Mac
-writer dark, so nothing had ever attempted the first write.
+Verified in the Production environment after deploying: `AgentStatus`, 9 fields, `recordName`
+REFERENCE Queryable, and all three custom fields present. The deployment diff contained only
+that record type, that index, and the three default security-role entries CloudKit attaches
+to any new type.
+
+**Still unverified on device:** the phone was disconnected before the subscription could be
+re-attempted, so `CKError 15/2000` has not yet been observed to clear. That is the first thing
+to check when the companion is next run — and note the environment split above still applies,
+so a Debug phone build exercises Development, not the Production schema the Mac will write to.
 
 **Known limit — this is an iOS-only bet.** CloudKit cannot serve an Android companion. If
 Android happens (plausible if Programa reaches Windows), push gets rebuilt around a relay that
