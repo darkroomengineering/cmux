@@ -15,8 +15,10 @@ import Foundation
 /// - `MobileBridgeSettings` being anything other than `.off` -- users who never turned on the
 ///   phone companion generate zero CloudKit traffic.
 /// - `CKContainer.accountStatus == .available` -- silently no-ops (logs once) otherwise, e.g.
-///   not signed into iCloud on this Mac, or (today) the container entitlement not yet present
-///   -- see the macOS entitlements note in this milestone's report.
+///   not signed into iCloud on this Mac. Note this gate does *not* cover a missing container
+///   entitlement: `CKContainer(identifier:)` traps before `accountStatus` is ever consulted,
+///   which is why the container is built lazily behind the guards (see `makeContainer`) and
+///   why `releaseProvisioningComplete` must move in lockstep with the entitlement itself.
 ///
 /// Trigger point: called directly from `Workspace.updatePanelAgentState` /
 /// `clearPanelAgentState` / `resetSidebarContext` (`Workspace+SidebarTelemetry.swift`),
@@ -44,7 +46,16 @@ final class MobileBridgePush: @unchecked Sendable {
         var mostRecentBlockedWorkspaceTitle: String?
     }
 
-    private let container: CKContainer
+    /// Deferred rather than built in `init`: `CKContainer(identifier:)` traps when the running
+    /// process is not actually entitled for that container, and `shared` is constructed on the
+    /// first `noteAgentStateChanged` call -- i.e. *before* any of the guards in that method can
+    /// run. Every ad-hoc-signed build (`codesign --sign -`, which is every Debug and CI test
+    /// host) is unentitled, so building the container eagerly crashed the host on the first
+    /// agent-state transition regardless of the kill switch below. Resolved lazily on `queue`
+    /// at the point of an actual write instead, which is the first moment the container is
+    /// genuinely needed and the only place it is used.
+    private let makeContainer: () -> CKContainer
+    private var resolvedContainer: CKContainer?
 
     /// Serializes all mutable state below (`trackedBlockedTitle` through
     /// `didLogAccountUnavailable`). Every access to that state -- including from CloudKit's
@@ -94,8 +105,21 @@ final class MobileBridgePush: @unchecked Sendable {
     /// on that gate alone is not sufficient to keep this dark.
     static let releaseProvisioningComplete = true
 
-    private init(container: CKContainer = CKContainer(identifier: MobileBridgePush.containerIdentifier)) {
-        self.container = container
+    private init(
+        makeContainer: @escaping () -> CKContainer = {
+            CKContainer(identifier: MobileBridgePush.containerIdentifier)
+        }
+    ) {
+        self.makeContainer = makeContainer
+    }
+
+    /// `queue`-confined. Both call sites (`checkAccountStatusAndSave`, `performSave`) already
+    /// run there, so the memoisation needs no further synchronisation.
+    private var container: CKContainer {
+        if let resolvedContainer { return resolvedContainer }
+        let container = makeContainer()
+        resolvedContainer = container
+        return container
     }
 
     /// Call on every agent-state transition (set or clear) that already calls
