@@ -28,6 +28,18 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // Signalled from Foundation's own termination callback rather than by parking a
+        // `DispatchQueue.global()` worker in `waitUntilExit()`. The old shape blocked one
+        // pooled thread for the entire lifetime of every child process; run enough of these
+        // concurrently (the suite runs in parallel) and the global pool saturates, so the
+        // block that signals this semaphore can sit unscheduled long past the child's actual
+        // exit. The test then reports a timeout at exactly its configured limit for a
+        // subprocess that finished in milliseconds -- observed repeatedly on CI as 90s
+        // failures of scripts that run in ~15ms locally. `terminationHandler` is delivered on
+        // Foundation's private queue and blocks nothing. Must be set before `run()`.
+        let exitSignal = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exitSignal.signal() }
+
         do {
             try process.run()
         } catch {
@@ -37,12 +49,6 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
                 stderr: String(describing: error),
                 timedOut: false
             )
-        }
-
-        let exitSignal = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async {
-            process.waitUntilExit()
-            exitSignal.signal()
         }
 
         let timedOut = exitSignal.wait(timeout: .now() + timeout) == .timedOut
@@ -1486,6 +1492,11 @@ final class CLINotifyProcessIntegrationTests: XCTestCase {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // See the sibling `runProcess` above for why this uses `terminationHandler` instead of
+        // parking a pooled thread in `waitUntilExit()`.
+        let exitSignal = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exitSignal.signal() }
+
         do {
             try process.run()
         } catch {
@@ -1495,12 +1506,6 @@ final class CLINotifyProcessIntegrationTests: XCTestCase {
                 stderr: String(describing: error),
                 timedOut: false
             )
-        }
-
-        let exitSignal = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async {
-            process.waitUntilExit()
-            exitSignal.signal()
         }
 
         let timedOut = exitSignal.wait(timeout: .now() + timeout) == .timedOut
