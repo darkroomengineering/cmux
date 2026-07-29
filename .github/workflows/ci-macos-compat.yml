@@ -91,7 +91,15 @@ jobs:
     needs: change-detection
     if: needs.change-detection.outputs.run_compat_tests == 'true'
     strategy:
-      fail-fast: true
+      # The two legs are independent OS-compatibility checks, so cancelling one
+      # because the other failed destroys the exact signal this job exists to
+      # produce. Worse, GitHub reports the cancelled leg as a *failure* to
+      # `gh pr checks`, so a leg that was passing when it got killed reads as
+      # broken. That cost real debugging time: two separate "macos-15 is failing
+      # everywhere" conclusions turned out to be macos-15 being cancelled
+      # mid-pass after macos-26 failed, only visible by reading the raw job log.
+      # Both legs should always run to completion and report independently.
+      fail-fast: false
       matrix:
         include:
           - os: macos-15
