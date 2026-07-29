@@ -53,6 +53,27 @@ targets:
       properties:
         CFBundleDisplayName: "Programa"
         UILaunchScreen: {}
+        # Required, not optional: TARGETED_DEVICE_FAMILY is "1,2" so the app
+        # claims iPad support, and App Store validation HARD FAILS an iPad-capable
+        # bundle that declares no orientations ("Invalid bundle. No orientations
+        # were specified"). It surfaces during archive only as a warning
+        # ("All interface orientations must be supported unless the app requires
+        # full screen"), so it is easy to ship past locally and only discover at
+        # upload.
+        #
+        # iPad gets all four because that is what iPad multitasking requires.
+        # iPhone omits upside-down, which is conventional and what Apple's own
+        # apps do. If this ever becomes iPhone-only, drop TARGETED_DEVICE_FAMILY
+        # to "1" and the ~ipad variant with it.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         # Export-compliance declaration required by App Store Connect. The app
         # uses only standard QUIC/TLS (via iroh) and Apple's own CloudKit --
         # no proprietary or non-standard cryptography -- which is the exempt
