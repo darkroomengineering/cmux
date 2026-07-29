@@ -57,8 +57,9 @@ sign_if_present "$app_path/Contents/Resources/bin/ghostty"
 # exact AMFI-kill failure mode this comment is warning about.
 #
 # When PROGRAMA_PROVISION_PROFILE is unset or the file doesn't exist, this is
-# a silent no-op: the current no-profile, no-iCloud build keeps working
-# exactly as it does today.
+# a no-op here — but it is no longer harmless, because the app does now declare
+# restricted entitlements. scripts/verify-provision-profile.sh runs after this
+# and fails the build in that case rather than letting an AMFI-killed app ship.
 if [[ -n "${PROGRAMA_PROVISION_PROFILE:-}" && -f "${PROGRAMA_PROVISION_PROFILE:-}" ]]; then
   echo "Embedding provisioning profile from $PROGRAMA_PROVISION_PROFILE"
   cp "$PROGRAMA_PROVISION_PROFILE" "$app_path/Contents/embedded.provisionprofile"
