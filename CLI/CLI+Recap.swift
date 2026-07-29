@@ -87,7 +87,37 @@ extension ProgramaCLI {
         guard let root = recapGitTopLevelDirectory(at: cwd) else {
             throw CLIError(message: "recap: '\(cwd)' is not inside a git repository")
         }
-        return URL(fileURLWithPath: root).appendingPathComponent(".programa/recaps")
+        let programaDirectory = URL(fileURLWithPath: root).appendingPathComponent(".programa")
+        ProgramaCLI.ensureDirectoryIsSelfIgnoring(programaDirectory)
+        return programaDirectory.appendingPathComponent("recaps")
+    }
+
+    /// `.programa/` lives in the *user's own* repository, so it must not surface as untracked
+    /// noise that a broad `git add -A` sweeps into their commit -- which is exactly what
+    /// happened twice in one session before this existed. A `.gitignore` of `*` placed inside
+    /// the directory makes it self-ignoring for every user with no per-repo `.gitignore` entry
+    /// and no per-machine global excludes. A recap genuinely worth keeping can still be
+    /// committed deliberately with `git add -f`.
+    ///
+    /// Deliberately a *heal*, not a create: nothing in this codebase writes `.programa/` (agents
+    /// write recap markdown there with their own file tools), so there is no creation site to
+    /// hook. Acting only when the directory already exists means a recap command never
+    /// materialises surprise directories in a repo that has none -- it just protects the ones
+    /// that do. Consequence worth knowing: a repo whose recaps are never opened or listed stays
+    /// unprotected until the first `recap` command runs.
+    ///
+    /// Best effort by design. `recap open`/`list` are read commands; failing to write the ignore
+    /// file (read-only checkout, permissions, a `.gitignore` the user wrote themselves) must
+    /// never stop someone opening a recap they already have.
+    static func ensureDirectoryIsSelfIgnoring(_ directory: URL) {
+        let fileManager = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return }
+
+        let ignoreFile = directory.appendingPathComponent(".gitignore")
+        guard !fileManager.fileExists(atPath: ignoreFile.path) else { return }
+        try? Data("*\n".utf8).write(to: ignoreFile)
     }
 
     private func recapGitTopLevelDirectory(at directory: String) -> String? {
