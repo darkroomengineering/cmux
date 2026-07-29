@@ -123,6 +123,27 @@ if ! command -v xcodegen >/dev/null 2>&1; then
 fi
 (cd "$IOS_DIR" && xcodegen generate)
 
+# Fail in seconds rather than after a ~10 minute archive and a consumed upload
+# slot. An iPad-capable bundle (TARGETED_DEVICE_FAMILY "1,2") with no declared
+# orientations passes the build with only a warning and then HARD FAILS App Store
+# validation: "Invalid bundle. No orientations were specified". That cost two
+# round trips on the first manual upload, including one that had already created
+# the App Store Connect record.
+SOURCE_PLIST="$IOS_DIR/ProgramaSpike/Info.plist"
+DEVICE_FAMILY="$(grep -m1 'TARGETED_DEVICE_FAMILY' "$IOS_DIR/project.yml" | sed 's/.*"\(.*\)".*/\1/')"
+if [[ "$DEVICE_FAMILY" == *"2"* ]]; then
+  for key in UISupportedInterfaceOrientations "UISupportedInterfaceOrientations~ipad"; do
+    if ! /usr/libexec/PlistBuddy -c "Print :$key" "$SOURCE_PLIST" >/dev/null 2>&1; then
+      echo "FAIL: $SOURCE_PLIST declares no :$key, but TARGETED_DEVICE_FAMILY is" >&2
+      echo "'$DEVICE_FAMILY' (iPad-capable). App Store validation rejects that bundle." >&2
+      echo "Declare it in project.yml under the app target's info.properties, or drop" >&2
+      echo "TARGETED_DEVICE_FAMILY to \"1\" if the app should be iPhone-only." >&2
+      exit 1
+    fi
+  done
+  echo "Orientations declared for both iPhone and iPad."
+fi
+
 # -------------------------------------------------------------------- archive
 xcodebuild \
   -project "$IOS_DIR/ProgramaSpike.xcodeproj" \
