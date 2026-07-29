@@ -1,0 +1,103 @@
+name: iOS TestFlight
+
+# Manual only, deliberately. Unlike the macOS app — where every green CI run on
+# main auto-ships — a TestFlight upload consumes a build number that can never be
+# reused and pushes to real testers' devices. That should be a decision, not a
+# side effect of merging.
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload to TestFlight (false = build and verify only)"
+        type: boolean
+        default: false
+
+concurrency:
+  # Build numbers must be monotonic and are derived from the run id, so two
+  # concurrent runs would race for the same slot in App Store Connect.
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        # No submodules: the iOS app depends on vendor/CmuxIrohTransport, which is
+        # vendored in-tree, and on iroh-ffi via SwiftPM. It does not need the
+        # ghostty submodule, and skipping it saves several minutes.
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort | tail -n 1)"
+          if [ -z "$XCODE_APP" ]; then XCODE_APP="/Applications/Xcode.app"; fi
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          echo "DEVELOPER_DIR=$XCODE_APP/Contents/Developer" >> "$GITHUB_ENV"
+          echo "Selected: $XCODE_APP"
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Materialise signing assets
+        env:
+          IOS_DIST_CERT_BASE64: ${{ secrets.APPLE_IOS_DIST_CERT_BASE64 }}
+          IOS_APP_PROFILE_BASE64: ${{ secrets.APPLE_IOS_APP_PROFILE_BASE64 }}
+          IOS_WIDGET_PROFILE_BASE64: ${{ secrets.APPLE_IOS_WIDGET_PROFILE_BASE64 }}
+          ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_CONNECT_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for v in IOS_DIST_CERT_BASE64 IOS_APP_PROFILE_BASE64 IOS_WIDGET_PROFILE_BASE64; do
+            [ -z "${!v}" ] && missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "Missing required secret(s):$missing" >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/signing"
+          echo "$IOS_DIST_CERT_BASE64"      | base64 --decode > "$RUNNER_TEMP/signing/dist.p12"
+          echo "$IOS_APP_PROFILE_BASE64"    | base64 --decode > "$RUNNER_TEMP/signing/app.mobileprovision"
+          echo "$IOS_WIDGET_PROFILE_BASE64" | base64 --decode > "$RUNNER_TEMP/signing/widget.mobileprovision"
+          if [ -n "$ASC_KEY_P8_BASE64" ]; then
+            echo "$ASC_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/signing/asc.p8"
+          fi
+
+      - name: Build, sign and verify
+        env:
+          PROGRAMA_IOS_DIST_CERT_P12: ${{ runner.temp }}/signing/dist.p12
+          PROGRAMA_IOS_DIST_CERT_PASSWORD: ${{ secrets.APPLE_IOS_DIST_CERT_PASSWORD }}
+          PROGRAMA_IOS_APP_PROFILE: ${{ runner.temp }}/signing/app.mobileprovision
+          PROGRAMA_IOS_WIDGET_PROFILE: ${{ runner.temp }}/signing/widget.mobileprovision
+          PROGRAMA_IOS_TEAM_ID: ZNHHMX2RP6
+          PROGRAMA_ASC_KEY_ID: ${{ secrets.APPSTORE_CONNECT_KEY_ID }}
+          PROGRAMA_ASC_ISSUER_ID: ${{ secrets.APPSTORE_CONNECT_ISSUER_ID }}
+          PROGRAMA_ASC_KEY_P8: ${{ runner.temp }}/signing/asc.p8
+          PROGRAMA_IOS_UPLOAD: ${{ inputs.upload && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          # Monotonic and unique per run, matching the macOS release lane. App Store
+          # Connect rejects a reused CFBundleVersion, and the committed value in
+          # project.yml is only a local-dev default.
+          RUN_ATTEMPT="$(printf '%02d' "${GITHUB_RUN_ATTEMPT:-1}")"
+          export PROGRAMA_IOS_BUILD_NUMBER="${GITHUB_RUN_ID}${RUN_ATTEMPT}"
+          echo "Build number: $PROGRAMA_IOS_BUILD_NUMBER"
+          chmod +x scripts/build-ios-testflight.sh
+          ./scripts/build-ios-testflight.sh
+
+      - name: Upload ipa artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: programa-ios-${{ github.run_id }}
+          path: .ios-build/export/*.ipa
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Clean up signing material
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/signing" "$HOME/private_keys" || true
+          security delete-keychain ios-build.keychain >/dev/null 2>&1 || true
