@@ -37,5 +37,32 @@ sign_if_present "$app_path/Contents/PlugIns/ProgramaDockTilePlugin.plugin"
 sign_if_present "$app_path/Contents/Resources/bin/programa"
 sign_if_present "$app_path/Contents/Resources/bin/ghostty"
 
+# Embed a Developer ID provisioning profile if one was supplied via
+# PROGRAMA_PROVISION_PROFILE. This is required for restricted entitlements
+# (e.g. CloudKit's com.apple.developer.icloud-services /
+# icloud-container-identifiers) to survive AMFI's launch-time check: Apple
+# evaluates the profile against the app's entitlements both at install time
+# and at every launch, so an app carrying a restricted entitlement but no
+# embedded profile signs and notarizes fine and is then killed at launch
+# (AMFI, POSIX 163). Xcode's normal provisioning flow never sees this
+# because CODE_SIGN_ENTITLEMENTS is empty in the project; entitlements are
+# applied here, post-build, directly by codesign.
+#
+# Ordering is load-bearing: this MUST run before the final `codesign` of the
+# app bundle below. The code signature seals Contents/embedded.provisionprofile
+# like any other bundle resource, so copying the profile in after signing
+# would invalidate the seal and `codesign --verify --deep --strict` (or
+# Gatekeeper at install time) would reject the app. Do not move this after
+# the app is signed, and do not "simplify" it away — that reintroduces the
+# exact AMFI-kill failure mode this comment is warning about.
+#
+# When PROGRAMA_PROVISION_PROFILE is unset or the file doesn't exist, this is
+# a silent no-op: the current no-profile, no-iCloud build keeps working
+# exactly as it does today.
+if [[ -n "${PROGRAMA_PROVISION_PROFILE:-}" && -f "${PROGRAMA_PROVISION_PROFILE:-}" ]]; then
+  echo "Embedding provisioning profile from $PROGRAMA_PROVISION_PROFILE"
+  cp "$PROGRAMA_PROVISION_PROFILE" "$app_path/Contents/embedded.provisionprofile"
+fi
+
 "${codesign[@]}" --entitlements "$app_entitlements" "$app_path"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"

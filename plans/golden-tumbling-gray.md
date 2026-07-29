@@ -105,6 +105,41 @@ Three screens. Anything beyond this is out of scope for v1.
 Explicitly deferred: live terminal mode, file browser, source control / diff review, browser
 session view, workspace creation.
 
+### Tappable answers instead of a free-text box (scoped 2026-07-28, not built)
+
+Requested after using the app: when an agent is blocked, the phone should show the agent's
+actual question and its choices as buttons, rather than only offering a text field. Answering
+"1" to a question you cannot see is the current experience.
+
+**The two blocked cases are not equally ready, and that is the whole finding.**
+
+*AskUserQuestion — the options already exist, structured.* `describeAskUserQuestion`
+(`CLI/CLI+Hooks.swift:725-748`) already reads `tool_input.questions[].question` and
+`options[].label` out of the `PreToolUse` payload. It then **flattens them into one display
+string** (`"[Label A] [Label B]"`, line 742) and stores that as `lastBody` in the session
+store. So the structure is captured and immediately thrown away. Making these tappable is
+plumbing, not new capture: keep the array, carry it through the session store, expose it on
+the v2 surface/agent-state payload, render buttons.
+
+*Permission prompts — no structured options exist.* This is the far more common blocked case,
+and `summarizeClaudeHookNotification` (`CLI/CLI+Hooks.swift:1225-1250`) only ever sees free
+text: it scrapes `message`/`body`/`text`/`prompt` and truncates to 180 chars. Claude Code does
+not hand the hook a choice list here. The realistic move is **not** to parse the prompt text
+but to model the fixed, known set of permission answers as actions, and accept that the
+button labels are ours rather than the agent's.
+
+**Sending the answer back is the risky half.** The bridge allow-list already carries
+`surface.send_key` and `surface.send_text`, so a tap becomes a key sequence into the TUI.
+That is fire-and-forget into a live terminal: if the prompt has already been answered at the
+desk, or the agent moved on, those keystrokes land somewhere arbitrary — potentially
+selecting an unrelated menu item. Any implementation needs a staleness guard: carry an
+identifier for the exact prompt the buttons were rendered from, and have the Mac reject the
+tap if the surface's pending prompt is no longer that one. Without it this feature can
+silently take destructive actions, which is strictly worse than the text box it replaces.
+
+**Order of work:** AskUserQuestion first (structure already exists, low risk), the staleness
+guard second, permission prompts last. Do not ship any of it before the guard.
+
 ---
 
 ## Layer strategy
@@ -383,9 +418,163 @@ Pairing flow, workspace list with state badges from `surface.list` + live `subsc
 detail with `agent.prompt` entry, Live Activity updating while connected.
 *Touches:* new iOS app target, new small Swift package consuming only the vendored transport.
 
-**M3 — Remote push. 1–2 weeks, gated on the decision above.**
-Device-token registration, Mac-side trigger wired to the existing `blocked` transition (reuse
-the classifier — no new detection), NSE with encrypted payload.
+**M3 — Remote push via CloudKit. 1–2 weeks.** Decided 2026-07-28 after research.
+
+**Why CloudKit, and why not the obvious alternatives.** APNs tokens are bound to the app's
+bundle ID and Team ID, so there is no per-user key: any provider pushing to our companion must
+hold *our* `.p8`. Programa is publicly distributed, so shipping that key makes it extractable.
+CloudKit escapes this entirely — each user's Mac writes to *their own* iCloud private database,
+their own phone is subscribed, Apple delivers. No key distributed, no infrastructure we run,
+per-user isolation by construction.
+
+Research findings that settled it:
+
+- **Happy Coder** claims "encrypted, we can't see the content" but
+  `packages/happy-server/sources/app/push/pushSend.ts` POSTs **plaintext** title/body to Expo's
+  public API. Expo holds the APNs key — including for self-hosters, since the push token is
+  minted by Expo. Their E2E encryption covers message content, not notifications.
+- **Home Assistant** — the closest analogue (thousands of self-hosted servers, one public iOS
+  app) — routes through a **centrally-operated relay**. `homeassistant/components/mobile_app/
+  notify.py` POSTs plaintext title/body to a `push_url`; HA core holds no APNs key. Free,
+  500/day/target, not gated behind Nabu Casa. Notably `push_notification.py` tries a *local*
+  channel first and only falls back to cloud push after ~10s — the same p2p-first shape we have.
+- **Orca** does **no real push**: `mobile/src/notifications/` uses
+  `scheduleNotificationAsync(trigger: nil)` — local only, while a live RPC connection exists.
+  Their "no cloud relay" claim is true because a backgrounded phone is never woken.
+
+**Nobody solves this without a relay or without giving up backgrounded wake.** CloudKit is the
+only found path that gets both.
+
+**Design:**
+
+1. One `CKRecord` in the user's **private** database holding current blocked-agent summaries.
+2. `CKQuerySubscription` created by the iOS app at pairing, with **both**
+   `alertBody` (no `soundName`) **and** `shouldSendContentAvailable = true`. The alert promotes
+   the push to the reliable high-priority channel and shows a lock-screen line without buzzing;
+   the same delivery wakes the app to refresh its Live Activity locally.
+3. **Alert text stays generic** ("An agent needs you"). Workspace names live only in the record,
+   inside the user's own private DB — so the payload transiting Apple carries nothing
+   meaningful. Stronger than Happy, which sends full plaintext to a third party.
+4. **Foreground reconciliation is mandatory.** Silent pushes are coalesced to the latest,
+   throttled ("two or three per hour"), and **discarded entirely after a force-quit**. The app
+   must re-read the record and rebuild Live Activity state on every foreground.
+5. **Gate on `CKContainer.accountStatus == .available`** and check both devices share an Apple
+   ID during pairing. Mismatched accounts deliver nothing and raise **no error** — a silent
+   failure mode.
+
+**Live Activities are demoted, not deleted.** The notification is the contract; the Live
+Activity is a bonus that refreshes when the silent push gets through. It is iOS-only and its
+freshness rides the least reliable channel Apple offers, so it gets no further investment.
+
+### Provisioning-profile groundwork done now, entitlement flip still gated
+
+The release pipeline can embed a Developer ID provisioning profile
+(`scripts/sign-release-app.sh` copies `$PROGRAMA_PROVISION_PROFILE` to
+`Contents/embedded.provisionprofile` before the app is signed, wired through
+`.github/workflows/release.yml` via an optional `APPLE_PROVISION_PROFILE_BASE64` secret,
+verified with `scripts/verify-provision-profile.sh`). None of this enables CloudKit by
+itself — `programa.entitlements` still carries no iCloud keys, and
+`MobileBridgePush.releaseProvisioningComplete` stays `false` until the steps below are done.
+**Steps 1 and 2 were completed on 2026-07-28.** What exists at Apple now:
+
+- iCloud container `iCloud.com.darkroom.programa` — Active.
+- App ID `Programa` / `com.darkroom.programa` — registered with the iCloud capability
+  (CloudKit) and the container attached. It did **not** exist before: the Mac app is
+  Developer-ID-signed with no provisioning, so nothing had ever needed one.
+- Provisioning profile `Programa Developer ID CloudKit` — Developer ID Application, platform
+  `OSX`, `ProvisionsAllDevices: true`, expires 2044-07-23. Verified to carry
+  `com.apple.application-identifier = ZNHHMX2RP6.com.darkroom.programa`,
+  `com.apple.developer.icloud-services = *`, and
+  `com.apple.developer.icloud-container-identifiers = [iCloud.com.darkroom.programa]`.
+  Stored as the `APPLE_PROVISION_PROFILE_BASE64` GitHub secret.
+- iOS App ID `com.darkroom.programa.spike` already had the same container attached, so it
+  needed no change — but its profiles were minted *before* the attachment and carry no
+  containers. Xcode regenerates them on the next companion build; verify before assuming
+  the phone can subscribe.
+
+Two traps worth recording, both of which cost time here:
+
+- **Xcode's Signing & Capabilities editor cannot finish this.** Setting a team on the
+  `GhosttyTabs` target makes Xcode attempt an automatic *Development* profile, which fails
+  with "Device … isn't registered in your developer account". That error is a dead end, not a
+  blocker to solve: Developer ID profiles set `ProvisionsAllDevices`, so no device
+  registration is involved. The editor also rewrites ~2,700 lines of `project.pbxproj`, adds
+  `CODE_SIGN_ENTITLEMENTS`, and reformats every shared scheme — all of which conflicts with
+  this project's post-build `codesign --entitlements` approach and must be reverted.
+- **Registering the App ID must happen before the profile.** The profile wizard only lists
+  existing App IDs, and `com.darkroom.programa` was not among them.
+
+**Still required, in order:**
+
+3. **Add the entitlement** to `programa.entitlements`
+   (`com.apple.developer.icloud-services`, `com.apple.developer.icloud-container-identifiers`)
+   in the same change that flips `MobileBridgePush.releaseProvisioningComplete` to `true` —
+   not before. Confirm `scripts/verify-provision-profile.sh` reports the profile as present,
+   unexpired, and granting exactly those entitlements.
+4. **Mandatory launch-test of the *notarized* build before shipping to `main`.** Notarization
+   only checks the code signature and scans for malware — it does **not** evaluate whether a
+   restricted entitlement matches an embedded profile. AMFI does that check at launch time,
+   on-device, every time. A profile/entitlement mismatch signs cleanly, notarizes cleanly,
+   staples cleanly, and then the app is silently killed the moment it launches (POSIX 163 —
+   this project has hit exactly this failure before, see
+   `restricted-entitlements-brick-app` memory). So: download the actual notarized,
+   stapled `.dmg` from a **dry-run** workflow_dispatch run (never test straight off `main`'s
+   auto-ship), install it, and confirm the app actually launches and CloudKit initializes
+   before that commit is allowed to reach `main`.
+
+### The schema had to be deployed by hand — Production will not create it for you
+
+Verified 2026-07-28 in CloudKit Console: container `iCloud.com.darkroom.programa` contains
+exactly one record type, `Users`, in **both** the Development and Production environments.
+`AgentStatus` does not exist anywhere. That single fact explains the phone's runtime errors:
+querying or subscribing to a record type that has never been defined is rejected with
+`CKError 15/2000 "Server Rejected Request"`, which reads like an entitlement or auth problem
+and is not one.
+
+Why it will not fix itself once the Mac starts writing:
+
+- **Development auto-creates record types on first save. Production never does.** Production
+  schema only ever arrives via *Deploy Schema Changes* from Development. So the Mac's first
+  write does not bootstrap it.
+- **The Mac writes to Production.** Its Developer ID profile pins
+  `com.apple.developer.icloud-container-environment = Production` (confirmed in the embedded
+  profile of the notarized dry-run build). So the Mac will hit the same rejection the phone
+  does, for the same reason.
+- **A Debug phone build reads Development.** Even with the schema deployed, a locally-built
+  companion and a Developer-ID Mac are pointed at two different databases and will never see
+  each other's records. End-to-end verification needs a Release/TestFlight build of the
+  companion, or a deliberately dev-signed Mac writer.
+
+**Resolved 2026-07-28.** `AgentStatus` was created in Development and deployed to Production,
+with the fields `MobileBridgePush.performSave` actually writes
+(`Sources/MobileBridge/MobileBridgePush.swift:209-221`):
+
+| field | type |
+|---|---|
+| `blockedCount` | Int64 |
+| `workingCount` | Int64 |
+| `mostRecentBlockedWorkspaceTitle` | String |
+
+The record name is fixed at `agent-status-summary` — a record ID, not a field, so it is not
+part of the schema. The `CKQuerySubscription` uses `NSPredicate(value: true)`
+(`ios/ProgramaSpike/ProgramaSpike/CloudKitPush.swift:46-51`), which requires the type to be
+queryable, so a QUERYABLE single-field index on `recordName` was added alongside it.
+
+Verified in the Production environment after deploying: `AgentStatus`, 9 fields, `recordName`
+REFERENCE Queryable, and all three custom fields present. The deployment diff contained only
+that record type, that index, and the three default security-role entries CloudKit attaches
+to any new type.
+
+**Still unverified on device:** the phone was disconnected before the subscription could be
+re-attempted, so `CKError 15/2000` has not yet been observed to clear. That is the first thing
+to check when the companion is next run — and note the environment split above still applies,
+so a Debug phone build exercises Development, not the Production schema the Mac will write to.
+
+**Known limit — this is an iOS-only bet.** CloudKit cannot serve an Android companion. If
+Android happens (plausible if Programa reaches Windows), push gets rebuilt around a relay that
+fans out to APNs and FCM. The *transport* generalizes fine — `iroh-ffi` is uniffi-based, so
+Kotlin bindings are achievable — only push is platform-locked. Accepted deliberately: pay for
+the second path when it is real.
 
 **M4 — Hardening. 1–2 weeks.**
 Resync discipline, background-refresh tuning, multi-device pairing, App Store prep.

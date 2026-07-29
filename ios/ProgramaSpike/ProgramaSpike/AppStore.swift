@@ -1,4 +1,5 @@
 import ActivityKit
+import CloudKit
 import Foundation
 import Observation
 import UIKit
@@ -47,6 +48,11 @@ final class AppStore {
     private(set) var lastSyncError: String?
     private(set) var isConnecting = false
 
+    /// M3: this iPhone's iCloud sign-in state, refreshed on init and on every foreground
+    /// reconciliation. Does **not** detect a mismatched Apple ID between this phone and the
+    /// paired Mac -- see `CloudKitPush.accountStatus()`'s doc comment.
+    private(set) var iCloudAccountStatus: CKAccountStatus = .couldNotDetermine
+
     var pairingTicketDraft: String
     var pairingTokenDraft: String = ""
 
@@ -77,6 +83,8 @@ final class AppStore {
     // init and read once in deinit, never concurrently, so the unsafe opt-out
     // is accurate rather than a way to silence the checker.
     private nonisolated(unsafe) var willTerminateObserver: NSObjectProtocol?
+    // `nonisolated(unsafe)` for the same reason as `willTerminateObserver` above.
+    private nonisolated(unsafe) var didBecomeActiveObserver: NSObjectProtocol?
 
     init() {
         let savedTicket = PairingStore.loadTicket()
@@ -105,6 +113,22 @@ final class AppStore {
         if let ticket = currentTicket {
             Task { [weak self] in await self?.attemptConnect(ticket: ticket, token: nil) }
         }
+
+        // M3 mandatory foreground reconciliation: silent CloudKit pushes are coalesced,
+        // throttled, and dropped entirely after a force-quit, so re-reading the record on
+        // every foreground is the only thing that guarantees the Live Activity (and the
+        // iCloud status banner) reflect reality rather than whatever pushes happened to land.
+        Task { [weak self] in await self?.reconcileFromCloudKit() }
+        didBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.reconcileFromCloudKit()
+            }
+        }
     }
 
     // `deinit` is nonisolated even on a @MainActor type, so it cannot read
@@ -112,6 +136,7 @@ final class AppStore {
     // and handed to a nonisolated static so teardown needs no isolated access.
     deinit {
         Self.removeObserver(willTerminateObserver)
+        Self.removeObserver(didBecomeActiveObserver)
     }
 
     private nonisolated static func removeObserver(_ token: NSObjectProtocol?) {
@@ -173,6 +198,26 @@ final class AppStore {
 
     func workspaceTitle(for workspaceID: String) -> String {
         workspaces.first(where: { $0.id == workspaceID })?.title ?? "Workspace"
+    }
+
+    /// `nil` when iCloud is signed in and everything should work; otherwise a message to show
+    /// on the pairing screen. See `iCloudAccountStatus`'s doc comment for what this can't catch
+    /// (a mismatched Apple ID between this phone and the paired Mac).
+    var iCloudStatusMessage: String? {
+        switch iCloudAccountStatus {
+        case .available:
+            return nil
+        case .noAccount:
+            return "Sign in to iCloud on this iPhone (Settings > [your name]) to get notified when an agent needs you while Programa is in the background."
+        case .restricted:
+            return "iCloud is restricted on this iPhone, so background notifications won't work."
+        case .temporarilyUnavailable:
+            return "iCloud is temporarily unavailable, so background notifications may be delayed."
+        case .couldNotDetermine:
+            return "Could not check this iPhone's iCloud status."
+        @unknown default:
+            return "Could not check this iPhone's iCloud status."
+        }
     }
 
     // MARK: - Connection plumbing
@@ -292,6 +337,9 @@ final class AppStore {
             try await connection.subscribe(classes: ["agent_state", "workspace_lifecycle"])
             stage = .workspaces
             recomputeLiveActivity()
+            // M3: (re)create the CloudKit query subscription once this device is trusted and
+            // talking to the Mac -- idempotent, so this is cheap on every reconnect.
+            await CloudKitPush.ensureSubscription()
         } catch {
             lastSyncError = "\(error)"
         }
@@ -504,6 +552,43 @@ final class AppStore {
             .first(where: { $0.id == id })
         else { return }
         await live.update(ActivityContent(state: state, staleDate: staleDate))
+    }
+
+    // MARK: - CloudKit reconciliation (M3)
+    //
+    // The bridge-driven path above (`recomputeLiveActivity`, fed by live `agent_state` events)
+    // is the precise, real-time source of truth while connected. CloudKit is the backstop for
+    // when it isn't: a silent push wakes the app (`AppDelegate`/`LiveActivityCloudKitBridge`)
+    // or, failing that, this reconciliation runs on every foreground regardless. Both paths
+    // write through the same `liveActivity`/`lastPushedActivityState` bookkeeping so the
+    // bridge-driven coalescing above stays correct afterward.
+
+    /// Called on `AppStore` init and on every `UIApplication.didBecomeActiveNotification`.
+    /// Refreshes the iCloud status banner and rebuilds Live Activity state from the last
+    /// summary the Mac wrote, independent of whether the iroh bridge is currently connected.
+    func reconcileFromCloudKit() async {
+        iCloudAccountStatus = await CloudKitPush.accountStatus()
+        guard let summary = await CloudKitPush.fetchSummary() else { return }
+        applyCloudKitSummary(summary)
+    }
+
+    private func applyCloudKitSummary(_ summary: CloudKitPush.Summary) {
+        ensureLiveActivityStarted()
+        guard let liveActivity else { return }
+
+        let newState = AgentActivityAttributes.ContentState(
+            blockedCount: summary.blockedCount,
+            workingCount: summary.workingCount,
+            headlineWorkspace: summary.blockedCount > 0 ? summary.mostRecentBlockedWorkspaceTitle : nil
+        )
+        guard newState != lastPushedActivityState else { return }
+        // CloudKit reconciliation always wins immediately rather than going through the 2s
+        // coalescing window -- it only runs at most once per foreground/background-wake, so
+        // there's no churn to coalesce against.
+        pendingActivityUpdateTask?.cancel()
+        pendingActivityUpdateTask = nil
+        pendingActivityContentState = nil
+        pushActivityUpdate(newState, activityID: liveActivity.id)
     }
 
     private func deriveActivityContentState() -> AgentActivityAttributes.ContentState {

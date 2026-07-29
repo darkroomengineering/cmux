@@ -123,7 +123,15 @@ actor BridgeConnection {
         do {
             let newEndpoint = try await Endpoint.bind(options: options)
             boundEndpoint = newEndpoint
-            let newConnection = try await newEndpoint.connect(addr: targetAddress, alpn: Self.alpn)
+            // Bound the dial. A ticket that points at a bridge which no longer
+            // exists -- a Mac that restarted, or an old pairing -- otherwise
+            // parks here indefinitely and the UI sits on "Connecting…" forever
+            // with no error and no way out. `Endpoint.connect` routes through
+            // `irohConnectWithTaskCancellation`, so unlike the raw stream reads
+            // it genuinely honours cancellation.
+            let newConnection = try await withRequestTimeout(seconds: 20) {
+                try await newEndpoint.connect(addr: targetAddress, alpn: Self.alpn)
+            }
             establishedConnection = newConnection
             try newConnection.setMaxConcurrentBiStreams(count: 1)
             try newConnection.setMaxConcurrentUniStreams(count: 0)
@@ -131,6 +139,11 @@ actor BridgeConnection {
         } catch {
             if let establishedConnection {
                 try? establishedConnection.close(errorCode: 0, reason: Data())
+            }
+            if case BridgeError.timedOut = error {
+                if let boundEndpoint { try? await boundEndpoint.close() }
+                setPhase(.failed("could not reach that Mac — is Programa running with Settings ▸ Phone turned on?"))
+                throw error
             }
             if let boundEndpoint {
                 try? await boundEndpoint.close()
@@ -385,6 +398,20 @@ actor BridgeConnection {
             emitEvent(name: eventName, line: line)
             return
         }
+        // A frame with no `id` and no `event` is a CONNECTION-level rejection,
+        // not a reply to anything: the bridge sends `{"ok":false,"error":
+        // {"code":"not_paired"}}` and hangs up before this client has sent a
+        // single request. Previously this fell through the `id` guard below and
+        // was silently dropped, so the app sat on "Connecting…" until an
+        // unrelated 15s ping timeout fired, then retried forever -- never
+        // surfacing the one fact that mattered: this device is not paired.
+        if object["id"] == nil,
+           let ok = object["ok"] as? Bool, ok == false {
+            let code = (object["error"] as? [String: Any])?["code"] as? String ?? "rejected"
+            failAllPending(with: BridgeError.rpc(code: code, message: nil))
+            setPhase(.failed(code))
+            return
+        }
         guard let rawId = object["id"] else { return }
         let id: Int?
         if let intId = rawId as? Int {
@@ -396,6 +423,14 @@ actor BridgeConnection {
         }
         guard let id, let continuation = pending.removeValue(forKey: id) else { return }
         continuation.resume(returning: line)
+    }
+
+    private func failAllPending(with error: Error) {
+        let outstanding = pending
+        pending.removeAll()
+        for (_, continuation) in outstanding {
+            continuation.resume(throwing: error)
+        }
     }
 
     private func emitEvent(name: String, line: Data) {
