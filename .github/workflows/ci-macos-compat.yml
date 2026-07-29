@@ -106,6 +106,12 @@ jobs:
             timeout: 45
             smoke: true
             skip_zig: false
+            # This runner starves async completions partway through the serial
+            # suite, timing out a fixed set of tests that are not broken on
+            # macOS 15 -- see QUARANTINED_ON_COMPAT in scripts/ci-run-unit-tests.sh
+            # for the evidence. Every quarantined test still runs on the macos-26
+            # leg and in the main CI workflow, so no coverage is lost.
+            quarantine: true
           - os: macos-26
             timeout: 60  # macos-26 runner is ~2x slower than macos-15; 45m was too tight on a cold DerivedData cache (see cache key on project.pbxproj)
             smoke: false
@@ -217,6 +223,7 @@ jobs:
         env:
           PROGRAMA_SKIP_ZIG_BUILD: ${{ matrix.skip_zig && '1' || '0' }}
           PROGRAMA_UNIT_TEST_SCOPE: serial
+          PROGRAMA_UNIT_TEST_QUARANTINE: ${{ matrix.quarantine && '1' || '' }}
         run: |
           ./scripts/ci-run-unit-tests.sh
 
