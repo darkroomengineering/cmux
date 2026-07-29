@@ -248,6 +248,16 @@ jobs:
       # ---------------------------------------------------------------------
 
       - name: Build app
+        env:
+          # Load-bearing on the macos-26 leg. A build phase runs
+          # scripts/build-ghostty-cli-helper.sh, which builds the Ghostty CLI
+          # helper with zig unless this is 1 -- and zig 0.15.2's MachO linker
+          # cannot resolve libSystem on macOS 26 (same reason the matrix sets
+          # skip_zig there). Without this the phase fails with a bare
+          # "Command PhaseScriptExecution failed with a nonzero exit code" and no
+          # error line, which is exactly how this step failed the first time it
+          # ran on that leg.
+          PROGRAMA_SKIP_ZIG_BUILD: ${{ matrix.skip_zig && '1' || '0' }}
         run: |
           set -euo pipefail
           SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
