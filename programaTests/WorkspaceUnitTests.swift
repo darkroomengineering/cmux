@@ -2036,7 +2036,10 @@ final class WorkspaceSplitWorkingDirectoryTests: XCTestCase {
         pollInterval: TimeInterval = 0.01,
         _ condition: () -> Bool
     ) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
+        // Scaled by `ciScale` (TabManagerUnitTests.swift), matching the copy of this
+        // helper in that file. This one polls the main run loop for a real window to
+        // settle, so a flat 2s is comfortable locally and thin on a loaded CI runner.
+        let deadline = Date().addingTimeInterval(timeout * ciScale)
         while Date() < deadline {
             if condition() {
                 return true

@@ -2102,7 +2102,16 @@ final class GhosttySurfaceOverlayTests: XCTestCase {
             },
             object: NSObject()
         )
-        let result = XCTWaiter().wait(for: [expectation], timeout: timeout)
+        // Scaled by `ciScale` (TabManagerUnitTests.swift) for the same reason
+        // TerminalWindowPortalLifecycleTests below scales its own spins: every test in
+        // this class mounts a real NSWindow and waits for a SwiftUI/AppKit overlay to
+        // attach, so the budget is spent on main-run-loop turns that compete with the
+        // backlog a full serial suite leaves behind. The raw 3s and 10s literals the
+        // call sites pass are comfortable locally and marginal on a loaded CI runner,
+        // which is why this class was the bulk of the macos-15 compat failures while
+        // the already-scaled class beside it stayed green. Scaling here rather than at
+        // each call site keeps all 11 of them consistent.
+        let result = XCTWaiter().wait(for: [expectation], timeout: timeout * ciScale)
         guard result == .completed else {
             XCTFail("Timed out waiting for \(description)", file: file, line: line)
             return false
