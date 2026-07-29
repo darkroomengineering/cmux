@@ -219,28 +219,42 @@ jobs:
             sleep $((attempt * 5))
           done
 
-      - name: Run unit tests
-        env:
-          PROGRAMA_SKIP_ZIG_BUILD: ${{ matrix.skip_zig && '1' || '0' }}
-          PROGRAMA_UNIT_TEST_SCOPE: serial
-          PROGRAMA_UNIT_TEST_QUARANTINE: ${{ matrix.quarantine && '1' || '' }}
-        run: |
-          ./scripts/ci-run-unit-tests.sh
+      # ---------------------------------------------------------------------
+      # Ordering is the whole point of this job's shape, so it is documented
+      # rather than left implicit.
+      #
+      # What only THIS job can tell you is whether Programa builds and launches
+      # on a macOS version other than the one `release.yml` ships from. That is
+      # the build + smoke steps below, and they now run FIRST and gate the job.
+      #
+      # Previously the full ~1,500-test unit suite ran first and gated. That was
+      # backwards twice over:
+      #
+      #   1. Those tests are OS-agnostic logic and already run on every PR in
+      #      ci.yml. Re-running them on two more macOS versions produced no
+      #      unique signal.
+      #   2. They failed on the macos-15 runner (async starvation, see
+      #      QUARANTINED_ON_COMPAT in scripts/ci-run-unit-tests.sh), so steps
+      #      13-15 -- the build and smoke test, the actual point -- were SKIPPED
+      #      on every run. The compatibility check never once verified
+      #      compatibility, for over a week, while five successive attempts to
+      #      quarantine the failing tests each fixed what was in front of them
+      #      and revealed the next thing.
+      #
+      # Unit tests still run here, after, and are now informational: a failure
+      # marks the step red without failing the job. That keeps the data (and the
+      # uploaded xcresult bundles) without letting OS-agnostic test noise mask
+      # the one result this job exists to produce.
+      # ---------------------------------------------------------------------
 
-      - name: Collect ghostty crash reports on failure
-        if: failure()
+      - name: Build app
         run: |
-          mkdir -p /tmp/programa-unit-xcresults
-          cp -R "$HOME/.local/state/ghostty/crash" /tmp/programa-unit-xcresults/ghostty-crash 2>/dev/null || true
-
-      - name: Upload unit-test result bundles on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-xcresults-${{ matrix.os }}-${{ github.run_attempt }}
-          path: /tmp/programa-unit-xcresults/
-          if-no-files-found: ignore
-          retention-days: 7
+          set -euo pipefail
+          SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
+          xcodebuild -project GhosttyTabs.xcodeproj -scheme programa -configuration Debug \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+            -disableAutomaticPackageResolution \
+            -destination "platform=macOS" build
 
       - name: Create virtual display
         if: matrix.smoke
@@ -258,19 +272,49 @@ jobs:
           echo "=== Display after ==="
           system_profiler SPDisplaysDataType 2>/dev/null || echo "(no display info)"
 
-      - name: Build app for smoke test
-        if: matrix.smoke
-        run: |
-          set -euo pipefail
-          SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
-          xcodebuild -project GhosttyTabs.xcodeproj -scheme programa -configuration Debug \
-            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
-            -disableAutomaticPackageResolution \
-            -destination "platform=macOS" build
-
       - name: Smoke test
         if: matrix.smoke
         run: |
           set -euo pipefail
           chmod +x scripts/smoke-test-ci.sh
           scripts/smoke-test-ci.sh
+
+      # Informational. See the ordering note above: this is coverage ci.yml
+      # already provides, kept here only because a genuine OS difference could
+      # in principle surface in it. It must not gate the job -- that is what
+      # hid the smoke test for over a week.
+      - name: Run unit tests (informational)
+        id: compat_unit_tests
+        continue-on-error: true
+        env:
+          PROGRAMA_SKIP_ZIG_BUILD: ${{ matrix.skip_zig && '1' || '0' }}
+          PROGRAMA_UNIT_TEST_SCOPE: serial
+          PROGRAMA_UNIT_TEST_QUARANTINE: ${{ matrix.quarantine && '1' || '' }}
+        run: |
+          ./scripts/ci-run-unit-tests.sh
+
+      # always(), not failure(): the unit-test step is continue-on-error, so the
+      # job is green even when it fails and failure() would never fire.
+      - name: Collect ghostty crash reports
+        if: always()
+        run: |
+          mkdir -p /tmp/programa-unit-xcresults
+          cp -R "$HOME/.local/state/ghostty/crash" /tmp/programa-unit-xcresults/ghostty-crash 2>/dev/null || true
+
+      - name: Upload unit-test result bundles
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-xcresults-${{ matrix.os }}-${{ github.run_attempt }}
+          path: /tmp/programa-unit-xcresults/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Report informational unit-test outcome
+        if: always()
+        run: |
+          outcome='${{ steps.compat_unit_tests.outcome }}'
+          echo "Unit tests (informational) on ${{ matrix.os }}: $outcome"
+          if [ "$outcome" != "success" ]; then
+            echo "::warning title=Unit tests failed on ${{ matrix.os }}::Informational only — this did not fail the job. See the uploaded xcresult bundle. The gating signal for this job is the build and smoke test above."
+          fi
