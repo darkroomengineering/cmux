@@ -17,6 +17,32 @@ DERIVED_DATA_DIR="${PROGRAMA_DERIVED_DATA_DIR:-$HOME/Library/Developer/Xcode/Der
 TEST_SCOPE="${PROGRAMA_UNIT_TEST_SCOPE:-serial}"
 STATEFUL_TEST_CLASS="programaTests/AppDelegateShortcutRoutingTests"
 STATEFUL_TEST_SKIP="${STATEFUL_TEST_CLASS}/testCmdWClosesWindowWhenClosingLastSurfaceInLastWorkspace"
+# Skipped because it FAILS on CI, not because it flakes. This carried no reason at
+# all until #221 measured it; the note below is what that run established.
+#
+# The test presses Cmd+W on the last surface in the last workspace and expects the
+# window to close. On CI the window never closes:
+#
+#   AppDelegateShortcutRoutingTests.swift:1463: failed - Timed out waiting for
+#     Cmd+W on the last surface to close the window
+#   AppDelegateShortcutRoutingTests.swift:1465: XCTAssertNil failed: "<NSWindow: 0x...>"
+#
+# Three things narrow it down:
+#   * NOT a timing race. #218 replaced the single fixed 0.05s spin with a 2s
+#     condition wait; it now waits the full two seconds and the window is still
+#     there. More time does not help.
+#   * The shortcut IS dispatched -- the XCTAssertTrue on debugHandleCustomShortcut
+#     just above passes. Routing works; the resulting close does not complete.
+#   * Headless window closing works in general. testCmdCtrlWPromptsBeforeClosing-
+#     Window and ...ClosesWindowAfterConfirmation both close real windows on the
+#     same runner and are not skipped.
+#
+# So it is specific to the CASCADE this test exercises: close last surface -> close
+# last workspace -> close window. Whether that is a headless-only gap or a real
+# product bug is undetermined; nobody has reproduced it outside CI.
+#
+# Do not read this skip as "the test is flaky". It is a known, reproducible failure
+# of a behaviour users rely on, parked rather than diagnosed. Worth its own issue.
 
 # Test CLASSES quarantined when PROGRAMA_UNIT_TEST_QUARANTINE is set (the
 # macos-15 compat leg). Every class here builds real NSWindows and waits on async
