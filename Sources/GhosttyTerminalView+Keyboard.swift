@@ -919,7 +919,11 @@ extension GhosttyNSView {
 #if DEBUG
             let refreshStart = ProcessInfo.processInfo.systemUptime
 #endif
-            terminalSurface?.forceRefresh(reason: "keyDown.textInput")
+            // PERF (#183): deliberately not forceRefresh. Typing changes grid
+            // contents, never the surface's geometry or display, so the display-id
+            // reassert and forceRefreshSurface() that forceRefresh does are pure
+            // cost here. forceRefresh stays for the topology changes it exists for.
+            terminalSurface?.requestRedrawAfterInput()
 #if DEBUG
             refreshMs = (ProcessInfo.processInfo.systemUptime - refreshStart) * 1000.0
             ProgramaDurationSamples.shared.record("keyDown.textInputRefresh", milliseconds: refreshMs)
