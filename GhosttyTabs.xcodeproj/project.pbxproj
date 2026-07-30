@@ -189,6 +189,7 @@
 			5B5711B8348F309563272B9D /* ShortcutRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDE5A5F043A04829779CF356 /* ShortcutRouting.swift */; };
 			NRAD1001 /* MainWindowHostingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0001 /* MainWindowHostingView.swift */; };
 			NRAD1002 /* TypingProfiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0002 /* TypingProfiler.swift */; };
+			704EC7ED55706CC3099E0ED9 /* DurationSamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = 974E18832220A6E017B9CA2E /* DurationSamples.swift */; };
 			NRAD1003 /* TerminalDirectoryOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0003 /* TerminalDirectoryOpener.swift */; };
 			NRAD1004 /* VSCodeIntegration.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0004 /* VSCodeIntegration.swift */; };
 			NRAD1005 /* WorkspaceShortcutMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0005 /* WorkspaceShortcutMapper.swift */; };
@@ -571,6 +572,7 @@
 		DDE5A5F043A04829779CF356 /* ShortcutRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutRouting.swift; sourceTree = "<group>"; };
 		NRAD0001 /* MainWindowHostingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowHostingView.swift; sourceTree = "<group>"; };
 		NRAD0002 /* TypingProfiler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingProfiler.swift; sourceTree = "<group>"; };
+		974E18832220A6E017B9CA2E /* DurationSamples.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DurationSamples.swift; sourceTree = "<group>"; };
 		NRAD0003 /* TerminalDirectoryOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalDirectoryOpener.swift; sourceTree = "<group>"; };
 		NRAD0004 /* VSCodeIntegration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VSCodeIntegration.swift; sourceTree = "<group>"; };
 		NRAD0005 /* WorkspaceShortcutMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceShortcutMapper.swift; sourceTree = "<group>"; };
@@ -954,6 +956,7 @@
 				DDE5A5F043A04829779CF356 /* ShortcutRouting.swift */,
 				NRAD0001 /* MainWindowHostingView.swift */,
 				NRAD0002 /* TypingProfiler.swift */,
+				974E18832220A6E017B9CA2E /* DurationSamples.swift */,
 				NRAD0003 /* TerminalDirectoryOpener.swift */,
 				NRAD0004 /* VSCodeIntegration.swift */,
 				NRAD0005 /* WorkspaceShortcutMapper.swift */,
@@ -1439,6 +1442,7 @@
 				5B5711B8348F309563272B9D /* ShortcutRouting.swift in Sources */,
 				NRAD1001 /* MainWindowHostingView.swift in Sources */,
 				NRAD1002 /* TypingProfiler.swift in Sources */,
+				704EC7ED55706CC3099E0ED9 /* DurationSamples.swift in Sources */,
 				NRAD1003 /* TerminalDirectoryOpener.swift in Sources */,
 				NRAD1004 /* VSCodeIntegration.swift in Sources */,
 				NRAD1005 /* WorkspaceShortcutMapper.swift in Sources */,

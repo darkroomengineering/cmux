@@ -514,6 +514,51 @@ extension TerminalController {
         return resp == "OK" ? .ok([:]) : .err(code: "internal_error", message: resp, data: nil)
     }
 
+#if DEBUG
+    private func samplesStatsPayload(for bucket: String) -> [String: Any]? {
+        guard let stats = ProgramaDurationSamples.shared.stats(for: bucket) else { return nil }
+        return [
+            "count": stats.count,
+            "p50": stats.p50,
+            "p95": stats.p95,
+            "p99": stats.p99,
+            "max": stats.maxMs,
+            "mean": stats.meanMs,
+        ]
+    }
+
+    // Telemetry read: bucket name is parsed off-main above; the accumulator itself
+    // is main-thread-confined (see ProgramaDurationSamples), so the actual read
+    // genuinely requires the main-thread hop rather than being fired there out of
+    // habit.
+    func v2DebugSamplesStats(params: [String: Any]) -> V2CallResult {
+        let requestedBucket = v2String(params, "bucket")
+        var result: [String: Any] = [:]
+        DispatchQueue.main.sync {
+            if let requestedBucket {
+                if let payload = self.samplesStatsPayload(for: requestedBucket) {
+                    result[requestedBucket] = payload
+                }
+            } else {
+                for name in ProgramaDurationSamples.shared.bucketNames() {
+                    if let payload = self.samplesStatsPayload(for: name) {
+                        result[name] = payload
+                    }
+                }
+            }
+        }
+        return .ok(result)
+    }
+
+    func v2DebugSamplesReset(params: [String: Any]) -> V2CallResult {
+        let requestedBucket = v2String(params, "bucket")
+        DispatchQueue.main.sync {
+            ProgramaDurationSamples.shared.reset(bucket: requestedBucket)
+        }
+        return .ok([:])
+    }
+#endif
+
     func v2DebugFocusNotification(params: [String: Any]) -> V2CallResult {
         guard let wsId = v2String(params, "workspace_id") else {
             return .err(code: "invalid_params", message: "Missing workspace_id", data: nil)
