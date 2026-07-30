@@ -230,13 +230,19 @@ SIGNED_ENTS="$(codesign -d --entitlements - --xml "$SIGNED_APP" 2>/dev/null || t
 check_entitlement() {
   local key="$1" expected="$2"
   local actual
-  # plutil writes "Could not extract value" to STDOUT, not stderr, so a bare
-  # `|| echo "<absent>"` never fires and the error text is reported as the
-  # entitlement's value -- which reads as a baffling mismatch rather than "the
-  # key is missing". Key on the exit status instead.
-  if ! actual="$(printf '%s' "$SIGNED_ENTS" | plutil -extract "$key" raw -o - - 2>/dev/null)"; then
+  # `plutil -extract` takes a KEYPATH, where an unescaped dot separates levels.
+  # Entitlement names are reverse-DNS, so a bare
+  # com.apple.developer.icloud-container-environment is read as com -> apple ->
+  # developer -> ... and never resolves, while dotless names like aps-environment
+  # and get-task-allow happen to work. That asymmetry made a correctly signed
+  # build look like it was missing the entitlement. Escape the dots.
+  local escaped="${key//./\\.}"
+  # plutil also writes "Could not extract value" to STDOUT rather than stderr, so
+  # a bare `|| echo "<absent>"` would report the error text as the value.
+  if ! actual="$(printf '%s' "$SIGNED_ENTS" | plutil -extract "$escaped" raw -o - - 2>/dev/null)"; then
     actual="<absent>"
   fi
+  case "$actual" in *"Could not extract value"*) actual="<absent>" ;; esac
   if [[ "$actual" != "$expected" ]]; then
     echo "FAIL: signed entitlement $key is '$actual', expected '$expected'" >&2
     return 1
