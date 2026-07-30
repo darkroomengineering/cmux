@@ -232,7 +232,15 @@ extension NSWindow {
         let previousContextHitView = programaFirstResponderGuardHitViewContext
         let previousContextWindowNumber = programaFirstResponderGuardContextWindowNumber
         programaFirstResponderGuardCurrentEventContext = event
-        programaFirstResponderGuardHitViewContext = Self.programaHitViewForEventDispatch(in: self, event: event)
+        // PERF (#183): this context is a cache for `programaHitViewForCurrentEvent`, whose only
+        // reader is `programaPointerHitWebView` -- and that bails on `programaIsPointerDownEvent`
+        // before ever reading it. Filling it for a keyDown therefore ran a full recursive AppKit
+        // hit-test, on every keystroke, for a value nothing could observe. Compute it only for the
+        // events that can actually consume it. When it is nil, `programaHitViewForCurrentEvent`
+        // already falls through to computing the hit view on demand, so no reader loses anything.
+        programaFirstResponderGuardHitViewContext = Self.programaIsPointerDownEvent(event)
+            ? Self.programaHitViewForEventDispatch(in: self, event: event)
+            : nil
         programaFirstResponderGuardContextWindowNumber = self.windowNumber
 #if DEBUG
         if event.type == .keyDown {
