@@ -18,6 +18,30 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
     private var actionsWithPersistedShortcut: Set<KeyboardShortcutSettings.Action> = []
     private var originalSettingsFileStore: KeyboardShortcutSettingsFileStore!
 
+    /// Polls `condition` by spinning the run loop in short increments, returning as soon as
+    /// it holds. Mirrors the poll style already used at this file's flake-prone fixed-spin
+    /// sites (e.g. the fullscreen-tiling opt-out wait and the search-field mount wait below)
+    /// rather than a fixed sleep: a fast pass returns almost immediately and a genuine failure
+    /// still gets a generous window before failing, instead of a flake on a loaded CI runner.
+    @discardableResult
+    private func waitUntil(
+        timeout: TimeInterval = 2.0,
+        description: String,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ condition: () -> Bool
+    ) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while !condition() {
+            guard Date() < deadline else {
+                XCTFail("Timed out waiting for \(description)", file: file, line: line)
+                return false
+            }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
+        return true
+    }
+
     private func makeKeyEvent(
         modifierFlags: NSEvent.ModifierFlags,
         characters: String,
@@ -192,7 +216,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 #endif
         }
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "chord to dispatch the configured shortcut") { manager.tabs.count == initialCount + 1 }
         XCTAssertEqual(manager.tabs.count, initialCount + 1, "Chord second key should dispatch the configured shortcut")
     }
 
@@ -264,7 +288,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "settings.json chord to dispatch the configured shortcut") { manager.tabs.count == initialCount + 1 }
         XCTAssertEqual(manager.tabs.count, initialCount + 1, "settings.json chord should dispatch the configured shortcut")
     }
 
@@ -390,7 +414,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 #endif
         }
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "chord prefix to arm and dispatch newTab instead of firing Settings") { manager.tabs.count == initialCount + 1 }
         XCTAssertEqual(manager.tabs.count, initialCount + 1, "Chord prefix should arm instead of firing Settings")
     }
 
@@ -753,7 +777,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         // isn't already the foreground app.
         NSApp.activate(ignoringOtherApps: true)
         secondWindow.makeKeyAndOrderFront(nil)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "secondWindow to become NSApp.keyWindow") { NSApp.keyWindow === secondWindow }
 
         // Force a stale app-level pointer to a different manager.
         appDelegate.tabManager = firstManager
@@ -858,7 +882,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 
         XCTAssertEqual(item.title, expectedTitle)
         XCTAssertTrue(NSApp.sendAction(#selector(AppDelegate.openNewMainWindow(_:)), to: item.target, from: item))
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "Dock menu New Window to create a main window") {
+            mainWindowIds().subtracting(existingWindowIds).count == 1
+        }
 
         let newWindowIds = mainWindowIds().subtracting(existingWindowIds)
         XCTAssertEqual(newWindowIds.count, 1, "Dock menu New Window should create one main window")
@@ -891,7 +917,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         // isn't already the foreground app.
         NSApp.activate(ignoringOtherApps: true)
         secondWindow.makeKeyAndOrderFront(nil)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "secondWindow to become NSApp.keyWindow") { NSApp.keyWindow === secondWindow }
 
 #if DEBUG
         XCTAssertTrue(appDelegate.debugInjectWindowContextKeyMismatch(windowId: secondWindowId))
@@ -949,7 +975,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             orphanWindow = nil
         }
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "orphaned window to finish deallocating") {
+            appDelegate.mainWindow(for: orphanWindowId) == nil
+        }
 
         XCTAssertNil(appDelegate.mainWindow(for: orphanWindowId), "Test precondition: orphaned context should not have a live window")
 
@@ -1008,7 +1036,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             orphanWindow = nil
         }
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "orphaned window to finish deallocating") {
+            appDelegate.mainWindow(for: orphanWindowId) == nil
+        }
 
         XCTAssertNil(appDelegate.mainWindow(for: orphanWindowId), "Test precondition: orphaned context should not have a live window")
 
@@ -1031,7 +1061,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 #else
             XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+            waitUntil(description: "orphaned context to be pruned after failed resolution") {
+                appDelegate.tabManagerFor(windowId: orphanWindowId) == nil
+            }
         }
 
         XCTAssertEqual(orphanManager.tabs.count, orphanCount, "Orphaned manager must not receive a new workspace from remapped Cmd+T")
@@ -1146,7 +1178,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 #else
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "Cmd+T to create a surface in the event window") {
+            secondWorkspace.panels.count == secondSurfaceCount + 1
+        }
 
         XCTAssertEqual(firstWorkspace.panels.count, firstSurfaceCount, "Cmd+T must not create a surface in stale active window")
         XCTAssertEqual(secondWorkspace.panels.count, secondSurfaceCount + 1, "Cmd+T should create a surface in the event window")
@@ -1201,7 +1235,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 #else
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "Cmd+D to create a split in the event window") {
+            secondWorkspace.panels.count == secondSurfaceCount + 1
+        }
 
         XCTAssertEqual(firstWorkspace.panels.count, firstSurfaceCount, "Cmd+D must not create a split in the stale key window")
         XCTAssertEqual(secondWorkspace.panels.count, secondSurfaceCount + 1, "Cmd+D should create a split in the event window")
@@ -1232,7 +1268,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             XCTFail("Expected split terminal panels")
             return
         }
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "split panels to receive Bonsplit pane IDs") {
+            workspace.paneId(forPanelId: leftPanel.id) != nil && workspace.paneId(forPanelId: rightPanel.id) != nil
+        }
 
         guard let leftPaneBefore = workspace.paneId(forPanelId: leftPanel.id),
               let rightPaneBefore = workspace.paneId(forPanelId: rightPanel.id) else {
@@ -1332,7 +1370,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "close confirmation handler to be invoked for the target window") { promptedWindow != nil }
 
         XCTAssertTrue(promptedWindow === targetWindow, "Cmd+Ctrl+W should prompt for the target main window")
         XCTAssertNotNil(self.window(withId: windowId), "Cancelling the confirmation should keep the window open")
@@ -1368,7 +1406,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "confirmed Cmd+Ctrl+W to close the target window") { !targetWindow.isVisible }
 
         // NOTE: `self.window(withId:)` (an `NSApp.windows` lookup) does not reliably
         // reflect a just-closed window in this test host process -- confirmed by
@@ -1422,7 +1460,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "Cmd+W on the last surface to close the window") { self.window(withId: windowId) == nil }
 
         XCTAssertNil(
             self.window(withId: windowId),
@@ -1480,7 +1518,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "the closed panel to be removed from the workspace") { workspace.panels[initialPanelId] == nil }
 
         XCTAssertNotNil(
             self.window(withId: windowId),
@@ -1544,7 +1582,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         throw XCTSkip("debugHandleCustomShortcut is only available in DEBUG builds")
 #endif
 
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "Cmd+W to close the auxiliary window") { !auxiliaryWindow.isVisible }
 
         XCTAssertFalse(auxiliaryWindow.isVisible, "Cmd+W should close the auxiliary window")
         XCTAssertNotNil(self.window(withId: windowId), "Cmd+W in auxiliary window should not close the main window")
@@ -1657,7 +1695,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 
         defaults.set(WorkspacePresentationModeSettings.Mode.minimal.rawValue, forKey: WorkspacePresentationModeSettings.modeKey)
         appDelegate.attachUpdateAccessory(to: window)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "minimal mode to remove the titlebar accessory") { !hasTitlebarAccessory() }
 
         XCTAssertFalse(
             hasTitlebarAccessory(),
@@ -4070,7 +4108,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 #else
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "Cmd+T to create a new surface with Russian keyboard layout") {
+            workspace.panels.count == surfaceCountBefore + 1
+        }
 
         XCTAssertEqual(workspace.panels.count, surfaceCountBefore + 1, "Cmd+T should create a new surface with Russian keyboard layout")
     }
@@ -4121,7 +4161,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 #else
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "Cmd+T keyCode fallback to create a new surface") {
+            workspace.panels.count == surfaceCountBefore + 1
+        }
 
         XCTAssertEqual(workspace.panels.count, surfaceCountBefore + 1, "Cmd+T keyCode fallback should create a new surface")
     }
@@ -4157,7 +4199,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         terminalPanel.hostedView.setVisibleInUI(true)
         terminalPanel.hostedView.setActive(true)
         terminalPanel.hostedView.moveFocus()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "terminal surface to become first responder") {
+            terminalPanel.hostedView.isSurfaceViewFirstResponder()
+        }
 
         XCTAssertTrue(
             terminalPanel.hostedView.isSurfaceViewFirstResponder(),
@@ -4210,7 +4254,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         }
 
         window.sendEvent(keyDown)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "typing to repair first responder back to the terminal surface") {
+            terminalPanel.hostedView.isSurfaceViewFirstResponder()
+        }
 
         XCTAssertTrue(
             terminalPanel.hostedView.isSurfaceViewFirstResponder(),
@@ -4261,7 +4307,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         terminalPanel.hostedView.setVisibleInUI(true)
         terminalPanel.hostedView.setActive(true)
         terminalPanel.hostedView.moveFocus()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "terminal surface to become first responder") {
+            terminalPanel.hostedView.isSurfaceViewFirstResponder()
+        }
 
         XCTAssertTrue(
             terminalPanel.hostedView.isSurfaceViewFirstResponder(),
@@ -4314,7 +4362,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         }
 
         window.sendEvent(keyDown)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "typing to repair first responder back to the terminal surface") {
+            terminalPanel.hostedView.isSurfaceViewFirstResponder()
+        }
 
         XCTAssertTrue(
             terminalPanel.hostedView.isSurfaceViewFirstResponder(),
@@ -4357,7 +4407,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         terminalPanel.hostedView.setVisibleInUI(true)
         terminalPanel.hostedView.setActive(true)
         terminalPanel.hostedView.moveFocus()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "terminal surface to become first responder") {
+            terminalPanel.hostedView.isSurfaceViewFirstResponder()
+        }
 
         // requestMountedSearchFieldFocus gates on window.isKeyWindow (production guard
         // against stealing keyboard focus into a background window's field). This
@@ -4410,7 +4462,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         )
 
         XCTAssertTrue(window.makeFirstResponder(nil), "Expected test to clear the window first responder")
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        waitUntil(description: "search field to lose first responder") {
+            !firstResponderOwnsTextField(window.firstResponder, textField: searchField)
+        }
 
         XCTAssertFalse(
             firstResponderOwnsTextField(window.firstResponder, textField: searchField),
