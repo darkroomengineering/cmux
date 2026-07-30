@@ -79,9 +79,20 @@ echo "Signing identity: $SIGN_IDENTITY"
 PROFILE_DIR="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
 mkdir -p "$PROFILE_DIR"
 
+# PlistBuddy needs a real, seekable file. Handed /dev/stdin it does not just
+# fail: it prints "Error Reading File: /dev/stdin" to STDOUT, so the caller's
+# emptiness check sees a non-empty value and treats the error text as the field.
+# That produced `cp ... "Error Reading File: /dev/stdin.mobileprovision"` and a
+# "No such file or directory" a hundred lines away from the real cause. Decode
+# to a temp file instead, and return empty on any failure so the callers'
+# `-z` guards work.
 profile_field() {
-  security cms -D -i "$1" 2>/dev/null \
-    | /usr/libexec/PlistBuddy -c "Print $2" /dev/stdin 2>/dev/null
+  local src="$1" key="$2" plist
+  plist="$(mktemp "${TMPDIR:-/tmp}/programa-profile.XXXXXX")"
+  if security cms -D -i "$src" >"$plist" 2>/dev/null; then
+    /usr/libexec/PlistBuddy -c "Print $key" "$plist" 2>/dev/null || true
+  fi
+  rm -f "$plist"
 }
 
 install_profile() {
