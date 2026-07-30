@@ -57,12 +57,28 @@ jobs:
           IOS_DIST_CERT_PASSWORD: ${{ secrets.APPLE_IOS_DIST_CERT_PASSWORD }}
           IOS_APP_PROFILE_BASE64: ${{ secrets.APPLE_IOS_APP_PROFILE_BASE64 }}
           IOS_WIDGET_PROFILE_BASE64: ${{ secrets.APPLE_IOS_WIDGET_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APPSTORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APPSTORE_CONNECT_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.APPSTORE_CONNECT_KEY_P8_BASE64 }}
+          WILL_UPLOAD: ${{ (github.event_name == 'push' || inputs.upload) && '1' || '0' }}
         run: |
           set -euo pipefail
           missing=""
           for v in IOS_DIST_CERT_BASE64 IOS_DIST_CERT_PASSWORD IOS_APP_PROFILE_BASE64 IOS_WIDGET_PROFILE_BASE64; do
-            [ -z "${!v}" ] && missing="$missing APPLE_$v"
+            if [ -z "${!v}" ]; then missing="$missing APPLE_$v"; fi
           done
+
+          # Check the upload credentials here too, when this run would upload.
+          # build-ios-testflight.sh only requires them at its very last step, so a
+          # repo with the four signing secrets but not the three App Store Connect
+          # ones used to report "configured", spend 10+ minutes on a macOS runner
+          # archiving, exporting and verifying entitlements, and only then die on
+          # `require PROGRAMA_ASC_KEY_ID`. Fail in seconds instead.
+          if [ "$WILL_UPLOAD" = "1" ]; then
+            for v in ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8_BASE64; do
+              if [ -z "${!v}" ]; then missing="$missing APPSTORE_CONNECT_${v#ASC_}"; fi
+            done
+          fi
 
           if [ -z "$missing" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
@@ -93,6 +109,18 @@ jobs:
             echo '| `APPSTORE_CONNECT_KEY_P8_BASE64` | the `.p8` key, base64 (upload only) |'
             echo ""
             echo 'Encode each file with `base64 -i <file> | pbcopy`.'
+            echo ""
+            echo "### Two things the secrets alone will not fix"
+            echo ""
+            echo "1. **Regenerate both provisioning profiles, do not reuse the existing ones.**"
+            echo "   The current profiles were minted before the iCloud container was attached"
+            echo "   to the App ID, so they carry no containers. Enable Push Notifications on"
+            echo "   the App ID first, then mint fresh App Store profiles — otherwise the build"
+            echo "   gets as far as signing and then fails its own entitlement verification on"
+            echo '   `aps-environment != production`.'
+            echo "2. **An App Store Connect app record must already exist** for"
+            echo '   `com.darkroom.programa.spike`. Nothing in this repo creates one, and'
+            echo '   `altool` rejects the upload without it. Create it once under My Apps.'
           } >> "$GITHUB_STEP_SUMMARY"
 
           echo "::warning title=iOS companion not shipped::Signing secrets are missing, so no TestFlight build was produced. See the run summary for the exact list."
