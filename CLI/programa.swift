@@ -1194,6 +1194,30 @@ enum CLICommandArgumentContract {
     case watchEvents
 }
 
+/// The argument grammar a `.registered` command accepts, declared once on its
+/// descriptor so validation is generated from the same source that documents
+/// it (`detailedUsage`), instead of being restated by hand as a switch arm in
+/// `validateRegisteredArguments`. Field vocabulary matches that switch's
+/// nested `parse`/`require` helpers so a grammar and a switch arm are
+/// interchangeable line-for-line.
+///
+/// A command with a `nil` grammar (the default) falls through to the switch
+/// unchanged -- this is additive, not a migration deadline.
+struct CLIArgumentGrammar {
+    /// Flags that take a value, e.g. `--name <value>`.
+    var valueOptions: Set<String> = []
+    /// Flags with no value, e.g. `--force`.
+    var booleanOptions: Set<String> = []
+    /// Subset of `valueOptions` that must be present. Checked in this order,
+    /// matching `require(_:in:)`'s first-missing-wins error semantics.
+    var requiredOptions: [String] = []
+    var minPositionals: Int = 0
+    /// `nil` means unbounded.
+    var maxPositionals: Int? = 0
+    /// Whether `--name=value` syntax is accepted in addition to `--name value`.
+    var allowEquals: Bool = false
+}
+
 /// Single source of truth for a CLI command's name(s), its one-line entry in
 /// the grouped `Commands:` help block, and how it executes.
 ///
@@ -1234,6 +1258,10 @@ struct CommandDescriptor {
     /// back to `helpLines` only, or to one of the per-family
     /// `*SubcommandUsage` helpers checked before the table lookup).
     let detailedUsage: String?
+    /// When set (and `argumentContract == .registered`), drives argument
+    /// validation directly instead of the command needing a switch arm in
+    /// `validateRegisteredArguments`. `nil` means "still on the switch".
+    let grammar: CLIArgumentGrammar?
     /// Executes the command. `nil` for commands implemented directly by
     /// `run()` before generic socket dispatch.
     let execute: ((CommandContext) throws -> Void)?
@@ -1245,6 +1273,7 @@ struct CommandDescriptor {
         helpPolicy: CLICommandHelpPolicy = .programa,
         argumentContract: CLICommandArgumentContract = .registered,
         detailedUsage: String? = nil,
+        grammar: CLIArgumentGrammar? = nil,
         execute: ((CommandContext) throws -> Void)?
     ) {
         self.names = names
@@ -1253,6 +1282,7 @@ struct CommandDescriptor {
         self.helpPolicy = helpPolicy
         self.argumentContract = argumentContract
         self.detailedUsage = detailedUsage
+        self.grammar = grammar
         self.execute = execute
     }
 }
@@ -1635,6 +1665,7 @@ struct ProgramaCLI {
                 Show a welcome screen with the programa logo and useful shortcuts.
                 Auto-runs once on first launch.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: nil
             ),
             CommandDescriptor(
@@ -1735,7 +1766,7 @@ struct ProgramaCLI {
                 }
             ),
 
-            CommandDescriptor(names: ["version"], helpLines: ["version"], connectionPolicy: .local, execute: nil),
+            CommandDescriptor(names: ["version"], helpLines: ["version"], connectionPolicy: .local, grammar: CLIArgumentGrammar(), execute: nil),
 
             CommandDescriptor(
                 names: ["capabilities"],
@@ -1745,6 +1776,7 @@ struct ProgramaCLI {
 
                 Print server capabilities as JSON.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     let response = try ctx.client.sendV2(method: "system.capabilities")
                     print(self.jsonString(self.formatIDs(response, mode: ctx.idFormat)))
@@ -1785,6 +1817,7 @@ struct ProgramaCLI {
                   --surface <id|ref>     Caller surface context (default: $PROGRAMA_SURFACE_ID)
                   --no-caller                  Omit caller context from the request
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace", "surface"], booleanOptions: ["no-caller"]),
                 execute: { ctx in
                     var params: [String: Any] = [:]
                     let includeCaller = !self.hasFlag(ctx.commandArgs, name: "--no-caller")
@@ -1830,6 +1863,7 @@ struct ProgramaCLI {
 
                 List open windows.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     let listed = try ctx.client.sendV2(method: "window.list")
                     let windows = listed["windows"] as? [[String: Any]] ?? []
@@ -1869,6 +1903,7 @@ struct ProgramaCLI {
 
                 Print the currently selected window ID.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     let response = try ctx.client.sendV2(method: "window.current")
                     let windowId = (response["window_id"] as? String) ?? ""
@@ -1891,6 +1926,7 @@ struct ProgramaCLI {
                 Example:
                   programa new-window
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     let response = try ctx.client.sendV2(method: "window.create")
                     print("OK \((response["window_id"] as? String) ?? "")")
@@ -1976,6 +2012,7 @@ struct ProgramaCLI {
                 Example:
                   programa move-workspace-to-window --workspace workspace:2 --window window:1
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace", "window"], requiredOptions: ["workspace", "window"]),
                 execute: { ctx in
                     guard let workspaceRaw = self.optionValue(ctx.commandArgs, name: "--workspace") else {
                         throw CLIError(message: "move-workspace-to-window requires --workspace")
@@ -2267,6 +2304,7 @@ struct ProgramaCLI {
                 Example:
                   programa list-workspaces
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     let payload = try ctx.client.sendV2(method: "workspace.list")
                     if ctx.jsonOutput {
@@ -2319,6 +2357,7 @@ struct ProgramaCLI {
                   programa new-workspace --cwd ~/projects/myapp
                   programa new-workspace --cwd . --command "npm test"
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["name", "description", "cwd", "command"]),
                 execute: { ctx in
                     let (commandOpt, rem0) = self.parseOption(ctx.commandArgs, name: "--command")
                     let (cwdOpt, rem1) = self.parseOption(rem0, name: "--cwd")
@@ -2404,6 +2443,7 @@ struct ProgramaCLI {
                   programa list-panes
                   programa list-panes --workspace workspace:2
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"]),
                 execute: { ctx in
                     let workspaceArg = self.workspaceFromArgsOrEnv(ctx.commandArgs, windowOverride: ctx.windowId)
                     var params: [String: Any] = [:]
@@ -2446,6 +2486,7 @@ struct ProgramaCLI {
                   programa list-pane-surfaces
                   programa list-pane-surfaces --workspace workspace:2 --pane pane:1
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace", "pane"]),
                 execute: { ctx in
                     let workspaceArg = self.workspaceFromArgsOrEnv(ctx.commandArgs, windowOverride: ctx.windowId)
                     let paneRaw = self.optionValue(ctx.commandArgs, name: "--pane")
@@ -2596,6 +2637,7 @@ struct ProgramaCLI {
                   programa close-surface
                   programa close-surface --surface surface:3
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["surface", "panel", "workspace"]),
                 execute: { ctx in
                     let csWsFlag = self.optionValue(ctx.commandArgs, name: "--workspace")
                     let workspaceArg = csWsFlag ?? (ctx.windowId == nil ? ProcessInfo.processInfo.environment["PROGRAMA_WORKSPACE_ID"] : nil)
@@ -2785,6 +2827,7 @@ struct ProgramaCLI {
 
                 Refresh surface snapshots for the focused workspace.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     // v1 always targeted the currently-selected workspace; no workspace_id here either.
                     let refreshPayload = try ctx.client.sendV2(method: "surface.refresh", params: [:])
@@ -2804,6 +2847,7 @@ struct ProgramaCLI {
                 Example:
                   programa reload-config
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     if let unexpected = ctx.commandArgs.first {
                         throw CLIError(message: "reload-config does not accept arguments. Unexpected argument '\(unexpected)'")
@@ -2828,6 +2872,7 @@ struct ProgramaCLI {
                   programa surface-health
                   programa surface-health --workspace workspace:2
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"]),
                 execute: { ctx in
                     let workspaceArg = self.workspaceFromArgsOrEnv(ctx.commandArgs, windowOverride: ctx.windowId)
                     var params: [String: Any] = [:]
@@ -2867,6 +2912,7 @@ struct ProgramaCLI {
                 Print live Ghostty terminal runtime metadata across all windows and workspaces.
                 Intended for debugging stray or detached terminal views.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     let unexpected = ctx.commandArgs.filter { $0 != "--" }
                     if let extra = unexpected.first {
@@ -2898,6 +2944,7 @@ struct ProgramaCLI {
                   programa trigger-flash
                   programa trigger-flash --workspace workspace:2 --surface surface:3
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace", "surface", "panel"]),
                 execute: { ctx in
                     let tfWsFlag = self.optionValue(ctx.commandArgs, name: "--workspace")
                     let explicitWorkspaceArg = tfWsFlag
@@ -2951,6 +2998,7 @@ struct ProgramaCLI {
                   programa list-panels
                   programa list-panels --workspace workspace:2
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"]),
                 execute: { ctx in
                     let workspaceArg = self.workspaceFromArgsOrEnv(ctx.commandArgs, windowOverride: ctx.windowId)
                     var params: [String: Any] = [:]
@@ -3088,6 +3136,7 @@ struct ProgramaCLI {
                   programa rename-workspace "backend logs"
                   programa rename-window --workspace workspace:2 "agent run"
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"], minPositionals: 1, maxPositionals: nil),
                 execute: { ctx in
                     let (wsArg, rem0) = self.parseOption(ctx.commandArgs, name: "--workspace")
                     let workspaceArg = wsArg ?? (ctx.windowId == nil ? ProcessInfo.processInfo.environment["PROGRAMA_WORKSPACE_ID"] : nil)
@@ -3111,6 +3160,7 @@ struct ProgramaCLI {
 
                 Print the currently selected workspace ID.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     let response = try ctx.client.sendV2(method: "workspace.current")
                     if ctx.jsonOutput {
@@ -3303,6 +3353,7 @@ struct ProgramaCLI {
                   programa prompt-agent "review this diff for bugs"
                   programa prompt-agent --surface surface:2 --timeout 300 "run the test suite"
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace", "surface", "timeout", "working-grace"], minPositionals: 1, maxPositionals: nil),
                 execute: { ctx in
                     let (wsArg, rem0) = self.parseOption(ctx.commandArgs, name: "--workspace")
                     let (sfArg, rem1) = self.parseOption(rem0, name: "--surface")
@@ -3457,6 +3508,7 @@ struct ProgramaCLI {
                   programa send "echo hello"
                   programa send --surface surface:2 "ls -la\\n"
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace", "surface"], minPositionals: 1, maxPositionals: nil),
                 execute: { ctx in
                     let (wsArg, rem0) = self.parseOption(ctx.commandArgs, name: "--workspace")
                     let (sfArg, rem1) = self.parseOption(rem0, name: "--surface")
@@ -3491,6 +3543,7 @@ struct ProgramaCLI {
                   programa send-key enter
                   programa send-key --surface surface:2 ctrl+c
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace", "surface"], minPositionals: 1, maxPositionals: 1),
                 execute: { ctx in
                     let (wsArg, rem0) = self.parseOption(ctx.commandArgs, name: "--workspace")
                     let (sfArg, rem1) = self.parseOption(rem0, name: "--surface")
@@ -3523,6 +3576,7 @@ struct ProgramaCLI {
                 Example:
                   programa send-panel --panel surface:2 "echo hello\\n"
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["panel", "workspace"], requiredOptions: ["panel"], minPositionals: 1, maxPositionals: nil),
                 execute: { ctx in
                     let (wsArg, rem0) = self.parseOption(ctx.commandArgs, name: "--workspace")
                     let (panelArg, rem1) = self.parseOption(rem0, name: "--panel")
@@ -3559,6 +3613,7 @@ struct ProgramaCLI {
                   programa send-key-panel --panel surface:2 enter
                   programa send-key-panel --panel surface:2 ctrl+c
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["panel", "workspace"], requiredOptions: ["panel"], minPositionals: 1, maxPositionals: 1),
                 execute: { ctx in
                     let (wsArg, rem0) = self.parseOption(ctx.commandArgs, name: "--workspace")
                     let (panelArg, rem1) = self.parseOption(rem0, name: "--panel")
@@ -3598,6 +3653,7 @@ struct ProgramaCLI {
                   programa notify --title "Build done" --body "All tests passed"
                   programa notify --title "Error" --subtitle "test.swift" --body "Line 42: syntax error"
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["title", "subtitle", "body", "workspace", "surface"]),
                 execute: { ctx in
                     let title = self.optionValue(ctx.commandArgs, name: "--title") ?? "Notification"
                     let subtitle = self.optionValue(ctx.commandArgs, name: "--subtitle") ?? ""
@@ -3651,6 +3707,7 @@ struct ProgramaCLI {
 
                 List queued notifications.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     let listed = try ctx.client.sendV2(method: "notification.list")
                     let notifications = listed["notifications"] as? [[String: Any]] ?? []
@@ -3694,6 +3751,7 @@ struct ProgramaCLI {
 
                 Clear all queued notifications.
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"]),
                 execute: { ctx in
                     if let wsFlag = self.optionValue(ctx.commandArgs, name: "--workspace") {
                         let wsId = try self.resolveWorkspaceId(wsFlag, client: ctx.client)
@@ -3775,6 +3833,7 @@ struct ProgramaCLI {
                 Example:
                   programa clear-status build
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"], minPositionals: 1, maxPositionals: 1, allowEquals: true),
                 execute: { ctx in
                     let parsed = self.parseFlagArgs(ctx.commandArgs)
                     guard let key = parsed.positional.first, parsed.positional.count == 1 else {
@@ -3801,6 +3860,7 @@ struct ProgramaCLI {
                   programa list-status
                   programa list-status --workspace workspace:2
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"], allowEquals: true),
                 execute: { ctx in
                     let parsed = self.parseFlagArgs(ctx.commandArgs)
                     let workspaceId = try self.resolveSidebarWorkspaceId(options: parsed.options, windowOverride: ctx.windowId, client: ctx.client)
@@ -3861,6 +3921,7 @@ struct ProgramaCLI {
                 Example:
                   programa clear-progress
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"], allowEquals: true),
                 execute: { ctx in
                     let parsed = self.parseFlagArgs(ctx.commandArgs)
                     let workspaceId = try self.resolveSidebarWorkspaceId(options: parsed.options, windowOverride: ctx.windowId, client: ctx.client)
@@ -3921,6 +3982,7 @@ struct ProgramaCLI {
                 Example:
                   programa clear-log
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"], allowEquals: true),
                 execute: { ctx in
                     let parsed = self.parseFlagArgs(ctx.commandArgs)
                     let workspaceId = try self.resolveSidebarWorkspaceId(options: parsed.options, windowOverride: ctx.windowId, client: ctx.client)
@@ -3985,6 +4047,7 @@ struct ProgramaCLI {
                   programa sidebar-state
                   programa sidebar-state --workspace workspace:2
                 """,
+                grammar: CLIArgumentGrammar(valueOptions: ["workspace"], allowEquals: true),
                 execute: { ctx in
                     let parsed = self.parseFlagArgs(ctx.commandArgs)
                     let workspaceId = try self.resolveSidebarWorkspaceId(options: parsed.options, windowOverride: ctx.windowId, client: ctx.client)
@@ -4033,6 +4096,7 @@ struct ProgramaCLI {
 
                 Trigger the app-active handler used by notification focus tests.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     _ = try ctx.client.sendV2(method: "app.simulate_active")
                     print("OK")
@@ -4215,6 +4279,7 @@ struct ProgramaCLI {
 
                 Show top-level CLI usage and command list.
                 """,
+                grammar: CLIArgumentGrammar(),
                 execute: { ctx in
                     print(self.usage())
                 }
@@ -6444,20 +6509,27 @@ struct ProgramaCLI {
             }
         }
 
-        switch command {
-        // Socket commands with no command-specific arguments.
-        case "capabilities", "list-windows", "current-window", "new-window",
-             "list-workspaces", "refresh-surfaces", "reload-config", "debug-terminals",
-             "current-workspace", "list-notifications",
-             "simulate-app-active":
-            _ = try parse()
+        // Commands that declare a typed grammar on their descriptor validate
+        // from it directly, through the exact same `parse`/`require` helpers
+        // the switch below uses -- so migrating a command off the switch
+        // cannot change its error messages. Commands without a grammar fall
+        // through to the switch unchanged.
+        if let grammar = commandDescriptor(named: command)?.grammar {
+            let parsed = try parse(
+                values: grammar.valueOptions,
+                booleans: grammar.booleanOptions,
+                minPositionals: grammar.minPositionals,
+                maxPositionals: grammar.maxPositionals,
+                allowEquals: grammar.allowEquals
+            )
+            try require(grammar.requiredOptions, in: parsed.options)
+            return
+        }
 
+        switch command {
         case "rpc":
             let parsed = try parse(minPositionals: 1, maxPositionals: 2)
             _ = try parseRPCParams(Array(parsed.positional.dropFirst()))
-
-        case "identify":
-            _ = try parse(values: ["workspace", "surface"], booleans: ["no-caller"])
 
         case "focus-window", "close-window":
             let parsed = try parse(values: ["window"])
@@ -6465,10 +6537,6 @@ struct ProgramaCLI {
             guard let rawWindow = parsed.options["window"], isUUID(rawWindow.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 throw CLIError(message: "\(command): invalid window id")
             }
-
-        case "move-workspace-to-window":
-            let parsed = try parse(values: ["workspace", "window"])
-            try require(["workspace", "window"], in: parsed.options)
 
         case "reorder-workspace":
             let parsed = try parse(values: ["workspace", "index", "before", "after", "window"])
@@ -6498,20 +6566,11 @@ struct ProgramaCLI {
                 throw CLIError(message: "workspace-action set-description requires a description")
             }
 
-        case "new-workspace":
-            _ = try parse(values: ["name", "description", "cwd", "command"])
-
         case "new-split":
             let parsed = try parse(values: ["workspace", "surface", "panel"], minPositionals: 1, maxPositionals: 1)
             guard ["left", "right", "up", "down"].contains(parsed.positional[0].lowercased()) else {
                 throw CLIError(message: "new-split: direction must be left, right, up, or down")
             }
-
-        case "list-panes", "surface-health", "list-panels":
-            _ = try parse(values: ["workspace"])
-
-        case "list-pane-surfaces":
-            _ = try parse(values: ["workspace", "pane"])
 
         case "focus-pane":
             let parsed = try parse(values: ["workspace", "pane"], maxPositionals: 1)
@@ -6536,9 +6595,6 @@ struct ProgramaCLI {
             if let type = parsed.options["type"], !["terminal", "browser"].contains(type.lowercased()) {
                 throw CLIError(message: "new-surface: --type must be terminal or browser")
             }
-
-        case "close-surface":
-            _ = try parse(values: ["surface", "panel", "workspace"])
 
         case "move-surface":
             let parsed = try parse(values: ["surface", "pane", "workspace", "window", "before", "before-surface", "after", "after-surface", "index", "focus"], maxPositionals: 1)
@@ -6596,9 +6652,6 @@ struct ProgramaCLI {
                 throw CLIError(message: "drag-surface-to-split: invalid direction")
             }
 
-        case "trigger-flash":
-            _ = try parse(values: ["workspace", "surface", "panel"])
-
         case "close-workspace", "select-workspace":
             let parsed = try parse(values: ["workspace"])
             if parsed.options["workspace"] == nil {
@@ -6606,32 +6659,6 @@ struct ProgramaCLI {
                     message: "\(command): --workspace <id|ref> is required (UUID or short ref like workspace:2). Refusing to target the current workspace implicitly."
                 )
             }
-
-        case "rename-workspace", "rename-window":
-            _ = try parse(values: ["workspace"], minPositionals: 1, maxPositionals: nil)
-
-        case "send":
-            _ = try parse(values: ["workspace", "surface"], minPositionals: 1, maxPositionals: nil)
-
-        case "prompt-agent":
-            _ = try parse(values: ["workspace", "surface", "timeout", "working-grace"], minPositionals: 1, maxPositionals: nil)
-
-        case "send-key":
-            _ = try parse(values: ["workspace", "surface"], minPositionals: 1, maxPositionals: 1)
-
-        case "send-panel":
-            let parsed = try parse(values: ["panel", "workspace"], minPositionals: 1, maxPositionals: nil)
-            try require(["panel"], in: parsed.options)
-
-        case "send-key-panel":
-            let parsed = try parse(values: ["panel", "workspace"], minPositionals: 1, maxPositionals: 1)
-            try require(["panel"], in: parsed.options)
-
-        case "notify":
-            _ = try parse(values: ["title", "subtitle", "body", "workspace", "surface"])
-
-        case "clear-notifications":
-            _ = try parse(values: ["workspace"])
 
         case "set-status":
             let parsed = try parse(
@@ -6649,12 +6676,6 @@ struct ProgramaCLI {
             if let pid = parsed.options["pid"], (Int(pid) ?? 0) <= 0 {
                 throw CLIError(message: "set-status: --pid must be a positive integer")
             }
-
-        case "clear-status":
-            _ = try parse(values: ["workspace"], minPositionals: 1, maxPositionals: 1, allowEquals: true)
-
-        case "list-status", "clear-progress", "clear-log", "sidebar-state":
-            _ = try parse(values: ["workspace"], allowEquals: true)
 
         case "log":
             let parsed = try parse(values: ["level", "source", "workspace"], minPositionals: 1, maxPositionals: nil, allowEquals: true)
@@ -6893,8 +6914,6 @@ struct ProgramaCLI {
 
         // Local commands are registered for unified lookup/help, but do not
         // acquire the app socket through the generic dispatcher.
-        case "welcome", "version", "help":
-            _ = try parse()
         case "shortcuts", "feedback", "themes", "claude-teams", "omo", "omx", "omc":
             return
         case "codex":

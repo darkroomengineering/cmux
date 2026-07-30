@@ -324,6 +324,18 @@ jobs:
 
           PROGRAMA_CLI_BIN="$CLI_BIN" python3 tests/test_cli_registry_behavior.py
 
+      - name: Run CLI argument grammar regression
+        run: |
+          set -euo pipefail
+
+          CLI_BIN="$RUNNER_TEMP/programa-cli-regression/programa"
+          if [ -z "${CLI_BIN:-}" ] || [ ! -x "$CLI_BIN" ]; then
+            echo "programa CLI binary not found in DerivedData" >&2
+            exit 1
+          fi
+
+          PROGRAMA_CLI_BIN="$CLI_BIN" python3 tests/test_cli_argument_grammar.py
+
       - name: Run unit tests
         env:
           PROGRAMA_UNIT_TEST_SCOPE: split-stateful
