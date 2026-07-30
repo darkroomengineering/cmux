@@ -1,13 +1,48 @@
 import SwiftUI
 
-/// Screen 1: paste the ticket, paste the token (first time only), connect.
+/// Screen 1: scan or paste the pairing code shown on Programa's Mac
+/// Settings ▸ Phone screen, then connect. The legacy separate ticket/token
+/// fields stay as a fallback for testers who can't scan or whose combined
+/// code paste didn't parse.
 struct PairConnectView: View {
     @Bindable var store: AppStore
+
+    @State private var showScanner = false
+    @State private var pairingCodeDraft = ""
+    @State private var pairingCodeError: String?
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Pairing ticket") {
+                Section("Pairing code") {
+                    Button {
+                        showScanner = true
+                    } label: {
+                        Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                    }
+
+                    TextField(
+                        "Or paste the code from Programa ▸ Settings ▸ Phone",
+                        text: $pairingCodeDraft,
+                        axis: .vertical
+                    )
+                    .lineLimit(1 ... 4)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                    Button("Use This Code") {
+                        applyPairingCodeDraft()
+                    }
+                    .disabled(pairingCodeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if let pairingCodeError {
+                        Text(pairingCodeError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                Section("Advanced: paste ticket and token separately") {
                     TextField(
                         "Paste the ticket from Programa's pairing screen",
                         text: $store.pairingTicketDraft,
@@ -16,9 +51,7 @@ struct PairConnectView: View {
                     .lineLimit(3 ... 8)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                }
 
-                Section("Pairing token") {
                     TextField("Only needed the first time", text: $store.pairingTokenDraft)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -68,7 +101,31 @@ struct PairConnectView: View {
                 }
             }
             .navigationTitle("Connect to Programa")
+            .sheet(isPresented: $showScanner) {
+                QRScannerView { code in
+                    handleScannedCode(code)
+                }
+            }
         }
+    }
+
+    private func applyPairingCodeDraft() {
+        let trimmed = pairingCodeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard store.applyPairingCode(trimmed) else {
+            pairingCodeError = "That doesn't look like a Programa pairing code. Scan the QR code, or paste the ticket and token below instead."
+            return
+        }
+        pairingCodeError = nil
+        Task { await store.connectManually() }
+    }
+
+    private func handleScannedCode(_ code: String) {
+        guard store.applyPairingCode(code) else {
+            pairingCodeError = "That QR code wasn't a valid Programa pairing code."
+            return
+        }
+        pairingCodeError = nil
+        Task { await store.connectManually() }
     }
 }
 

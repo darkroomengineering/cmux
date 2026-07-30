@@ -147,13 +147,34 @@ final class AppStore {
     // MARK: - User actions
 
     func connectManually() async {
-        let ticket = pairingTicketDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        var ticket = pairingTicketDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        var token = pairingTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A combined `programa-pair://` code pasted straight into the
+        // legacy ticket field is handled here rather than sent to iroh as a
+        // malformed ticket, which would otherwise fail with an opaque error.
+        if let parsed = PairingCode.parse(ticket) {
+            ticket = parsed.ticket
+            if token.isEmpty { token = parsed.token }
+        }
         guard !ticket.isEmpty else { return }
-        let token = pairingTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         PairingStore.saveTicket(ticket)
         currentTicket = ticket
+        pairingTicketDraft = ticket
         pairingTokenDraft = ""
         await attemptConnect(ticket: ticket, token: token.isEmpty ? nil : token)
+    }
+
+    /// Fills the legacy ticket/token fields from a combined `programa-pair://`
+    /// code -- scanned via `QRScannerView` or pasted into the "Pairing code"
+    /// field. Returns `false` (leaving the legacy fields untouched) if `raw`
+    /// isn't a recognised combined code, so the caller can show a clear
+    /// error instead of silently doing nothing.
+    @discardableResult
+    func applyPairingCode(_ raw: String) -> Bool {
+        guard let parsed = PairingCode.parse(raw) else { return false }
+        pairingTicketDraft = parsed.ticket
+        pairingTokenDraft = parsed.token
+        return true
     }
 
     func manualResync() async {

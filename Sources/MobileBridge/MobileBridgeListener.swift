@@ -9,6 +9,24 @@ private let mobileBridgeALPN = Data("programa/mobile-bridge/1".utf8)
 
 private let mobileBridgePairingWindowDuration: Duration = .seconds(300)
 
+private extension Duration {
+    /// `Duration` has no direct `TimeInterval` conversion; used to derive a
+    /// wall-clock `Date` expiry from `mobileBridgePairingWindowDuration` for
+    /// display in Settings, without hardcoding the 300s figure a second time.
+    var timeIntervalValue: TimeInterval {
+        let parts = components
+        return TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1e18
+    }
+}
+
+/// Everything Settings needs to show a pairing invitation: the two payloads
+/// to transfer plus the wall-clock deadline for the live countdown.
+struct MobileBridgePairingInfo: Sendable {
+    let ticket: String
+    let token: String
+    let expiresAt: Date
+}
+
 /// Owns the in-process iroh endpoint that lets a paired iPhone reach this
 /// Mac's terminal control dispatch without the user ever running the
 /// `tools/mobile-spike bridge` CLI in a terminal. Ported from
@@ -84,7 +102,7 @@ final class MobileBridgeListener: @unchecked Sendable {
     /// the endpoint isn't bound yet (mode just enabled, still connecting to
     /// relays) -- the caller should show a brief error and let the user
     /// retry.
-    func beginPairing() async -> (ticket: String, token: String)? {
+    func beginPairing() async -> MobileBridgePairingInfo? {
         stateLock.lock()
         let ep = endpoint
         stateLock.unlock()
@@ -93,13 +111,14 @@ final class MobileBridgeListener: @unchecked Sendable {
         let tokenBytes = Data((0 ..< 32).map { _ in UInt8.random(in: 0 ... 255) })
         let tokenString = MobileBridgeBase64URL.encode(tokenBytes)
         let window = MobileBridgePairingWindow(token: Data(tokenString.utf8), duration: mobileBridgePairingWindowDuration)
+        let expiresAt = Date().addingTimeInterval(mobileBridgePairingWindowDuration.timeIntervalValue)
 
         stateLock.lock()
         pairingWindow = window
         stateLock.unlock()
 
         guard let ticket = try? EndpointTicket.fromAddr(addr: ep.addr()) else { return nil }
-        return (ticket: ticket.description, token: tokenString)
+        return MobileBridgePairingInfo(ticket: ticket.description, token: tokenString, expiresAt: expiresAt)
     }
 
     /// Revokes a previously paired device immediately.

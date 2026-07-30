@@ -10207,6 +10207,23 @@
         }
       }
     },
+    "settings.phone.pair.copy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コピー"
+          }
+        }
+      }
+    },
     "settings.phone.pair.error": {
       "extractionState": "manual",
       "localizations": {
@@ -10224,19 +10241,70 @@
         }
       }
     },
-    "settings.phone.pair.expiry": {
+    "settings.phone.pair.expired": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Single use. Expires in 5 minutes."
+            "value": "Expired. Start a new pairing."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "1回限り。5分で失効します。"
+            "value": "有効期限が切れました。新しいペア設定を開始してください。"
+          }
+        }
+      }
+    },
+    "settings.phone.pair.expiresIn": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Single use. Expires in %@."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1回限り。%@ で失効します。"
+          }
+        }
+      }
+    },
+    "settings.phone.pair.manualFallback": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Can't scan? Paste the payload and token manually"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スキャンできない場合は、ペイロードとトークンを手動で貼り付け"
+          }
+        }
+      }
+    },
+    "settings.phone.pair.scanLabel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Scan this with the Programa iOS app's “Scan QR Code” button."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programa iOSアプリの「QRコードをスキャン」ボタンでこれをスキャンしてください。"
           }
         }
       }
@@ -10247,13 +10315,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Opens a single-use, 5-minute pairing window. Enter the payload and token in the Programa iOS app."
+            "value": "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or enter the payload and token manually."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "5分間有効な、1回限りのペア設定ウィンドウを開きます。Programa iOSアプリにペイロードとトークンを入力してください。"
+            "value": "5分間有効な、1回限りのペア設定ウィンドウを開きます。Programa iOSアプリでQRコードをスキャンするか、ペイロードとトークンを手動で入力してください。"
           }
         }
       }
