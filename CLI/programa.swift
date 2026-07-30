@@ -6869,22 +6869,6 @@ struct ProgramaCLI {
                     throw CLIError(message: "wait-for: --timeout must be finite and nonnegative")
                 }
             }
-        case "swap-pane":
-            let parsed = try parse(values: ["pane", "target-pane", "workspace"])
-            try require(["pane", "target-pane"], in: parsed.options)
-        case "break-pane":
-            _ = try parse(values: ["workspace", "pane", "surface"], booleans: ["no-focus"])
-        case "join-pane":
-            let parsed = try parse(values: ["target-pane", "workspace", "pane", "surface"], booleans: ["no-focus"])
-            try require(["target-pane"], in: parsed.options)
-        case "next-window", "previous-window", "last-window", "list-buffers":
-            _ = try parse()
-        case "last-pane":
-            _ = try parse(values: ["workspace"])
-        case "find-window":
-            _ = try parse(booleans: ["content", "select"], minPositionals: 1, maxPositionals: nil)
-        case "clear-history":
-            _ = try parse(values: ["workspace", "surface"])
         case "set-hook":
             let parsed = try parse(values: ["unset"], booleans: ["list"], maxPositionals: nil)
             if parsed.options["list"] == nil, parsed.options["unset"] == nil, parsed.positional.count < 2 {
@@ -6892,12 +6876,6 @@ struct ProgramaCLI {
             }
         case "popup", "bind-key", "unbind-key", "copy-mode":
             throw CLIError(message: "\(command) is not supported yet in programa CLI parity mode")
-        case "set-buffer":
-            _ = try parse(values: ["name"], minPositionals: 1, maxPositionals: nil)
-        case "paste-buffer":
-            _ = try parse(values: ["name", "workspace", "surface"])
-        case "respawn-pane":
-            _ = try parse(values: ["workspace", "surface", "command"])
         case "display-message":
             let parsed = try parse(booleans: ["print"], minPositionals: 1, maxPositionals: nil)
             guard parsed.positional.filter({ $0 != "-p" }).isEmpty == false else {
