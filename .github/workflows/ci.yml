@@ -36,6 +36,11 @@ on:
       - "GhosttyTabs.xcodeproj/**"
       - "ghostty/**"
       - ".gitmodules"
+  # On-demand runs, so the typing-lag regression can be measured on a branch
+  # BEFORE it merges. Without this the lag job only ever ran post-merge on main,
+  # which made "measure p95 before and after" impossible to do pre-merge and left
+  # perf changes to the keystroke path effectively unverifiable until too late.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -493,7 +498,7 @@ jobs:
     needs:
       - unit-tests
       - change-detection
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.change-detection.outputs.run_app_jobs == 'true'
+    if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && needs.change-detection.outputs.run_app_jobs == 'true'
     # Build the full cmux scheme and run the lag regression on GitHub-hosted runners.
     # Keep lag validation separate from UI regressions so functional UI failures
     # and performance regressions stay isolated. Broader interactive UI suites
