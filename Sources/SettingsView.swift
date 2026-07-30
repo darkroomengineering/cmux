@@ -3,6 +3,8 @@ import SwiftUI
 import Darwin
 import Bonsplit
 import UniformTypeIdentifiers
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 
 struct SettingsView: View {
@@ -95,6 +97,7 @@ struct SettingsView: View {
     @State private var mobileBridgePairedDevices: [MobileBridgeTrustedDevice] = []
     @State private var mobileBridgePairingTicket: String?
     @State private var mobileBridgePairingToken: String?
+    @State private var mobileBridgePairingExpiresAt: Date?
     @State private var mobileBridgePairingErrorMessage: String?
     @State private var isPairingMobileBridgeDevice = false
 
@@ -1379,9 +1382,11 @@ struct SettingsView: View {
             if let pairing = await MobileBridgeListener.shared.beginPairing() {
                 mobileBridgePairingTicket = pairing.ticket
                 mobileBridgePairingToken = pairing.token
+                mobileBridgePairingExpiresAt = pairing.expiresAt
             } else {
                 mobileBridgePairingTicket = nil
                 mobileBridgePairingToken = nil
+                mobileBridgePairingExpiresAt = nil
                 mobileBridgePairingErrorMessage = String(
                     localized: "settings.phone.pair.error",
                     defaultValue: "Could not start pairing. The phone companion may still be connecting — try again in a moment."
@@ -1407,6 +1412,44 @@ struct SettingsView: View {
         return String(localized: "settings.phone.devices.pairedOn", defaultValue: "Paired \(formattedDate)")
     }
 
+    /// Renders `string` as a fixed-size QR code using CoreImage's built-in
+    /// generator (no third-party dependency). Regenerated on demand rather
+    /// than cached in `@State` -- this only runs while the pairing card is
+    /// visible in Settings, not on any hot path.
+    private func mobileBridgeQRImage(for string: String) -> NSImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(string.utf8)
+        filter.correctionLevel = "M"
+        guard let outputImage = filter.outputImage else { return nil }
+
+        let targetSize: CGFloat = 512
+        let scale = targetSize / outputImage.extent.width
+        let scaled = outputImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+
+        let rep = NSCIImageRep(ciImage: scaled)
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
+    private func mobileBridgePairingRemainingSeconds(at date: Date) -> Int? {
+        guard let expiresAt = mobileBridgePairingExpiresAt else { return nil }
+        return max(0, Int(expiresAt.timeIntervalSince(date).rounded(.up)))
+    }
+
+    private func mobileBridgePairingIsExpired(at date: Date) -> Bool {
+        (mobileBridgePairingRemainingSeconds(at: date) ?? 0) <= 0
+    }
+
+    private func mobileBridgePairingCountdownLabel(at date: Date) -> String {
+        guard let remaining = mobileBridgePairingRemainingSeconds(at: date) else { return "" }
+        if remaining <= 0 {
+            return String(localized: "settings.phone.pair.expired", defaultValue: "Expired. Start a new pairing.")
+        }
+        let timeString = String(format: "%d:%02d", remaining / 60, remaining % 60)
+        return String(localized: "settings.phone.pair.expiresIn", defaultValue: "Single use. Expires in \(timeString).")
+    }
+
     @ViewBuilder
     private var phoneSection: some View {
         SettingsSectionHeader(title: String(localized: "settings.section.phone", defaultValue: "Phone"))
@@ -1430,7 +1473,7 @@ struct SettingsView: View {
 
                 SettingsCardRow(
                     String(localized: "settings.phone.pair.title", defaultValue: "Pair a Device"),
-                    subtitle: String(localized: "settings.phone.pair.subtitle", defaultValue: "Opens a single-use, 5-minute pairing window. Enter the payload and token in the Programa iOS app.")
+                    subtitle: String(localized: "settings.phone.pair.subtitle", defaultValue: "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or enter the payload and token manually.")
                 ) {
                     Button(String(localized: "settings.phone.pair.button", defaultValue: "Pair a Device…")) {
                         beginMobileBridgePairing()
@@ -1441,36 +1484,81 @@ struct SettingsView: View {
                     .accessibilityIdentifier("MobileBridgePairButton")
                 }
 
-                if let ticket = mobileBridgePairingTicket, let token = mobileBridgePairingToken {
+                if let ticket = mobileBridgePairingTicket, let token = mobileBridgePairingToken,
+                   let pairingURL = MobileBridgePairingCode.makeURL(ticket: ticket, token: token) {
                     SettingsCardDivider()
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(String(localized: "settings.phone.pair.ticketLabel", defaultValue: "Pairing Payload"))
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(ticket)
-                            .font(.system(size: 11, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(Color(nsColor: .controlBackgroundColor))
-                            )
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: 14) {
+                            if let qrImage = mobileBridgeQRImage(for: pairingURL.absoluteString) {
+                                Image(nsImage: qrImage)
+                                    .interpolation(.none)
+                                    .resizable()
+                                    .frame(width: 168, height: 168)
+                                    .background(Color.white)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                    .accessibilityIdentifier("MobileBridgePairingQRCode")
+                            }
 
-                        Text(String(localized: "settings.phone.pair.tokenLabel", defaultValue: "Pairing Token"))
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(token)
-                            .font(.system(size: 11, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(Color(nsColor: .controlBackgroundColor))
-                            )
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(String(localized: "settings.phone.pair.scanLabel", defaultValue: "Scan this with the Programa iOS app's \u{201c}Scan QR Code\u{201d} button."))
+                                    .font(.system(size: 12, weight: .semibold))
 
-                        Text(String(localized: "settings.phone.pair.expiry", defaultValue: "Single use. Expires in 5 minutes."))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                                Text(pairingURL.absoluteString)
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(Color(nsColor: .controlBackgroundColor))
+                                    )
+
+                                HStack(spacing: 10) {
+                                    Button(String(localized: "settings.phone.pair.copy", defaultValue: "Copy")) {
+                                        let pasteboard = NSPasteboard.general
+                                        pasteboard.clearContents()
+                                        pasteboard.setString(pairingURL.absoluteString, forType: .string)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+
+                                    TimelineView(.periodic(from: mobileBridgePairingExpiresAt ?? Date(), by: 1)) { context in
+                                        Text(mobileBridgePairingCountdownLabel(at: context.date))
+                                            .font(.caption)
+                                            .foregroundStyle(mobileBridgePairingIsExpired(at: context.date) ? .red : .secondary)
+                                    }
+                                }
+                            }
+                        }
+
+                        DisclosureGroup(String(localized: "settings.phone.pair.manualFallback", defaultValue: "Can't scan? Paste the payload and token manually")) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(String(localized: "settings.phone.pair.ticketLabel", defaultValue: "Pairing Payload"))
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text(ticket)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(Color(nsColor: .controlBackgroundColor))
+                                    )
+
+                                Text(String(localized: "settings.phone.pair.tokenLabel", defaultValue: "Pairing Token"))
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text(token)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(Color(nsColor: .controlBackgroundColor))
+                                    )
+                            }
+                            .padding(.top, 6)
+                        }
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)

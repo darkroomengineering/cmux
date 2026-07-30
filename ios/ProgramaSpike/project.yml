@@ -85,6 +85,9 @@ targets:
         # so the connection falls back to a relay even on the same Wi-Fi.
         # Measured: phone reported `relay` until this key was added.
         NSLocalNetworkUsageDescription: "Programa connects directly to your Mac on the same network instead of routing through a relay."
+        # Used only by the pairing screen's "Scan QR Code" button, to read the
+        # pairing code shown in Programa's Mac Settings ▸ Phone screen.
+        NSCameraUsageDescription: "Programa uses the camera to scan the pairing QR code shown in Programa's Mac Settings ▸ Phone screen."
         # Required for ActivityKit -- without this the app can request a Live
         # Activity but the system silently refuses to start it.
         NSSupportsLiveActivities: true
