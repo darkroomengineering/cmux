@@ -1428,6 +1428,11 @@ final class TerminalSurface: Identifiable, ObservableObject {
 
     /// Force a full size recalculation and surface redraw.
     func forceRefresh(reason: String = "unspecified") {
+        // PERF (#183): this diagnostic string is consumed only by the DEBUG-only `dlog` below,
+        // but it used to be built unconditionally -- interpolating the view's bounds and doing a
+        // CAMetalLayer cast on every call, including the one that runs after each text-input
+        // keystroke. Keep the whole thing inside DEBUG so release builds allocate nothing here.
+        #if DEBUG
         let hasSurface = surface != nil
         let viewState: String
         if let view = attachedView {
@@ -1438,7 +1443,6 @@ final class TerminalSurface: Identifiable, ObservableObject {
         } else {
             viewState = "NO_ATTACHED_VIEW hasSurface=\(hasSurface)"
         }
-        #if DEBUG
         dlog("forceRefresh: \(id) reason=\(reason) \(viewState)")
         #endif
         guard let view = attachedView,
