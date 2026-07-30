@@ -41,6 +41,16 @@ on:
   # which made "measure p95 before and after" impossible to do pre-merge and left
   # perf changes to the keystroke path effectively unverifiable until too late.
   workflow_dispatch:
+    inputs:
+      lag_combo:
+        description: >-
+          Key the typing-lag harness repeats. "up" (the default, and what
+          scheduled runs use) exercises the per-event hit-test path. A printable
+          key such as "a" additionally reaches shouldRefreshAfterTextInput and
+          therefore forceRefresh, which the arrow key never does -- the only way
+          to measure the text-input half of the keystroke path.
+        type: string
+        default: up
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -666,6 +676,7 @@ jobs:
           PROGRAMA_LAG_MAX_AVG_DELTA_MS=12.0 \
           PROGRAMA_LAG_MAX_CHURN_P95_MS=35 \
           PROGRAMA_LAG_KEY_EVENTS=180 \
+          PROGRAMA_LAG_KEY_COMBO="${{ inputs.lag_combo || 'up' }}" \
           python3 tests/test_workspace_churn_up_arrow_lag.py
 
       - name: Cleanup virtual display
