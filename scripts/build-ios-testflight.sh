@@ -230,7 +230,13 @@ SIGNED_ENTS="$(codesign -d --entitlements - --xml "$SIGNED_APP" 2>/dev/null || t
 check_entitlement() {
   local key="$1" expected="$2"
   local actual
-  actual="$(printf '%s' "$SIGNED_ENTS" | plutil -extract "$key" raw -o - - 2>/dev/null || echo "<absent>")"
+  # plutil writes "Could not extract value" to STDOUT, not stderr, so a bare
+  # `|| echo "<absent>"` never fires and the error text is reported as the
+  # entitlement's value -- which reads as a baffling mismatch rather than "the
+  # key is missing". Key on the exit status instead.
+  if ! actual="$(printf '%s' "$SIGNED_ENTS" | plutil -extract "$key" raw -o - - 2>/dev/null)"; then
+    actual="<absent>"
+  fi
   if [[ "$actual" != "$expected" ]]; then
     echo "FAIL: signed entitlement $key is '$actual', expected '$expected'" >&2
     return 1

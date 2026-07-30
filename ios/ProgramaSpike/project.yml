@@ -126,6 +126,16 @@ targets:
           - iCloud.com.darkroom.programa
         com.apple.developer.icloud-services:
           - CloudKit
+        # Which CloudKit environment the signed build talks to. Unlike
+        # aps-environment -- which Xcode rewrites from development to production
+        # when signing for distribution -- this key is NOT injected: leaving it
+        # out produces a signed binary with no such entitlement at all, and
+        # build-ios-testflight.sh refuses to upload because it cannot confirm the
+        # build would reach the same container the Mac writes to.
+        # Declared as Production because that is the only environment that
+        # interoperates with the distributed macOS app. The App Store profile
+        # permits both values (it carries them as an array), so this signs fine.
+        com.apple.developer.icloud-container-environment: Production
 
   ProgramaSpikeWidgets:
     type: app-extension
