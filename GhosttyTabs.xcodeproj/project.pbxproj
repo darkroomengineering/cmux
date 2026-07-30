@@ -185,6 +185,7 @@
 		NRWS00000000000000000004 /* RemoteSCPUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRWS00000000000000000003 /* RemoteSCPUpload.swift */; };
 		A5001407 /* WorkspaceContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001417 /* WorkspaceContentView.swift */; };
 			A5001093 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001090 /* AppDelegate.swift */; };
+			5B5711B8348F309563272B9D /* ShortcutRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDE5A5F043A04829779CF356 /* ShortcutRouting.swift */; };
 			NRAD1001 /* MainWindowHostingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0001 /* MainWindowHostingView.swift */; };
 			NRAD1002 /* TypingProfiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0002 /* TypingProfiler.swift */; };
 			NRAD1003 /* TerminalDirectoryOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0003 /* TerminalDirectoryOpener.swift */; };
@@ -275,6 +276,7 @@
 					SWCT000001A1B2C3D4E5F607 /* SessionWALCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = SWCT000002A1B2C3D4E5F607 /* SessionWALCoreTests.swift */; };
 					FA100000A1B2C3D4E5F60718 /* BrowserImportMappingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA100001A1B2C3D4E5F60718 /* BrowserImportMappingTests.swift */; };
 					F6000000A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6000001A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift */; };
+				E57B23C339CE9F1226BC4478 /* ShortcutRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C838E51ABC8DBDCC2040D56 /* ShortcutRoutingTests.swift */; };
 					F6100000A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6100001A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift */; };
 					F7000000A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7000001A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift */; };
 					F8000000A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8000001A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift */; };
@@ -562,6 +564,7 @@
 		NRWS00000000000000000003 /* RemoteSCPUpload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteSCPUpload.swift; sourceTree = "<group>"; };
 		A5001417 /* WorkspaceContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceContentView.swift; sourceTree = "<group>"; };
 		A5001090 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		DDE5A5F043A04829779CF356 /* ShortcutRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutRouting.swift; sourceTree = "<group>"; };
 		NRAD0001 /* MainWindowHostingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowHostingView.swift; sourceTree = "<group>"; };
 		NRAD0002 /* TypingProfiler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingProfiler.swift; sourceTree = "<group>"; };
 		NRAD0003 /* TerminalDirectoryOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalDirectoryOpener.swift; sourceTree = "<group>"; };
@@ -650,6 +653,7 @@
 				SWCT000002A1B2C3D4E5F607 /* SessionWALCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionWALCoreTests.swift; sourceTree = "<group>"; };
 				FA100001A1B2C3D4E5F60718 /* BrowserImportMappingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserImportMappingTests.swift; sourceTree = "<group>"; };
 				F6000001A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegateShortcutRoutingTests.swift; sourceTree = "<group>"; };
+				6C838E51ABC8DBDCC2040D56 /* ShortcutRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutRoutingTests.swift; sourceTree = "<group>"; };
 				F6100001A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRemoteConnectionTests.swift; sourceTree = "<group>"; };
 				F7000001A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceContentViewVisibilityTests.swift; sourceTree = "<group>"; };
 					F8000001A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketControlPasswordStoreTests.swift; sourceTree = "<group>"; };
@@ -940,6 +944,7 @@
 				A5001620 /* AppleScriptSupport.swift */,
 				D1320AA0D1320AA0D1320AA4 /* AppIconDockTilePlugin.swift */,
 				A5001090 /* AppDelegate.swift */,
+				DDE5A5F043A04829779CF356 /* ShortcutRouting.swift */,
 				NRAD0001 /* MainWindowHostingView.swift */,
 				NRAD0002 /* TypingProfiler.swift */,
 				NRAD0003 /* TerminalDirectoryOpener.swift */,
@@ -1111,6 +1116,7 @@
 					SWCT000002A1B2C3D4E5F607 /* SessionWALCoreTests.swift */,
 					FA100001A1B2C3D4E5F60718 /* BrowserImportMappingTests.swift */,
 					F6000001A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift */,
+					6C838E51ABC8DBDCC2040D56 /* ShortcutRoutingTests.swift */,
 					F6100001A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift */,
 					F7000001A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift */,
 					F8000001A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift */,
@@ -1420,6 +1426,7 @@
 				A5001226 /* SocketControlSettings.swift in Sources */,
 				A5001621 /* AppleScriptSupport.swift in Sources */,
 				A5001093 /* AppDelegate.swift in Sources */,
+				5B5711B8348F309563272B9D /* ShortcutRouting.swift in Sources */,
 				NRAD1001 /* MainWindowHostingView.swift in Sources */,
 				NRAD1002 /* TypingProfiler.swift in Sources */,
 				NRAD1003 /* TerminalDirectoryOpener.swift in Sources */,
@@ -1554,6 +1561,7 @@
 					SWCT000001A1B2C3D4E5F607 /* SessionWALCoreTests.swift in Sources */,
 					FA100000A1B2C3D4E5F60718 /* BrowserImportMappingTests.swift in Sources */,
 					F6000000A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift in Sources */,
+					E57B23C339CE9F1226BC4478 /* ShortcutRoutingTests.swift in Sources */,
 					F6100000A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift in Sources */,
 					F7000000A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift in Sources */,
 					F8000000A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift in Sources */,
