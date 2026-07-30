@@ -13,10 +13,14 @@ enum ObservedPath: CustomStringConvertible, Equatable, Sendable {
 
     var description: String {
         switch self {
-        case .direct: "direct"
-        case .privateNetwork: "private network"
-        case let .relay(url): "relay (\(url))"
-        case .unavailable: "unavailable"
+        case .direct: String(localized: "connection.path.direct", defaultValue: "direct")
+        case .privateNetwork: String(localized: "connection.path.privateNetwork", defaultValue: "private network")
+        case let .relay(url):
+            String.localizedStringWithFormat(
+                String(localized: "connection.path.relay", defaultValue: "relay (%@)"),
+                url
+            )
+        case .unavailable: String(localized: "connection.path.unavailable", defaultValue: "unavailable")
         }
     }
 }

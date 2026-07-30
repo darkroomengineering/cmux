@@ -57,12 +57,15 @@ enum BridgeError: Error, CustomStringConvertible, Sendable {
 
     var description: String {
         switch self {
-        case .notConnected: "not connected to the bridge"
-        case .timedOut: "the Mac did not respond in time"
-        case .invalidTicket: "could not parse the pairing ticket"
-        case .disconnected: "connection closed"
-        case .encodingFailed: "failed to encode request"
-        case .malformedResponse: "malformed response from bridge"
+        case .notConnected: String(localized: "bridge.error.notConnected", defaultValue: "not connected to the bridge")
+        case .timedOut: String(localized: "bridge.error.timedOut", defaultValue: "the Mac did not respond in time")
+        case .invalidTicket: String(localized: "bridge.error.ticketParseFailed", defaultValue: "could not parse the pairing ticket")
+        case .disconnected: String(localized: "bridge.error.connectionClosed", defaultValue: "connection closed")
+        case .encodingFailed: String(localized: "bridge.error.encodingFailed", defaultValue: "failed to encode request")
+        case .malformedResponse: String(localized: "bridge.error.malformedResponse", defaultValue: "malformed response from bridge")
+        // Out of scope (see issue #203 part-2 notes): this leaks a raw wire
+        // code (e.g. "not_paired") into UI text when `message` is nil. Not
+        // fixed here — flagged as a known wart, not a localization gap.
         case let .rpc(code, message): message.map { "\(code): \($0)" } ?? code
         }
     }
