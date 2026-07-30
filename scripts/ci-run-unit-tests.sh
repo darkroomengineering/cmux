@@ -16,7 +16,16 @@ SWIFTPM_CACHE_DIR="${PROGRAMA_SWIFTPM_CACHE_DIR:-$HOME/Library/Caches/org.swift.
 DERIVED_DATA_DIR="${PROGRAMA_DERIVED_DATA_DIR:-$HOME/Library/Developer/Xcode/DerivedData}"
 TEST_SCOPE="${PROGRAMA_UNIT_TEST_SCOPE:-serial}"
 STATEFUL_TEST_CLASS="programaTests/AppDelegateShortcutRoutingTests"
-STATEFUL_TEST_SKIP="${STATEFUL_TEST_CLASS}/testCmdWClosesWindowWhenClosingLastSurfaceInLastWorkspace"
+# testCmdWClosesWindowWhenClosingLastSurfaceInLastWorkspace used to be skipped here,
+# with no recorded reason. The likeliest cause was timing: it asserted the window had
+# gone after a single fixed 0.05s run-loop spin, which is the same failure mode that
+# made this whole class flaky enough to need a retry. That test now waits for
+# `window(withId:) == nil` with a 2s budget instead of assuming one spin is enough,
+# so the original cause should be gone. Un-skipped deliberately to find out.
+#
+# If it turns out to fail for some other reason, re-add the skip WITH the reason
+# written down -- a silently excluded test is worse than either a fixed one or a
+# deleted one, because nobody can tell which it should be.
 
 # Test CLASSES quarantined when PROGRAMA_UNIT_TEST_QUARANTINE is set (the
 # macos-15 compat leg). Every class here builds real NSWindows and waits on async
@@ -117,11 +126,9 @@ run_unit_tests() {
       ;;
     stateful)
       xcode_args+=("-only-testing:${STATEFUL_TEST_CLASS}")
-      xcode_args+=("-skip-testing:${STATEFUL_TEST_SKIP}")
       xcode_args+=("-parallel-testing-enabled" "NO")
       ;;
     serial|*)
-      xcode_args+=("-skip-testing:${STATEFUL_TEST_SKIP}")
       xcode_args+=("-parallel-testing-enabled" "NO")
       ;;
   esac
