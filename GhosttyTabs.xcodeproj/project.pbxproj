@@ -309,6 +309,7 @@
 					7C10SE2A0000000000000002 /* WorkspaceCloseConfirmationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C10SE2A0000000000000001 /* WorkspaceCloseConfirmationTests.swift */; };
 					C1A2B3C4D5E6F70800000001 /* ProgramaConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A2B3C4D5E6F70800000002 /* ProgramaConfigTests.swift */; };
 					C1A2B3C4D5E6F70800000006 /* ServeWebPortStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A2B3C4D5E6F70800000005 /* ServeWebPortStoreTests.swift */; };
+					9EAF4699346282F2171FCDB7 /* ProgramaDirectoryTrustTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CA3597273B50CC0592C0164 /* ProgramaDirectoryTrustTests.swift */; };
 		/* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -684,6 +685,7 @@
 				7C10SE2A0000000000000001 /* WorkspaceCloseConfirmationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCloseConfirmationTests.swift; sourceTree = "<group>"; };
 				C1A2B3C4D5E6F70800000002 /* ProgramaConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramaConfigTests.swift; sourceTree = "<group>"; };
 				C1A2B3C4D5E6F70800000005 /* ServeWebPortStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServeWebPortStoreTests.swift; sourceTree = "<group>"; };
+		3CA3597273B50CC0592C0164 /* ProgramaDirectoryTrustTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramaDirectoryTrustTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1143,6 +1145,7 @@
 					7C10SE2A0000000000000001 /* WorkspaceCloseConfirmationTests.swift */,
 					C1A2B3C4D5E6F70800000002 /* ProgramaConfigTests.swift */,
 					C1A2B3C4D5E6F70800000005 /* ServeWebPortStoreTests.swift */,
+					3CA3597273B50CC0592C0164 /* ProgramaDirectoryTrustTests.swift */,
 				);
 				path = programaTests;
 				sourceTree = "<group>";
@@ -1586,6 +1589,7 @@
 					7C10SE2A0000000000000002 /* WorkspaceCloseConfirmationTests.swift in Sources */,
 					C1A2B3C4D5E6F70800000001 /* ProgramaConfigTests.swift in Sources */,
 					C1A2B3C4D5E6F70800000006 /* ServeWebPortStoreTests.swift in Sources */,
+					9EAF4699346282F2171FCDB7 /* ProgramaDirectoryTrustTests.swift in Sources */,
 				);
 				runOnlyForDeploymentPostprocessing = 0;
 			};

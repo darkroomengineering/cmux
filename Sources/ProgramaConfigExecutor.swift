@@ -116,11 +116,13 @@ struct ProgramaConfigExecutor {
         globalConfigPath: String
     ) -> Bool {
         // No source path means the global config in ~/.config/programa, written by the user.
-        let trusted = configSourcePath.map {
-            ProgramaDirectoryTrust.shared.isTrusted(configPath: $0, globalConfigPath: globalConfigPath)
-        } ?? true
+        let trustState: ProgramaDirectoryTrust.TrustState = configSourcePath.map {
+            ProgramaDirectoryTrust.shared.trustState(configPath: $0, globalConfigPath: globalConfigPath)
+        } ?? .trusted
+        let trusted = trustState == .trusted
+        let configChanged = trustState == .changed
 
-        guard requiresConfirmation(confirmFlag: confirmFlag, isTrusted: trusted) else {
+        guard configChanged || requiresConfirmation(confirmFlag: confirmFlag, isTrusted: trusted) else {
             return true
         }
 
@@ -163,7 +165,8 @@ struct ProgramaConfigExecutor {
             messageFormat: messageFormat,
             affirmativeButtonTitle: affirmativeButtonTitle,
             detail: detail,
-            configPath: trusted ? nil : configSourcePath
+            configPath: trusted ? nil : configSourcePath,
+            configChanged: configChanged
         )
     }
 
@@ -271,7 +274,8 @@ struct ProgramaConfigExecutor {
         messageFormat: String,
         affirmativeButtonTitle: String,
         detail: String,
-        configPath: String?
+        configPath: String?,
+        configChanged: Bool = false
     ) -> Bool {
         let alert = NSAlert()
         alert.messageText = title
@@ -279,7 +283,15 @@ struct ProgramaConfigExecutor {
         // `describeForConfirmation` -- re-running sanitizeForDisplay on the whole string here
         // would collapse the real newlines between entries that the caller relies on to keep
         // each surface on its own line.
-        alert.informativeText = String(format: messageFormat, detail)
+        var informativeText = String(format: messageFormat, detail)
+        if configChanged {
+            let changedWarning = String(
+                localized: "dialog.cmuxConfig.confirmCommand.configChanged",
+                defaultValue: "This folder's programa.json has changed since you trusted it."
+            )
+            informativeText = changedWarning + "\n\n" + informativeText
+        }
+        alert.informativeText = informativeText
         alert.alertStyle = .warning
         alert.addButton(withTitle: affirmativeButtonTitle)
         alert.addButton(withTitle: String(
