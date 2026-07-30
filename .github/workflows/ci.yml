@@ -691,6 +691,52 @@ jobs:
           PROGRAMA_LAG_KEY_COMBO="${{ inputs.lag_combo || 'up' }}" \
           python3 tests/test_workspace_churn_up_arrow_lag.py
 
+      # On-demand only. This measures the refresh call itself with an in-process
+      # timer rather than an end-to-end socket round trip, because that round trip
+      # is order-milliseconds and cannot resolve a change of this size -- four runs
+      # of the forceRefresh change produced completely overlapping ranges (#183).
+      #
+      # Runs in its own app instance: the sampler only records when
+      # PROGRAMA_TYPING_TIMING_LOGS=1, and enabling that for the lag harness above
+      # would add logging to the very path that harness measures.
+      #
+      # Reports numbers, asserts no budget. There is no baseline yet, and a
+      # threshold invented before any data would be a number from nowhere.
+      - name: Measure text-input refresh cost (dispatch only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+
+          APP="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Debug/Programa DEV.app" -print -quit)"
+          [ -n "$APP" ] || { echo "Programa DEV.app not found" >&2; exit 1; }
+
+          TAG="ci-refresh-cost"
+          SOCK="/tmp/programa-debug-${TAG}.sock"
+          BUNDLE_ID="$(
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null \
+              || echo 'com.darkroom.programa.debug'
+          )"
+
+          pkill -x "Programa DEV" || true
+          rm -f "$SOCK" || true
+          defaults write "$BUNDLE_ID" socketControlMode -string full >/dev/null 2>&1 || true
+
+          PROGRAMA_TAG="$TAG" PROGRAMA_SOCKET_PATH="$SOCK" PROGRAMA_UI_TEST_MODE=1 \
+            PROGRAMA_TYPING_TIMING_LOGS=1 \
+            "$APP/Contents/MacOS/Programa DEV" >/tmp/programa-ci-refresh-cost.log 2>&1 &
+          APP_PID=$!
+          trap 'kill "$APP_PID" >/dev/null 2>&1 || true' EXIT
+
+          for _ in {1..240}; do
+            [ -S "$SOCK" ] && break
+            sleep 0.25
+          done
+          [ -S "$SOCK" ] || { echo "Socket not ready at $SOCK" >&2; exit 1; }
+
+          PROGRAMA_SOCKET_PATH="$SOCK" \
+          PROGRAMA_REFRESH_COST_KEY_EVENTS=400 \
+          python3 tests/test_text_input_refresh_cost.py | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Cleanup virtual display
         if: always()
         run: |
