@@ -132,6 +132,12 @@ if ! command -v xcodegen >/dev/null 2>&1; then
   echo "xcodegen is required (brew install xcodegen)" >&2
   exit 1
 fi
+# XcodeGen substitutes ${VAR} from the environment, which is how each target gets
+# its own PROVISIONING_PROFILE_SPECIFIER. These must be exported before generate:
+# a command-line build setting would apply to both targets, and the app and the
+# widget sign with different profiles.
+export PROGRAMA_IOS_APP_PROFILE_NAME="$APP_PROFILE_NAME"
+export PROGRAMA_IOS_WIDGET_PROFILE_NAME="$WIDGET_PROFILE_NAME"
 (cd "$IOS_DIR" && xcodegen generate)
 
 # Fail in seconds rather than after a ~10 minute archive and a consumed upload

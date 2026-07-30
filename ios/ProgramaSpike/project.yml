@@ -28,6 +28,16 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
+        # Set by scripts/build-ios-testflight.sh before `xcodegen generate`, from
+        # the name inside the actual installed profile. It has to live here rather
+        # than on the xcodebuild command line: a command-line build setting applies
+        # to every target, and the app and the widget need *different* profiles.
+        # Without it, a manual-signing archive fails with "requires a provisioning
+        # profile with the iCloud and Push Notifications features".
+        # Unset locally, where it stays an undefined build-setting reference and
+        # expands to empty -- harmless, since local builds pass
+        # CODE_SIGNING_ALLOWED=NO and Xcode itself uses automatic signing.
+        PROVISIONING_PROFILE_SPECIFIER: ${PROGRAMA_IOS_APP_PROFILE_NAME}
         # Black-and-white treatment of the macOS Programa mark.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     # Every Info.plist key is declared here, explicitly, rather than via
@@ -131,6 +141,10 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
+        # The widget needs its own profile, not the app's -- see the note on the
+        # app target's PROVISIONING_PROFILE_SPECIFIER for why this cannot be
+        # passed on the xcodebuild command line.
+        PROVISIONING_PROFILE_SPECIFIER: ${PROGRAMA_IOS_WIDGET_PROFILE_NAME}
         # An app extension must ship a real nested NSExtension dictionary.
         # INFOPLIST_KEY_* only synthesises a documented allowlist of flat keys,
         # so NSExtensionPointIdentifier never nests and iOS refuses to install
