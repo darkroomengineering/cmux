@@ -2008,6 +2008,10 @@ class TerminalController {
             return v2Result(id: id, self.v2DebugEmptyPanelCount())
         case "debug.empty_panel.reset":
             return v2Result(id: id, self.v2DebugResetEmptyPanelCount())
+        case "debug.samples.stats":
+            return v2Result(id: id, self.v2DebugSamplesStats(params: params))
+        case "debug.samples.reset":
+            return v2Result(id: id, self.v2DebugSamplesReset(params: params))
         case "debug.notification.focus":
             return v2Result(id: id, self.v2DebugFocusNotification(params: params))
         case "debug.flash.count":

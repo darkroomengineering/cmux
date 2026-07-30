@@ -922,6 +922,7 @@ extension GhosttyNSView {
             terminalSurface?.forceRefresh(reason: "keyDown.textInput")
 #if DEBUG
             refreshMs = (ProcessInfo.processInfo.systemUptime - refreshStart) * 1000.0
+            ProgramaDurationSamples.shared.record("keyDown.textInputRefresh", milliseconds: refreshMs)
 #endif
         }
 
