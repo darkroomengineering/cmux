@@ -22,9 +22,9 @@ enum AgentBadge: Int, Comparable, Sendable {
 
     var label: String {
         switch self {
-        case .blocked: "Blocked"
-        case .working: "Working"
-        case .idle: "Idle"
+        case .blocked: String(localized: "agentBadge.blocked", defaultValue: "Blocked")
+        case .working: String(localized: "agentBadge.working", defaultValue: "Working")
+        case .idle: String(localized: "agentBadge.idle", defaultValue: "Idle")
         }
     }
 

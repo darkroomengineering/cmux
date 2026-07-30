@@ -93,7 +93,7 @@ actor BridgeConnection {
         do {
             ticket = try EndpointTicket.fromString(str: pairingPayload)
         } catch {
-            setPhase(.failed("invalid pairing ticket"))
+            setPhase(.failed(String(localized: "bridge.error.invalidTicket", defaultValue: "invalid pairing ticket")))
             throw BridgeError.invalidTicket
         }
         let targetAddress = ticket.endpointAddr()
@@ -102,7 +102,7 @@ actor BridgeConnection {
         do {
             secretKey = try SecretKeyStore.loadOrCreate()
         } catch {
-            setPhase(.failed("could not load device identity"))
+            setPhase(.failed(String(localized: "bridge.error.deviceIdentityFailed", defaultValue: "could not load device identity")))
             throw error
         }
 
@@ -142,7 +142,12 @@ actor BridgeConnection {
             }
             if case BridgeError.timedOut = error {
                 if let boundEndpoint { try? await boundEndpoint.close() }
-                setPhase(.failed("could not reach that Mac — is Programa running with Settings ▸ Phone turned on?"))
+                setPhase(.failed(
+                    String(
+                        localized: "bridge.error.unreachable",
+                        defaultValue: "could not reach that Mac — is Programa running with Settings ▸ Phone turned on?"
+                    )
+                ))
                 throw error
             }
             if let boundEndpoint {
@@ -153,7 +158,7 @@ actor BridgeConnection {
         }
 
         guard let newEndpoint = boundEndpoint, let newConnection = establishedConnection else {
-            setPhase(.failed("connection setup failed"))
+            setPhase(.failed(String(localized: "bridge.error.setupFailed", defaultValue: "connection setup failed")))
             throw BridgeError.disconnected
         }
 
@@ -214,7 +219,12 @@ actor BridgeConnection {
             }
         } catch {
             await teardownConnection()
-            setPhase(.failed("not admitted by the Mac: \(error)"))
+            setPhase(.failed(
+                String.localizedStringWithFormat(
+                    String(localized: "bridge.error.notAdmitted", defaultValue: "not admitted by the Mac: %@"),
+                    "\(error)"
+                )
+            ))
             throw error
         }
 
@@ -313,7 +323,12 @@ actor BridgeConnection {
         } catch {
             // The read loop owns disconnect handling; surface the phase here so
             // a silently dead connection doesn't keep looking healthy.
-            setPhase(.failed("connection lost: \(error)"))
+            setPhase(.failed(
+                String.localizedStringWithFormat(
+                    String(localized: "bridge.error.connectionLost", defaultValue: "connection lost: %@"),
+                    "\(error)"
+                )
+            ))
         }
     }
 
@@ -335,7 +350,9 @@ actor BridgeConnection {
         while !Task.isCancelled {
             do {
                 guard let line = try await nextBufferedLine() else {
-                    await handleDisconnect(reason: "connection closed")
+                    await handleDisconnect(
+                        reason: String(localized: "bridge.error.connectionClosed", defaultValue: "connection closed")
+                    )
                     return
                 }
                 handleLine(line)

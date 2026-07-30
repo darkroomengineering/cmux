@@ -90,11 +90,12 @@ private struct AgentActivityLockScreenView: View {
 /// Shared string/symbol/color logic for every presentation size (Lock
 /// Screen, banner, Dynamic Island compact/expanded/minimal) so they all
 /// agree on what "blocked" looks like. All user-facing strings are
-/// localizable via `String(localized:)` -- this widget extension target has
-/// no `.xcstrings` catalog of its own (the app's `Resources/Localizable
-/// .xcstrings` belongs to the macOS app, not this iOS spike), so these fall
-/// back to their inline `defaultValue:` until/unless this target grows its
-/// own catalog.
+/// localizable via `String(localized:)` and now resolve for real: the
+/// catalog at `ProgramaSpike/Shared/Localizable.xcstrings` is a member of
+/// both this extension and the app, since `Shared/` is a `sources:` path for
+/// each target in `project.yml`. A widget extension resolves
+/// `String(localized:)` against its own bundle, so a catalog visible only to
+/// the app would have left these keys falling back to `defaultValue:`.
 enum AgentActivityPresentation {
     static func symbolName(for state: AgentActivityAttributes.ContentState) -> String {
         state.blockedCount > 0 ? "bell.badge.fill" : "circle.dotted"

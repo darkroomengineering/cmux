@@ -20,9 +20,9 @@ struct WorkspaceListView: View {
                     .foregroundStyle(.secondary)
                 }
 
-                Section("Workspaces") {
+                Section(String(localized: "workspaceList.title", defaultValue: "Workspaces")) {
                     if store.sortedWorkspaces.isEmpty {
-                        Text("No workspaces yet.")
+                        Text(String(localized: "workspaceList.empty", defaultValue: "No workspaces yet."))
                             .foregroundStyle(.secondary)
                     }
                     ForEach(store.sortedWorkspaces) { workspace in
@@ -32,13 +32,13 @@ struct WorkspaceListView: View {
                     }
                 }
             }
-            .navigationTitle("Workspaces")
+            .navigationTitle(String(localized: "workspaceList.title", defaultValue: "Workspaces"))
             .navigationDestination(for: String.self) { workspaceID in
                 AgentDetailView(store: store, workspaceID: workspaceID)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Change Pairing") { store.returnToPairing() }
+                    Button(String(localized: "workspaceList.changePairing.button", defaultValue: "Change Pairing")) { store.returnToPairing() }
                 }
             }
             .refreshable {

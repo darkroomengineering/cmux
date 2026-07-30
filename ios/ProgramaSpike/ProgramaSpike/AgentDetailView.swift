@@ -13,9 +13,9 @@ struct AgentDetailView: View {
 
     var body: some View {
         List {
-            Section("Surfaces") {
+            Section(String(localized: "agentDetail.section.surfaces", defaultValue: "Surfaces")) {
                 if store.surfaces(for: workspaceID).isEmpty {
-                    Text("No surfaces in this workspace.")
+                    Text(String(localized: "agentDetail.surfaces.empty", defaultValue: "No surfaces in this workspace."))
                         .foregroundStyle(.secondary)
                 }
                 ForEach(store.surfaces(for: workspaceID)) { surface in
@@ -28,10 +28,10 @@ struct AgentDetailView: View {
                 }
             }
 
-            Section("Unblock it") {
-                TextField("Prompt text", text: $promptText, axis: .vertical)
+            Section(String(localized: "agentDetail.section.unblock", defaultValue: "Unblock it")) {
+                TextField(String(localized: "agentDetail.prompt.placeholder", defaultValue: "Prompt text"), text: $promptText, axis: .vertical)
                     .lineLimit(2 ... 6)
-                Button("Send") {
+                Button(String(localized: "agentDetail.send.button", defaultValue: "Send")) {
                     Task { await send() }
                 }
                 .disabled(
@@ -61,10 +61,13 @@ struct AgentDetailView: View {
         let textToSend = promptText
         do {
             try await store.sendPrompt(surfaceID: surfaceID, text: textToSend)
-            sendResultDescription = "Sent."
+            sendResultDescription = String(localized: "agentDetail.send.success", defaultValue: "Sent.")
             promptText = ""
         } catch {
-            sendResultDescription = "Failed: \(error)"
+            sendResultDescription = String.localizedStringWithFormat(
+                String(localized: "agentDetail.send.failed", defaultValue: "Failed: %@"),
+                "\(error)"
+            )
         }
         isSending = false
     }

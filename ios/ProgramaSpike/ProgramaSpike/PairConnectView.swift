@@ -14,15 +14,21 @@ struct PairConnectView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Pairing code") {
+                Section(String(localized: "pairing.connect.section.code", defaultValue: "Pairing code")) {
                     Button {
                         showScanner = true
                     } label: {
-                        Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                        Label(
+                            String(localized: "pairing.connect.scanButton", defaultValue: "Scan QR Code"),
+                            systemImage: "qrcode.viewfinder"
+                        )
                     }
 
                     TextField(
-                        "Or paste the code from Programa ▸ Settings ▸ Phone",
+                        String(
+                            localized: "pairing.connect.codeField.placeholder",
+                            defaultValue: "Or paste the code from Programa ▸ Settings ▸ Phone"
+                        ),
                         text: $pairingCodeDraft,
                         axis: .vertical
                     )
@@ -30,7 +36,7 @@ struct PairConnectView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
 
-                    Button("Use This Code") {
+                    Button(String(localized: "pairing.connect.useCodeButton", defaultValue: "Use This Code")) {
                         applyPairingCodeDraft()
                     }
                     .disabled(pairingCodeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -42,9 +48,17 @@ struct PairConnectView: View {
                     }
                 }
 
-                Section("Advanced: paste ticket and token separately") {
+                Section(
+                    String(
+                        localized: "pairing.connect.section.advanced",
+                        defaultValue: "Advanced: paste ticket and token separately"
+                    )
+                ) {
                     TextField(
-                        "Paste the ticket from Programa's pairing screen",
+                        String(
+                            localized: "pairing.connect.ticketField.placeholder",
+                            defaultValue: "Paste the ticket from Programa's pairing screen"
+                        ),
                         text: $store.pairingTicketDraft,
                         axis: .vertical
                     )
@@ -52,16 +66,24 @@ struct PairConnectView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
 
-                    TextField("Only needed the first time", text: $store.pairingTokenDraft)
+                    TextField(
+                        String(localized: "pairing.connect.tokenField.placeholder", defaultValue: "Only needed the first time"),
+                        text: $store.pairingTokenDraft
+                    )
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Text("Once this device is paired it stays trusted — you won't need the token again.")
+                    Text(
+                        String(
+                            localized: "pairing.connect.tokenField.footnote",
+                            defaultValue: "Once this device is paired it stays trusted — you won't need the token again."
+                        )
+                    )
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
 
                 Section {
-                    Button("Connect") {
+                    Button(String(localized: "pairing.connect.connectButton", defaultValue: "Connect")) {
                         Task { await store.connectManually() }
                     }
                     .disabled(
@@ -70,11 +92,14 @@ struct PairConnectView: View {
                     )
                 }
 
-                Section("Status") {
-                    LabeledContent("State", value: store.connectionBanner.label)
+                Section(String(localized: "pairing.connect.section.status", defaultValue: "Status")) {
+                    LabeledContent(String(localized: "State", defaultValue: "State"), value: store.connectionBanner.label)
                     // The observed network path stays visible even on this
                     // screen — it remains diagnostically useful.
-                    LabeledContent("Network path", value: store.observedPathDescription)
+                    LabeledContent(
+                        String(localized: "pairing.connect.networkPath.label", defaultValue: "Network path"),
+                        value: store.observedPathDescription
+                    )
                     if let lastSyncError = store.lastSyncError {
                         Text(lastSyncError)
                             .foregroundStyle(.red)
@@ -82,25 +107,30 @@ struct PairConnectView: View {
                     }
                 }
 
-                Section("Notifications") {
+                Section(String(localized: "notifications.title", defaultValue: "Notifications")) {
                     if let message = store.iCloudStatusMessage {
                         Text(message)
                             .font(.footnote)
                             .foregroundStyle(.orange)
                     } else {
-                        Text("iCloud is signed in on this iPhone.")
+                        Text(String(localized: "pairing.connect.icloud.signedIn", defaultValue: "iCloud is signed in on this iPhone."))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                     // CloudKit has no API to detect this, so the app cannot warn about it
                     // directly -- it can only ever report "signed in" or "not signed in" on
                     // this device. A mismatch delivers nothing and raises no error.
-                    Text("This iPhone and your Mac must be signed into the same iCloud account for background notifications to arrive. Programa can't detect a mismatch — check the Apple ID on both devices if notifications never show up.")
+                    Text(
+                        String(
+                            localized: "pairing.connect.icloud.accountMismatchNotice",
+                            defaultValue: "This iPhone and your Mac must be signed into the same iCloud account for background notifications to arrive. Programa can't detect a mismatch — check the Apple ID on both devices if notifications never show up."
+                        )
+                    )
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("Connect to Programa")
+            .navigationTitle(String(localized: "pairing.connect.title", defaultValue: "Connect to Programa"))
             .sheet(isPresented: $showScanner) {
                 QRScannerView { code in
                     handleScannedCode(code)
@@ -112,7 +142,10 @@ struct PairConnectView: View {
     private func applyPairingCodeDraft() {
         let trimmed = pairingCodeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard store.applyPairingCode(trimmed) else {
-            pairingCodeError = "That doesn't look like a Programa pairing code. Scan the QR code, or paste the ticket and token below instead."
+            pairingCodeError = String(
+                localized: "pairing.connect.error.invalidPastedCode",
+                defaultValue: "That doesn't look like a Programa pairing code. Scan the QR code, or paste the ticket and token below instead."
+            )
             return
         }
         pairingCodeError = nil
@@ -121,7 +154,10 @@ struct PairConnectView: View {
 
     private func handleScannedCode(_ code: String) {
         guard store.applyPairingCode(code) else {
-            pairingCodeError = "That QR code wasn't a valid Programa pairing code."
+            pairingCodeError = String(
+                localized: "pairing.connect.error.invalidScannedCode",
+                defaultValue: "That QR code wasn't a valid Programa pairing code."
+            )
             return
         }
         pairingCodeError = nil

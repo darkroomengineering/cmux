@@ -24,10 +24,10 @@ final class AppStore {
 
         var label: String {
             switch self {
-            case .connecting: "Connecting…"
-            case .connected: "Connected"
-            case .reconnecting: "Reconnecting…"
-            case .disconnected: "Not connected"
+            case .connecting: String(localized: "remote.status.connecting", defaultValue: "Connecting…")
+            case .connected: String(localized: "remote.status.connected", defaultValue: "Connected")
+            case .reconnecting: String(localized: "remote.status.reconnecting", defaultValue: "Reconnecting…")
+            case .disconnected: String(localized: "remote.status.disconnected", defaultValue: "Not connected")
             }
         }
 
@@ -42,7 +42,7 @@ final class AppStore {
 
     private(set) var stage: Stage = .pairing
     private(set) var connectionBanner: ConnectionBanner = .disconnected
-    private(set) var observedPathDescription: String = "unknown"
+    private(set) var observedPathDescription: String = String(localized: "connection.path.unknown", defaultValue: "unknown")
     private(set) var workspaces: [WorkspaceRow] = []
     private(set) var surfacesByWorkspace: [String: [SurfaceRow]] = [:]
     private(set) var lastSyncError: String?
@@ -218,7 +218,8 @@ final class AppStore {
     }
 
     func workspaceTitle(for workspaceID: String) -> String {
-        workspaces.first(where: { $0.id == workspaceID })?.title ?? "Workspace"
+        workspaces.first(where: { $0.id == workspaceID })?.title
+            ?? String(localized: "workspace.displayName.fallback", defaultValue: "Workspace")
     }
 
     /// `nil` when iCloud is signed in and everything should work; otherwise a message to show
@@ -229,15 +230,24 @@ final class AppStore {
         case .available:
             return nil
         case .noAccount:
-            return "Sign in to iCloud on this iPhone (Settings > [your name]) to get notified when an agent needs you while Programa is in the background."
+            return String(
+                localized: "icloud.status.noAccount",
+                defaultValue: "Sign in to iCloud on this iPhone (Settings > [your name]) to get notified when an agent needs you while Programa is in the background."
+            )
         case .restricted:
-            return "iCloud is restricted on this iPhone, so background notifications won't work."
+            return String(
+                localized: "icloud.status.restricted",
+                defaultValue: "iCloud is restricted on this iPhone, so background notifications won't work."
+            )
         case .temporarilyUnavailable:
-            return "iCloud is temporarily unavailable, so background notifications may be delayed."
+            return String(
+                localized: "icloud.status.temporarilyUnavailable",
+                defaultValue: "iCloud is temporarily unavailable, so background notifications may be delayed."
+            )
         case .couldNotDetermine:
-            return "Could not check this iPhone's iCloud status."
+            return String(localized: "icloud.status.couldNotDetermine", defaultValue: "Could not check this iPhone's iCloud status.")
         @unknown default:
-            return "Could not check this iPhone's iCloud status."
+            return String(localized: "icloud.status.couldNotDetermine", defaultValue: "Could not check this iPhone's iCloud status.")
         }
     }
 
@@ -379,7 +389,7 @@ final class AppStore {
         for (offset, wireWorkspace) in wireWorkspaces.enumerated() {
             let row = WorkspaceRow(
                 id: wireWorkspace.id,
-                title: wireWorkspace.title ?? "Untitled workspace",
+                title: wireWorkspace.title ?? String(localized: "workspace.title.untitled", defaultValue: "Untitled workspace"),
                 selected: wireWorkspace.selected ?? false,
                 index: wireWorkspace.index ?? offset
             )
@@ -389,7 +399,7 @@ final class AppStore {
             newSurfaces[wireWorkspace.id] = wireSurfaces.map { surface in
                 SurfaceRow(
                     id: surface.id,
-                    title: surface.title ?? "Surface",
+                    title: surface.title ?? String(localized: "surface.title.fallback", defaultValue: "Surface"),
                     focused: surface.focused ?? false,
                     agentState: surface.agentState,
                     agentStateSource: surface.agentStateSource
@@ -449,7 +459,10 @@ final class AppStore {
             // Record rather than crash -- the user simply disabled Live
             // Activities (Settings > Face ID & Passcode, or per-app), which
             // is a normal, expected state, not a bridge/sync failure.
-            lastSyncError = "Live Activities are disabled; agent status won't appear on the Lock Screen."
+            lastSyncError = String(
+                localized: "liveActivity.error.disabled",
+                defaultValue: "Live Activities are disabled; agent status won't appear on the Lock Screen."
+            )
             return
         }
 
@@ -477,7 +490,10 @@ final class AppStore {
             lastPushedActivityState = initialState
             lastActivityPushAt = Date()
         } catch {
-            lastSyncError = "Could not start Live Activity: \(error)"
+            lastSyncError = String.localizedStringWithFormat(
+                String(localized: "liveActivity.error.startFailed", defaultValue: "Could not start Live Activity: %@"),
+                "\(error)"
+            )
         }
     }
 

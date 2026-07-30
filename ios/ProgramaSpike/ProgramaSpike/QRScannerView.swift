@@ -21,10 +21,10 @@ struct QRScannerView: View {
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Scan QR Code")
+                .navigationTitle(String(localized: "pairing.scanner.title", defaultValue: "Scan QR Code"))
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
+                        Button(String(localized: "common.cancel", defaultValue: "Cancel")) { dismiss() }
                     }
                 }
         }
@@ -36,7 +36,10 @@ struct QRScannerView: View {
         case .authorized:
             if cameraUnavailable {
                 unavailableView(
-                    message: "No camera is available on this device. Paste the pairing code instead."
+                    message: String(
+                        localized: "pairing.scanner.unavailable.noCamera",
+                        defaultValue: "No camera is available on this device. Paste the pairing code instead."
+                    )
                 )
             } else {
                 QRCaptureRepresentable(
@@ -53,10 +56,18 @@ struct QRScannerView: View {
                 .task { await requestAccess() }
         case .denied, .restricted:
             unavailableView(
-                message: "Camera access is off for Programa. Enable it in Settings ▸ Programa to scan the pairing code, or paste it instead."
+                message: String(
+                    localized: "pairing.scanner.unavailable.accessDenied",
+                    defaultValue: "Camera access is off for Programa. Enable it in Settings ▸ Programa to scan the pairing code, or paste it instead."
+                )
             )
         @unknown default:
-            unavailableView(message: "Camera unavailable. Paste the pairing code instead.")
+            unavailableView(
+                message: String(
+                    localized: "pairing.scanner.unavailable.generic",
+                    defaultValue: "Camera unavailable. Paste the pairing code instead."
+                )
+            )
         }
     }
 
