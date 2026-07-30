@@ -199,7 +199,7 @@ extension NSWindow {
         // recordTypingActivity must run in all builds so runSessionAutosaveTick
         // can honor the typing quiet period in release.
         if event.type == .keyDown {
-            AppDelegate.shared?.recordTypingActivity()
+            AppDelegate.shared?.sessionAutosave.recordTypingActivity()
         }
 #if DEBUG
         defer {

@@ -978,12 +978,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     private var didPrepareStartupSessionSnapshot = false
     private var didAttemptStartupSessionRestore = false
     private var isApplyingStartupSessionRestore = false
-    private var sessionAutosaveTimer: DispatchSourceTimer?
-    private var sessionAutosaveTickInFlight = false
-    private var sessionAutosaveDeferredRetryPending = false
     private let sessionPersistenceQueue = DispatchQueue(
         label: "com.cmuxterm.app.sessionPersistence",
         qos: .utility
+    )
+    // Constructed eagerly with placeholder dependencies; `configure(...)` in `init()` rebinds
+    // them to the real queue/closures immediately after `super.init()` returns. See
+    // `SessionAutosaveCoordinator.configure` for why this two-step exists.
+    let sessionAutosave = SessionAutosaveCoordinator(
+        sessionPersistenceQueue: DispatchQueue(
+            label: "com.cmuxterm.app.sessionPersistence.autosave-placeholder",
+            qos: .utility
+        ),
+        snapshotProvider: { _ in nil },
+        saveSnapshot: { _, _ in false },
+        isTerminating: { false },
+        isRunningUnderXCTest: { false }
     )
     private nonisolated static let launchServicesRegistrationQueue = DispatchQueue(
         label: "com.cmuxterm.app.launchServicesRegistration",
@@ -992,9 +1002,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     private nonisolated static func enqueueLaunchServicesRegistrationWork(_ work: @escaping @Sendable () -> Void) {
         launchServicesRegistrationQueue.async(execute: work)
     }
-    private var lastSessionAutosaveFingerprint: Data?
-    private var lastSessionAutosavePersistedAt: Date = .distantPast
-    private var lastTypingActivityAt: TimeInterval = 0
     private var didHandleExplicitOpenIntentAtStartup = false
     private var isTerminatingApp = false
     // Set to true when the user has already confirmed quit via the warning dialog,
@@ -1005,7 +1012,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     private var commandPaletteStateByWindowId: [UUID: CommandPaletteWindowState] = [:]
     private static let commandPaletteRequestGraceInterval: TimeInterval = 1.25
     private static let commandPalettePendingOpenMaxAge: TimeInterval = 8.0
-    private static let sessionAutosaveTypingQuietPeriod: TimeInterval = 0.65
 
     var updateViewModel: UpdateViewModel {
         updateController.viewModel
@@ -1061,6 +1067,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     override init() {
         super.init()
         Self.shared = self
+        sessionAutosave.configure(
+            sessionPersistenceQueue: sessionPersistenceQueue,
+            snapshotProvider: { [weak self] includeScrollback in
+                self?.buildSessionSnapshot(includeScrollback: includeScrollback)
+            },
+            saveSnapshot: { [weak self] includeScrollback, prebuiltSnapshot in
+                self?.saveSessionSnapshot(
+                    includeScrollback: includeScrollback,
+                    prebuiltSnapshot: prebuiltSnapshot
+                ) ?? false
+            },
+            isTerminating: { [weak self] in self?.isTerminatingApp ?? false },
+            isRunningUnderXCTest: { [weak self] in
+                guard let self else { return false }
+                return self.isRunningUnderXCTest(ProcessInfo.processInfo.environment)
+            }
+        )
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -1502,7 +1525,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         for context in mainWindowContexts.values {
             context.tabManager.closedTerminalUndoStore.expireAll()
         }
-        stopSessionAutosaveTimer()
+        sessionAutosave.stopSessionAutosaveTimer()
         TerminalController.shared.stop()
         MobileBridgeListener.shared.stop()
         VSCodeServeWebController.shared.stop()
@@ -1529,7 +1552,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         disableSuddenTerminationIfNeeded()
         installLifecycleSnapshotObserversIfNeeded()
         prepareStartupSessionSnapshotIfNeeded()
-        startSessionAutosaveTimerIfNeeded()
+        sessionAutosave.startSessionAutosaveTimerIfNeeded()
 #if DEBUG
         setupJumpUnreadUITestIfNeeded()
         setupTerminalCmdClickUITestIfNeeded()
@@ -2117,32 +2140,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         )
     }
 
-    private func startSessionAutosaveTimerIfNeeded() {
-        guard sessionAutosaveTimer == nil else { return }
-        let env = ProcessInfo.processInfo.environment
-        guard !isRunningUnderXCTest(env) else { return }
-
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        let interval = SessionPersistencePolicy.autosaveInterval
-        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(1))
-        timer.setEventHandler { [weak self] in
-            guard let self,
-                  Self.shouldRunSessionAutosaveTick(isTerminatingApp: self.isTerminatingApp) else {
-                return
-            }
-            self.runSessionAutosaveTick(source: "timer")
-        }
-        sessionAutosaveTimer = timer
-        timer.resume()
-    }
-
-    private func stopSessionAutosaveTimer() {
-        sessionAutosaveTimer?.cancel()
-        sessionAutosaveTimer = nil
-        sessionAutosaveTickInFlight = false
-        sessionAutosaveDeferredRetryPending = false
-    }
-
     private func installLifecycleSnapshotObserversIfNeeded() {
         guard !didInstallLifecycleSnapshotObservers else { return }
         didInstallLifecycleSnapshotObservers = true
@@ -2234,7 +2231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             return false
         }
 
-        let writeSynchronously = Self.shouldWriteSessionSnapshotSynchronously(
+        let writeSynchronously = SessionAutosaveCoordinator.shouldWriteSessionSnapshotSynchronously(
             isTerminatingApp: isTerminatingApp,
             includeScrollback: includeScrollback
         )
@@ -2293,162 +2290,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         includeScrollback: Bool
     ) -> Bool {
         isApplyingStartupSessionRestore && !includeScrollback
-    }
-
-    nonisolated static func shouldRunSessionAutosaveTick(isTerminatingApp: Bool) -> Bool {
-        !isTerminatingApp
-    }
-
-    private func remainingSessionAutosaveTypingQuietPeriod(
-        nowUptime: TimeInterval = ProcessInfo.processInfo.systemUptime
-    ) -> TimeInterval? {
-        guard lastTypingActivityAt > 0 else { return nil }
-        let elapsed = nowUptime - lastTypingActivityAt
-        guard elapsed < Self.sessionAutosaveTypingQuietPeriod else { return nil }
-        return Self.sessionAutosaveTypingQuietPeriod - elapsed
-    }
-
-    private func scheduleDeferredSessionAutosaveRetry(after delay: TimeInterval) {
-        guard delay.isFinite, delay > 0 else { return }
-        guard !sessionAutosaveDeferredRetryPending else { return }
-        sessionAutosaveDeferredRetryPending = true
-        sessionPersistenceQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.sessionAutosaveDeferredRetryPending = false
-                self.runSessionAutosaveTick(source: "typingQuietRetry")
-            }
-        }
-    }
-
-    private func runSessionAutosaveTick(source: String) {
-        guard Self.shouldRunSessionAutosaveTick(isTerminatingApp: isTerminatingApp) else { return }
-        guard !sessionAutosaveTickInFlight else { return }
-        if let remainingQuietPeriod = remainingSessionAutosaveTypingQuietPeriod() {
-#if DEBUG
-            dlog(
-                "session.save.skipped reason=typing_recent includeScrollback=0 source=\(source) " +
-                "retryMs=\(Int((remainingQuietPeriod * 1000).rounded()))"
-            )
-#endif
-            scheduleDeferredSessionAutosaveRetry(after: remainingQuietPeriod)
-            return
-        }
-
-        sessionAutosaveTickInFlight = true
-#if DEBUG
-        let timingStart = ProgramaTypingTiming.start()
-        let phaseStart = ProcessInfo.processInfo.systemUptime
-        var fingerprintMs: Double = 0
-        var saveMs: Double = 0
-        defer {
-            sessionAutosaveTickInFlight = false
-            let totalMs = (ProcessInfo.processInfo.systemUptime - phaseStart) * 1000.0
-            ProgramaTypingTiming.logBreakdown(
-                path: "session.autosaveTick.phase",
-                totalMs: totalMs,
-                thresholdMs: 2.0,
-                parts: [
-                    ("fingerprintMs", fingerprintMs),
-                    ("saveMs", saveMs),
-                ],
-                extra: "source=\(source)"
-            )
-            ProgramaTypingTiming.logDuration(
-                path: "session.autosaveTick",
-                startedAt: timingStart,
-                extra: "source=\(source)"
-            )
-        }
-#else
-        defer { sessionAutosaveTickInFlight = false }
-#endif
-
-        let now = Date()
-#if DEBUG
-        let fingerprintStart = ProcessInfo.processInfo.systemUptime
-#endif
-        let autosaveSnapshot = buildSessionSnapshot(includeScrollback: false)
-        let autosaveFingerprint = autosaveSnapshot.flatMap {
-            SessionPersistenceStore.contentIdentity(for: $0)
-        }
-#if DEBUG
-        fingerprintMs = (ProcessInfo.processInfo.systemUptime - fingerprintStart) * 1000.0
-#endif
-        if Self.shouldSkipSessionAutosaveForUnchangedFingerprint(
-            isTerminatingApp: isTerminatingApp,
-            includeScrollback: false,
-            previousFingerprint: lastSessionAutosaveFingerprint,
-            currentFingerprint: autosaveFingerprint,
-            lastPersistedAt: lastSessionAutosavePersistedAt,
-            now: now
-        ) {
-#if DEBUG
-            dlog(
-                "session.save.skipped reason=unchanged_autosave_fingerprint includeScrollback=0 source=\(source)"
-            )
-#endif
-            return
-        }
-
-#if DEBUG
-        let saveStart = ProcessInfo.processInfo.systemUptime
-#endif
-        _ = saveSessionSnapshot(
-            includeScrollback: false,
-            prebuiltSnapshot: autosaveSnapshot
-        )
-#if DEBUG
-        saveMs = (ProcessInfo.processInfo.systemUptime - saveStart) * 1000.0
-#endif
-        updateSessionAutosaveSaveState(
-            includeScrollback: false,
-            persistedAt: now,
-            fingerprint: autosaveFingerprint
-        )
-    }
-
-    // Widened from `fileprivate` to `internal`: NSWindow.programa_sendEvent(_:) (now in
-    // WindowSwizzles.swift) calls AppDelegate.shared?.recordTypingActivity() from a different file. Refs #95.
-    func recordTypingActivity() {
-        lastTypingActivityAt = ProcessInfo.processInfo.systemUptime
-    }
-
-    nonisolated static func shouldWriteSessionSnapshotSynchronously(
-        isTerminatingApp: Bool,
-        includeScrollback: Bool
-    ) -> Bool {
-        isTerminatingApp && includeScrollback
-    }
-
-    nonisolated static func shouldSkipSessionAutosaveForUnchangedFingerprint<Fingerprint: Equatable>(
-        isTerminatingApp: Bool,
-        includeScrollback: Bool,
-        previousFingerprint: Fingerprint?,
-        currentFingerprint: Fingerprint?,
-        lastPersistedAt: Date,
-        now: Date,
-        maximumAutosaveSkippableInterval: TimeInterval = 60
-    ) -> Bool {
-        guard !isTerminatingApp,
-              !includeScrollback,
-              let previousFingerprint,
-              let currentFingerprint,
-              previousFingerprint == currentFingerprint else {
-            return false
-        }
-
-        return now.timeIntervalSince(lastPersistedAt) < maximumAutosaveSkippableInterval
-    }
-
-    private func updateSessionAutosaveSaveState(
-        includeScrollback: Bool,
-        persistedAt: Date,
-        fingerprint: Data?
-    ) {
-        guard !isTerminatingApp, !includeScrollback else { return }
-        lastSessionAutosaveFingerprint = fingerprint
-        lastSessionAutosavePersistedAt = persistedAt
     }
 
     private func persistSessionSnapshot(

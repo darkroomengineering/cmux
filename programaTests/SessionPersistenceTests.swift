@@ -522,34 +522,34 @@ final class SessionPersistenceTests: XCTestCase {
 
     func testSessionAutosaveTickPolicySkipsWhenTerminating() {
         XCTAssertTrue(
-            AppDelegate.shouldRunSessionAutosaveTick(isTerminatingApp: false)
+            SessionAutosaveCoordinator.shouldRunSessionAutosaveTick(isTerminatingApp: false)
         )
         XCTAssertFalse(
-            AppDelegate.shouldRunSessionAutosaveTick(isTerminatingApp: true)
+            SessionAutosaveCoordinator.shouldRunSessionAutosaveTick(isTerminatingApp: true)
         )
     }
 
     func testSessionSnapshotSynchronousWritePolicy() {
         XCTAssertFalse(
-            AppDelegate.shouldWriteSessionSnapshotSynchronously(
+            SessionAutosaveCoordinator.shouldWriteSessionSnapshotSynchronously(
                 isTerminatingApp: false,
                 includeScrollback: false
             )
         )
         XCTAssertFalse(
-            AppDelegate.shouldWriteSessionSnapshotSynchronously(
+            SessionAutosaveCoordinator.shouldWriteSessionSnapshotSynchronously(
                 isTerminatingApp: false,
                 includeScrollback: true
             )
         )
         XCTAssertFalse(
-            AppDelegate.shouldWriteSessionSnapshotSynchronously(
+            SessionAutosaveCoordinator.shouldWriteSessionSnapshotSynchronously(
                 isTerminatingApp: true,
                 includeScrollback: false
             )
         )
         XCTAssertTrue(
-            AppDelegate.shouldWriteSessionSnapshotSynchronously(
+            SessionAutosaveCoordinator.shouldWriteSessionSnapshotSynchronously(
                 isTerminatingApp: true,
                 includeScrollback: true
             )
@@ -559,7 +559,7 @@ final class SessionPersistenceTests: XCTestCase {
     func testUnchangedAutosaveFingerprintSkipsWithinStalenessWindow() {
         let now = Date()
         XCTAssertTrue(
-            AppDelegate.shouldSkipSessionAutosaveForUnchangedFingerprint(
+            SessionAutosaveCoordinator.shouldSkipSessionAutosaveForUnchangedFingerprint(
                 isTerminatingApp: false,
                 includeScrollback: false,
                 previousFingerprint: 1234,
@@ -574,7 +574,7 @@ final class SessionPersistenceTests: XCTestCase {
     func testUnchangedAutosaveFingerprintDoesNotSkipAfterStalenessWindow() {
         let now = Date()
         XCTAssertFalse(
-            AppDelegate.shouldSkipSessionAutosaveForUnchangedFingerprint(
+            SessionAutosaveCoordinator.shouldSkipSessionAutosaveForUnchangedFingerprint(
                 isTerminatingApp: false,
                 includeScrollback: false,
                 previousFingerprint: 1234,
@@ -589,7 +589,7 @@ final class SessionPersistenceTests: XCTestCase {
     func testUnchangedAutosaveFingerprintNeverSkipsTerminatingOrScrollbackWrites() {
         let now = Date()
         XCTAssertFalse(
-            AppDelegate.shouldSkipSessionAutosaveForUnchangedFingerprint(
+            SessionAutosaveCoordinator.shouldSkipSessionAutosaveForUnchangedFingerprint(
                 isTerminatingApp: true,
                 includeScrollback: false,
                 previousFingerprint: 1234,
@@ -599,7 +599,7 @@ final class SessionPersistenceTests: XCTestCase {
             )
         )
         XCTAssertFalse(
-            AppDelegate.shouldSkipSessionAutosaveForUnchangedFingerprint(
+            SessionAutosaveCoordinator.shouldSkipSessionAutosaveForUnchangedFingerprint(
                 isTerminatingApp: false,
                 includeScrollback: true,
                 previousFingerprint: 1234,
