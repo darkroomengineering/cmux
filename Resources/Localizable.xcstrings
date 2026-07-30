@@ -6847,6 +6847,40 @@
         }
       }
     },
+    "dialog.cmuxConfig.confirmCommand.configChanged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This folder's programa.json has changed since you trusted it."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このフォルダのprograma.jsonは、信頼してから変更されています。"
+          }
+        }
+      }
+    },
+    "dialog.cmuxConfig.confirmCommand.messageWithCommand": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This will run the following command:\n\n%@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "次のコマンドを実行します:\n\n%@"
+          }
+        }
+      }
+    },
     "dialog.cmuxConfig.confirmCommand.run": {
       "extractionState": "manual",
       "localizations": {
@@ -6865,6 +6899,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Run Command"
+          }
+        }
+      }
+    },
+    "dialog.cmuxConfig.confirmCommand.trustDirectory": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Always trust commands from this folder"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このフォルダのコマンドを常に信頼する"
           }
         }
       }

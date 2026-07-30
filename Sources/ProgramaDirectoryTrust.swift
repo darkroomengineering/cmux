@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Manages trusted directories for programa.json command execution.
@@ -12,80 +13,158 @@ import Foundation
 ///
 /// Global config (~/.config/programa/programa.json) is always trusted.
 ///
-/// Known limitation: trust is granted per directory (or git repo root) and is not pinned to the
-/// file's contents, so a later edit to an already-trusted programa.json runs without re-asking.
-/// Tracked in https://github.com/darkroomengineering/programa/issues/188.
+/// Trust is pinned to the config's *executable content* at the moment it was approved, not just
+/// to the directory: each trusted entry records a SHA-256 digest of the config with JSONC
+/// comments/trailing commas stripped and keys canonically sorted, so editing a comment or
+/// reformatting the file does not re-prompt, but changing an actual command does. A later pull
+/// that changes an already-trusted `programa.json` therefore surfaces `.changed` instead of
+/// silently running the new content. See `trustState(configPath:globalConfigPath:)`. Formerly
+/// tracked in https://github.com/darkroomengineering/programa/issues/188.
 final class ProgramaDirectoryTrust {
     static let shared = ProgramaDirectoryTrust()
     static let didChangeNotification = Notification.Name("programa.directoryTrustDidChange")
 
-    private let storePath: String
-    private var trustedPaths: Set<String>
+    /// Outcome of comparing a config's current content against what was trusted.
+    enum TrustState {
+        /// Trusted and, if a digest was recorded, the content still matches it.
+        case trusted
+        /// Trusted at some point, but the config's executable content has changed since.
+        case changed
+        /// Never trusted (or the trusted config can no longer be read/digested).
+        case untrusted
+    }
 
-    private init() {
+    /// On-disk shape, version 2. Value is the SHA-256 hex digest of the config's executable
+    /// content at approval time, or `nil` for a legacy entry that predates digesting (adopted
+    /// silently on first query, see `trustState`).
+    private struct TrustStoreV2: Codable {
+        var version: Int
+        var directories: [String: String?]
+    }
+
+    private let storePath: String
+    private var trustedDirectories: [String: String?]
+
+    private convenience init() {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
         ).first!.appendingPathComponent("programa")
-        storePath = appSupport.appendingPathComponent("trusted-directories.json").path
 
         let fm = FileManager.default
         if !fm.fileExists(atPath: appSupport.path) {
             try? fm.createDirectory(atPath: appSupport.path, withIntermediateDirectories: true)
         }
 
-        if let data = fm.contents(atPath: storePath),
-           let paths = try? JSONDecoder().decode([String].self, from: data) {
-            trustedPaths = Set(paths)
-        } else {
-            trustedPaths = []
-        }
+        self.init(storePath: appSupport.appendingPathComponent("trusted-directories.json").path)
     }
 
-    /// Check if a programa.json path is trusted.
+    /// Testing seam: lets tests point the store at a temp file instead of the real per-user
+    /// Application Support store. Production code must always go through `.shared`.
+    init(storePath: String) {
+        self.storePath = storePath
+        self.trustedDirectories = Self.load(fromStorePath: storePath)
+    }
+
+    /// Check if a programa.json path is trusted and its content has not changed since approval.
     /// Global config is always trusted. For local configs, check the git repo root
     /// (or the programa.json parent directory if not in a git repo).
     func isTrusted(configPath: String, globalConfigPath: String) -> Bool {
-        if configPath == globalConfigPath { return true }
+        trustState(configPath: configPath, globalConfigPath: globalConfigPath) == .trusted
+    }
+
+    /// Three-state trust query: `.trusted`, `.changed` (trusted before, content differs now), or
+    /// `.untrusted`.
+    ///
+    /// A legacy entry (trusted under the pre-digest scheme, so its stored digest is `nil`) is
+    /// adopted silently here: the current digest is computed and persisted with no prompt, then
+    /// enforced from then on. A trusted entry whose config can no longer be read or digested
+    /// fails closed to `.untrusted` rather than treating an unreadable file as still-trusted.
+    func trustState(configPath: String, globalConfigPath: String) -> TrustState {
+        if configPath == globalConfigPath { return .trusted }
+
         let trustKey = Self.trustKey(for: configPath)
-        return trustedPaths.contains(trustKey)
+        guard let storedDigest = trustedDirectories[trustKey] else {
+            return .untrusted
+        }
+
+        guard let currentDigest = Self.executableDigest(forConfigAt: configPath) else {
+            return .untrusted
+        }
+
+        guard let storedDigest else {
+            // Legacy entry with no digest -- adopt silently, no prompt.
+            trustedDirectories[trustKey] = currentDigest
+            save()
+            return .trusted
+        }
+
+        return storedDigest == currentDigest ? .trusted : .changed
     }
 
     /// Trust the directory containing a programa.json. If the programa.json is inside a git
-    /// repo, trusts the repo root (covering all subdirectories).
+    /// repo, trusts the repo root (covering all subdirectories). Records the config's current
+    /// executable-content digest so a later edit to the file is detected.
     func trust(configPath: String) {
         let trustKey = Self.trustKey(for: configPath)
-        trustedPaths.insert(trustKey)
+        trustedDirectories[trustKey] = Self.executableDigest(forConfigAt: configPath)
         save()
     }
 
     /// Remove trust for a directory.
     func revokeTrust(configPath: String) {
         let trustKey = Self.trustKey(for: configPath)
-        trustedPaths.remove(trustKey)
+        trustedDirectories.removeValue(forKey: trustKey)
         save()
     }
 
     /// Remove trust by the trust key directly (as stored/displayed in settings).
     func revokeTrustByPath(_ path: String) {
-        trustedPaths.remove(path)
+        trustedDirectories.removeValue(forKey: path)
         save()
     }
 
     /// All currently trusted paths.
     var allTrustedPaths: [String] {
-        Array(trustedPaths).sorted()
+        Array(trustedDirectories.keys).sorted()
     }
 
-    /// Replace all trusted paths (used by Settings textarea save).
+    /// Replace all trusted paths (used by Settings textarea save and settings-backup restore).
+    /// Entries arriving this way carry no digest -- they go through the same silent-adoption
+    /// path as a legacy entry the first time their config is queried.
     func replaceAll(with paths: [String]) {
-        trustedPaths = Set(paths)
+        var replacement: [String: String?] = [:]
+        for path in paths {
+            // `replacement[path] = nil` would REMOVE the key: on a dictionary with an optional
+            // value type, assigning nil through the subscript deletes the entry rather than
+            // storing a nil value. `updateValue` is the only way to store "present, no digest".
+            replacement.updateValue(nil, forKey: path)
+        }
+        trustedDirectories = replacement
         save()
     }
 
     /// Clear all trusted directories.
     func clearAll() {
-        trustedPaths.removeAll()
+        trustedDirectories.removeAll()
         save()
+    }
+
+    // MARK: - Digesting
+
+    /// SHA-256 of the config's executable content: JSONC comments and trailing commas
+    /// stripped, then re-serialized canonically with sorted keys, so comment edits and
+    /// reformatting do not invalidate trust but a changed command does.
+    static func executableDigest(forConfigAt path: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: path), !data.isEmpty else { return nil }
+        guard let sanitized = try? JSONCParser.preprocess(data: data) else { return nil }
+        let canonical: Data
+        if let object = try? JSONSerialization.jsonObject(with: sanitized),
+           let encoded = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) {
+            canonical = encoded
+        } else {
+            canonical = sanitized
+        }
+        return Data(SHA256.hash(data: canonical)).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Private
@@ -116,9 +195,34 @@ final class ProgramaDirectoryTrust {
         return nil
     }
 
+    /// Decode the on-disk store. Tries the versioned object shape first (current format), then
+    /// falls back to the flat `[String]` array that is live on every existing user's disk
+    /// (mapping each path to a nil/legacy digest). Never crashes and never wipes the file on a
+    /// decode error -- an empty result just means "nothing trusted yet".
+    private static func load(fromStorePath path: String) -> [String: String?] {
+        guard let data = FileManager.default.contents(atPath: path), !data.isEmpty else { return [:] }
+
+        if let versioned = try? JSONDecoder().decode(TrustStoreV2.self, from: data) {
+            return versioned.directories
+        }
+
+        if let paths = try? JSONDecoder().decode([String].self, from: data) {
+            var map: [String: String?] = [:]
+            for path in paths {
+                // Must be `updateValue`, not `map[path] = nil` -- see the note in `replaceAll`.
+                // Subscript-assigning nil here would delete every key and silently drop the
+                // trust set of every user upgrading from the flat-array format.
+                map.updateValue(nil, forKey: path)
+            }
+            return map
+        }
+
+        return [:]
+    }
+
     private func save() {
-        let sorted = trustedPaths.sorted()
-        guard let data = try? JSONEncoder().encode(sorted) else { return }
+        let store = TrustStoreV2(version: 2, directories: trustedDirectories)
+        guard let data = try? JSONEncoder().encode(store) else { return }
         FileManager.default.createFile(atPath: storePath, contents: data)
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
     }
