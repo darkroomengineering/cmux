@@ -1229,7 +1229,7 @@ struct SettingsView: View {
 
                 SettingsCardRow(
                     String(localized: "settings.phone.pair.title", defaultValue: "Pair a Device"),
-                    subtitle: String(localized: "settings.phone.pair.subtitle", defaultValue: "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or enter the payload and token manually.")
+                    subtitle: String(localized: "settings.phone.pair.subtitleV2", defaultValue: "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or copy the code it shows.")
                 ) {
                     Button(String(localized: "settings.phone.pair.button", defaultValue: "Pair a Device…")) {
                         beginMobileBridgePairing()
@@ -1287,34 +1287,6 @@ struct SettingsView: View {
                             }
                         }
 
-                        DisclosureGroup(String(localized: "settings.phone.pair.manualFallback", defaultValue: "Can't scan? Paste the payload and token manually")) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(String(localized: "settings.phone.pair.ticketLabel", defaultValue: "Pairing Payload"))
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text(ticket)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .padding(8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(Color(nsColor: .controlBackgroundColor))
-                                    )
-
-                                Text(String(localized: "settings.phone.pair.tokenLabel", defaultValue: "Pairing Token"))
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text(token)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .padding(8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(Color(nsColor: .controlBackgroundColor))
-                                    )
-                            }
-                            .padding(.top, 6)
-                        }
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
