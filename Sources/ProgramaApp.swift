@@ -1238,12 +1238,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
+            contentRect: NSRect(
+                x: 0,
+                y: 0,
+                width: SettingsWindowMetrics.contentWidth,
+                height: SettingsWindowMetrics.defaultContentHeight
+            ),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.isReleasedWhenClosed = false
+        // A provisional floor; the view replaces it with the width the tab labels
+        // actually need once the strip has measured itself.
+        window.minSize = NSSize(
+            width: SettingsWindowMetrics.contentWidth,
+            height: SettingsWindowMetrics.minContentHeight
+        )
+        window.maxSize = NSSize(
+            width: SettingsWindowMetrics.maxContentWidth,
+            height: SettingsWindowMetrics.maxContentHeight
+        )
         window.identifier = NSUserInterfaceItemIdentifier("cmux.settings")
         window.center()
         window.contentView = NSHostingView(rootView: SettingsRootView())

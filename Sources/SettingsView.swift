@@ -7,13 +7,33 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 
 
+/// Height tracks the selected tab's content; width is free above a floor derived from
+/// the tab labels, so the six segments never truncate.
+enum SettingsWindowMetrics {
+    static let contentWidth: CGFloat = 640
+    static let maxContentWidth: CGFloat = 1_100
+    /// Low enough that a one-row tab fits snugly instead of padding out dead space.
+    static let minContentHeight: CGFloat = 180
+    /// Long tabs scroll rather than growing the window off the desk.
+    static let maxContentHeight: CGFloat = 760
+    /// Opening straight onto an over-long tab (a deep link to Shortcuts) never
+    /// triggers a fit, so the window has to start at a height that already reads well.
+    static let defaultContentHeight: CGFloat = 520
+}
+
 struct SettingsView: View {
-    // The header overlay now carries a tab strip under the title, so content has
-    // to start below both rather than just below the title.
-    private let contentTopInset: CGFloat = 42
-    private let headerHeight: CGFloat = 96
+    // The header is a traffic-light band plus the tab strip. It is a safe-area inset,
+    // so the scroll view positions content below it without a hand-tuned top inset.
+    private let headerHeight: CGFloat = 80
+    private let contentVerticalPadding: CGFloat = 20
+    /// Clears the traffic lights so the header action sits level with them.
+    private let titlebarBandHeight: CGFloat = 28
+    /// Shared by the tab strip and the scrolling rows so they line up on both edges.
+    private let contentHorizontalInset: CGFloat = 20
 
     @State private var selectedTab: SettingsTab = .general
+    @State private var measuredContentHeight: CGFloat = 0
+    @State private var minimumWindowWidth: CGFloat = SettingsWindowMetrics.contentWidth
     private let pickerColumnWidth: CGFloat = 196
     private let notificationSoundControlWidth: CGFloat = 280
     private let shortcutChordsDocsURL = URL(string: "https://github.com/darkroomengineering/programa/tree/main/docs")!
@@ -77,7 +97,6 @@ struct SettingsView: View {
     @State private var shortcutResetToken = UUID()
     @State private var topBlurOpacity: Double = 0
     @State private var topBlurBaselineOffset: CGFloat?
-    @State private var settingsTitleLeadingInset: CGFloat = 92
     @State private var showClearBrowserHistoryConfirmation = false
     @State private var showOpenAccessConfirmation = false
     @State private var pendingOpenAccessMode: SocketControlMode?
@@ -469,7 +488,6 @@ struct SettingsView: View {
     var body: some View {
         let _ = keyboardShortcutSettingsObserver.revision
         ScrollViewReader { proxy in
-            ZStack(alignment: .top) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     switch selectedTab {
@@ -490,15 +508,19 @@ struct SettingsView: View {
                         keyboardShortcutsSection
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 20)
-                .padding(.top, contentTopInset)
+                .padding(.horizontal, contentHorizontalInset)
+                .padding(.vertical, contentVerticalPadding)
                 .background(
                     GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: SettingsTopOffsetPreferenceKey.self,
-                            value: proxy.frame(in: .named("SettingsScrollArea")).minY
-                        )
+                        Color.clear
+                            .preference(
+                                key: SettingsTopOffsetPreferenceKey.self,
+                                value: proxy.frame(in: .named("SettingsScrollArea")).minY
+                            )
+                            .preference(
+                                key: SettingsContentHeightPreferenceKey.self,
+                                value: proxy.size.height
+                            )
                     }
                 )
             }
@@ -509,86 +531,76 @@ struct SettingsView: View {
                 }
                 topBlurOpacity = blurOpacity(forContentOffset: value)
             }
-
+            .onPreferenceChange(SettingsContentHeightPreferenceKey.self) { value in
+                measuredContentHeight = value
+            }
+            .onChange(of: selectedTab) { _, _ in
+                // Each tab starts at the top, so the old baseline would leave the
+                // hairline showing over content that is no longer scrolled.
+                topBlurBaselineOffset = nil
+                topBlurOpacity = 0
+            }
+            // A safe-area inset rather than an overlay: the scroll view then knows the
+            // header is there, so its scroller starts below the header instead of
+            // running the full height and disappearing behind it.
+            .safeAreaInset(edge: .top, spacing: 0) {
             ZStack(alignment: .top) {
-                SettingsTitleLeadingInsetReader(inset: $settingsTitleLeadingInset)
-                    .frame(width: 0, height: 0)
+                // A gradient that fades to clear never fully hides what scrolls behind
+                // it, so rows used to read straight through the tab strip. A solid
+                // header material plus a hairline on scroll is what AppKit does.
+                AboutVisualEffectBackground(material: .headerView, blendingMode: .withinWindow)
 
-                AboutVisualEffectBackground(material: .underWindowBackground, blendingMode: .withinWindow)
-                    .mask(
-                        LinearGradient(
-                            colors: [
-                                Color.black.opacity(0.9),
-                                Color.black.opacity(0.64),
-                                Color.black.opacity(0.36),
-                                Color.clear
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .opacity(0.52)
-
-                AboutVisualEffectBackground(material: .underWindowBackground, blendingMode: .withinWindow)
-                    .mask(
-                        LinearGradient(
-                            colors: [
-                                Color.black.opacity(0.98),
-                                Color.black.opacity(0.78),
-                                Color.black.opacity(0.42),
-                                Color.clear
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .opacity(0.14 + (topBlurOpacity * 0.86))
-
-                VStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
+                    // No in-window title: the window is already the Settings window, so
+                    // this row is just the traffic lights on the left and the one action
+                    // on the right, the way System Settings uses its titlebar band.
                     HStack {
-                        Text(String(localized: "settings.title", defaultValue: "Settings"))
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(.primary.opacity(0.92))
                         Spacer(minLength: 0)
-                        HStack(spacing: 6) {
-                            SettingsHeaderActionButton(
-                                title: String(localized: "settings.app.settingsFile.openButton", defaultValue: "Open settings.json"),
-                                helpText: KeyboardShortcutSettings.settingsFileStore.settingsFileDisplayPath(),
-                                accessibilityIdentifier: "SettingsFileOpenButton",
-                                action: openProgramaSettingsFileInTextEdit
-                            )
-                        }
+                        SettingsHeaderActionButton(
+                            title: String(localized: "settings.app.settingsFile.openButton", defaultValue: "Open settings.json"),
+                            helpText: KeyboardShortcutSettings.settingsFileStore.settingsFileDisplayPath(),
+                            accessibilityIdentifier: "SettingsFileOpenButton",
+                            action: openProgramaSettingsFileInTextEdit
+                        )
                     }
-                    .padding(.leading, settingsTitleLeadingInset)
-                    .padding(.trailing, 20)
+                    .frame(height: titlebarBandHeight)
 
-                    // Lives in the header overlay rather than the scroll content so
-                    // it stays put while a tab's rows scroll under the blur.
-                    Picker("", selection: $selectedTab) {
-                        ForEach(SettingsTab.allCases) { tab in
-                            Text(tab.title).tag(tab)
+                    // Lives in the header rather than the scroll content so it stays
+                    // put while a tab's rows scroll underneath it.
+                    SettingsTabStrip(selection: $selectedTab) { natural in
+                        let floor = natural + (contentHorizontalInset * 2)
+                        if abs(floor - minimumWindowWidth) > 0.5 {
+                            minimumWindowWidth = floor
                         }
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .padding(.leading, settingsTitleLeadingInset)
-                    .padding(.trailing, 20)
-                    .accessibilityIdentifier("SettingsTabPicker")
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.top, 12)
+                .padding(.horizontal, contentHorizontalInset)
+                .padding(.top, 6)
+                .padding(.bottom, 12)
             }
                 .frame(height: headerHeight)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .ignoresSafeArea(.container, edges: .top)
                 .overlay(
                     Rectangle()
-                        .fill(Color(nsColor: .separatorColor).opacity(0.07))
-                        .frame(height: 1),
+                        .fill(Color(nsColor: .separatorColor))
+                        .frame(height: 1)
+                        // Only once something is actually tucked under the header.
+                        .opacity(topBlurOpacity),
                     alignment: .bottom
                 )
-        }
+            }
+            // The window draws under the titlebar, so the header has to start at the
+            // very top of the frame for its action to sit level with the traffic lights.
+            .ignoresSafeArea(.container, edges: .top)
         .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
+        .background(
+            SettingsWindowHeightFitter(
+                contentHeight: measuredContentHeight,
+                headerHeight: headerHeight,
+                minimumWidth: minimumWindowWidth
+            )
+            .frame(width: 0, height: 0)
+        )
         .toggleStyle(.switch)
         .onAppear {
             BrowserHistoryStore.shared.loadIfNeeded()
@@ -1755,25 +1767,136 @@ private struct SettingsTopOffsetPreferenceKey: PreferenceKey {
     }
 }
 
-private struct SettingsTitleLeadingInsetReader: NSViewRepresentable {
-    @Binding var inset: CGFloat
+private struct SettingsContentHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    /// `max` rather than last-wins: siblings in the tree report the 0 default and
+    /// would otherwise clobber the real measurement. It is recomputed per update, so
+    /// it cannot latch onto a previous tab's height.
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Grows and shrinks the window to whatever the selected tab actually needs, the way
+/// System Settings does, so short tabs stop showing a half-empty pane and a scroller
+/// they never needed. Also owns the width floor the tab labels require.
+private struct SettingsWindowHeightFitter: NSViewRepresentable {
+    let contentHeight: CGFloat
+    let headerHeight: CGFloat
+    let minimumWidth: CGFloat
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        return view
+        NSView(frame: .zero)
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        let measured = contentHeight
+        let header = headerHeight
+        let floorWidth = minimumWidth
+        guard measured > 0 else { return }
         DispatchQueue.main.async {
-            guard let window = nsView.window else { return }
-            let buttons: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
-            let maxX = buttons
-                .compactMap { window.standardWindowButton($0)?.frame.maxX }
-                .max() ?? 78
-            let nextInset = maxX + 14
-            if abs(nextInset - inset) > 0.5 {
-                inset = nextInset
+            guard let window = nsView.window, let container = window.contentView else { return }
+            // The floor is whatever the tab labels need, so the strip can never be
+            // dragged narrow enough for AppKit to start ellipsising them.
+            window.minSize = NSSize(width: floorWidth, height: SettingsWindowMetrics.minContentHeight)
+            window.maxSize = NSSize(
+                width: SettingsWindowMetrics.maxContentWidth,
+                height: SettingsWindowMetrics.maxContentHeight
+            )
+            if window.frame.width < floorWidth {
+                var widened = window.frame
+                widened.size.width = floorWidth
+                window.setFrame(widened, display: true)
             }
+            // The header is a safe-area inset above the scroll view, so the window needs
+            // to carry both it and the content the scroll view actually holds.
+            let target = measured + header
+            let screenCeiling = ((window.screen ?? NSScreen.main)?.visibleFrame.height ?? target) - 40
+            let ceiling = min(SettingsWindowMetrics.maxContentHeight, screenCeiling)
+            // Tabs taller than the ceiling settle at the ceiling and scroll, rather than
+            // growing the window past the bottom of the screen.
+            let desired = min(max(target, SettingsWindowMetrics.minContentHeight), ceiling)
+            let delta = desired - container.bounds.height
+            // Without a deadband the resize retriggers the measurement that caused it.
+            guard abs(delta) > 0.5 else { return }
+            var frame = window.frame
+            frame.origin.y -= delta
+            frame.size.height += delta
+            window.setFrame(frame, display: true, animate: window.isVisible)
+        }
+    }
+}
+
+/// SwiftUI's segmented `Picker` sizes itself to its labels and centres the result,
+/// which leaves the strip floating with wider gaps than the rows below it. Wrapping
+/// `NSSegmentedControl` lets us ask for `.fillEqually`, so the segments genuinely
+/// share the full width and both edges line up with the content inset.
+private struct SettingsTabStrip: NSViewRepresentable {
+    @Binding var selection: SettingsTab
+    /// The width the six labels need before AppKit starts truncating them. Reported
+    /// from the control itself so translated labels raise the floor automatically.
+    let onNaturalWidthChange: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let control = NSSegmentedControl(
+            labels: SettingsTab.allCases.map(\.title),
+            trackingMode: .selectOne,
+            target: context.coordinator,
+            action: #selector(Coordinator.segmentChanged(_:))
+        )
+        control.segmentDistribution = .fillEqually
+        control.controlSize = .regular
+        control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        control.setAccessibilityIdentifier("SettingsTabPicker")
+        control.selectedSegment = Self.index(of: selection)
+        return control
+    }
+
+    func updateNSView(_ nsView: NSSegmentedControl, context: Context) {
+        context.coordinator.selection = $selection
+        for (index, tab) in SettingsTab.allCases.enumerated() where nsView.label(forSegment: index) != tab.title {
+            nsView.setLabel(tab.title, forSegment: index)
+        }
+        let index = Self.index(of: selection)
+        if nsView.selectedSegment != index {
+            nsView.selectedSegment = index
+        }
+        let natural = nsView.intrinsicContentSize.width
+        DispatchQueue.main.async {
+            onNaturalWidthChange(natural)
+        }
+    }
+
+    /// Without this the representable falls back to the control's intrinsic width,
+    /// which is the hugging behaviour we are trying to get away from.
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSSegmentedControl, context: Context) -> CGSize? {
+        CGSize(
+            width: proposal.width ?? nsView.intrinsicContentSize.width,
+            height: nsView.intrinsicContentSize.height
+        )
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selection: $selection)
+    }
+
+    private static func index(of tab: SettingsTab) -> Int {
+        SettingsTab.allCases.firstIndex(of: tab) ?? 0
+    }
+
+    final class Coordinator: NSObject {
+        var selection: Binding<SettingsTab>
+
+        init(selection: Binding<SettingsTab>) {
+            self.selection = selection
+        }
+
+        @objc func segmentChanged(_ sender: NSSegmentedControl) {
+            let tabs = SettingsTab.allCases
+            guard tabs.indices.contains(sender.selectedSegment) else { return }
+            selection.wrappedValue = tabs[sender.selectedSegment]
         }
     }
 }
