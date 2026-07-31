@@ -8,7 +8,12 @@ import CoreImage.CIFilterBuiltins
 
 
 struct SettingsView: View {
-    private let contentTopInset: CGFloat = 8
+    // The header overlay now carries a tab strip under the title, so content has
+    // to start below both rather than just below the title.
+    private let contentTopInset: CGFloat = 42
+    private let headerHeight: CGFloat = 96
+
+    @State private var selectedTab: SettingsTab = .general
     private let pickerColumnWidth: CGFloat = 196
     private let notificationSoundControlWidth: CGFloat = 280
     private let shortcutChordsDocsURL = URL(string: "https://github.com/darkroomengineering/programa/tree/main/docs")!
@@ -48,17 +53,11 @@ struct SettingsView: View {
     private var longCommandThresholdSeconds = LongCommandNotificationSettings.defaultThresholdSeconds
     @AppStorage(QuitWarningSettings.warnBeforeQuitKey) private var warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
     @AppStorage(ScrollbackPersistenceSettings.persistScrollbackKey) private var sessionPersistScrollback = ScrollbackPersistenceSettings.defaultPersistScrollback
-    @AppStorage(CommandPaletteRenameSelectionSettings.selectAllOnFocusKey)
-    private var commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
     @AppStorage(CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey)
     private var commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
     @AppStorage(ShortcutHintDebugSettings.alwaysShowHintsKey)
     private var alwaysShowShortcutHints = ShortcutHintDebugSettings.defaultAlwaysShowHints
     @AppStorage(WorkspacePlacementSettings.placementKey) private var newWorkspacePlacement = WorkspacePlacementSettings.defaultPlacement.rawValue
-    @AppStorage(LastSurfaceCloseShortcutSettings.key)
-    private var closeWorkspaceOnLastSurfaceShortcut = LastSurfaceCloseShortcutSettings.defaultValue
-    @AppStorage(PaneFirstClickFocusSettings.enabledKey)
-    private var paneFirstClickFocusEnabled = PaneFirstClickFocusSettings.defaultEnabled
     @AppStorage(WorkspaceAutoReorderSettings.key) private var workspaceAutoReorder = WorkspaceAutoReorderSettings.defaultValue
     @AppStorage(SidebarActiveTabIndicatorSettings.styleKey)
     private var sidebarActiveTabIndicatorStyle = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
@@ -92,7 +91,6 @@ struct SettingsView: View {
     @State private var notificationCustomSoundStatusIsError = false
     @State private var showNotificationCustomSoundErrorAlert = false
     @State private var notificationCustomSoundErrorAlertMessage = ""
-    @State private var workspaceTabPaletteEntries = WorkspaceTabColorSettings.palette()
     @State private var trustedDirectoriesDraft: String = ProgramaDirectoryTrust.shared.allTrustedPaths.joined(separator: "\n")
     @State private var mobileBridgePairedDevices: [MobileBridgeTrustedDevice] = []
     @State private var mobileBridgePairingTicket: String?
@@ -119,43 +117,6 @@ struct SettingsView: View {
         return String(
             localized: "settings.app.minimalMode.subtitleOff",
             defaultValue: "Use the standard workspace title bar and controls."
-        )
-    }
-
-    private var keepWorkspaceOpenOnLastSurfaceShortcut: Bool {
-        !closeWorkspaceOnLastSurfaceShortcut
-    }
-
-    private var keepWorkspaceOpenOnLastSurfaceShortcutBinding: Binding<Bool> {
-        Binding(
-            get: { keepWorkspaceOpenOnLastSurfaceShortcut },
-            set: { closeWorkspaceOnLastSurfaceShortcut = !$0 }
-        )
-    }
-
-    private var closeWorkspaceOnLastSurfaceShortcutSubtitle: String {
-        if keepWorkspaceOpenOnLastSurfaceShortcut {
-            return String(
-                localized: "settings.app.closeWorkspaceOnLastSurfaceShortcut.subtitleOn",
-                defaultValue: "When the focused surface is the last one in its workspace, the close-surface shortcut closes only the surface and keeps the workspace open. Use the close-workspace shortcut to close the workspace explicitly."
-            )
-        }
-        return String(
-            localized: "settings.app.closeWorkspaceOnLastSurfaceShortcut.subtitleOff",
-            defaultValue: "When the focused surface is the last one in its workspace, the close-surface shortcut also closes the workspace."
-        )
-    }
-
-    private var paneFirstClickFocusSubtitle: String {
-        if paneFirstClickFocusEnabled {
-            return String(
-                localized: "settings.app.paneFirstClickFocus.subtitleOn",
-                defaultValue: "When Programa is inactive, clicking a pane activates the window and focuses that pane in one click."
-            )
-        }
-        return String(
-            localized: "settings.app.paneFirstClickFocus.subtitleOff",
-            defaultValue: "When Programa is inactive, the first click only activates the window. Click again to focus the pane."
         )
     }
 
@@ -250,10 +211,6 @@ struct SettingsView: View {
         default:
             return String(localized: "settings.browser.history.subtitleMany", defaultValue: "\(browserHistoryEntryCount) saved pages appear in omnibar suggestions.")
         }
-    }
-
-    private var browserImportSubtitle: String {
-        InstalledBrowserDetector.summaryText(for: detectedImportBrowsers)
     }
 
     private var browserImportHintSettingsNote: String {
@@ -515,15 +472,23 @@ struct SettingsView: View {
             ZStack(alignment: .top) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    appSection
-                    workspaceColorsSection
-                    sidebarAppearanceSection
-                    automationSection
-                    phoneSection
-                    customCommandsSection
-                    browserSection
-                    keyboardShortcutsSection
-                    resetSection
+                    switch selectedTab {
+                    case .general:
+                        appSection
+                        resetSection
+                    case .appearance:
+                        workspaceColorsSection
+                        sidebarAppearanceSection
+                    case .automation:
+                        automationSection
+                        customCommandsSection
+                    case .phone:
+                        phoneSection
+                    case .browser:
+                        browserSection
+                    case .shortcuts:
+                        keyboardShortcutsSection
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
@@ -579,25 +544,41 @@ struct SettingsView: View {
                     )
                     .opacity(0.14 + (topBlurOpacity * 0.86))
 
-                HStack {
-                    Text(String(localized: "settings.title", defaultValue: "Settings"))
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.primary.opacity(0.92))
-                    Spacer(minLength: 0)
-                    HStack(spacing: 6) {
-                        SettingsHeaderActionButton(
-                            title: String(localized: "settings.app.settingsFile.openButton", defaultValue: "Open settings.json"),
-                            helpText: KeyboardShortcutSettings.settingsFileStore.settingsFileDisplayPath(),
-                            accessibilityIdentifier: "SettingsFileOpenButton",
-                            action: openProgramaSettingsFileInTextEdit
-                        )
+                VStack(spacing: 8) {
+                    HStack {
+                        Text(String(localized: "settings.title", defaultValue: "Settings"))
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.primary.opacity(0.92))
+                        Spacer(minLength: 0)
+                        HStack(spacing: 6) {
+                            SettingsHeaderActionButton(
+                                title: String(localized: "settings.app.settingsFile.openButton", defaultValue: "Open settings.json"),
+                                helpText: KeyboardShortcutSettings.settingsFileStore.settingsFileDisplayPath(),
+                                accessibilityIdentifier: "SettingsFileOpenButton",
+                                action: openProgramaSettingsFileInTextEdit
+                            )
+                        }
                     }
+                    .padding(.leading, settingsTitleLeadingInset)
+                    .padding(.trailing, 20)
+
+                    // Lives in the header overlay rather than the scroll content so
+                    // it stays put while a tab's rows scroll under the blur.
+                    Picker("", selection: $selectedTab) {
+                        ForEach(SettingsTab.allCases) { tab in
+                            Text(tab.title).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .padding(.leading, settingsTitleLeadingInset)
+                    .padding(.trailing, 20)
+                    .accessibilityIdentifier("SettingsTabPicker")
                 }
-                .padding(.leading, settingsTitleLeadingInset)
-                .padding(.trailing, 20)
                 .padding(.top, 12)
             }
-                .frame(height: 62)
+                .frame(height: headerHeight)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .ignoresSafeArea(.container, edges: .top)
                 .overlay(
@@ -616,7 +597,6 @@ struct SettingsView: View {
             browserHistoryEntryCount = BrowserHistoryStore.shared.entries.count
             browserInsecureHTTPAllowlistDraft = browserInsecureHTTPAllowlist
             refreshDetectedImportBrowsers()
-            reloadWorkspaceTabColorSettings()
             refreshNotificationCustomSoundStatus()
             Task { await refreshMobileBridgePairedDevices() }
         }
@@ -635,11 +615,11 @@ struct SettingsView: View {
         .onReceive(BrowserHistoryStore.shared.$entries) { entries in
             browserHistoryEntryCount = entries.count
         }
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-            reloadWorkspaceTabColorSettings()
-        }
         .onReceive(NotificationCenter.default.publisher(for: SettingsNavigationRequest.notificationName)) { notification in
             guard let target = SettingsNavigationRequest.target(from: notification) else { return }
+            // Select the owning tab first. The anchor only exists while its tab is
+            // the selected one, so scrolling in the same pass would find nothing.
+            selectedTab = SettingsTab.owning(target)
             DispatchQueue.main.async {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     proxy.scrollTo(target, anchor: .top)
@@ -729,31 +709,6 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(
-                String(localized: "settings.app.closeWorkspaceOnLastSurfaceShortcut", defaultValue: "Keep Workspace Open When Closing Last Surface"),
-                subtitle: closeWorkspaceOnLastSurfaceShortcutSubtitle
-            ) {
-                Toggle("", isOn: keepWorkspaceOpenOnLastSurfaceShortcutBinding)
-                    .labelsHidden()
-                    .controlSize(.small)
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.app.paneFirstClickFocus", defaultValue: "Focus Pane on First Click"),
-                subtitle: paneFirstClickFocusSubtitle
-            ) {
-                Toggle("", isOn: $paneFirstClickFocusEnabled)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .accessibilityLabel(
-                        String(localized: "settings.app.paneFirstClickFocus", defaultValue: "Focus Pane on First Click")
-                    )
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
                 String(localized: "settings.app.preferredEditor", defaultValue: "Open Files With"),
                 subtitle: String(localized: "settings.app.preferredEditor.subtitle", defaultValue: "Command to open files on Cmd-click. Leave empty for system default.")
             ) {
@@ -795,7 +750,7 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(
-                "Desktop Notifications",
+                String(localized: "settings.notifications.desktop.title", defaultValue: "Desktop Notifications"),
                 subtitle: notificationPermissionSubtitle
             ) {
                 HStack(spacing: 6) {
@@ -882,10 +837,16 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(
-                "Notification Command",
-                subtitle: "Run a shell command when a notification arrives. $PROGRAMA_NOTIFICATION_TITLE, $PROGRAMA_NOTIFICATION_SUBTITLE, $PROGRAMA_NOTIFICATION_BODY are set."
+                String(localized: "settings.notifications.command.title", defaultValue: "Notification Command"),
+                subtitle: String(
+                    localized: "settings.notifications.command.subtitle",
+                    defaultValue: "Run a shell command when a notification arrives. $PROGRAMA_NOTIFICATION_TITLE, $PROGRAMA_NOTIFICATION_SUBTITLE, $PROGRAMA_NOTIFICATION_BODY are set."
+                )
             ) {
-                TextField("say \"done\"", text: $notificationCustomCommand)
+                TextField(
+                    String(localized: "settings.notifications.command.placeholder", defaultValue: "say \"done\""),
+                    text: $notificationCustomCommand
+                )
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 200)
             }
@@ -943,19 +904,6 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(
-                String(localized: "settings.app.renameSelectsName", defaultValue: "Rename Selects Existing Name"),
-                subtitle: commandPaletteRenameSelectAllOnFocus
-                    ? String(localized: "settings.app.renameSelectsName.subtitleOn", defaultValue: "Command Palette rename starts with all text selected.")
-                    : String(localized: "settings.app.renameSelectsName.subtitleOff", defaultValue: "Command Palette rename keeps the caret at the end.")
-            ) {
-                Toggle("", isOn: $commandPaletteRenameSelectAllOnFocus)
-                    .labelsHidden()
-                    .controlSize(.small)
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
                 String(localized: "settings.app.commandPaletteSearchAllSurfaces", defaultValue: "Command Palette Searches All Surfaces"),
                 subtitle: commandPaletteSearchAllSurfaces
                     ? String(localized: "settings.app.commandPaletteSearchAllSurfaces.subtitleOn", defaultValue: "Cmd+P also matches terminal, browser, and markdown surfaces across workspaces.")
@@ -987,136 +935,13 @@ struct SettingsView: View {
                     Text(style.displayName).tag(style.rawValue)
                 }
             }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.workspaceColors.selectionColor", defaultValue: "Selection Highlight"),
-                subtitle: String(localized: "settings.workspaceColors.selectionColor.subtitle", defaultValue: "Background color of the selected workspace in the sidebar.")
-            ) {
-                HStack(spacing: 8) {
-                    if sidebarSelectionColorHex != nil {
-                        Button(String(localized: "settings.workspaceColors.selectionColor.reset", defaultValue: "Reset")) {
-                            sidebarSelectionColorHex = nil
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-
-                    HexColorPicker(
-                        hex: sidebarSelectionColorHex,
-                        fallback: programaAccentColor()
-                    ) { newHex in
-                        sidebarSelectionColorHex = newHex
-                    }
-
-                    Text(sidebarSelectionColorHex ?? String(localized: "settings.sidebarAppearance.defaultLabel", defaultValue: "Default"))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 76, alignment: .trailing)
-                }
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.workspaceColors.notificationBadgeColor", defaultValue: "Notification Badge"),
-                subtitle: String(localized: "settings.workspaceColors.notificationBadgeColor.subtitle", defaultValue: "Color of the unread notification badge on workspace tabs.")
-            ) {
-                HStack(spacing: 8) {
-                    if sidebarNotificationBadgeColorHex != nil {
-                        Button(String(localized: "settings.workspaceColors.notificationBadgeColor.reset", defaultValue: "Reset")) {
-                            sidebarNotificationBadgeColorHex = nil
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-
-                    HexColorPicker(
-                        hex: sidebarNotificationBadgeColorHex,
-                        fallback: programaAccentColor()
-                    ) { newHex in
-                        sidebarNotificationBadgeColorHex = newHex
-                    }
-
-                    Text(sidebarNotificationBadgeColorHex ?? String(localized: "settings.sidebarAppearance.defaultLabel", defaultValue: "Default"))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 76, alignment: .trailing)
-                }
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardNote(
-                String(
-                    localized: "settings.workspaceColors.dictionaryNote",
-                    defaultValue: "Edit settings.json to add or remove named colors. \"Choose Custom Color...\" still adds local Custom N entries."
-                )
-            )
-
-            if workspaceTabPaletteEntries.isEmpty {
-                SettingsCardNote(
-                    String(
-                        localized: "settings.workspaceColors.emptyPalette",
-                        defaultValue: "No palette entries. Add colors in settings.json or use \"Choose Custom Color...\" from a workspace context menu."
-                    )
-                )
-            } else {
-                ForEach(Array(workspaceTabPaletteEntries.enumerated()), id: \.element.name) { index, entry in
-                    if index > 0 {
-                        SettingsCardDivider()
-                    }
-                    SettingsCardRow(
-                        entry.name,
-                        subtitle: baseTabColorHex(for: entry.name).map {
-                            String(localized: "settings.workspaceColors.base", defaultValue: "Base: \($0)")
-                        } ?? String(
-                            localized: "settings.workspaceColors.customEntry",
-                            defaultValue: "Named palette entry."
-                        )
-                    ) {
-                        HStack(spacing: 8) {
-                            HexColorPicker(
-                                hex: entry.hex,
-                                fallback: .blue
-                            ) { newHex in
-                                WorkspaceTabColorSettings.setColor(named: entry.name, hex: newHex)
-                                reloadWorkspaceTabColorSettings()
-                            }
-
-                            Text(entry.hex)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 76, alignment: .trailing)
-
-                            if baseTabColorHex(for: entry.name) == nil {
-                                Button(String(localized: "settings.workspaceColors.remove", defaultValue: "Remove")) {
-                                    removeWorkspaceColor(named: entry.name)
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                        }
-                    }
-                }
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.workspaceColors.resetPalette", defaultValue: "Reset Palette"),
-                subtitle: String(
-                    localized: "settings.workspaceColors.resetPalette.subtitleV2",
-                    defaultValue: "Restore the built-in palette and remove extra named colors."
-                )
-            ) {
-                Button(String(localized: "settings.workspaceColors.resetPalette.button", defaultValue: "Reset")) {
-                    resetWorkspaceTabColors()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
+            // Selection-highlight and notification-badge hex pickers, the inline
+            // palette editor and a section-local Reset Palette used to follow. The
+            // editor duplicated settings.json, which its own note already pointed at
+            // as the way to manage named colors, and the two hex pickers were the
+            // same per-pixel tuning as the sidebar tints. "Reset all settings" still
+            // calls WorkspaceTabColorSettings.reset() and nils both hex keys, so
+            // anything set while these rows existed is still recoverable.
         }
 
     }
@@ -1149,82 +974,13 @@ struct SettingsView: View {
                         String(localized: "settings.sidebarAppearance.showClaudeQuota", defaultValue: "Show Claude Quota")
                     )
             }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.tintColorLight", defaultValue: "Light Mode Tint"),
-                subtitle: String(localized: "settings.sidebarAppearance.tintColorLight.subtitle", defaultValue: "Sidebar tint color when using light appearance.")
-            ) {
-                HStack(spacing: 8) {
-                    HexColorPicker(
-                        hex: sidebarTintHexLight ?? sidebarTintHex,
-                        fallback: .black
-                    ) { newHex in
-                        sidebarTintHexLight = newHex
-                    }
-
-                    Text(sidebarTintHexLight ?? String(localized: "settings.sidebarAppearance.defaultLabel", defaultValue: "Default"))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 76, alignment: .trailing)
-                }
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.tintColorDark", defaultValue: "Dark Mode Tint"),
-                subtitle: String(localized: "settings.sidebarAppearance.tintColorDark.subtitle", defaultValue: "Sidebar tint color when using dark appearance.")
-            ) {
-                HStack(spacing: 8) {
-                    HexColorPicker(
-                        hex: sidebarTintHexDark ?? sidebarTintHex,
-                        fallback: .black
-                    ) { newHex in
-                        sidebarTintHexDark = newHex
-                    }
-
-                    Text(sidebarTintHexDark ?? String(localized: "settings.sidebarAppearance.defaultLabel", defaultValue: "Default"))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 76, alignment: .trailing)
-                }
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.tintOpacity", defaultValue: "Tint Opacity"),
-                subtitle: String(localized: "settings.sidebarAppearance.tintOpacity.subtitle", defaultValue: "How strongly the tint color shows over the sidebar material.")
-            ) {
-                HStack(spacing: 8) {
-                    Slider(value: $sidebarTintOpacity, in: 0...1)
-                        .frame(width: 140)
-                    Text(String(format: "%.0f%%", sidebarTintOpacity * 100))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 36, alignment: .trailing)
-                }
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.reset", defaultValue: "Reset Sidebar Tint"),
-                subtitle: String(localized: "settings.sidebarAppearance.reset.subtitle", defaultValue: "Restore default sidebar appearance.")
-            ) {
-                Button(String(localized: "settings.sidebarAppearance.reset.button", defaultValue: "Reset")) {
-                    sidebarTintHexLight = nil
-                    sidebarTintHexDark = nil
-                    sidebarTintHex = SidebarTintDefaults.hex
-                    sidebarTintOpacity = SidebarTintDefaults.opacity
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
+            // Light/dark tint hex, tint opacity and a section-local reset used to
+            // live here. They were per-pixel tuning of one surface, shipped to
+            // every user, and the same four keys are already bound by the Debug
+            // window (DebugWindows.swift) where that kind of tuning belongs. The
+            // bindings stay on this view because "Reset all settings" below still
+            // restores them for anyone who set a value while the rows existed.
         }
-
     }
 
     @ViewBuilder
@@ -1473,7 +1229,7 @@ struct SettingsView: View {
 
                 SettingsCardRow(
                     String(localized: "settings.phone.pair.title", defaultValue: "Pair a Device"),
-                    subtitle: String(localized: "settings.phone.pair.subtitle", defaultValue: "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or enter the payload and token manually.")
+                    subtitle: String(localized: "settings.phone.pair.subtitleV2", defaultValue: "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or copy the code it shows.")
                 ) {
                     Button(String(localized: "settings.phone.pair.button", defaultValue: "Pair a Device…")) {
                         beginMobileBridgePairing()
@@ -1531,34 +1287,6 @@ struct SettingsView: View {
                             }
                         }
 
-                        DisclosureGroup(String(localized: "settings.phone.pair.manualFallback", defaultValue: "Can't scan? Paste the payload and token manually")) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(String(localized: "settings.phone.pair.ticketLabel", defaultValue: "Pairing Payload"))
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text(ticket)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .padding(8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(Color(nsColor: .controlBackgroundColor))
-                                    )
-
-                                Text(String(localized: "settings.phone.pair.tokenLabel", defaultValue: "Pairing Token"))
-                                    .font(.system(size: 12, weight: .semibold))
-                                Text(token)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .padding(8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(Color(nsColor: .controlBackgroundColor))
-                                    )
-                            }
-                            .padding(.top, 6)
-                        }
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -1820,36 +1548,13 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(String(localized: "settings.browser.import", defaultValue: "Import Browser Data"))
-                        .font(.system(size: 13, weight: .semibold))
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(String(localized: "browser.import.hint.title", defaultValue: "Import browser data"))
-                            .font(.system(size: 12.5, weight: .semibold))
-
-                        Text(browserImportSubtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Text(String(localized: "browser.import.hint.settingsFootnote", defaultValue: "You can always find this in Settings > Browser."))
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
-                    )
-                }
+                // A mock of the blank-tab import hint used to be rendered here,
+                // reusing the hint's own strings -- including its footnote saying
+                // "You can always find this in Settings > Browser", shown inside
+                // Settings. The buttons below do the same job without restating
+                // the hint. The real card still lives in BrowserToolbarViews.
+                Text(String(localized: "settings.browser.import", defaultValue: "Import Browser Data"))
+                    .font(.system(size: 13, weight: .semibold))
 
                 HStack(spacing: 8) {
                     Button(String(localized: "settings.browser.import.choose", defaultValue: "Choose…")) {
@@ -2006,14 +1711,11 @@ struct SettingsView: View {
         showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
         warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
         sessionPersistScrollback = ScrollbackPersistenceSettings.defaultPersistScrollback
-        commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
         commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
         ShortcutHintDebugSettings.resetVisibilityDefaults()
         alwaysShowShortcutHints = ShortcutHintDebugSettings.defaultAlwaysShowHints
         newWorkspacePlacement = WorkspacePlacementSettings.defaultPlacement.rawValue
         workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
-        closeWorkspaceOnLastSurfaceShortcut = LastSurfaceCloseShortcutSettings.defaultValue
-        paneFirstClickFocusEnabled = PaneFirstClickFocusSettings.defaultEnabled
         workspaceAutoReorder = WorkspaceAutoReorderSettings.defaultValue
         sidebarActiveTabIndicatorStyle = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
         sidebarSelectionColorHex = nil
@@ -2033,26 +1735,7 @@ struct SettingsView: View {
         refreshDetectedImportBrowsers()
         KeyboardShortcutSettings.resetAll()
         WorkspaceTabColorSettings.reset()
-        reloadWorkspaceTabColorSettings()
         shortcutResetToken = UUID()
-    }
-
-    private func baseTabColorHex(for name: String) -> String? {
-        WorkspaceTabColorSettings.defaultColorHex(named: name)
-    }
-
-    private func removeWorkspaceColor(named name: String) {
-        WorkspaceTabColorSettings.removeColor(named: name)
-        reloadWorkspaceTabColorSettings()
-    }
-
-    private func resetWorkspaceTabColors() {
-        WorkspaceTabColorSettings.reset()
-        reloadWorkspaceTabColorSettings()
-    }
-
-    private func reloadWorkspaceTabColorSettings() {
-        workspaceTabPaletteEntries = WorkspaceTabColorSettings.palette()
     }
 
     private func saveBrowserInsecureHTTPAllowlist() {

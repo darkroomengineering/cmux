@@ -6903,23 +6903,6 @@
         }
       }
     },
-    "dialog.cmuxConfig.confirmCommand.trustDirectory": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Always trust commands from this folder"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "このフォルダのコマンドを常に信頼する"
-          }
-        }
-      }
-    },
     "dialog.cmuxConfig.confirmCommand.truncated": {
       "extractionState": "manual",
       "localizations": {
@@ -6933,6 +6916,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "…(省略)"
+          }
+        }
+      }
+    },
+    "dialog.cmuxConfig.confirmCommand.trustDirectory": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Always trust commands from this folder"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このフォルダのコマンドを常に信頼する"
           }
         }
       }
@@ -8515,39 +8515,6 @@
         }
       }
     },
-    "settings.app.closeWorkspaceOnLastSurfaceShortcut": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Keep Workspace Open When Closing Last Surface"
-          }
-        }
-      }
-    },
-    "settings.app.closeWorkspaceOnLastSurfaceShortcut.subtitleOff": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When the focused surface is the last one in its workspace, the close-surface shortcut also closes the workspace."
-          }
-        }
-      }
-    },
-    "settings.app.closeWorkspaceOnLastSurfaceShortcut.subtitleOn": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When the focused surface is the last one in its workspace, the close-surface shortcut closes only the surface and keeps the workspace open. Use the close-workspace shortcut to close the workspace explicitly."
-          }
-        }
-      }
-    },
     "settings.app.commandPaletteSearchAllSurfaces": {
       "extractionState": "manual",
       "localizations": {
@@ -8625,39 +8592,6 @@
         }
       }
     },
-    "settings.app.paneFirstClickFocus": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Focus Pane on First Click"
-          }
-        }
-      }
-    },
-    "settings.app.paneFirstClickFocus.subtitleOff": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When Programa is inactive, the first click only activates the window. Click again to focus the pane."
-          }
-        }
-      }
-    },
-    "settings.app.paneFirstClickFocus.subtitleOn": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When Programa is inactive, clicking a pane activates the window and focuses that pane in one click."
-          }
-        }
-      }
-    },
     "settings.app.persistScrollback": {
       "extractionState": "manual",
       "localizations": {
@@ -8705,39 +8639,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "スクロールバックは保存され、次回起動時に復元されます。"
-          }
-        }
-      }
-    },
-    "settings.app.renameSelectsName": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rename Selects Existing Name"
-          }
-        }
-      }
-    },
-    "settings.app.renameSelectsName.subtitleOff": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Command Palette rename keeps the caret at the end."
-          }
-        }
-      }
-    },
-    "settings.app.renameSelectsName.subtitleOn": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Command Palette rename starts with all text selected."
           }
         }
       }
@@ -9789,6 +9690,74 @@
         }
       }
     },
+    "settings.notifications.command.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "say \"done\""
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "say \"done\""
+          }
+        }
+      }
+    },
+    "settings.notifications.command.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Run a shell command when a notification arrives. $PROGRAMA_NOTIFICATION_TITLE, $PROGRAMA_NOTIFICATION_SUBTITLE, $PROGRAMA_NOTIFICATION_BODY are set."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知が届いたときにシェルコマンドを実行します。$PROGRAMA_NOTIFICATION_TITLE、$PROGRAMA_NOTIFICATION_SUBTITLE、$PROGRAMA_NOTIFICATION_BODY が設定されます。"
+          }
+        }
+      }
+    },
+    "settings.notifications.command.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notification Command"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通知コマンド"
+          }
+        }
+      }
+    },
+    "settings.notifications.desktop.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desktop Notifications"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デスクトップ通知"
+          }
+        }
+      }
+    },
     "settings.notifications.longCommandThreshold.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -9990,83 +9959,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Notification Sound"
-          }
-        }
-      }
-    },
-    "settings.preset.hudGlass": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "HUD Glass"
-          }
-        }
-      }
-    },
-    "settings.preset.nativeSidebar": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Native Sidebar"
-          }
-        }
-      }
-    },
-    "settings.preset.popoverGlass": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Popover Glass"
-          }
-        }
-      }
-    },
-    "settings.preset.raycastGray": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Raycast Gray"
-          }
-        }
-      }
-    },
-    "settings.preset.softBlur": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Soft Blur"
-          }
-        }
-      }
-    },
-    "settings.preset.underWindow": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Under Window"
-          }
-        }
-      }
-    },
-    "settings.reset.resetAll": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset All Settings"
           }
         }
       }
@@ -10326,23 +10218,6 @@
         }
       }
     },
-    "settings.phone.pair.manualFallback": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Can't scan? Paste the payload and token manually"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "スキャンできない場合は、ペイロードとトークンを手動で貼り付け"
-          }
-        }
-      }
-    },
     "settings.phone.pair.scanLabel": {
       "extractionState": "manual",
       "localizations": {
@@ -10360,36 +10235,19 @@
         }
       }
     },
-    "settings.phone.pair.subtitle": {
+    "settings.phone.pair.subtitleV2": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or enter the payload and token manually."
+            "value": "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or copy the code it shows."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "5分間有効な、1回限りのペア設定ウィンドウを開きます。Programa iOSアプリでQRコードをスキャンするか、ペイロードとトークンを手動で入力してください。"
-          }
-        }
-      }
-    },
-    "settings.phone.pair.ticketLabel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pairing Payload"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ペア設定ペイロード"
+            "value": "一度だけ使える5分間のペアリング枠を開きます。Programa iOSアプリでQRコードをスキャンするか、表示されたコードをコピーしてください。"
           }
         }
       }
@@ -10411,19 +10269,79 @@
         }
       }
     },
-    "settings.phone.pair.tokenLabel": {
+    "settings.preset.hudGlass": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pairing Token"
+            "value": "HUD Glass"
           }
-        },
-        "ja": {
+        }
+      }
+    },
+    "settings.preset.nativeSidebar": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "ペア設定トークン"
+            "value": "Native Sidebar"
+          }
+        }
+      }
+    },
+    "settings.preset.popoverGlass": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Popover Glass"
+          }
+        }
+      }
+    },
+    "settings.preset.raycastGray": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Raycast Gray"
+          }
+        }
+      }
+    },
+    "settings.preset.softBlur": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Soft Blur"
+          }
+        }
+      }
+    },
+    "settings.preset.underWindow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Under Window"
+          }
+        }
+      }
+    },
+    "settings.reset.resetAll": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reset All Settings"
           }
         }
       }
@@ -10610,17 +10528,6 @@
         }
       }
     },
-    "settings.sidebarAppearance.defaultLabel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Default"
-          }
-        }
-      }
-    },
     "settings.sidebarAppearance.matchTerminalBackground": {
       "extractionState": "manual",
       "localizations": {
@@ -10639,39 +10546,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Use the same background color and transparency as the terminal."
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.reset": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset Sidebar Tint"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.reset.button": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.reset.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Restore default sidebar appearance."
           }
         }
       }
@@ -10710,72 +10584,6 @@
         }
       }
     },
-    "settings.sidebarAppearance.tintColorDark": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dark Mode Tint"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintColorDark.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sidebar tint color when using dark appearance."
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintColorLight": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Light Mode Tint"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintColorLight.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sidebar tint color when using light appearance."
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintOpacity": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tint Opacity"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintOpacity.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "How strongly the tint color shows over the sidebar material."
-          }
-        }
-      }
-    },
     "settings.state.active": {
       "extractionState": "manual",
       "localizations": {
@@ -10809,6 +10617,108 @@
         }
       }
     },
+    "settings.tab.appearance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Appearance"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外観"
+          }
+        }
+      }
+    },
+    "settings.tab.automation": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Automation"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自動化"
+          }
+        }
+      }
+    },
+    "settings.tab.browser": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Browser"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブラウザ"
+          }
+        }
+      }
+    },
+    "settings.tab.general": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "General"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一般"
+          }
+        }
+      }
+    },
+    "settings.tab.phone": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Phone"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スマートフォン"
+          }
+        }
+      }
+    },
+    "settings.tab.shortcuts": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shortcuts"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ショートカット"
+          }
+        }
+      }
+    },
     "settings.title": {
       "extractionState": "manual",
       "localizations": {
@@ -10820,50 +10730,6 @@
         }
       }
     },
-    "settings.workspaceColors.base": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Base: %@"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.customEntry": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Named palette entry."
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.dictionaryNote": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edit settings.json to add or remove named colors. \"Choose Custom Color...\" still adds local Custom N entries."
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.emptyPalette": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No palette entries. Add colors in settings.json or use \"Choose Custom Color...\" from a workspace context menu."
-          }
-        }
-      }
-    },
     "settings.workspaceColors.indicator": {
       "extractionState": "manual",
       "localizations": {
@@ -10871,50 +10737,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Workspace Color Indicator"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.remove": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Remove"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.resetPalette": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset Palette"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.resetPalette.button": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.resetPalette.subtitleV2": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Restore the built-in palette and remove extra named colors."
           }
         }
       }

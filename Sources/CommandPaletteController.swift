@@ -65,8 +65,6 @@ final class CommandPaletteController: ObservableObject {
     @Published var commandPalettePendingActivation: ContentView.CommandPalettePendingActivation?
     @Published var commandPaletteResultsRevision: UInt64 = 0
     @Published var commandPaletteUsageHistoryByCommandId: [String: ContentView.CommandPaletteUsageEntry] = [:]
-    @AppStorage(CommandPaletteRenameSelectionSettings.selectAllOnFocusKey)
-    var commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
     @AppStorage(CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey)
     var commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
     @Published var commandPaletteShouldFocusWorkspaceDescriptionEditor = false

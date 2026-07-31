@@ -1050,6 +1050,42 @@ final class TabManagerCloseCurrentPanelTests: XCTestCase {
         XCTAssertTrue(secondWorkspace.panels.isEmpty)
     }
 
+    // Mirrors testCloseCurrentPanelClosesWorkspaceWhenItOwnsTheLastSurface, with the
+    // removed preference key written first. Cmd+W closing the workspace along with
+    // its last surface is no longer configurable, and a stale settings.json entry
+    // must not quietly bring the old behaviour back.
+    func testCloseCurrentPanelClosesWorkspaceEvenWhenRemovedKeepOpenKeyIsSet() {
+        let defaults = UserDefaults.standard
+        let original = defaults.object(forKey: lastSurfaceCloseShortcutDefaultsKey)
+        defaults.set(false, forKey: lastSurfaceCloseShortcutDefaultsKey)
+        defer {
+            if let original {
+                defaults.set(original, forKey: lastSurfaceCloseShortcutDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: lastSurfaceCloseShortcutDefaultsKey)
+            }
+        }
+
+        let manager = TabManager()
+        let firstWorkspace = manager.tabs[0]
+        let secondWorkspace = manager.addWorkspace()
+        manager.selectWorkspace(secondWorkspace)
+
+        guard let secondPanelId = secondWorkspace.focusedPanelId else {
+            XCTFail("Expected focused panel in selected workspace")
+            return
+        }
+
+        manager.closeCurrentPanelWithConfirmation()
+        drainMainQueue()
+        drainMainQueue()
+
+        XCTAssertEqual(manager.tabs.map(\.id), [firstWorkspace.id])
+        XCTAssertEqual(manager.selectedTabId, firstWorkspace.id)
+        XCTAssertNil(secondWorkspace.panels[secondPanelId])
+        XCTAssertTrue(secondWorkspace.panels.isEmpty)
+    }
+
     func testCloseCurrentPanelPromptsBeforeClosingPinnedWorkspaceLastSurface() {
         let manager = TabManager()
         _ = manager.tabs[0]
@@ -1119,39 +1155,6 @@ final class TabManagerCloseCurrentPanelTests: XCTestCase {
         XCTAssertTrue(pinnedWorkspace.panels.isEmpty)
     }
 
-    func testCloseCurrentPanelKeepsWorkspaceOpenWhenKeepWorkspaceOpenPreferenceIsEnabled() {
-        let defaults = UserDefaults.standard
-        let originalSetting = defaults.object(forKey: lastSurfaceCloseShortcutDefaultsKey)
-        defaults.set(false, forKey: lastSurfaceCloseShortcutDefaultsKey)
-        defer {
-            if let originalSetting {
-                defaults.set(originalSetting, forKey: lastSurfaceCloseShortcutDefaultsKey)
-            } else {
-                defaults.removeObject(forKey: lastSurfaceCloseShortcutDefaultsKey)
-            }
-        }
-
-        let manager = TabManager()
-        guard let workspace = manager.selectedWorkspace,
-              let initialPanelId = workspace.focusedPanelId else {
-            XCTFail("Expected selected workspace and focused panel")
-            return
-        }
-
-        let initialWorkspaceId = workspace.id
-
-        manager.closeCurrentPanelWithConfirmation()
-        drainMainQueue()
-        drainMainQueue()
-
-        XCTAssertEqual(manager.tabs.count, 1)
-        XCTAssertEqual(manager.selectedTabId, initialWorkspaceId)
-        XCTAssertEqual(manager.tabs.first?.id, initialWorkspaceId)
-        XCTAssertNil(workspace.panels[initialPanelId])
-        XCTAssertEqual(workspace.panels.count, 1)
-        XCTAssertNotEqual(workspace.focusedPanelId, initialPanelId)
-    }
-
     func testClosePanelButtonClosesWorkspaceWhenItOwnsTheLastSurface() {
         let manager = TabManager()
         let firstWorkspace = manager.tabs[0]
@@ -1165,44 +1168,6 @@ final class TabManagerCloseCurrentPanelTests: XCTestCase {
 
         XCTAssertEqual(manager.selectedTabId, secondWorkspace.id)
         XCTAssertEqual(secondWorkspace.panels.count, 1)
-
-        guard let secondSurfaceId = secondWorkspace.surfaceIdFromPanelId(secondPanelId) else {
-            XCTFail("Expected bonsplit surface ID for focused panel")
-            return
-        }
-
-        secondWorkspace.markExplicitClose(surfaceId: secondSurfaceId)
-        XCTAssertFalse(secondWorkspace.closePanel(secondPanelId))
-        drainMainQueue()
-        drainMainQueue()
-
-        XCTAssertEqual(manager.tabs.map(\.id), [firstWorkspace.id])
-        XCTAssertEqual(manager.selectedTabId, firstWorkspace.id)
-        XCTAssertNil(secondWorkspace.panels[secondPanelId])
-        XCTAssertTrue(secondWorkspace.panels.isEmpty)
-    }
-
-    func testClosePanelButtonStillClosesWorkspaceWhenKeepWorkspaceOpenPreferenceIsEnabled() {
-        let defaults = UserDefaults.standard
-        let originalSetting = defaults.object(forKey: lastSurfaceCloseShortcutDefaultsKey)
-        defaults.set(false, forKey: lastSurfaceCloseShortcutDefaultsKey)
-        defer {
-            if let originalSetting {
-                defaults.set(originalSetting, forKey: lastSurfaceCloseShortcutDefaultsKey)
-            } else {
-                defaults.removeObject(forKey: lastSurfaceCloseShortcutDefaultsKey)
-            }
-        }
-
-        let manager = TabManager()
-        let firstWorkspace = manager.tabs[0]
-        let secondWorkspace = manager.addWorkspace()
-        manager.selectWorkspace(secondWorkspace)
-
-        guard let secondPanelId = secondWorkspace.focusedPanelId else {
-            XCTFail("Expected focused panel in selected workspace")
-            return
-        }
 
         guard let secondSurfaceId = secondWorkspace.surfaceIdFromPanelId(secondPanelId) else {
             XCTFail("Expected bonsplit surface ID for focused panel")

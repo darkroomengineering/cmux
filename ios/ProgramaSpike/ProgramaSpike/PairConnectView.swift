@@ -1,9 +1,13 @@
 import SwiftUI
 
 /// Screen 1: scan or paste the pairing code shown on Programa's Mac
-/// Settings ▸ Phone screen, then connect. The legacy separate ticket/token
-/// fields stay as a fallback for testers who can't scan or whose combined
-/// code paste didn't parse.
+/// Settings ▸ Phone screen, then connect.
+///
+/// There is deliberately one way in. Separate ticket and token fields used to
+/// sit below this as a legacy fallback, with their own Connect button, so the
+/// screen offered three entry points and two buttons for a single action. The
+/// Mac shows the same combined code it encodes in the QR, and pasting that is
+/// the fallback for anyone who cannot scan.
 struct PairConnectView: View {
     @Bindable var store: AppStore
 
@@ -36,60 +40,19 @@ struct PairConnectView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
 
-                    Button(String(localized: "pairing.connect.useCodeButton", defaultValue: "Use This Code")) {
+                    Button(String(localized: "pairing.connect.useCodeButton", defaultValue: "Connect")) {
                         applyPairingCodeDraft()
                     }
-                    .disabled(pairingCodeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        pairingCodeDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || store.isConnecting
+                    )
 
                     if let pairingCodeError {
                         Text(pairingCodeError)
                             .font(.footnote)
                             .foregroundStyle(.red)
                     }
-                }
-
-                Section(
-                    String(
-                        localized: "pairing.connect.section.advanced",
-                        defaultValue: "Advanced: paste ticket and token separately"
-                    )
-                ) {
-                    TextField(
-                        String(
-                            localized: "pairing.connect.ticketField.placeholder",
-                            defaultValue: "Paste the ticket from Programa's pairing screen"
-                        ),
-                        text: $store.pairingTicketDraft,
-                        axis: .vertical
-                    )
-                    .lineLimit(3 ... 8)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-
-                    TextField(
-                        String(localized: "pairing.connect.tokenField.placeholder", defaultValue: "Only needed the first time"),
-                        text: $store.pairingTokenDraft
-                    )
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Text(
-                        String(
-                            localized: "pairing.connect.tokenField.footnote",
-                            defaultValue: "Once this device is paired it stays trusted — you won't need the token again."
-                        )
-                    )
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section {
-                    Button(String(localized: "pairing.connect.connectButton", defaultValue: "Connect")) {
-                        Task { await store.connectManually() }
-                    }
-                    .disabled(
-                        store.pairingTicketDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || store.isConnecting
-                    )
                 }
 
                 Section(String(localized: "pairing.connect.section.status", defaultValue: "Status")) {

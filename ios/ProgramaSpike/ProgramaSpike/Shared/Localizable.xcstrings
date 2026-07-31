@@ -783,23 +783,6 @@
         }
       }
     },
-    "pairing.connect.connectButton": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connect"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "接続"
-          }
-        }
-      }
-    },
     "pairing.connect.error.invalidPastedCode": {
       "extractionState": "manual",
       "localizations": {
@@ -902,23 +885,6 @@
         }
       }
     },
-    "pairing.connect.section.advanced": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Advanced: paste ticket and token separately"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "詳細設定：チケットとトークンを個別に貼り付け"
-          }
-        }
-      }
-    },
     "pairing.connect.section.code": {
       "extractionState": "manual",
       "localizations": {
@@ -953,23 +919,6 @@
         }
       }
     },
-    "pairing.connect.ticketField.placeholder": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Paste the ticket from Programa's pairing screen"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Programaのペア設定画面からチケットを貼り付け"
-          }
-        }
-      }
-    },
     "pairing.connect.title": {
       "extractionState": "manual",
       "localizations": {
@@ -987,53 +936,19 @@
         }
       }
     },
-    "pairing.connect.tokenField.footnote": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Once this device is paired it stays trusted — you won't need the token again."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "このデバイスは一度ペア設定されると信頼済みのままになり、次回からトークンは不要です。"
-          }
-        }
-      }
-    },
-    "pairing.connect.tokenField.placeholder": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Only needed the first time"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "初回のみ必要です"
-          }
-        }
-      }
-    },
     "pairing.connect.useCodeButton": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Use This Code"
+            "value": "Connect"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "このコードを使用"
+            "value": "接続"
           }
         }
       }

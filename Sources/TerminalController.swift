@@ -1988,8 +1988,6 @@ class TerminalController {
             return v2Result(id: id, self.v2DebugCommandPaletteRenameInputDeleteBackward(params: params))
         case "debug.command_palette.rename_input.selection":
             return v2Result(id: id, self.v2DebugCommandPaletteRenameInputSelection(params: params))
-        case "debug.command_palette.rename_input.select_all":
-            return v2Result(id: id, self.v2DebugCommandPaletteRenameInputSelectAll(params: params))
         case "debug.browser.address_bar_focused":
             return v2Result(id: id, self.v2DebugBrowserAddressBarFocused(params: params))
         case "debug.browser.favicon":

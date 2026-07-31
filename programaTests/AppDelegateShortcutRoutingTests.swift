@@ -1468,69 +1468,6 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         )
     }
 
-    func testCmdWKeepsLastSurfaceWorkspaceOpenWhenKeepWorkspaceOpenPreferenceIsEnabled() throws {
-        guard let appDelegate = AppDelegate.shared else {
-            XCTFail("Expected AppDelegate.shared")
-            return
-        }
-
-        appDelegate.debugCloseMainWindowConfirmationHandler = { _ in true }
-
-        let defaults = UserDefaults.standard
-        let originalSetting = defaults.object(forKey: appDelegateLastSurfaceCloseShortcutDefaultsKey)
-        defaults.set(false, forKey: appDelegateLastSurfaceCloseShortcutDefaultsKey)
-        defer {
-            if let originalSetting {
-                defaults.set(originalSetting, forKey: appDelegateLastSurfaceCloseShortcutDefaultsKey)
-            } else {
-                defaults.removeObject(forKey: appDelegateLastSurfaceCloseShortcutDefaultsKey)
-            }
-        }
-
-        let windowId = appDelegate.createMainWindow()
-        defer { closeWindow(withId: windowId) }
-
-        guard let targetWindow = window(withId: windowId),
-              let manager = appDelegate.tabManagerFor(windowId: windowId),
-              let workspace = manager.selectedWorkspace,
-              let initialPanelId = workspace.focusedPanelId else {
-            XCTFail("Expected test window, manager, workspace, and focused panel")
-            return
-        }
-
-        // This test exercises keep-workspace-open semantics, not close-confirm heuristics.
-        // Mark the shell idle so Cmd+W routes through the immediate close path deterministically.
-        workspace.updatePanelShellActivityState(panelId: initialPanelId, state: .promptIdle)
-
-        guard let event = makeKeyDownEvent(
-            key: "w",
-            modifiers: [.command],
-            keyCode: 13,
-            windowNumber: targetWindow.windowNumber
-        ) else {
-            XCTFail("Failed to construct Cmd+W event")
-            return
-        }
-
-#if DEBUG
-        XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: event))
-#else
-        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
-#endif
-
-        waitUntil(description: "the closed panel to be removed from the workspace") { workspace.panels[initialPanelId] == nil }
-
-        XCTAssertNotNil(
-            self.window(withId: windowId),
-            "Cmd+W should keep the window open when the keep-workspace-open preference is enabled"
-        )
-        XCTAssertEqual(manager.tabs.count, 1)
-        XCTAssertEqual(manager.selectedTabId, workspace.id)
-        XCTAssertNil(workspace.panels[initialPanelId])
-        XCTAssertEqual(workspace.panels.count, 1)
-        XCTAssertNotEqual(workspace.focusedPanelId, initialPanelId)
-    }
-
     func testCmdWClosesAuxiliaryWindowInsteadOfMainTerminalPanel() throws {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")

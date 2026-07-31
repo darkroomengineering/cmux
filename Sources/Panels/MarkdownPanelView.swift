@@ -339,16 +339,9 @@ final class MarkdownPanelPointerObserverView: NSView {
         }
     }
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard PaneFirstClickFocusSettings.isEnabled(),
-              window?.isKeyWindow != true,
-              bounds.contains(point) else { return nil }
-        return self
-    }
-
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        PaneFirstClickFocusSettings.isEnabled()
-    }
+    // This overlay never takes part in hit-testing. It only ever did so while
+    // the first-click-focus preference was on, and that preference is gone.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func mouseDown(with event: NSEvent) {
         onPointerDown?()
@@ -370,9 +363,6 @@ final class MarkdownPanelPointerObserverView: NSView {
               let window,
               event.window === window,
               !isHiddenOrHasHiddenAncestor else { return false }
-        if PaneFirstClickFocusSettings.isEnabled(), window.isKeyWindow != true {
-            return false
-        }
         let point = convert(event.locationInWindow, from: nil)
         return bounds.contains(point)
     }

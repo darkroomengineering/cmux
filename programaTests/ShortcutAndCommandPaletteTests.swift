@@ -680,34 +680,6 @@ final class CommandPaletteRestoreFocusStateMachineTests: XCTestCase {
 }
 
 
-final class CommandPaletteRenameSelectionSettingsTests: XCTestCase {
-    private let suiteName = "cmux.tests.commandPaletteRenameSelection.\(UUID().uuidString)"
-
-    private func makeDefaults() -> UserDefaults {
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return defaults
-    }
-
-    func testDefaultsToSelectAllWhenUnset() {
-        let defaults = makeDefaults()
-        XCTAssertTrue(CommandPaletteRenameSelectionSettings.selectAllOnFocusEnabled(defaults: defaults))
-    }
-
-    func testReturnsFalseWhenStoredFalse() {
-        let defaults = makeDefaults()
-        defaults.set(false, forKey: CommandPaletteRenameSelectionSettings.selectAllOnFocusKey)
-        XCTAssertFalse(CommandPaletteRenameSelectionSettings.selectAllOnFocusEnabled(defaults: defaults))
-    }
-
-    func testReturnsTrueWhenStoredTrue() {
-        let defaults = makeDefaults()
-        defaults.set(true, forKey: CommandPaletteRenameSelectionSettings.selectAllOnFocusKey)
-        XCTAssertTrue(CommandPaletteRenameSelectionSettings.selectAllOnFocusEnabled(defaults: defaults))
-    }
-}
-
-
 final class CommandPaletteSelectionScrollBehaviorTests: XCTestCase {
     func testFirstEntryPinsToTopAnchor() {
         let anchor = ContentView.commandPaletteScrollPositionAnchor(
@@ -1023,44 +995,6 @@ final class ShortcutHintHorizontalPlannerTests: XCTestCase {
         let intervals: [ClosedRange<CGFloat>] = [0...12, 20...32, 40...52]
         let rightEdges = ShortcutHintHorizontalPlanner.assignRightEdges(for: intervals, minSpacing: 4)
         XCTAssertEqual(rightEdges, [12, 32, 52])
-    }
-}
-
-
-final class LastSurfaceCloseShortcutSettingsTests: XCTestCase {
-    func testDefaultClosesWorkspace() {
-        let suiteName = "LastSurfaceCloseShortcutSettingsTests.Default.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            XCTFail("Failed to create isolated UserDefaults suite")
-            return
-        }
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        XCTAssertTrue(LastSurfaceCloseShortcutSettings.closesWorkspace(defaults: defaults))
-    }
-
-    func testStoredTrueClosesWorkspace() {
-        let suiteName = "LastSurfaceCloseShortcutSettingsTests.Enabled.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            XCTFail("Failed to create isolated UserDefaults suite")
-            return
-        }
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        defaults.set(true, forKey: LastSurfaceCloseShortcutSettings.key)
-        XCTAssertTrue(LastSurfaceCloseShortcutSettings.closesWorkspace(defaults: defaults))
-    }
-
-    func testStoredFalseKeepsWorkspaceOpen() {
-        let suiteName = "LastSurfaceCloseShortcutSettingsTests.Disabled.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            XCTFail("Failed to create isolated UserDefaults suite")
-            return
-        }
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        defaults.set(false, forKey: LastSurfaceCloseShortcutSettings.key)
-        XCTAssertFalse(LastSurfaceCloseShortcutSettings.closesWorkspace(defaults: defaults))
     }
 }
 

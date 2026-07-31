@@ -345,33 +345,6 @@ extension TerminalController {
         return result
     }
 
-    func v2DebugCommandPaletteRenameInputSelectAll(params: [String: Any]) -> V2CallResult {
-        if let rawEnabled = params["enabled"] {
-            guard let enabled = rawEnabled as? Bool else {
-                return .err(
-                    code: "invalid_params",
-                    message: "enabled must be a bool",
-                    data: ["enabled": rawEnabled]
-                )
-            }
-            DispatchQueue.main.sync {
-                UserDefaults.standard.set(
-                    enabled,
-                    forKey: CommandPaletteRenameSelectionSettings.selectAllOnFocusKey
-                )
-            }
-        }
-
-        var enabled = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
-        DispatchQueue.main.sync {
-            enabled = CommandPaletteRenameSelectionSettings.selectAllOnFocusEnabled()
-        }
-
-        return .ok([
-            "enabled": enabled
-        ])
-    }
-
     func v2DebugBrowserAddressBarFocused(params: [String: Any]) -> V2CallResult {
         let requestedSurfaceId = v2UUID(params, "surface_id") ?? v2UUID(params, "panel_id")
         var focusedSurfaceId: UUID?
