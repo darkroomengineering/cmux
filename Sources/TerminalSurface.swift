@@ -1426,6 +1426,29 @@ final class TerminalSurface: Identifiable, ObservableObject {
         return true
     }
 
+    /// Ask Ghostty to redraw after committed text input, without the geometry
+    /// reconciliation `forceRefresh` does.
+    ///
+    /// PERF (#183): this runs after every printable keystroke. `forceRefresh`
+    /// additionally reasserts the display id and calls `forceRefreshSurface()`,
+    /// which exist for *topology* changes -- split close/reparent, and the
+    /// stuck-vsync state after wake-from-sleep -- none of which a character can
+    /// cause. Typing changes the grid contents, not the surface's size or which
+    /// display it lives on.
+    ///
+    /// The early-out conditions are deliberately identical to `forceRefresh`'s,
+    /// so *when* a redraw happens is unchanged; only the work done differs.
+    func requestRedrawAfterInput() {
+        guard let view = attachedView,
+              view.window != nil,
+              view.bounds.width > 0,
+              view.bounds.height > 0 else {
+            return
+        }
+        guard let surface = self.surface else { return }
+        ghostty_surface_refresh(surface)
+    }
+
     /// Force a full size recalculation and surface redraw.
     func forceRefresh(reason: String = "unspecified") {
         // PERF (#183): this diagnostic string is consumed only by the DEBUG-only `dlog` below,
