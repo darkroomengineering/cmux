@@ -63,6 +63,10 @@ Layouts (new in v2, no v1 predecessor -- see "worktree.* / layout.*" below):
 - (no v1 equivalent) -> `layout.apply`
 - (no v1 equivalent) -> `layout.list`
 
+Session snapshot history (new in v2, no v1 predecessor -- see `docs/plans/snapshot-restore.md`):
+- (no v1 equivalent) -> `snapshot.list`
+- (no v1 equivalent) -> `snapshot.restore`
+
 Agent detection (new in v2, no v1 predecessor -- see "agent.detection.*" below):
 - (no v1 equivalent) -> `agent.detection.list`
 - (no v1 equivalent) -> `agent.detection.classify`

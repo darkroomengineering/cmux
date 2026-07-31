@@ -1635,6 +1635,12 @@ class TerminalController {
         case "layout.list":
             return v2Result(id: id, self.v2LayoutList(params: params))
 
+        // Snapshots
+        case "snapshot.list":
+            return v2Result(id: id, self.v2SnapshotList(params: params))
+        case "snapshot.restore":
+            return v2Result(id: id, self.v2SnapshotRestore(params: params))
+
         // Settings
         case "settings.open":
             return v2Result(id: id, self.v2SettingsOpen(params: params))

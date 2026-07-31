@@ -125,6 +125,8 @@ enum V2CommandCatalog {
         "layout.save",
         "layout.apply",
         "layout.list",
+        "snapshot.list",
+        "snapshot.restore",
         "browser.open_split",
         "browser.navigate",
         "browser.back",

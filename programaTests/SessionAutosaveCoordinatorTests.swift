@@ -14,7 +14,8 @@ final class SessionAutosaveCoordinatorTests: XCTestCase {
     private static let fakeSnapshot = AppSessionSnapshot(
         version: SessionSnapshotSchema.currentVersion,
         createdAt: 0,
-        windows: []
+        windows: [],
+        cleanShutdown: false
     )
 
     @MainActor
