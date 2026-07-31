@@ -8515,39 +8515,6 @@
         }
       }
     },
-    "settings.app.closeWorkspaceOnLastSurfaceShortcut": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Keep Workspace Open When Closing Last Surface"
-          }
-        }
-      }
-    },
-    "settings.app.closeWorkspaceOnLastSurfaceShortcut.subtitleOff": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When the focused surface is the last one in its workspace, the close-surface shortcut also closes the workspace."
-          }
-        }
-      }
-    },
-    "settings.app.closeWorkspaceOnLastSurfaceShortcut.subtitleOn": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When the focused surface is the last one in its workspace, the close-surface shortcut closes only the surface and keeps the workspace open. Use the close-workspace shortcut to close the workspace explicitly."
-          }
-        }
-      }
-    },
     "settings.app.commandPaletteSearchAllSurfaces": {
       "extractionState": "manual",
       "localizations": {

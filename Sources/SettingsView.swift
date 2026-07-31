@@ -60,8 +60,6 @@ struct SettingsView: View {
     @AppStorage(ShortcutHintDebugSettings.alwaysShowHintsKey)
     private var alwaysShowShortcutHints = ShortcutHintDebugSettings.defaultAlwaysShowHints
     @AppStorage(WorkspacePlacementSettings.placementKey) private var newWorkspacePlacement = WorkspacePlacementSettings.defaultPlacement.rawValue
-    @AppStorage(LastSurfaceCloseShortcutSettings.key)
-    private var closeWorkspaceOnLastSurfaceShortcut = LastSurfaceCloseShortcutSettings.defaultValue
     @AppStorage(PaneFirstClickFocusSettings.enabledKey)
     private var paneFirstClickFocusEnabled = PaneFirstClickFocusSettings.defaultEnabled
     @AppStorage(WorkspaceAutoReorderSettings.key) private var workspaceAutoReorder = WorkspaceAutoReorderSettings.defaultValue
@@ -123,30 +121,6 @@ struct SettingsView: View {
         return String(
             localized: "settings.app.minimalMode.subtitleOff",
             defaultValue: "Use the standard workspace title bar and controls."
-        )
-    }
-
-    private var keepWorkspaceOpenOnLastSurfaceShortcut: Bool {
-        !closeWorkspaceOnLastSurfaceShortcut
-    }
-
-    private var keepWorkspaceOpenOnLastSurfaceShortcutBinding: Binding<Bool> {
-        Binding(
-            get: { keepWorkspaceOpenOnLastSurfaceShortcut },
-            set: { closeWorkspaceOnLastSurfaceShortcut = !$0 }
-        )
-    }
-
-    private var closeWorkspaceOnLastSurfaceShortcutSubtitle: String {
-        if keepWorkspaceOpenOnLastSurfaceShortcut {
-            return String(
-                localized: "settings.app.closeWorkspaceOnLastSurfaceShortcut.subtitleOn",
-                defaultValue: "When the focused surface is the last one in its workspace, the close-surface shortcut closes only the surface and keeps the workspace open. Use the close-workspace shortcut to close the workspace explicitly."
-            )
-        }
-        return String(
-            localized: "settings.app.closeWorkspaceOnLastSurfaceShortcut.subtitleOff",
-            defaultValue: "When the focused surface is the last one in its workspace, the close-surface shortcut also closes the workspace."
         )
     }
 
@@ -751,17 +725,6 @@ struct SettingsView: View {
                     .accessibilityLabel(
                         String(localized: "settings.app.minimalMode", defaultValue: "Minimal Mode")
                     )
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.app.closeWorkspaceOnLastSurfaceShortcut", defaultValue: "Keep Workspace Open When Closing Last Surface"),
-                subtitle: closeWorkspaceOnLastSurfaceShortcutSubtitle
-            ) {
-                Toggle("", isOn: keepWorkspaceOpenOnLastSurfaceShortcutBinding)
-                    .labelsHidden()
-                    .controlSize(.small)
             }
 
             SettingsCardDivider()
@@ -1853,7 +1816,6 @@ struct SettingsView: View {
         alwaysShowShortcutHints = ShortcutHintDebugSettings.defaultAlwaysShowHints
         newWorkspacePlacement = WorkspacePlacementSettings.defaultPlacement.rawValue
         workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
-        closeWorkspaceOnLastSurfaceShortcut = LastSurfaceCloseShortcutSettings.defaultValue
         paneFirstClickFocusEnabled = PaneFirstClickFocusSettings.defaultEnabled
         workspaceAutoReorder = WorkspaceAutoReorderSettings.defaultValue
         sidebarActiveTabIndicatorStyle = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
