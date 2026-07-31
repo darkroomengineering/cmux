@@ -1469,7 +1469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isTerminatingApp = true
-        _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
+        _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false, cleanShutdown: true)
 
         // Tagged DEV builds are ephemeral, skip quit confirmation entirely.
         if SocketControlSettings.isTaggedDevBuild() {
@@ -1519,7 +1519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminatingApp = true
-        _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
+        _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false, cleanShutdown: true)
         // Finalize any terminal closes still sitting in their undo grace period so a staged close
         // doesn't quietly leak instead of tearing down cleanly on quit.
         for context in mainWindowContexts.values {
@@ -1586,6 +1586,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     private func prepareStartupSessionSnapshotIfNeeded() {
         guard !didPrepareStartupSessionSnapshot else { return }
         didPrepareStartupSessionSnapshot = true
+        // Archive whatever the previous launch left behind before any code path below (or
+        // later in startup) can overwrite it -- including a launch that skips restore entirely
+        // (explicit open intent), which otherwise clobbers the file with no way back.
+        SessionPersistenceStore.rotateIntoHistory()
         guard SessionRestorePolicy.shouldAttemptRestore() else { return }
         Self.removeLegacyPersistedWindowGeometry()
         startupSessionSnapshot = SessionPersistenceStore.load()
@@ -2153,7 +2157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.isTerminatingApp = true
-                _ = self.saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
+                _ = self.saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false, cleanShutdown: true)
             }
         }
         lifecycleSnapshotObservers.append(powerOffObserver)
@@ -2219,6 +2223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     private func saveSessionSnapshot(
         includeScrollback: Bool,
         removeWhenEmpty: Bool = false,
+        cleanShutdown: Bool = false,
         prebuiltSnapshot: AppSessionSnapshot? = nil
     ) -> Bool {
         if Self.shouldSkipSessionSaveDuringStartupRestore(
@@ -2246,7 +2251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         }
 #endif
 
-        guard let snapshot = prebuiltSnapshot ?? buildSessionSnapshot(includeScrollback: includeScrollback) else {
+        guard let snapshot = prebuiltSnapshot ?? buildSessionSnapshot(includeScrollback: includeScrollback, cleanShutdown: cleanShutdown) else {
             persistSessionSnapshot(
                 nil,
                 removeWhenEmpty: removeWhenEmpty,
@@ -2322,7 +2327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         }
     }
 
-    private func buildSessionSnapshot(includeScrollback: Bool) -> AppSessionSnapshot? {
+    private func buildSessionSnapshot(includeScrollback: Bool, cleanShutdown: Bool = false) -> AppSessionSnapshot? {
         let contexts = mainWindowContexts.values.sorted { lhs, rhs in
             let lhsWindow = lhs.window ?? windowForMainWindowId(lhs.windowId)
             let rhsWindow = rhs.window ?? windowForMainWindowId(rhs.windowId)
@@ -2356,7 +2361,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         return AppSessionSnapshot(
             version: SessionSnapshotSchema.currentVersion,
             createdAt: Date().timeIntervalSince1970,
-            windows: windows
+            windows: windows,
+            cleanShutdown: cleanShutdown
         )
     }
 

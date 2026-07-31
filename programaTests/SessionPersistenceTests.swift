@@ -139,6 +139,125 @@ final class SessionPersistenceTests: XCTestCase {
         )
     }
 
+    func testRotateIntoHistoryCopiesLiveSnapshotIntoHistoryDirectory() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-history-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        let snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        XCTAssertTrue(SessionPersistenceStore.save(snapshot, fileURL: snapshotURL))
+
+        XCTAssertTrue(SessionPersistenceStore.rotateIntoHistory(fileURL: snapshotURL))
+
+        let entries = SessionPersistenceStore.historyFileURLs(fileURL: snapshotURL)
+        XCTAssertEqual(entries.count, 1)
+
+        let liveData = try Data(contentsOf: snapshotURL)
+        let archivedData = try Data(contentsOf: try XCTUnwrap(entries.first))
+        XCTAssertEqual(liveData, archivedData)
+    }
+
+    func testRotateIntoHistorySkipsWhenNewestEntryIsIdentical() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-history-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        let snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        XCTAssertTrue(SessionPersistenceStore.save(snapshot, fileURL: snapshotURL))
+
+        XCTAssertTrue(SessionPersistenceStore.rotateIntoHistory(fileURL: snapshotURL))
+        XCTAssertFalse(
+            SessionPersistenceStore.rotateIntoHistory(fileURL: snapshotURL),
+            "Rotating unchanged content again should be a no-op"
+        )
+
+        XCTAssertEqual(
+            SessionPersistenceStore.historyFileURLs(fileURL: snapshotURL).count,
+            1,
+            "A duplicate rotation should not add a second history entry"
+        )
+    }
+
+    func testRotateIntoHistoryPrunesToTenNewestEntries() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-history-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        let historyDirectory = try XCTUnwrap(SessionPersistenceStore.historyDirectoryURL(fileURL: snapshotURL))
+        try FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+
+        for index in 0..<12 {
+            let filename = "20260101-0000\(String(format: "%02d", index)).json"
+            let fileURL = historyDirectory.appendingPathComponent(filename, isDirectory: false)
+            try Data("{\"seed\":\(index)}".utf8).write(to: fileURL)
+        }
+
+        let snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        XCTAssertTrue(SessionPersistenceStore.save(snapshot, fileURL: snapshotURL))
+        // Force the live file's modification date later than every seeded entry above, so the
+        // just-rotated copy is unambiguously the newest and the pruning boundary is deterministic.
+        let laterDate = try XCTUnwrap(
+            Calendar(identifier: .gregorian).date(from: DateComponents(year: 2026, month: 1, day: 2))
+        )
+        try FileManager.default.setAttributes([.modificationDate: laterDate], ofItemAtPath: snapshotURL.path)
+
+        XCTAssertTrue(SessionPersistenceStore.rotateIntoHistory(fileURL: snapshotURL, maxHistoryEntries: 10))
+
+        let entries = SessionPersistenceStore.historyFileURLs(fileURL: snapshotURL)
+        XCTAssertEqual(entries.count, 10)
+
+        let remainingNames = Set(entries.map { $0.lastPathComponent })
+        XCTAssertFalse(remainingNames.contains("20260101-000000.json"), "Oldest seeded entry should be pruned")
+        XCTAssertFalse(remainingNames.contains("20260101-000001.json"), "Second-oldest seeded entry should be pruned")
+        XCTAssertFalse(remainingNames.contains("20260101-000002.json"), "Third-oldest seeded entry should be pruned")
+        XCTAssertTrue(remainingNames.contains("20260101-000011.json"), "Newest seeded entry should survive pruning")
+        XCTAssertEqual(
+            entries.first?.lastPathComponent.hasPrefix("20260102-"),
+            true,
+            "The just-rotated entry should sort as the newest"
+        )
+    }
+
+    func testDecodeSnapshotDetectsVersionMismatchWithoutRequiringAppKit() throws {
+        let mismatched = makeSnapshot(version: SessionSnapshotSchema.currentVersion + 1)
+        let data = try JSONEncoder().encode(mismatched)
+
+        let decoded = try XCTUnwrap(SessionPersistenceStore.decodeSnapshot(from: data))
+        XCTAssertNotEqual(decoded.version, SessionSnapshotSchema.currentVersion)
+    }
+
+    func testDecodeSnapshotReturnsNilForCorruptData() {
+        XCTAssertNil(SessionPersistenceStore.decodeSnapshot(from: Data("not json".utf8)))
+    }
+
+    func testAppSessionSnapshotDecodesLegacyJSONWithoutCleanShutdownField() throws {
+        let legacyJSON = Data("""
+        {
+          "version": \(SessionSnapshotSchema.currentVersion),
+          "createdAt": 1700000000,
+          "windows": []
+        }
+        """.utf8)
+
+        let decoded = try JSONDecoder().decode(AppSessionSnapshot.self, from: legacyJSON)
+        XCTAssertNil(decoded.cleanShutdown)
+    }
+
+    func testAppSessionSnapshotRoundTripsCleanShutdownFlag() throws {
+        var snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        snapshot.cleanShutdown = true
+        let data = try JSONEncoder().encode(snapshot)
+
+        let decoded = try JSONDecoder().decode(AppSessionSnapshot.self, from: data)
+        XCTAssertEqual(decoded.cleanShutdown, true)
+    }
+
     @MainActor
     func testAutosaveFingerprintChangesWhenPersistedStatusValueChangesWithoutCountChange() throws {
         let manager = TabManager()
@@ -1065,7 +1184,8 @@ final class SessionPersistenceTests: XCTestCase {
         return AppSessionSnapshot(
             version: version,
             createdAt: Date().timeIntervalSince1970,
-            windows: [window]
+            windows: [window],
+            cleanShutdown: false
         )
     }
 

@@ -19,6 +19,7 @@ enum SessionPersistencePolicy {
     static let maxPanelsPerWorkspace: Int = 512
     static let maxScrollbackLinesPerTerminal: Int = 4000
     static let maxScrollbackCharactersPerTerminal: Int = 400_000
+    static let maxSnapshotHistoryEntries: Int = 10
 
     static func sanitizedSidebarWidth(_ candidate: Double?) -> Double {
         let fallback = defaultSidebarWidth
@@ -375,6 +376,8 @@ struct AppSessionSnapshot: Codable, Sendable {
     var version: Int
     var createdAt: TimeInterval
     var windows: [SessionWindowSnapshot]
+    /// `nil` for snapshots written before this field existed -- treat as "unknown", not "unclean".
+    var cleanShutdown: Bool?
 }
 
 enum SessionPersistenceStore {
@@ -443,17 +446,119 @@ enum SessionPersistenceStore {
         } else {
             return nil
         }
+        return resolvedAppSupport
+            .appendingPathComponent("programa", isDirectory: true)
+            .appendingPathComponent("session-\(sanitizedBundleIdentifier(bundleIdentifier)).json", isDirectory: false)
+    }
+
+    static func historyDirectoryURL(fileURL: URL? = nil) -> URL? {
+        guard let fileURL = fileURL ?? defaultSnapshotFileURL() else { return nil }
+        return fileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("session-history", isDirectory: true)
+    }
+
+    /// Newest-first list of archived snapshot files, or `[]` if none exist yet.
+    static func historyFileURLs(fileURL: URL? = nil) -> [URL] {
+        guard let historyDirectory = historyDirectoryURL(fileURL: fileURL) else { return [] }
+        return historyEntries(in: historyDirectory)
+    }
+
+    /// Decodes an archived (or live) snapshot file's bytes without enforcing the current
+    /// schema version, so a caller can inspect `version`/`cleanShutdown` on an older file
+    /// before deciding whether it is restorable.
+    static func decodeSnapshot(from data: Data) -> AppSessionSnapshot? {
+        try? JSONDecoder().decode(AppSessionSnapshot.self, from: data)
+    }
+
+    /// Archives the current snapshot file into `session-history/` before anything else can
+    /// overwrite it, so a launch that clobbers `session-<bundleId>.json` (a cold boot with no
+    /// clean shutdown, or an explicit-open-intent launch that skips restore entirely) never
+    /// destroys the previous layout for good. Copies rather than moves: the normal same-launch
+    /// restore path still reads the live file afterward, unchanged. Best-effort throughout --
+    /// every failure mode here must leave launch unaffected.
+    @discardableResult
+    static func rotateIntoHistory(
+        fileURL: URL? = nil,
+        now: Date = Date(),
+        maxHistoryEntries: Int = SessionPersistencePolicy.maxSnapshotHistoryEntries
+    ) -> Bool {
+        guard let fileURL = fileURL ?? defaultSnapshotFileURL(),
+              let historyDirectory = historyDirectoryURL(fileURL: fileURL),
+              let data = try? Data(contentsOf: fileURL) else {
+            return false
+        }
+
+        do {
+            try FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
+
+        if let newestEntry = historyEntries(in: historyDirectory).first,
+           let newestData = try? Data(contentsOf: newestEntry),
+           newestData == data {
+            return false
+        }
+
+        let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        let modifiedAt = (attributes?[.modificationDate] as? Date) ?? now
+        let filename = "\(historyTimestampFormatter.string(from: modifiedAt))-\(sanitizedBundleIdentifier(Bundle.main.bundleIdentifier)).json"
+        let destination = historyDirectory.appendingPathComponent(filename, isDirectory: false)
+
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.copyItem(at: fileURL, to: destination)
+        } catch {
+            return false
+        }
+
+        pruneHistory(in: historyDirectory, keeping: maxHistoryEntries)
+        return true
+    }
+
+    private static func historyEntries(in directory: URL) -> [URL] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        // Filenames are `<yyyyMMdd-HHmmss>-<bundleId>.json`; the fixed-width timestamp prefix
+        // sorts newest-first lexicographically without needing to parse it back into a Date.
+        return contents
+            .filter { $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+    }
+
+    private static func pruneHistory(in directory: URL, keeping maxEntries: Int) {
+        let entries = historyEntries(in: directory)
+        guard entries.count > maxEntries else { return }
+        for staleEntry in entries.dropFirst(maxEntries) {
+            try? FileManager.default.removeItem(at: staleEntry)
+        }
+    }
+
+    private static let historyTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
+
+    private static func sanitizedBundleIdentifier(_ bundleIdentifier: String?) -> String {
         let bundleId = (bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             ? bundleIdentifier!
             : "com.darkroom.programa"
-        let safeBundleId = bundleId.replacingOccurrences(
+        return bundleId.replacingOccurrences(
             of: "[^A-Za-z0-9._-]",
             with: "_",
             options: .regularExpression
         )
-        return resolvedAppSupport
-            .appendingPathComponent("programa", isDirectory: true)
-            .appendingPathComponent("session-\(safeBundleId).json", isDirectory: false)
     }
 }
 
