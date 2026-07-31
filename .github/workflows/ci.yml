@@ -689,7 +689,7 @@ jobs:
           PROGRAMA_LAG_MAX_CHURN_P95_MS=35 \
           PROGRAMA_LAG_KEY_EVENTS=180 \
           PROGRAMA_LAG_KEY_COMBO="${{ inputs.lag_combo || 'up' }}" \
-          python3 tests/test_workspace_churn_up_arrow_lag.py
+          python3 tests_v2/test_workspace_churn_up_arrow_lag.py
 
       # On-demand only. This measures the refresh call itself with an in-process
       # timer rather than an end-to-end socket round trip, because that round trip
@@ -739,7 +739,7 @@ jobs:
           # where nobody can read it. That cost a full four-run cycle to learn nothing.
           if ! PROGRAMA_SOCKET_PATH="$SOCK" \
                PROGRAMA_REFRESH_COST_KEY_EVENTS=400 \
-               python3 tests/test_text_input_refresh_cost.py | tee -a "$GITHUB_STEP_SUMMARY"; then
+               python3 tests_v2/test_text_input_refresh_cost.py | tee -a "$GITHUB_STEP_SUMMARY"; then
             echo "--- app still running? ---"
             pgrep -x "Programa DEV" >/dev/null && echo "yes" || echo "NO - it exited"
             echo "--- socket present at $SOCK? ---"

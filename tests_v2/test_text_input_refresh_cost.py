@@ -3,7 +3,7 @@
 Measuring instrument (not a regression gate): in-process cost of the text-input
 refresh call on the keyDown path.
 
-tests/test_workspace_churn_up_arrow_lag.py measures a full socket RPC round trip
+tests_v2/test_workspace_churn_up_arrow_lag.py measures a full socket RPC round trip
 (IPC + JSON + DispatchQueue.main.sync + AppKit dispatch + the work under test).
 That transport floor sits in the low milliseconds, which is too coarse to resolve
 changes to a single call inside keyDown (e.g. swapping forceRefresh() for a
@@ -41,7 +41,7 @@ import sys
 import time
 from typing import Optional
 
-# Mirrors tests/test_workspace_churn_up_arrow_lag.py: speak the v2 JSON-RPC
+# Mirrors tests_v2/test_workspace_churn_up_arrow_lag.py: speak the v2 JSON-RPC
 # protocol directly for the tight simulate-keystroke loop, and reuse
 # tests_v2/cmux.py only for its error type.
 _TESTS_V2_DIR = os.path.normpath(
@@ -65,7 +65,7 @@ class RawSocketClient:
     """Minimal v2 JSON-RPC client for the simulate-keystroke loop.
 
     Copied in shape from RawSocketClient in
-    tests/test_workspace_churn_up_arrow_lag.py: skips the full tests_v2/cmux.py
+    tests_v2/test_workspace_churn_up_arrow_lag.py: skips the full tests_v2/cmux.py
     client's id-resolution helpers so per-call overhead stays minimal. Not
     shared with that file directly since it is out of scope for this change.
     """
@@ -142,7 +142,7 @@ class RawSocketClient:
 
 
 def resolve_target_socket() -> str:
-    # Same refusal as tests/test_workspace_churn_up_arrow_lag.py::resolve_target_socket:
+    # Same refusal as tests_v2/test_workspace_churn_up_arrow_lag.py::resolve_target_socket:
     # never target the main/untagged socket from an automated harness.
     socket_path = os.environ.get("PROGRAMA_SOCKET_PATH")
     if not socket_path:

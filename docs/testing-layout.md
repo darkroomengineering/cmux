@@ -1,0 +1,48 @@
+# Where tests live
+
+Four directories, because there are four harnesses. They are not versions of
+each other, and `tests_v2` is not "the second attempt at `tests`".
+
+| Directory | Language | Needs a running app? | Run by |
+|---|---|---|---|
+| `tests/` | shell + python | no | `workflow-guard-tests`, CLI steps in `ci.yml` |
+| `tests_v2/` | python | **yes** | `socket-integration-tests`, lag/perf jobs |
+| `programaTests/` | Swift (XCTest) | no | `unit-tests` (`programa-unit` scheme) |
+| `programaUITests/` | Swift (XCUITest) | launches its own | `ui-regressions` |
+
+## What `_v2` means
+
+The v2 **socket API** — the JSON-RPC surface in `Sources/V2CommandCatalog.swift`,
+whose methods look like `debug.command_palette.visible` or `snapshot.restore`.
+Those tests connect to a running Programa over its control socket and drive the
+app through that API. The name is about the protocol, not about a previous
+generation of tests. There is no `tests_v1`.
+
+## Which one to write in
+
+**`tests/`** — the thing under test is a script or a build artifact, and no app
+is involved. Shell scripts here guard `scripts/*.sh`, the CI workflows, DMG
+creation, and release assets. The three python files here drive the `programa`
+CLI binary as a subprocess via `PROGRAMA_CLI_BIN`.
+
+**`tests_v2/`** — the thing under test is app behaviour you can observe over the
+socket. Everything here talks to a live instance, whether through `cmux.py` or
+by speaking JSON-RPC directly. The two lag/perf harnesses live here for that
+reason, even though they bypass `cmux.py`.
+
+**`programaTests/`** — pure logic that can be exercised without launching
+anything: policy types, decision functions, snapshot encoding, layout maths.
+Cheapest and fastest, so prefer it when a behaviour can be reached this way.
+When it cannot, add a small seam so it can, rather than reaching for a socket
+test. See the test-quality policy in `CLAUDE.md`.
+
+**`programaUITests/`** — behaviour that only exists through real event
+delivery and AppKit: clicks, drags, menus, focus.
+
+## Running them
+
+Per `CLAUDE.md`, tests are **not run locally** — they run on CI or the VM.
+`xcodebuild -scheme programa-unit` is the one safe local exception because it
+launches no app. `tests_v2` in particular will attach to whatever socket it
+finds, which is why running it locally risks driving your real Programa
+instance rather than a build under test.
