@@ -6,3 +6,7 @@ ProgramaSpike/ProgramaSpike.entitlements
 # lives there rather than in INFOPLIST_KEY_* build settings -- see the comment in
 # project.yml for why mixing the two styles silently drops keys.
 ProgramaSpike/Info.plist
+# The widget's plist is generated the same way and was tracked by accident. A
+# committed copy of a generated file drifts from what the build actually
+# produces, which is how the hardcoded CFBundleVersion went unnoticed.
+ProgramaSpikeWidgets/Info.plist

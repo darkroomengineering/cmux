@@ -105,6 +105,9 @@ struct PairConnectView: View {
                             .foregroundStyle(.red)
                             .font(.footnote)
                     }
+                    // Shown before pairing too: "which build am I on" is most
+                    // often asked when the phone will not connect at all.
+                    AppVersionRow()
                 }
 
                 Section(String(localized: "notifications.title", defaultValue: "Notifications")) {
