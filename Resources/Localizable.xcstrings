@@ -10610,17 +10610,6 @@
         }
       }
     },
-    "settings.sidebarAppearance.defaultLabel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Default"
-          }
-        }
-      }
-    },
     "settings.sidebarAppearance.matchTerminalBackground": {
       "extractionState": "manual",
       "localizations": {
@@ -10721,50 +10710,6 @@
         }
       }
     },
-    "settings.workspaceColors.base": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Base: %@"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.customEntry": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Named palette entry."
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.dictionaryNote": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Edit settings.json to add or remove named colors. \"Choose Custom Color...\" still adds local Custom N entries."
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.emptyPalette": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "No palette entries. Add colors in settings.json or use \"Choose Custom Color...\" from a workspace context menu."
-          }
-        }
-      }
-    },
     "settings.workspaceColors.indicator": {
       "extractionState": "manual",
       "localizations": {
@@ -10772,50 +10717,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Workspace Color Indicator"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.remove": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Remove"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.resetPalette": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset Palette"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.resetPalette.button": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset"
-          }
-        }
-      }
-    },
-    "settings.workspaceColors.resetPalette.subtitleV2": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Restore the built-in palette and remove extra named colors."
           }
         }
       }
