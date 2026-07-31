@@ -502,24 +502,81 @@ private struct SidebarDevFooter: View {
 }
 #endif
 
+/// When the sidebar borrows the terminal's background, the app's own light/dark
+/// appearance stops describing what the sidebar actually looks like. Anything drawn on
+/// it has to resolve against the terminal's luminance instead, or `.primary` and
+/// `.secondary` land dark-on-dark.
+enum SidebarTerminalAppearance {
+    static func colorScheme() -> ColorScheme {
+        let color = GhosttyBackgroundTheme.currentColor()
+        let srgb = color.usingColorSpace(.sRGB) ?? color
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        srgb.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        return luminance > 0.5 ? .light : .dark
+    }
+}
+
+/// Applies the terminal-derived scheme to a subtree while the sidebar is matching the
+/// terminal background, so every label in it picks contrast from the colour it sits on.
+struct SidebarTerminalColorScheme: ViewModifier {
+    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
+    @State private var scheme: ColorScheme = SidebarTerminalAppearance.colorScheme()
+
+    func body(content: Content) -> some View {
+        Group {
+            if matchTerminalBackground {
+                content.environment(\.colorScheme, scheme)
+            } else {
+                content
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
+            scheme = SidebarTerminalAppearance.colorScheme()
+        }
+    }
+}
+
 struct SidebarTopScrim: View {
     let height: CGFloat
+    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
+    @State private var terminalColor = Color(nsColor: GhosttyBackgroundTheme.currentColor())
 
     var body: some View {
-        SidebarTopBlurEffect()
-            .frame(height: height)
-            .mask(
+        Group {
+            if matchTerminalBackground {
+                // The system material stays light over a terminal-coloured sidebar, which
+                // reads as a grey wash across the top. Fade the terminal colour instead.
                 LinearGradient(
                     colors: [
-                        Color.black.opacity(0.95),
-                        Color.black.opacity(0.75),
-                        Color.black.opacity(0.35),
+                        terminalColor,
+                        terminalColor.opacity(0.85),
+                        terminalColor.opacity(0.4),
                         Color.clear
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-            )
+            } else {
+                SidebarTopBlurEffect()
+                    .mask(
+                        LinearGradient(
+                            colors: [
+                                Color.black.opacity(0.95),
+                                Color.black.opacity(0.75),
+                                Color.black.opacity(0.35),
+                                Color.clear
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            }
+        }
+        .frame(height: height)
+        .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
+            terminalColor = Color(nsColor: GhosttyBackgroundTheme.currentColor())
+        }
     }
 }
 
