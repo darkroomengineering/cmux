@@ -10218,23 +10218,6 @@
         }
       }
     },
-    "settings.phone.pair.manualFallback": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Can't scan? Paste the payload and token manually"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "スキャンできない場合は、ペイロードとトークンを手動で貼り付け"
-          }
-        }
-      }
-    },
     "settings.phone.pair.scanLabel": {
       "extractionState": "manual",
       "localizations": {
@@ -10252,36 +10235,19 @@
         }
       }
     },
-    "settings.phone.pair.subtitle": {
+    "settings.phone.pair.subtitleV2": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or enter the payload and token manually."
+            "value": "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or copy the code it shows."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "5分間有効な、1回限りのペア設定ウィンドウを開きます。Programa iOSアプリでQRコードをスキャンするか、ペイロードとトークンを手動で入力してください。"
-          }
-        }
-      }
-    },
-    "settings.phone.pair.ticketLabel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pairing Payload"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ペア設定ペイロード"
+            "value": "一度だけ使える5分間のペアリング枠を開きます。Programa iOSアプリでQRコードをスキャンするか、表示されたコードをコピーしてください。"
           }
         }
       }
@@ -10299,23 +10265,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "デバイスをペア設定"
-          }
-        }
-      }
-    },
-    "settings.phone.pair.tokenLabel": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pairing Token"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "ペア設定トークン"
           }
         }
       }
