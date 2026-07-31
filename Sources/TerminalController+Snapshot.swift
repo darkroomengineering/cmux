@@ -49,10 +49,12 @@ extension TerminalController {
             return .err(code: "not_found", message: "Archived snapshot has no windows to restore", data: nil)
         }
 
+        let windowsToRestore = SessionPersistenceStore.windowsToRestore(from: snapshot)
+
         var workspaceCount = 0
         var panelCount = 0
         v2MainSync {
-            for windowSnapshot in snapshot.windows {
+            for windowSnapshot in windowsToRestore {
                 _ = AppDelegate.shared?.createMainWindow(sessionWindowSnapshot: windowSnapshot)
                 workspaceCount += windowSnapshot.tabManager.workspaces.count
                 panelCount += windowSnapshot.tabManager.workspaces.reduce(0) { $0 + $1.panels.count }
@@ -61,7 +63,7 @@ extension TerminalController {
 
         return .ok([
             "restored": [
-                "windows": snapshot.windows.count,
+                "windows": windowsToRestore.count,
                 "workspaces": workspaceCount,
                 "panels": panelCount
             ]

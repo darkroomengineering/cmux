@@ -471,6 +471,17 @@ enum SessionPersistenceStore {
         try? JSONDecoder().decode(AppSessionSnapshot.self, from: data)
     }
 
+    /// The windows a restore should actually reconstruct. Startup restore already clamps to
+    /// `maxWindowsPerSnapshot`; manual `snapshot restore` reads the same archives and must
+    /// clamp identically, or a corrupt or hand-edited history file with thousands of windows
+    /// freezes the app on the one command you reach for when recovering.
+    static func windowsToRestore(
+        from snapshot: AppSessionSnapshot,
+        limit: Int = SessionPersistencePolicy.maxWindowsPerSnapshot
+    ) -> [SessionWindowSnapshot] {
+        Array(snapshot.windows.prefix(max(0, limit)))
+    }
+
     /// Archives the current snapshot file into `session-history/` before anything else can
     /// overwrite it, so a launch that clobbers `session-<bundleId>.json` (a cold boot with no
     /// clean shutdown, or an explicit-open-intent launch that skips restore entirely) never
@@ -506,12 +517,31 @@ enum SessionPersistenceStore {
         let filename = "\(historyTimestampFormatter.string(from: modifiedAt))-\(sanitizedBundleIdentifier(Bundle.main.bundleIdentifier)).json"
         let destination = historyDirectory.appendingPathComponent(filename, isDirectory: false)
 
+        // Stage the copy beside the destination and swap it in, rather than deleting the
+        // existing archive first. Second-resolution filenames mean two launches can land on
+        // the same name, and a delete-then-copy that fails midway (full disk) would leave
+        // neither the old archive nor the new one -- the exact loss this file exists to
+        // prevent. The staging name is hidden and not `.json`, so it never reads back as a
+        // history entry if we die before the swap.
+        let staging = historyDirectory.appendingPathComponent(
+            ".\(filename).staging-\(UUID().uuidString)",
+            isDirectory: false
+        )
+        do {
+            try FileManager.default.copyItem(at: fileURL, to: staging)
+        } catch {
+            try? FileManager.default.removeItem(at: staging)
+            return false
+        }
+
         do {
             if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)
+            } else {
+                try FileManager.default.moveItem(at: staging, to: destination)
             }
-            try FileManager.default.copyItem(at: fileURL, to: destination)
         } catch {
+            try? FileManager.default.removeItem(at: staging)
             return false
         }
 

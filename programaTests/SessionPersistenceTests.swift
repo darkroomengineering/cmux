@@ -224,6 +224,68 @@ final class SessionPersistenceTests: XCTestCase {
         )
     }
 
+    func testRotateIntoHistoryReplacesAnArchiveThatLandsOnTheSameFilename() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-history-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        // Archive filenames carry the live file's modification date at second resolution, so
+        // pinning the same date twice reproduces the collision two quick launches would hit.
+        let fixedDate = try XCTUnwrap(
+            Calendar(identifier: .gregorian).date(from: DateComponents(year: 2026, month: 3, day: 4))
+        )
+
+        try Data("{\"seed\":1}".utf8).write(to: snapshotURL)
+        try FileManager.default.setAttributes([.modificationDate: fixedDate], ofItemAtPath: snapshotURL.path)
+        XCTAssertTrue(SessionPersistenceStore.rotateIntoHistory(fileURL: snapshotURL))
+
+        try Data("{\"seed\":2}".utf8).write(to: snapshotURL)
+        try FileManager.default.setAttributes([.modificationDate: fixedDate], ofItemAtPath: snapshotURL.path)
+        XCTAssertTrue(SessionPersistenceStore.rotateIntoHistory(fileURL: snapshotURL))
+
+        let entries = SessionPersistenceStore.historyFileURLs(fileURL: snapshotURL)
+        XCTAssertEqual(entries.count, 1, "A same-filename rotation should replace, not duplicate")
+        XCTAssertEqual(
+            try Data(contentsOf: try XCTUnwrap(entries.first)),
+            Data("{\"seed\":2}".utf8),
+            "The archive should hold the newer content after the swap"
+        )
+
+        let historyDirectory = try XCTUnwrap(SessionPersistenceStore.historyDirectoryURL(fileURL: snapshotURL))
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: historyDirectory.path)
+            .filter { $0.contains(".staging-") }
+        XCTAssertTrue(leftovers.isEmpty, "Staging files should not survive a successful rotation")
+    }
+
+    func testWindowsToRestoreClampsToTheStartupWindowCap() throws {
+        let base = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        let window = try XCTUnwrap(base.windows.first)
+
+        let oversized = AppSessionSnapshot(
+            version: base.version,
+            createdAt: base.createdAt,
+            windows: Array(repeating: window, count: SessionPersistencePolicy.maxWindowsPerSnapshot + 25),
+            cleanShutdown: base.cleanShutdown
+        )
+        XCTAssertEqual(
+            SessionPersistenceStore.windowsToRestore(from: oversized).count,
+            SessionPersistencePolicy.maxWindowsPerSnapshot,
+            "Manual restore should clamp to the same cap startup restore uses"
+        )
+
+        XCTAssertEqual(
+            SessionPersistenceStore.windowsToRestore(from: base).count,
+            1,
+            "A snapshot under the cap should restore every window"
+        )
+        XCTAssertTrue(
+            SessionPersistenceStore.windowsToRestore(from: oversized, limit: 0).isEmpty,
+            "A zero limit should restore nothing rather than trapping"
+        )
+    }
+
     func testDecodeSnapshotDetectsVersionMismatchWithoutRequiringAppKit() throws {
         let mismatched = makeSnapshot(version: SessionSnapshotSchema.currentVersion + 1)
         let data = try JSONEncoder().encode(mismatched)
