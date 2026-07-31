@@ -790,7 +790,7 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(
-                "Desktop Notifications",
+                String(localized: "settings.notifications.desktop.title", defaultValue: "Desktop Notifications"),
                 subtitle: notificationPermissionSubtitle
             ) {
                 HStack(spacing: 6) {
@@ -877,10 +877,16 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(
-                "Notification Command",
-                subtitle: "Run a shell command when a notification arrives. $PROGRAMA_NOTIFICATION_TITLE, $PROGRAMA_NOTIFICATION_SUBTITLE, $PROGRAMA_NOTIFICATION_BODY are set."
+                String(localized: "settings.notifications.command.title", defaultValue: "Notification Command"),
+                subtitle: String(
+                    localized: "settings.notifications.command.subtitle",
+                    defaultValue: "Run a shell command when a notification arrives. $PROGRAMA_NOTIFICATION_TITLE, $PROGRAMA_NOTIFICATION_SUBTITLE, $PROGRAMA_NOTIFICATION_BODY are set."
+                )
             ) {
-                TextField("say \"done\"", text: $notificationCustomCommand)
+                TextField(
+                    String(localized: "settings.notifications.command.placeholder", defaultValue: "say \"done\""),
+                    text: $notificationCustomCommand
+                )
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 200)
             }
