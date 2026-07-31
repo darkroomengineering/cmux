@@ -733,9 +733,21 @@ jobs:
           done
           [ -S "$SOCK" ] || { echo "Socket not ready at $SOCK" >&2; exit 1; }
 
-          PROGRAMA_SOCKET_PATH="$SOCK" \
-          PROGRAMA_REFRESH_COST_KEY_EVENTS=400 \
-          python3 tests/test_text_input_refresh_cost.py | tee -a "$GITHUB_STEP_SUMMARY"
+          # Surface the app's own log on failure. Without this the step can only say
+          # "Socket closed while waiting for response" -- which tells you the app died
+          # or refused the connection, but not why, and its log sits on the runner
+          # where nobody can read it. That cost a full four-run cycle to learn nothing.
+          if ! PROGRAMA_SOCKET_PATH="$SOCK" \
+               PROGRAMA_REFRESH_COST_KEY_EVENTS=400 \
+               python3 tests/test_text_input_refresh_cost.py | tee -a "$GITHUB_STEP_SUMMARY"; then
+            echo "--- app still running? ---"
+            pgrep -x "Programa DEV" >/dev/null && echo "yes" || echo "NO - it exited"
+            echo "--- socket present at $SOCK? ---"
+            [ -S "$SOCK" ] && echo "yes" || echo "NO"
+            echo "--- tail of /tmp/programa-ci-refresh-cost.log ---"
+            tail -80 /tmp/programa-ci-refresh-cost.log 2>/dev/null || echo "(no log)"
+            exit 1
+          fi
 
       - name: Cleanup virtual display
         if: always()
