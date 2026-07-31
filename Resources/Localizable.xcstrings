@@ -10643,39 +10643,6 @@
         }
       }
     },
-    "settings.sidebarAppearance.reset": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset Sidebar Tint"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.reset.button": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Reset"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.reset.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Restore default sidebar appearance."
-          }
-        }
-      }
-    },
     "settings.sidebarAppearance.showClaudeQuota": {
       "extractionState": "manual",
       "localizations": {
@@ -10706,72 +10673,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "サイドバーのフッターにClaude Codeの残り使用量を表示します。"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintColorDark": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dark Mode Tint"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintColorDark.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sidebar tint color when using dark appearance."
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintColorLight": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Light Mode Tint"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintColorLight.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Sidebar tint color when using light appearance."
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintOpacity": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Tint Opacity"
-          }
-        }
-      }
-    },
-    "settings.sidebarAppearance.tintOpacity.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "How strongly the tint color shows over the sidebar material."
           }
         }
       }

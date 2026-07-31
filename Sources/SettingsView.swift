@@ -1149,82 +1149,13 @@ struct SettingsView: View {
                         String(localized: "settings.sidebarAppearance.showClaudeQuota", defaultValue: "Show Claude Quota")
                     )
             }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.tintColorLight", defaultValue: "Light Mode Tint"),
-                subtitle: String(localized: "settings.sidebarAppearance.tintColorLight.subtitle", defaultValue: "Sidebar tint color when using light appearance.")
-            ) {
-                HStack(spacing: 8) {
-                    HexColorPicker(
-                        hex: sidebarTintHexLight ?? sidebarTintHex,
-                        fallback: .black
-                    ) { newHex in
-                        sidebarTintHexLight = newHex
-                    }
-
-                    Text(sidebarTintHexLight ?? String(localized: "settings.sidebarAppearance.defaultLabel", defaultValue: "Default"))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 76, alignment: .trailing)
-                }
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.tintColorDark", defaultValue: "Dark Mode Tint"),
-                subtitle: String(localized: "settings.sidebarAppearance.tintColorDark.subtitle", defaultValue: "Sidebar tint color when using dark appearance.")
-            ) {
-                HStack(spacing: 8) {
-                    HexColorPicker(
-                        hex: sidebarTintHexDark ?? sidebarTintHex,
-                        fallback: .black
-                    ) { newHex in
-                        sidebarTintHexDark = newHex
-                    }
-
-                    Text(sidebarTintHexDark ?? String(localized: "settings.sidebarAppearance.defaultLabel", defaultValue: "Default"))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 76, alignment: .trailing)
-                }
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.tintOpacity", defaultValue: "Tint Opacity"),
-                subtitle: String(localized: "settings.sidebarAppearance.tintOpacity.subtitle", defaultValue: "How strongly the tint color shows over the sidebar material.")
-            ) {
-                HStack(spacing: 8) {
-                    Slider(value: $sidebarTintOpacity, in: 0...1)
-                        .frame(width: 140)
-                    Text(String(format: "%.0f%%", sidebarTintOpacity * 100))
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 36, alignment: .trailing)
-                }
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.reset", defaultValue: "Reset Sidebar Tint"),
-                subtitle: String(localized: "settings.sidebarAppearance.reset.subtitle", defaultValue: "Restore default sidebar appearance.")
-            ) {
-                Button(String(localized: "settings.sidebarAppearance.reset.button", defaultValue: "Reset")) {
-                    sidebarTintHexLight = nil
-                    sidebarTintHexDark = nil
-                    sidebarTintHex = SidebarTintDefaults.hex
-                    sidebarTintOpacity = SidebarTintDefaults.opacity
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
+            // Light/dark tint hex, tint opacity and a section-local reset used to
+            // live here. They were per-pixel tuning of one surface, shipped to
+            // every user, and the same four keys are already bound by the Debug
+            // window (DebugWindows.swift) where that kind of tuning belongs. The
+            // bindings stay on this view because "Reset all settings" below still
+            // restores them for anyone who set a value while the rows existed.
         }
-
     }
 
     @ViewBuilder
