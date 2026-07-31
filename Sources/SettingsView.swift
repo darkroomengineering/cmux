@@ -53,8 +53,6 @@ struct SettingsView: View {
     private var longCommandThresholdSeconds = LongCommandNotificationSettings.defaultThresholdSeconds
     @AppStorage(QuitWarningSettings.warnBeforeQuitKey) private var warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
     @AppStorage(ScrollbackPersistenceSettings.persistScrollbackKey) private var sessionPersistScrollback = ScrollbackPersistenceSettings.defaultPersistScrollback
-    @AppStorage(CommandPaletteRenameSelectionSettings.selectAllOnFocusKey)
-    private var commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
     @AppStorage(CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey)
     private var commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
     @AppStorage(ShortcutHintDebugSettings.alwaysShowHintsKey)
@@ -903,19 +901,6 @@ struct SettingsView: View {
                     : String(localized: "settings.app.persistScrollback.subtitleOff", defaultValue: "Terminal scrollback is not written to disk.")
             ) {
                 Toggle("", isOn: $sessionPersistScrollback)
-                    .labelsHidden()
-                    .controlSize(.small)
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.app.renameSelectsName", defaultValue: "Rename Selects Existing Name"),
-                subtitle: commandPaletteRenameSelectAllOnFocus
-                    ? String(localized: "settings.app.renameSelectsName.subtitleOn", defaultValue: "Command Palette rename starts with all text selected.")
-                    : String(localized: "settings.app.renameSelectsName.subtitleOff", defaultValue: "Command Palette rename keeps the caret at the end.")
-            ) {
-                Toggle("", isOn: $commandPaletteRenameSelectAllOnFocus)
                     .labelsHidden()
                     .controlSize(.small)
             }
@@ -1781,7 +1766,6 @@ struct SettingsView: View {
         showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
         warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
         sessionPersistScrollback = ScrollbackPersistenceSettings.defaultPersistScrollback
-        commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
         commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
         ShortcutHintDebugSettings.resetVisibilityDefaults()
         alwaysShowShortcutHints = ShortcutHintDebugSettings.defaultAlwaysShowHints

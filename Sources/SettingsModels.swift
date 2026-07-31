@@ -105,16 +105,6 @@ enum ScrollbackPersistenceSettings {
     }
 }
 
-enum CommandPaletteRenameSelectionSettings {
-    static let selectAllOnFocusKey = "commandPalette.renameSelectAllOnFocus"
-    static let defaultSelectAllOnFocus = true
-    private static let flag = UserDefaultsFlag(key: selectAllOnFocusKey, defaultValue: defaultSelectAllOnFocus)
-
-    static func selectAllOnFocusEnabled(defaults: UserDefaults = .standard) -> Bool {
-        flag.isEnabled(defaults: defaults)
-    }
-}
-
 enum CommandPaletteSwitcherSearchSettings {
     static let searchAllSurfacesKey = "commandPalette.switcherSearchAllSurfaces"
     static let defaultSearchAllSurfaces = false

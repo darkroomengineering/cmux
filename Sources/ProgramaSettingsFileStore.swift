@@ -348,9 +348,6 @@ final class ProgramaSettingsFileStore {
         if let value = jsonBool(section["warnBeforeQuit"]) {
             snapshot.managedUserDefaults[QuitWarningSettings.warnBeforeQuitKey] = .bool(value)
         }
-        if let value = jsonBool(section["renameSelectsExistingName"]) {
-            snapshot.managedUserDefaults[CommandPaletteRenameSelectionSettings.selectAllOnFocusKey] = .bool(value)
-        }
         if let value = jsonBool(section["commandPaletteSearchesAllSurfaces"]) {
             snapshot.managedUserDefaults[CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey] = .bool(value)
         }
@@ -1207,7 +1204,6 @@ final class ProgramaSettingsFileStore {
                     "preferredEditor": "",
                     "reorderOnNotification": WorkspaceAutoReorderSettings.defaultValue,
                     "warnBeforeQuit": QuitWarningSettings.defaultWarnBeforeQuit,
-                    "renameSelectsExistingName": CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus,
                     "commandPaletteSearchesAllSurfaces": CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces,
                 ],
             ],

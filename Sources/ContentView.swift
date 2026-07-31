@@ -181,10 +181,6 @@ struct ContentView: View {
         get { commandPaletteController.commandPaletteUsageHistoryByCommandId }
         nonmutating set { commandPaletteController.commandPaletteUsageHistoryByCommandId = newValue }
     }
-    private var commandPaletteRenameSelectAllOnFocus: Bool {
-        get { commandPaletteController.commandPaletteRenameSelectAllOnFocus }
-        nonmutating set { commandPaletteController.commandPaletteRenameSelectAllOnFocus = newValue }
-    }
     private var commandPaletteSearchAllSurfaces: Bool {
         get { commandPaletteController.commandPaletteSearchAllSurfaces }
         nonmutating set { commandPaletteController.commandPaletteSearchAllSurfaces = newValue }
@@ -5493,13 +5489,12 @@ struct ContentView: View {
     }
 
     private func commandPaletteRenameInputFocusPolicy() -> CommandPaletteInputFocusPolicy {
-        let selectAllOnFocus = CommandPaletteRenameSelectionSettings.selectAllOnFocusEnabled()
-        let selectionBehavior: CommandPaletteTextSelectionBehavior = selectAllOnFocus
-            ? .selectAll
-            : .caretAtEnd
+        // Rename always opens with the existing name selected, so typing replaces
+        // it. This used to be a preference. Other focus policies still use
+        // .caretAtEnd, so only this call site is fixed.
         return CommandPaletteInputFocusPolicy(
             focusTarget: .rename,
-            selectionBehavior: selectionBehavior
+            selectionBehavior: .selectAll
         )
     }
 

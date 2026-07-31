@@ -77,10 +77,9 @@ def main():
         time.sleep(0.2)
         window_id = client.current_window()
 
-        original_select_all = client.command_palette_rename_select_all()
-
         try:
-            client.set_command_palette_rename_select_all(True)
+            # Rename always opens with the existing name selected now, so this
+            # no longer has to pin a setting to get a deterministic starting state.
             _open_rename_input(client, window_id)
 
             _wait_until(
@@ -138,11 +137,6 @@ def main():
                 raise cmuxError("palette closed unexpectedly instead of navigating back to command list")
 
         finally:
-            try:
-                client.set_command_palette_rename_select_all(original_select_all)
-            except Exception:
-                pass
-
             if _palette_visible(client, window_id):
                 client._call("debug.command_palette.toggle", {"window_id": window_id})
                 _wait_until(

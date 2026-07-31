@@ -8643,39 +8643,6 @@
         }
       }
     },
-    "settings.app.renameSelectsName": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Rename Selects Existing Name"
-          }
-        }
-      }
-    },
-    "settings.app.renameSelectsName.subtitleOff": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Command Palette rename keeps the caret at the end."
-          }
-        }
-      }
-    },
-    "settings.app.renameSelectsName.subtitleOn": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Command Palette rename starts with all text selected."
-          }
-        }
-      }
-    },
     "settings.app.reorderOnNotification": {
       "extractionState": "manual",
       "localizations": {

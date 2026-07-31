@@ -228,7 +228,6 @@ enum V2CommandCatalog {
         "debug.command_palette.rename_input.interact",
         "debug.command_palette.rename_input.delete_backward",
         "debug.command_palette.rename_input.selection",
-        "debug.command_palette.rename_input.select_all",
         "debug.browser.address_bar_focused",
         "debug.browser.favicon",
         "debug.sidebar.visible",

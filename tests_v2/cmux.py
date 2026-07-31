@@ -951,14 +951,6 @@ class cmux:
         ) or {}
         return dict(res)
 
-    def command_palette_rename_select_all(self) -> bool:
-        res = self._call("debug.command_palette.rename_input.select_all") or {}
-        return bool(res.get("enabled"))
-
-    def set_command_palette_rename_select_all(self, enabled: bool) -> bool:
-        res = self._call("debug.command_palette.rename_input.select_all", {"enabled": bool(enabled)}) or {}
-        return bool(res.get("enabled"))
-
     def is_terminal_focused(self, panel: Union[str, int]) -> bool:
         sid = self._resolve_surface_id(panel)
         res = self._call("debug.terminal.is_focused", {"surface_id": sid}) or {}
