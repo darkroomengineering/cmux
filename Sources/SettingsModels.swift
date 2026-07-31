@@ -222,3 +222,45 @@ enum PreferredEditorSettings {
     }
 }
 
+
+/// The tabs the settings window is split across.
+///
+/// Settings used to be one scroll of nine stacked sections, which meant finding
+/// anything required knowing roughly how far down it lived. The grouping here
+/// merges sections that answer the same question: Workspace Colors and Sidebar
+/// Appearance are both "how it looks", Custom Commands is part of Automation,
+/// and Reset belongs with the general app switches it resets.
+///
+/// Keyboard Shortcuts stays on its own because it renders one row per
+/// `KeyboardShortcutSettings.Action` -- 57 of them -- and would swamp whatever
+/// it shared a tab with.
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general
+    case appearance
+    case automation
+    case phone
+    case browser
+    case shortcuts
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: String(localized: "settings.tab.general", defaultValue: "General")
+        case .appearance: String(localized: "settings.tab.appearance", defaultValue: "Appearance")
+        case .automation: String(localized: "settings.tab.automation", defaultValue: "Automation")
+        case .phone: String(localized: "settings.tab.phone", defaultValue: "Phone")
+        case .browser: String(localized: "settings.tab.browser", defaultValue: "Browser")
+        case .shortcuts: String(localized: "settings.tab.shortcuts", defaultValue: "Shortcuts")
+        }
+    }
+
+    /// The tab that owns a deep-link target, so `SettingsNavigationRequest`
+    /// still lands on the right content now that it is not all one scroll.
+    static func owning(_ target: SettingsNavigationTarget) -> SettingsTab {
+        switch target {
+        case .browser, .browserImport: .browser
+        case .keyboardShortcuts: .shortcuts
+        }
+    }
+}

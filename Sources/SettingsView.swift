@@ -8,7 +8,12 @@ import CoreImage.CIFilterBuiltins
 
 
 struct SettingsView: View {
-    private let contentTopInset: CGFloat = 8
+    // The header overlay now carries a tab strip under the title, so content has
+    // to start below both rather than just below the title.
+    private let contentTopInset: CGFloat = 42
+    private let headerHeight: CGFloat = 96
+
+    @State private var selectedTab: SettingsTab = .general
     private let pickerColumnWidth: CGFloat = 196
     private let notificationSoundControlWidth: CGFloat = 280
     private let shortcutChordsDocsURL = URL(string: "https://github.com/darkroomengineering/programa/tree/main/docs")!
@@ -514,15 +519,23 @@ struct SettingsView: View {
             ZStack(alignment: .top) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    appSection
-                    workspaceColorsSection
-                    sidebarAppearanceSection
-                    automationSection
-                    phoneSection
-                    customCommandsSection
-                    browserSection
-                    keyboardShortcutsSection
-                    resetSection
+                    switch selectedTab {
+                    case .general:
+                        appSection
+                        resetSection
+                    case .appearance:
+                        workspaceColorsSection
+                        sidebarAppearanceSection
+                    case .automation:
+                        automationSection
+                        customCommandsSection
+                    case .phone:
+                        phoneSection
+                    case .browser:
+                        browserSection
+                    case .shortcuts:
+                        keyboardShortcutsSection
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
@@ -578,25 +591,41 @@ struct SettingsView: View {
                     )
                     .opacity(0.14 + (topBlurOpacity * 0.86))
 
-                HStack {
-                    Text(String(localized: "settings.title", defaultValue: "Settings"))
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.primary.opacity(0.92))
-                    Spacer(minLength: 0)
-                    HStack(spacing: 6) {
-                        SettingsHeaderActionButton(
-                            title: String(localized: "settings.app.settingsFile.openButton", defaultValue: "Open settings.json"),
-                            helpText: KeyboardShortcutSettings.settingsFileStore.settingsFileDisplayPath(),
-                            accessibilityIdentifier: "SettingsFileOpenButton",
-                            action: openProgramaSettingsFileInTextEdit
-                        )
+                VStack(spacing: 8) {
+                    HStack {
+                        Text(String(localized: "settings.title", defaultValue: "Settings"))
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.primary.opacity(0.92))
+                        Spacer(minLength: 0)
+                        HStack(spacing: 6) {
+                            SettingsHeaderActionButton(
+                                title: String(localized: "settings.app.settingsFile.openButton", defaultValue: "Open settings.json"),
+                                helpText: KeyboardShortcutSettings.settingsFileStore.settingsFileDisplayPath(),
+                                accessibilityIdentifier: "SettingsFileOpenButton",
+                                action: openProgramaSettingsFileInTextEdit
+                            )
+                        }
                     }
+                    .padding(.leading, settingsTitleLeadingInset)
+                    .padding(.trailing, 20)
+
+                    // Lives in the header overlay rather than the scroll content so
+                    // it stays put while a tab's rows scroll under the blur.
+                    Picker("", selection: $selectedTab) {
+                        ForEach(SettingsTab.allCases) { tab in
+                            Text(tab.title).tag(tab)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .padding(.leading, settingsTitleLeadingInset)
+                    .padding(.trailing, 20)
+                    .accessibilityIdentifier("SettingsTabPicker")
                 }
-                .padding(.leading, settingsTitleLeadingInset)
-                .padding(.trailing, 20)
                 .padding(.top, 12)
             }
-                .frame(height: 62)
+                .frame(height: headerHeight)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .ignoresSafeArea(.container, edges: .top)
                 .overlay(
@@ -635,6 +664,9 @@ struct SettingsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: SettingsNavigationRequest.notificationName)) { notification in
             guard let target = SettingsNavigationRequest.target(from: notification) else { return }
+            // Select the owning tab first. The anchor only exists while its tab is
+            // the selected one, so scrolling in the same pass would find nothing.
+            selectedTab = SettingsTab.owning(target)
             DispatchQueue.main.async {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     proxy.scrollTo(target, anchor: .top)
