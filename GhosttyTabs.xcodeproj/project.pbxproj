@@ -106,6 +106,7 @@
 		NRTC0014 /* TerminalController+Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRTC0004 /* TerminalController+Workspace.swift */; };
 		WTMG000003 /* TerminalController+Worktree.swift in Sources */ = {isa = PBXBuildFile; fileRef = WTMG000004 /* TerminalController+Worktree.swift */; };
 		WTMG000007 /* TerminalController+Layout.swift in Sources */ = {isa = PBXBuildFile; fileRef = WTMG000008 /* TerminalController+Layout.swift */; };
+			SNAP000001 /* TerminalController+Snapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = SNAP000002 /* TerminalController+Snapshot.swift */; };
 		NRTC0015 /* TerminalController+Surface.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRTC0005 /* TerminalController+Surface.swift */; };
 		NRTC0016 /* TerminalController+Pane.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRTC0006 /* TerminalController+Pane.swift */; };
 		NRTC0017 /* TerminalController+Notification.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRTC0007 /* TerminalController+Notification.swift */; };
@@ -491,6 +492,7 @@
 		NRTC0004 /* TerminalController+Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+Workspace.swift"; sourceTree = "<group>"; };
 		WTMG000004 /* TerminalController+Worktree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+Worktree.swift"; sourceTree = "<group>"; };
 		WTMG000008 /* TerminalController+Layout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+Layout.swift"; sourceTree = "<group>"; };
+			SNAP000002 /* TerminalController+Snapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+Snapshot.swift"; sourceTree = "<group>"; };
 		NRTC0005 /* TerminalController+Surface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+Surface.swift"; sourceTree = "<group>"; };
 		NRTC0006 /* TerminalController+Pane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+Pane.swift"; sourceTree = "<group>"; };
 		NRTC0007 /* TerminalController+Notification.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+Notification.swift"; sourceTree = "<group>"; };
@@ -938,6 +940,7 @@
 				NRTC0004 /* TerminalController+Workspace.swift */,
 				WTMG000004 /* TerminalController+Worktree.swift */,
 				WTMG000008 /* TerminalController+Layout.swift */,
+					SNAP000002 /* TerminalController+Snapshot.swift */,
 				NRTC0005 /* TerminalController+Surface.swift */,
 				NRTC0006 /* TerminalController+Pane.swift */,
 				NRTC0007 /* TerminalController+Notification.swift */,
@@ -1425,6 +1428,7 @@
 				NRTC0014 /* TerminalController+Workspace.swift in Sources */,
 				WTMG000003 /* TerminalController+Worktree.swift in Sources */,
 				WTMG000007 /* TerminalController+Layout.swift in Sources */,
+					SNAP000001 /* TerminalController+Snapshot.swift in Sources */,
 				NRTC0015 /* TerminalController+Surface.swift in Sources */,
 				NRTC0016 /* TerminalController+Pane.swift in Sources */,
 				NRTC0017 /* TerminalController+Notification.swift in Sources */,

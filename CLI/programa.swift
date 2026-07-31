@@ -2121,8 +2121,11 @@ struct ProgramaCLI {
                       focusing the new workspace (default: does not steal focus).
 
                   open <path-or-branch> [--repo <dir>] [--focus]
+                  open --all [--repo <dir>]
                       Open an existing worktree (by path or branch name) as a workspace.
-                      Idempotent: returns the existing workspace if already open.
+                      Idempotent: returns the existing workspace if already open. --all opens
+                      every worktree of the repo at once instead of one <path-or-branch>;
+                      mutually exclusive with a positional target and with --focus.
 
                   remove <path-or-branch> [--repo <dir>] [--force]
                       Remove a worktree (never deletes the branch). Closes its workspace if
@@ -2140,12 +2143,14 @@ struct ProgramaCLI {
                   --layout <name>    Apply a saved layout (see 'programa layout') after creating
                                      the workspace (create only).
                   --focus            Focus the workspace after create/open (default: off).
+                  --all              Open every worktree of the repo (open only).
                   --force            Allow removing a worktree with uncommitted changes.
 
                 Example:
                   programa worktree create feature-x
                   programa worktree create feature-x --base main --layout fullstack-dev
                   programa worktree list --repo ~/code/programa
+                  programa worktree open --all
                   programa worktree remove feature-x
                 """,
                 execute: { ctx in
@@ -2290,6 +2295,38 @@ struct ProgramaCLI {
                 """,
                 execute: { ctx in
                     try self.runLayoutCommand(commandArgs: ctx.commandArgs, client: ctx.client, jsonOutput: ctx.jsonOutput, idFormat: ctx.idFormat)
+                }
+            ),
+
+            CommandDescriptor(
+                names: ["snapshot"],
+                helpLines: ["snapshot <list|restore> ..."],
+                detailedUsage: """
+                Usage: programa snapshot <subcommand> [flags]
+
+                Session-restore history: every launch archives the previous session snapshot
+                into ~/Library/Application Support/programa/session-history/ before it can be
+                overwritten, so a crash, a forced shutdown, or a launch that skips restore
+                never loses your last window layout for good.
+
+                Subcommands:
+                  list [--json]
+                      List archived snapshots, newest first: id, saved-at, clean/unclean
+                      shutdown, and window/workspace/panel counts.
+
+                  restore [<id>|latest]
+                      Restore an archived snapshot by opening a new window for every window
+                      it contains. Never closes or changes a window that is already open.
+                      Defaults to the newest archived snapshot when <id> is omitted or
+                      "latest".
+
+                Example:
+                  programa snapshot list
+                  programa snapshot restore
+                  programa snapshot restore 20260731-153000-com.darkroom.programa
+                """,
+                execute: { ctx in
+                    try self.runSnapshotCommand(commandArgs: ctx.commandArgs, client: ctx.client, jsonOutput: ctx.jsonOutput, idFormat: ctx.idFormat)
                 }
             ),
 
@@ -5289,10 +5326,23 @@ struct ProgramaCLI {
     ) throws {
         let (repoOpt, rem0) = parseOption(args, name: "--repo")
         let focus = hasFlag(rem0, name: "--focus")
-        var positional = rem0.filter { $0 != "--focus" }
+        let all = hasFlag(rem0, name: "--all")
+        var positional = rem0.filter { $0 != "--focus" && $0 != "--all" }
+
+        if all {
+            if focus {
+                throw CLIError(message: "worktree open: --focus cannot be combined with --all")
+            }
+            if !positional.isEmpty {
+                throw CLIError(message: "worktree open --all does not take a <path-or-branch> argument")
+            }
+            let repo = try resolveWorktreeRepoRoot(explicit: repoOpt)
+            try runWorktreeOpenAll(repo: repo, client: client, jsonOutput: jsonOutput, idFormat: idFormat)
+            return
+        }
 
         guard let target = positional.first, !target.hasPrefix("--") else {
-            throw CLIError(message: "worktree open requires <path-or-branch>")
+            throw CLIError(message: "worktree open requires <path-or-branch> (or --all)")
         }
         positional.removeFirst()
         if let unknown = positional.first(where: { $0.hasPrefix("--") }) {
@@ -5311,6 +5361,40 @@ struct ProgramaCLI {
 
         let payload = try client.sendV2(method: "worktree.open", params: params)
         printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: worktreeSummary(payload, idFormat: idFormat))
+    }
+
+    /// Opens every worktree of `repo` as a workspace, in one call. `worktree.open` is idempotent
+    /// (a no-op for a worktree already open as a workspace), so this never duplicates workspaces
+    /// on repeated runs, and it never focuses/selects -- same "no focus by default" policy as a
+    /// single `worktree open`.
+    private func runWorktreeOpenAll(
+        repo: String,
+        client: SocketClient,
+        jsonOutput: Bool,
+        idFormat: CLIIDFormat
+    ) throws {
+        let listPayload = try client.sendV2(method: "worktree.list", params: ["repo": repo])
+        let worktrees = listPayload["worktrees"] as? [[String: Any]] ?? []
+
+        var openedPayloads: [[String: Any]] = []
+        for entry in worktrees {
+            guard let path = entry["path"] as? String else { continue }
+            let opened = try client.sendV2(method: "worktree.open", params: ["repo": repo, "path": path])
+            openedPayloads.append(opened)
+        }
+
+        if jsonOutput {
+            print(jsonString(formatIDs(openedPayloads, mode: idFormat)))
+            return
+        }
+
+        guard !openedPayloads.isEmpty else {
+            print("No worktrees to open for \(repo)")
+            return
+        }
+        for payload in openedPayloads {
+            print(worktreeSummary(payload, idFormat: idFormat))
+        }
     }
 
     private func runWorktreeRemove(
@@ -6071,6 +6155,98 @@ struct ProgramaCLI {
             let savedAt = entry["saved_at"] as? String ?? ""
             print(savedAt.isEmpty ? name : "\(name)  (saved \(savedAt))")
         }
+    }
+
+    // MARK: - Snapshot history commands (docs/plans/snapshot-restore.md)
+
+    private func runSnapshotCommand(
+        commandArgs: [String],
+        client: SocketClient,
+        jsonOutput: Bool,
+        idFormat: CLIIDFormat
+    ) throws {
+        var positional = commandArgs
+        guard let subcommandRaw = positional.first else {
+            throw CLIError(message: "snapshot requires a subcommand: list, restore")
+        }
+        positional.removeFirst()
+
+        switch subcommandRaw.lowercased() {
+        case "list":
+            try runSnapshotList(args: positional, client: client, jsonOutput: jsonOutput, idFormat: idFormat)
+        case "restore":
+            try runSnapshotRestore(args: positional, client: client, jsonOutput: jsonOutput, idFormat: idFormat)
+        default:
+            throw CLIError(message: "snapshot: unknown subcommand '\(subcommandRaw)' (expected list, restore)")
+        }
+    }
+
+    private func runSnapshotList(
+        args: [String],
+        client: SocketClient,
+        jsonOutput: Bool,
+        idFormat: CLIIDFormat
+    ) throws {
+        if let unknown = args.first(where: { $0.hasPrefix("--") && $0 != "--json" }) {
+            throw CLIError(message: "snapshot list: unknown flag '\(unknown)'")
+        }
+
+        let payload = try client.sendV2(method: "snapshot.list", params: [:])
+        if jsonOutput {
+            print(jsonString(formatIDs(payload, mode: idFormat)))
+            return
+        }
+
+        let snapshots = payload["snapshots"] as? [[String: Any]] ?? []
+        guard !snapshots.isEmpty else {
+            print("No archived snapshots")
+            return
+        }
+        for entry in snapshots {
+            let id = entry["id"] as? String ?? "?"
+            let savedAt = entry["saved_at"] as? String ?? ""
+            let cleanShutdown = entry["clean_shutdown"] as? Bool
+            let cleanTag = cleanShutdown == true ? "clean" : (cleanShutdown == false ? "unclean" : "unknown")
+            let windowCount = intFromAny(entry["window_count"]) ?? 0
+            let workspaceCount = intFromAny(entry["workspace_count"]) ?? 0
+            let panelCount = intFromAny(entry["panel_count"]) ?? 0
+            print("\(id)  \(savedAt)  \(cleanTag)  windows=\(windowCount) workspaces=\(workspaceCount) panels=\(panelCount)")
+        }
+    }
+
+    private func runSnapshotRestore(
+        args: [String],
+        client: SocketClient,
+        jsonOutput: Bool,
+        idFormat: CLIIDFormat
+    ) throws {
+        var positional = args
+        if let unknown = positional.first(where: { $0.hasPrefix("--") }) {
+            throw CLIError(message: "snapshot restore: unknown flag '\(unknown)'")
+        }
+
+        var params: [String: Any] = [:]
+        if let target = positional.first {
+            positional.removeFirst()
+            if !positional.isEmpty {
+                throw CLIError(message: "snapshot restore takes at most one argument: <id>|latest")
+            }
+            if target.lowercased() != "latest" {
+                params["id"] = target
+            }
+        }
+
+        let payload = try client.sendV2(method: "snapshot.restore", params: params)
+        let restored = payload["restored"] as? [String: Any] ?? [:]
+        let windows = intFromAny(restored["windows"]) ?? 0
+        let workspaces = intFromAny(restored["workspaces"]) ?? 0
+        let panels = intFromAny(restored["panels"]) ?? 0
+        printV2Payload(
+            payload,
+            jsonOutput: jsonOutput,
+            idFormat: idFormat,
+            fallbackText: "OK restored windows=\(windows) workspaces=\(workspaces) panels=\(panels)"
+        )
     }
 
     private func runTabAction(
