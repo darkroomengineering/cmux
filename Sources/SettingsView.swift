@@ -213,10 +213,6 @@ struct SettingsView: View {
         }
     }
 
-    private var browserImportSubtitle: String {
-        InstalledBrowserDetector.summaryText(for: detectedImportBrowsers)
-    }
-
     private var browserImportHintSettingsNote: String {
         switch browserImportHintPresentation.settingsStatus {
         case .visible:
@@ -1580,36 +1576,13 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(String(localized: "settings.browser.import", defaultValue: "Import Browser Data"))
-                        .font(.system(size: 13, weight: .semibold))
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(String(localized: "browser.import.hint.title", defaultValue: "Import browser data"))
-                            .font(.system(size: 12.5, weight: .semibold))
-
-                        Text(browserImportSubtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Text(String(localized: "browser.import.hint.settingsFootnote", defaultValue: "You can always find this in Settings > Browser."))
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
-                    )
-                }
+                // A mock of the blank-tab import hint used to be rendered here,
+                // reusing the hint's own strings -- including its footnote saying
+                // "You can always find this in Settings > Browser", shown inside
+                // Settings. The buttons below do the same job without restating
+                // the hint. The real card still lives in BrowserToolbarViews.
+                Text(String(localized: "settings.browser.import", defaultValue: "Import Browser Data"))
+                    .font(.system(size: 13, weight: .semibold))
 
                 HStack(spacing: 8) {
                     Button(String(localized: "settings.browser.import.choose", defaultValue: "Choose…")) {
