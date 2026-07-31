@@ -101,8 +101,35 @@ enum ProgramaTypingTiming {
     }
 
     @inline(__always)
+    /// `keyCode` and `isARepeat` are only valid on key events. AppKit raises
+    /// NSInternalInconsistencyException -- "Invalid message sent to event" -- for any
+    /// other type, and an uncaught ObjC exception terminates the process.
+    ///
+    /// This is not hypothetical. With the profiler enabled, a `KitDefined` event
+    /// (subtype 4) reached here from `insertText`'s defer during `interpretKeyEvents`
+    /// and killed the app mid-keystroke:
+    ///
+    ///     *** Terminating app due to uncaught exception 'NSInternalInconsistencyException',
+    ///     reason: 'Invalid message sent to event "NSEvent: type=KitDefined ... subtype=4"'
+    ///         3  AppKit  -[NSEvent keyCode]
+    ///         6  GhosttyNSView.insertText(_:replacementRange:) $deferL_
+    ///        16  -[NSView interpretKeyEvents:]
+    ///
+    /// So the instrumentation crashed the app it was measuring, and only when
+    /// switched on -- which is why nothing caught it until someone tried to use it.
+    /// Read the key-only fields only when the event actually is a key event.
     private static func eventFields(_ event: NSEvent) -> String {
-        "eventType=\(event.type.rawValue) keyCode=\(event.keyCode) mods=\(event.modifierFlags.rawValue) repeat=\(event.isARepeat ? 1 : 0)"
+        switch event.type {
+        case .keyDown, .keyUp:
+            return "eventType=\(event.type.rawValue) keyCode=\(event.keyCode) " +
+                "mods=\(event.modifierFlags.rawValue) repeat=\(event.isARepeat ? 1 : 0)"
+        case .flagsChanged:
+            // keyCode is valid here; isARepeat is not.
+            return "eventType=\(event.type.rawValue) keyCode=\(event.keyCode) " +
+                "mods=\(event.modifierFlags.rawValue)"
+        default:
+            return "eventType=\(event.type.rawValue)"
+        }
     }
 
     @inline(__always)
