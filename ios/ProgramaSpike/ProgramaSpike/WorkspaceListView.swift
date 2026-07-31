@@ -31,6 +31,10 @@ struct WorkspaceListView: View {
                         }
                     }
                 }
+
+                Section {
+                    AppVersionRow()
+                }
             }
             .navigationTitle(String(localized: "workspaceList.title", defaultValue: "Workspaces"))
             .navigationDestination(for: String.self) { workspaceID in

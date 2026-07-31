@@ -255,6 +255,40 @@ verify_failed=0
 check_entitlement "aps-environment" "production" || verify_failed=1
 check_entitlement "get-task-allow" "false" || verify_failed=1
 check_entitlement "com.apple.developer.icloud-container-environment" "Production" || verify_failed=1
+# The build number has to actually reach the bundle, and for a long time it did
+# not: xcodegen's default for CFBundleVersion is the literal "1", and because
+# `info.path` sets INFOPLIST_FILE, Xcode substitutes only $(...) references --
+# so the CURRENT_PROJECT_VERSION passed on the archive command line was silently
+# discarded and every build shipped as 1.0 (1). App Store Connect takes that
+# once and rejects everything after it as a duplicate bundle version, which
+# reads like a broken upload lane rather than a versioning bug. Check the built
+# artifact, never the source.
+echo "Verifying bundle version:"
+check_bundle_version() {
+  local label="$1" plist="$2" actual
+  # plutil writes "Could not extract value" to STDOUT, so a bare fallback would
+  # report the error text as the value -- same trap as the entitlement checks.
+  if ! actual="$(plutil -extract CFBundleVersion raw -o - "$plist" 2>/dev/null)"; then
+    actual="<absent>"
+  fi
+  case "$actual" in *"Could not extract value"*) actual="<absent>" ;; esac
+  if [[ "$actual" != "$BUILD_NUMBER" ]]; then
+    echo "FAIL: $label CFBundleVersion is '$actual', expected '$BUILD_NUMBER'" >&2
+    return 1
+  fi
+  echo "  ok  $label CFBundleVersion = $actual"
+}
+check_bundle_version "app" "$SIGNED_APP/Info.plist" || verify_failed=1
+# An embedded extension whose CFBundleVersion differs from its host app fails
+# App Store validation, so the widget is checked against the same number.
+WIDGET_PLIST="$SIGNED_APP/PlugIns/ProgramaSpikeWidgets.appex/Info.plist"
+if [[ -f "$WIDGET_PLIST" ]]; then
+  check_bundle_version "widget" "$WIDGET_PLIST" || verify_failed=1
+else
+  echo "FAIL: widget appex missing from the signed bundle" >&2
+  verify_failed=1
+fi
+
 if (( verify_failed )); then
   echo "Refusing to upload a build that would not behave correctly in TestFlight." >&2
   exit 1

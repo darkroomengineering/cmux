@@ -24,7 +24,12 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.darkroom.programa.spike
-        MARKETING_VERSION: "0.1"
+        # App Store Connect already holds a build under version 1.0, because the
+        # plist used to hardcode that literal and this setting never reached the
+        # bundle. Now that it does, dropping to 0.1 would push the version string
+        # backwards against a record that already exists, so this stays at 1.0
+        # until the companion's version is deliberately aligned with the Mac app.
+        MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -62,6 +67,16 @@ targets:
       path: ProgramaSpike/Info.plist
       properties:
         CFBundleDisplayName: "Programa"
+        # Declared explicitly because xcodegen's defaults for these two are the
+        # literals "1.0" and "1", not references to the build settings. Since
+        # `info.path` sets INFOPLIST_FILE, Xcode only substitutes $(...) in the
+        # file -- so the CURRENT_PROJECT_VERSION that
+        # scripts/build-ios-testflight.sh passes on the xcodebuild command line
+        # never reached the bundle. Every archive shipped as 1.0 (1) regardless
+        # of the CI build number, which App Store Connect then rejects on the
+        # second upload as a duplicate bundle version.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         # Required, not optional: TARGETED_DEVICE_FAMILY is "1,2" so the app
         # claims iPad support, and App Store validation HARD FAILS an iPad-capable
@@ -147,7 +162,12 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.darkroom.programa.spike.widgets
-        MARKETING_VERSION: "0.1"
+        # App Store Connect already holds a build under version 1.0, because the
+        # plist used to hardcode that literal and this setting never reached the
+        # bundle. Now that it does, dropping to 0.1 would push the version string
+        # backwards against a record that already exists, so this stays at 1.0
+        # until the companion's version is deliberately aligned with the Mac app.
+        MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -164,5 +184,10 @@ targets:
       path: ProgramaSpikeWidgets/Info.plist
       properties:
         CFBundleDisplayName: Programa Widgets
+        # Same reason as the app target. These must also track the app exactly:
+        # App Store validation rejects a bundle whose embedded extension carries
+        # a different CFBundleVersion than its host app.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
