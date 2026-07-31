@@ -28,16 +28,6 @@ enum WorkspacePresentationModeSettings {
     }
 }
 
-enum PaneFirstClickFocusSettings {
-    static let enabledKey = "paneFirstClickFocus.enabled"
-    static let defaultEnabled = false
-    private static let flag = UserDefaultsFlag(key: enabledKey, defaultValue: defaultEnabled)
-
-    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
-        flag.isEnabled(defaults: defaults)
-    }
-}
-
 enum AppearanceMode: String, CaseIterable, Identifiable {
     case system
     case light

@@ -339,9 +339,6 @@ final class ProgramaSettingsFileStore {
             let mode = value ? WorkspacePresentationModeSettings.Mode.minimal : .standard
             snapshot.managedUserDefaults[WorkspacePresentationModeSettings.modeKey] = .string(mode.rawValue)
         }
-        if let value = jsonBool(section["focusPaneOnFirstClick"]) {
-            snapshot.managedUserDefaults[PaneFirstClickFocusSettings.enabledKey] = .bool(value)
-        }
         if let value = jsonString(section["preferredEditor"]) {
             snapshot.managedUserDefaults[PreferredEditorSettings.key] = .string(value)
         }
@@ -1207,7 +1204,6 @@ final class ProgramaSettingsFileStore {
                     "appearance": AppearanceSettings.defaultMode.rawValue,
                     "newWorkspacePlacement": WorkspacePlacementSettings.defaultPlacement.rawValue,
                     "minimalMode": WorkspacePresentationModeSettings.defaultMode == .minimal,
-                    "focusPaneOnFirstClick": PaneFirstClickFocusSettings.defaultEnabled,
                     "preferredEditor": "",
                     "reorderOnNotification": WorkspaceAutoReorderSettings.defaultValue,
                     "warnBeforeQuit": QuitWarningSettings.defaultWarnBeforeQuit,

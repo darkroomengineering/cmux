@@ -8592,39 +8592,6 @@
         }
       }
     },
-    "settings.app.paneFirstClickFocus": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Focus Pane on First Click"
-          }
-        }
-      }
-    },
-    "settings.app.paneFirstClickFocus.subtitleOff": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When Programa is inactive, the first click only activates the window. Click again to focus the pane."
-          }
-        }
-      }
-    },
-    "settings.app.paneFirstClickFocus.subtitleOn": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "When Programa is inactive, clicking a pane activates the window and focuses that pane in one click."
-          }
-        }
-      }
-    },
     "settings.app.persistScrollback": {
       "extractionState": "manual",
       "localizations": {

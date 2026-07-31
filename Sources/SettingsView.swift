@@ -60,8 +60,6 @@ struct SettingsView: View {
     @AppStorage(ShortcutHintDebugSettings.alwaysShowHintsKey)
     private var alwaysShowShortcutHints = ShortcutHintDebugSettings.defaultAlwaysShowHints
     @AppStorage(WorkspacePlacementSettings.placementKey) private var newWorkspacePlacement = WorkspacePlacementSettings.defaultPlacement.rawValue
-    @AppStorage(PaneFirstClickFocusSettings.enabledKey)
-    private var paneFirstClickFocusEnabled = PaneFirstClickFocusSettings.defaultEnabled
     @AppStorage(WorkspaceAutoReorderSettings.key) private var workspaceAutoReorder = WorkspaceAutoReorderSettings.defaultValue
     @AppStorage(SidebarActiveTabIndicatorSettings.styleKey)
     private var sidebarActiveTabIndicatorStyle = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
@@ -121,19 +119,6 @@ struct SettingsView: View {
         return String(
             localized: "settings.app.minimalMode.subtitleOff",
             defaultValue: "Use the standard workspace title bar and controls."
-        )
-    }
-
-    private var paneFirstClickFocusSubtitle: String {
-        if paneFirstClickFocusEnabled {
-            return String(
-                localized: "settings.app.paneFirstClickFocus.subtitleOn",
-                defaultValue: "When Programa is inactive, clicking a pane activates the window and focuses that pane in one click."
-            )
-        }
-        return String(
-            localized: "settings.app.paneFirstClickFocus.subtitleOff",
-            defaultValue: "When Programa is inactive, the first click only activates the window. Click again to focus the pane."
         )
     }
 
@@ -724,20 +709,6 @@ struct SettingsView: View {
                     .accessibilityIdentifier("SettingsMinimalModeToggle")
                     .accessibilityLabel(
                         String(localized: "settings.app.minimalMode", defaultValue: "Minimal Mode")
-                    )
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.app.paneFirstClickFocus", defaultValue: "Focus Pane on First Click"),
-                subtitle: paneFirstClickFocusSubtitle
-            ) {
-                Toggle("", isOn: $paneFirstClickFocusEnabled)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .accessibilityLabel(
-                        String(localized: "settings.app.paneFirstClickFocus", defaultValue: "Focus Pane on First Click")
                     )
             }
 
@@ -1816,7 +1787,6 @@ struct SettingsView: View {
         alwaysShowShortcutHints = ShortcutHintDebugSettings.defaultAlwaysShowHints
         newWorkspacePlacement = WorkspacePlacementSettings.defaultPlacement.rawValue
         workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
-        paneFirstClickFocusEnabled = PaneFirstClickFocusSettings.defaultEnabled
         workspaceAutoReorder = WorkspaceAutoReorderSettings.defaultValue
         sidebarActiveTabIndicatorStyle = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
         sidebarSelectionColorHex = nil
