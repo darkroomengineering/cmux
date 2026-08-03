@@ -206,10 +206,16 @@ enum PreferredEditorSettings {
 /// The tabs the settings window is split across.
 ///
 /// Settings used to be one scroll of nine stacked sections, which meant finding
-/// anything required knowing roughly how far down it lived. The grouping here
-/// merges sections that answer the same question: Workspace Colors and Sidebar
-/// Appearance are both "how it looks", Custom Commands is part of Automation,
-/// and Reset belongs with the general app switches it resets.
+/// anything required knowing roughly how far down it lived. Tabs group by the
+/// question a user is answering, and each tab is further split into its own
+/// named sections so a tab is never just one undivided pile of rows: General
+/// covers how the app behaves day to day (App), what it notifies you about
+/// (Notifications), and how to start over (Reset); Appearance covers how the
+/// app looks (theme, window chrome) and how the sidebar looks and behaves
+/// (Sidebar); Automation covers the socket used for scripting it (Socket
+/// Control), the coding agents it integrates with (Agents), the ports it
+/// hands to workspaces (Ports), and per-project custom commands (Custom
+/// Commands).
 ///
 /// Keyboard Shortcuts stays on its own because it renders one row per
 /// `KeyboardShortcutSettings.Action` -- 57 of them -- and would swamp whatever

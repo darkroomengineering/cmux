@@ -493,17 +493,22 @@ struct SettingsView: View {
                     switch selectedTab {
                     case .general:
                         appSection
+                        notificationsSection
                         resetSection
                     case .appearance:
-                        workspaceColorsSection
-                        sidebarAppearanceSection
+                        appearanceSection
+                        sidebarSection
                     case .automation:
-                        automationSection
+                        socketControlSection
+                        agentsSection
+                        portsSection
                         customCommandsSection
                     case .phone:
                         phoneSection
                     case .browser:
-                        browserSection
+                        browsingSection
+                        browserLinksSection
+                        browserDataSection
                     case .shortcuts:
                         keyboardShortcutsSection
                     }
@@ -683,15 +688,6 @@ struct SettingsView: View {
     private var appSection: some View {
         SettingsSectionHeader(title: String(localized: "settings.section.app", defaultValue: "App"))
         SettingsCard {
-            ThemePickerRow(
-                selectedMode: appearanceMode,
-                onSelect: { mode in
-                    appearanceMode = mode.rawValue
-                }
-            )
-
-            SettingsCardDivider()
-
             SettingsPickerRow(
                 String(localized: "settings.app.newWorkspacePlacement", defaultValue: "New Workspace Placement"),
                 subtitle: selectedWorkspacePlacement.description,
@@ -705,17 +701,15 @@ struct SettingsView: View {
 
             SettingsCardDivider()
 
+            // Next to New Workspace Placement: both decide where a workspace sits
+            // in the sidebar list, so they read as one question.
             SettingsCardRow(
-                String(localized: "settings.app.minimalMode", defaultValue: "Minimal Mode"),
-                subtitle: minimalModeSubtitle
+                String(localized: "settings.app.reorderOnNotification", defaultValue: "Reorder on Notification"),
+                subtitle: String(localized: "settings.app.reorderOnNotification.subtitle", defaultValue: "Move workspaces to the top when they receive a notification. Disable for stable shortcut positions.")
             ) {
-                Toggle("", isOn: minimalModeBinding)
+                Toggle("", isOn: $workspaceAutoReorder)
                     .labelsHidden()
                     .controlSize(.small)
-                    .accessibilityIdentifier("SettingsMinimalModeToggle")
-                    .accessibilityLabel(
-                        String(localized: "settings.app.minimalMode", defaultValue: "Minimal Mode")
-                    )
             }
 
             SettingsCardDivider()
@@ -735,18 +729,6 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(
-                String(localized: "settings.app.reorderOnNotification", defaultValue: "Reorder on Notification"),
-                subtitle: String(localized: "settings.app.reorderOnNotification.subtitle", defaultValue: "Move workspaces to the top when they receive a notification. Disable for stable shortcut positions.")
-            ) {
-                Toggle("", isOn: $workspaceAutoReorder)
-                    .labelsHidden()
-                    .controlSize(.small)
-            }
-
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
                 String(localized: "settings.app.showInMenuBar", defaultValue: "Show in Menu Bar"),
                 subtitle: String(localized: "settings.app.showInMenuBar.subtitle", defaultValue: "Keep Programa in the menu bar for unread notifications and quick actions.")
             ) {
@@ -761,6 +743,55 @@ struct SettingsView: View {
 
             SettingsCardDivider()
 
+            SettingsCardRow(
+                String(localized: "settings.app.warnBeforeQuit", defaultValue: "Warn Before Quit"),
+                subtitle: warnBeforeQuitShortcut
+                    ? String(localized: "settings.app.warnBeforeQuit.subtitleOn", defaultValue: "Show a confirmation before quitting with Cmd+Q.")
+                    : String(localized: "settings.app.warnBeforeQuit.subtitleOff", defaultValue: "Cmd+Q quits immediately without confirmation.")
+            ) {
+                Toggle("", isOn: $warnBeforeQuitShortcut)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.app.persistScrollback", defaultValue: "Save Scrollback on Quit"),
+                subtitle: sessionPersistScrollback
+                    ? String(localized: "settings.app.persistScrollback.subtitleOn", defaultValue: "Terminal scrollback is saved and restored on next launch.")
+                    : String(localized: "settings.app.persistScrollback.subtitleOff", defaultValue: "Terminal scrollback is not written to disk.")
+            ) {
+                Toggle("", isOn: $sessionPersistScrollback)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.app.commandPaletteSearchAllSurfaces", defaultValue: "Command Palette Searches All Surfaces"),
+                subtitle: commandPaletteSearchAllSurfaces
+                    ? String(localized: "settings.app.commandPaletteSearchAllSurfaces.subtitleOn", defaultValue: "Cmd+P also matches terminal, browser, and markdown surfaces across workspaces.")
+                    : String(localized: "settings.app.commandPaletteSearchAllSurfaces.subtitleOff", defaultValue: "Cmd+P matches workspace rows only.")
+            ) {
+                Toggle("", isOn: $commandPaletteSearchAllSurfaces)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .accessibilityIdentifier("CommandPaletteSearchAllSurfacesToggle")
+                    .accessibilityLabel(
+                        String(localized: "settings.app.commandPaletteSearchAllSurfaces", defaultValue: "Command Palette Searches All Surfaces")
+                    )
+            }
+
+        }
+
+    }
+
+    @ViewBuilder
+    private var notificationsSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.notifications", defaultValue: "Notifications"))
+        SettingsCard {
             SettingsCardRow(
                 String(localized: "settings.notifications.desktop.title", defaultValue: "Desktop Notifications"),
                 subtitle: notificationPermissionSubtitle
@@ -886,57 +917,37 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.app.warnBeforeQuit", defaultValue: "Warn Before Quit"),
-                subtitle: warnBeforeQuitShortcut
-                    ? String(localized: "settings.app.warnBeforeQuit.subtitleOn", defaultValue: "Show a confirmation before quitting with Cmd+Q.")
-                    : String(localized: "settings.app.warnBeforeQuit.subtitleOff", defaultValue: "Cmd+Q quits immediately without confirmation.")
-            ) {
-                Toggle("", isOn: $warnBeforeQuitShortcut)
-                    .labelsHidden()
-                    .controlSize(.small)
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.app.persistScrollback", defaultValue: "Save Scrollback on Quit"),
-                subtitle: sessionPersistScrollback
-                    ? String(localized: "settings.app.persistScrollback.subtitleOn", defaultValue: "Terminal scrollback is saved and restored on next launch.")
-                    : String(localized: "settings.app.persistScrollback.subtitleOff", defaultValue: "Terminal scrollback is not written to disk.")
-            ) {
-                Toggle("", isOn: $sessionPersistScrollback)
-                    .labelsHidden()
-                    .controlSize(.small)
-            }
-
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.app.commandPaletteSearchAllSurfaces", defaultValue: "Command Palette Searches All Surfaces"),
-                subtitle: commandPaletteSearchAllSurfaces
-                    ? String(localized: "settings.app.commandPaletteSearchAllSurfaces.subtitleOn", defaultValue: "Cmd+P also matches terminal, browser, and markdown surfaces across workspaces.")
-                    : String(localized: "settings.app.commandPaletteSearchAllSurfaces.subtitleOff", defaultValue: "Cmd+P matches workspace rows only.")
-            ) {
-                Toggle("", isOn: $commandPaletteSearchAllSurfaces)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .accessibilityIdentifier("CommandPaletteSearchAllSurfacesToggle")
-                    .accessibilityLabel(
-                        String(localized: "settings.app.commandPaletteSearchAllSurfaces", defaultValue: "Command Palette Searches All Surfaces")
-                    )
-            }
-
         }
 
     }
 
     @ViewBuilder
-    private var workspaceColorsSection: some View {
-        SettingsSectionHeader(title: String(localized: "settings.section.workspaceColors", defaultValue: "Workspace Colors"))
+    private var appearanceSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.appearance", defaultValue: "Appearance"))
+        SettingsCard {
+            ThemePickerRow(selectedMode: appearanceMode, onSelect: { mode in appearanceMode = mode.rawValue })
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.app.minimalMode", defaultValue: "Minimal Mode"),
+                subtitle: minimalModeSubtitle
+            ) {
+                Toggle("", isOn: minimalModeBinding)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .accessibilityIdentifier("SettingsMinimalModeToggle")
+                    .accessibilityLabel(
+                        String(localized: "settings.app.minimalMode", defaultValue: "Minimal Mode")
+                    )
+            }
+        }
+
+    }
+
+    @ViewBuilder
+    private var sidebarSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.sidebar", defaultValue: "Sidebar"))
         SettingsCard {
             SettingsPickerRow(
                 String(localized: "settings.workspaceColors.indicator", defaultValue: "Workspace Color Indicator"),
@@ -954,14 +965,9 @@ struct SettingsView: View {
             // same per-pixel tuning as the sidebar tints. "Reset all settings" still
             // calls WorkspaceTabColorSettings.reset() and nils both hex keys, so
             // anything set while these rows existed is still recoverable.
-        }
 
-    }
+            SettingsCardDivider()
 
-    @ViewBuilder
-    private var sidebarAppearanceSection: some View {
-        SettingsSectionHeader(title: String(localized: "settings.section.sidebarAppearance", defaultValue: "Sidebar Appearance"))
-        SettingsCard {
             SettingsCardRow(
                 String(localized: "settings.sidebarAppearance.matchTerminalBackground", defaultValue: "Match Terminal Background"),
                 subtitle: String(localized: "settings.sidebarAppearance.matchTerminalBackground.subtitle", defaultValue: "Use the same background color and transparency as the terminal.")
@@ -996,8 +1002,8 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private var automationSection: some View {
-        SettingsSectionHeader(title: String(localized: "settings.section.automation", defaultValue: "Automation"))
+    private var socketControlSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.socketControl", defaultValue: "Socket Control"))
         SettingsCard {
             SettingsPickerRow(
                 String(localized: "settings.automation.socketMode", defaultValue: "Socket Control Mode"),
@@ -1060,6 +1066,11 @@ struct SettingsView: View {
             SettingsCardNote(String(localized: "settings.automation.socketOverrides.note", defaultValue: "Overrides: PROGRAMA_SOCKET_ENABLE, PROGRAMA_SOCKET_MODE, and PROGRAMA_SOCKET_PATH (set PROGRAMA_ALLOW_SOCKET_OVERRIDE=1 for release builds)."))
         }
 
+    }
+
+    @ViewBuilder
+    private var agentsSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.agents", defaultValue: "Agents"))
         SettingsCard {
             SettingsCardRow(
                 String(localized: "settings.automation.claudeCode", defaultValue: "Claude Code Integration"),
@@ -1110,6 +1121,11 @@ struct SettingsView: View {
             }
         }
 
+    }
+
+    @ViewBuilder
+    private var portsSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.ports", defaultValue: "Ports"))
         SettingsCard {
             SettingsCardRow(String(localized: "settings.automation.portBase", defaultValue: "Port Base"), subtitle: String(localized: "settings.automation.portBase.subtitle", defaultValue: "Starting port for PROGRAMA_PORT env var."), controlWidth: pickerColumnWidth) {
                 TextField("", value: $programaPortBase, format: .number)
@@ -1381,8 +1397,8 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private var browserSection: some View {
-        SettingsSectionHeader(title: String(localized: "settings.section.browser", defaultValue: "Browser"))
+    private var browsingSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.browsing", defaultValue: "Browsing"))
             .id(SettingsNavigationTarget.browser)
             .accessibilityIdentifier("SettingsBrowserSection")
         SettingsCard {
@@ -1419,9 +1435,14 @@ struct SettingsView: View {
                     Text(mode.displayName).tag(mode.rawValue)
                 }
             }
+        }
 
-            SettingsCardDivider()
+    }
 
+    @ViewBuilder
+    private var browserLinksSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.browserLinks", defaultValue: "Link Handling"))
+        SettingsCard {
             SettingsCardRow(
                 String(localized: "settings.browser.openTerminalLinks", defaultValue: "Open Terminal Links in Programa Browser"),
                 subtitle: String(localized: "settings.browser.openTerminalLinks.subtitle", defaultValue: "When off, links clicked in terminal output open in your default browser.")
@@ -1556,9 +1577,14 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+        }
 
-            SettingsCardDivider()
+    }
 
+    @ViewBuilder
+    private var browserDataSection: some View {
+        SettingsSectionHeader(title: String(localized: "settings.section.browserData", defaultValue: "Data"))
+        SettingsCard {
             VStack(alignment: .leading, spacing: 12) {
                 // A mock of the blank-tab import hint used to be rendered here,
                 // reusing the hint's own strings -- including its footnote saying
