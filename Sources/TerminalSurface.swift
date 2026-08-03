@@ -228,6 +228,25 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// `createSurface` copies it into `surfaceConfig` -- see
     /// `TerminalSurfaceReviveDescriptor`'s doc comment.
     private var reviveDescriptor: TerminalSurfaceReviveDescriptor?
+    /// restore-replay-residuals: pre-crash scrollback text (and whether the
+    /// revived shell owns the terminal, so mouse-mode reset should run) that
+    /// `createSurface` has captured but not yet replayed, because it must
+    /// wait for the surface to reach a settled size. Set at most once per
+    /// surface (in `createSurface`); consumed exactly once by
+    /// `seedRevivedScrollbackIfPending()`, whichever trigger (the first
+    /// post-creation `updateSize` call, or a bounded fallback timer) runs
+    /// first. `text` may be empty -- a revive with no scrollback to seed
+    /// still needs this set so the post-seed SIGWINCH nudge below still
+    /// fires and the output tap still gets registered.
+    private var pendingReviveSeed: (text: String, resetModes: Bool, workingDirectory: String?)?
+    /// restore-replay-residuals: the revived pty's foreground process group
+    /// and child pid, snapshotted in `createSurface` before ghostty takes
+    /// ownership of the fd. Consumed exactly once by
+    /// `seedRevivedScrollbackIfPending()` to deliver a one-shot SIGWINCH
+    /// nudge after replay settles. `SIGWINCH`'s default disposition is
+    /// ignore, so a stale or reused target is a silent no-op.
+    private var pendingReviveWinchPGID: pid_t?
+    private var pendingReviveWinchChildPID: Int64?
     /// The desired focus state for the Ghostty C surface. May be set before the
     /// C surface exists (e.g. during layout restoration); `createSurface`
     /// reapplies this value once the runtime surface exists, then keeps using it
@@ -1167,6 +1186,19 @@ final class TerminalSurface: Identifiable, ObservableObject {
             return Int64(foregroundGroup) == consumedReviveDescriptor.childPID
         }()
 
+        // restore-replay-residuals: snapshot the same foreground-group read's
+        // raw value (still before ghostty takes ownership of the fd below),
+        // plus the descriptor's childPID, for the one-shot post-replay
+        // SIGWINCH nudge in `seedRevivedScrollbackIfPending()`. A live TUI
+        // that survived the relaunch (and thus handles SIGWINCH) repaints
+        // over any replay artifacts on its own -- this is what today's
+        // manual window-resize workaround relies on happening incidentally.
+        if let consumedReviveDescriptor {
+            let foregroundGroup = tcgetpgrp(consumedReviveDescriptor.masterFD)
+            pendingReviveWinchPGID = foregroundGroup > 0 ? foregroundGroup : nil
+            pendingReviveWinchChildPID = consumedReviveDescriptor.childPID
+        }
+
         createWithCommandAndWorkingDirectory()
 
         if surface == nil {
@@ -1179,6 +1211,14 @@ final class TerminalSurface: Identifiable, ObservableObject {
             if let consumedReviveDescriptor {
                 close(consumedReviveDescriptor.masterFD)
             }
+            // A retry of `createSurface` reuses this same TerminalSurface
+            // instance with `reviveDescriptor` already nil, so nothing would
+            // otherwise clear these on a failed-then-retried creation --
+            // leaving a stale seed/winch target for a surface the retry
+            // creates without ever revisiting this revive branch.
+            pendingReviveSeed = nil
+            pendingReviveWinchPGID = nil
+            pendingReviveWinchChildPID = nil
             surfaceCallbackContext?.release()
             surfaceCallbackContext = nil
             print("Failed to create ghostty surface")
@@ -1236,46 +1276,46 @@ final class TerminalSurface: Identifiable, ObservableObject {
             lastYScale = scaleFactors.y
         }
 
-        // Issue #182 slice 2: seed pre-crash scrollback into the fresh
-        // surface's own screen/scrollback state via
+        // restore-replay-residuals: pre-crash scrollback replay via
         // `ghostty_surface_process_output` -- bypasses the pty entirely
-        // (writing to the pty *master* would appear as new keyboard INPUT
-        // to the revived child, not output) and, deliberately, happens
-        // BEFORE the output tap is registered below so this replay text is
-        // never captured into the new session's own `wal.log`.
-        if let scrollbackText = consumedReviveDescriptor?.scrollbackText, !scrollbackText.isEmpty {
-            let data = Data(scrollbackText.utf8)
-            data.withUnsafeBytes { rawBuffer in
-                guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
-                ghostty_surface_process_output(createdSurface, baseAddress, UInt(rawBuffer.count))
-            }
-            // The seeded transcript is historical: any DECSET inside it was
-            // balanced by a DECRST that the relaunch-killed program never sent,
-            // so replaying it re-arms the mode in this fresh terminal for good.
-            // Disarm mouse tracking before live output resumes -- otherwise the
-            // revived shell's bare prompt fills with mouse motion reports.
-            if revivedShellOwnsTerminal {
-                let modeReset = Data(TerminalReplayModeReset.disableSequence.utf8)
-                modeReset.withUnsafeBytes { rawBuffer in
-                    guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
-                    ghostty_surface_process_output(createdSurface, baseAddress, UInt(rawBuffer.count))
+        // (writing to the pty *master* would appear as new keyboard INPUT to
+        // the revived child, not output) -- is deferred to
+        // `seedRevivedScrollbackIfPending()` rather than run here. Doing it
+        // here would replay the transcript's absolute-cursor-positioned
+        // redraws against whatever transitional size the surface happens to
+        // have at `ghostty_surface_new` time; on the primary-window restore
+        // path that size is not proven final yet (`restoreSessionSnapshot`
+        // runs before `setFrame(restoredFrame)`), so replay damage gets
+        // baked in at the wrong width and survives every later resize. The
+        // deferred method still runs before the output tap is registered
+        // for the revive case (moved there too, below) so this replay text
+        // is never captured into the new session's own `wal.log`.
+        if let consumedReviveDescriptor {
+            pendingReviveSeed = (
+                text: consumedReviveDescriptor.scrollbackText ?? "",
+                resetModes: revivedShellOwnsTerminal,
+                workingDirectory: resolvedWorkingDirectory
+            )
+            if !SessionMachineryGate.isUnitTesting {
+                // Bounded fallback: covers a surface created already at its
+                // final size, where no further `updateSize` call ever lands
+                // to trigger the primary path in `seedRevivedScrollbackIfPending()`.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.seedRevivedScrollbackIfPending(trigger: "fallback-timer")
                 }
             }
-
-            #if DEBUG
-            dlog("session.escrow.revive.scrollback_seeded surface=\(id.uuidString.prefix(8)) bytes=\(data.count)")
-            #endif
+        } else {
+            // Register the PTY output tap now that the runtime surface
+            // definitely exists, wiring it into the session WAL writer. See
+            // SessionOutputTapSpike.swift (SessionWALStore). The revive case
+            // registers this later, inside `seedRevivedScrollbackIfPending()`.
+            outputTapContext?.release()
+            outputTapContext = SessionWALStore.shared.register(
+                surface: createdSurface,
+                surfaceId: id.uuidString,
+                workingDirectory: resolvedWorkingDirectory
+            )
         }
-
-        // Register the PTY output tap now that the runtime surface definitely
-        // exists, wiring it into the session WAL writer. See
-        // SessionOutputTapSpike.swift (SessionWALStore).
-        outputTapContext?.release()
-        outputTapContext = SessionWALStore.shared.register(
-            surface: createdSurface,
-            surfaceId: id.uuidString,
-            workingDirectory: resolvedWorkingDirectory
-        )
         if SessionMachineryGate.isUnitTesting {
             return
         }
@@ -1413,6 +1453,84 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
     }
 
+    /// restore-replay-residuals: seeds pre-crash scrollback into a revived
+    /// surface once it has reached a settled size, then delivers the
+    /// one-shot post-revive SIGWINCH nudge. Two triggers race to call this;
+    /// whichever runs first wins and the other becomes a no-op because
+    /// `pendingReviveSeed` is cleared under the same main-thread discipline
+    /// the rest of this file uses for surface state:
+    /// - `updateSize`, on the first call after creation -- that call carries
+    ///   real, laid-out geometry pushed down from AppKit, unlike the
+    ///   transitional/placeholder size `createSurface` sees.
+    /// - a bounded fallback timer (scheduled at the end of `createSurface`)
+    ///   for the case where the surface is already created at its final size
+    ///   and no further `updateSize` call ever arrives.
+    private func seedRevivedScrollbackIfPending(trigger: String) {
+        guard let pending = pendingReviveSeed else { return }
+        pendingReviveSeed = nil
+        guard let surface else { return }
+
+        if !pending.text.isEmpty {
+            let data = Data(pending.text.utf8)
+            data.withUnsafeBytes { rawBuffer in
+                guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
+                ghostty_surface_process_output(surface, baseAddress, UInt(rawBuffer.count))
+            }
+            // The seeded transcript is historical: any DECSET inside it was
+            // balanced by a DECRST that the relaunch-killed program never
+            // sent, so replaying it re-arms the mode in this fresh terminal
+            // for good. Disarm mouse tracking before live output resumes --
+            // otherwise the revived shell's bare prompt fills with mouse
+            // motion reports.
+            if pending.resetModes {
+                let modeReset = Data(TerminalReplayModeReset.disableSequence.utf8)
+                modeReset.withUnsafeBytes { rawBuffer in
+                    guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
+                    ghostty_surface_process_output(surface, baseAddress, UInt(rawBuffer.count))
+                }
+            }
+        }
+
+        #if DEBUG
+        let currentSize = ghostty_surface_size(surface)
+        dlog(
+            "session.escrow.revive.seed surface=\(id.uuidString.prefix(8)) bytes=\(pending.text.utf8.count) " +
+            "px=\(currentSize.width_px)x\(currentSize.height_px) grid=\(currentSize.columns)x\(currentSize.rows) trigger=\(trigger)"
+        )
+        #endif
+
+        // Register the PTY output tap now -- deliberately after seeding, so
+        // this replay text is never captured into the new session's own
+        // `wal.log`. Mirrors the non-revive registration in `createSurface`.
+        outputTapContext?.release()
+        outputTapContext = SessionWALStore.shared.register(
+            surface: surface,
+            surfaceId: id.uuidString,
+            workingDirectory: pending.workingDirectory
+        )
+
+        // Post-seed SIGWINCH: a live TUI that survived the relaunch (and
+        // thus handles SIGWINCH) repaints over any replay artifacts on its
+        // own, replacing the manual window-resize users otherwise do today.
+        // SIGWINCH's default disposition is ignore, so delivering it to a
+        // stale/reused pgid or pid is a silent no-op, not a hazard.
+        let pgid = pendingReviveWinchPGID
+        let childPID = pendingReviveWinchChildPID
+        pendingReviveWinchPGID = nil
+        pendingReviveWinchChildPID = nil
+        if let pgid, pgid > 0 {
+            killpg(pgid, SIGWINCH)
+            #if DEBUG
+            dlog("session.escrow.revive.winch surface=\(id.uuidString.prefix(8)) pgid=\(pgid) child=0")
+            #endif
+        } else if let childPID, childPID > 0 {
+            kill(pid_t(childPID), SIGWINCH)
+            #if DEBUG
+            dlog("session.escrow.revive.winch surface=\(id.uuidString.prefix(8)) pgid=0 child=\(childPID)")
+            #endif
+        }
+    }
+
     @discardableResult
     func updateSize(
         width: CGFloat,
@@ -1424,6 +1542,16 @@ final class TerminalSurface: Identifiable, ObservableObject {
     ) -> Bool {
         guard let surface = surface else { return false }
         _ = layerScale
+
+        // restore-replay-residuals: the first `updateSize` call after
+        // creation is the primary trigger for deferred revived-scrollback
+        // seeding -- see `seedRevivedScrollbackIfPending()`'s doc comment.
+        // No-ops once `pendingReviveSeed` has already been consumed (by this
+        // trigger or the fallback timer), and no-ops entirely for non-revive
+        // surfaces (`pendingReviveSeed` is never set for those).
+        if pendingReviveSeed != nil {
+            seedRevivedScrollbackIfPending(trigger: "updateSize")
+        }
 
         let resolvedBackingWidth = backingSize?.width ?? (width * xScale)
         let resolvedBackingHeight = backingSize?.height ?? (height * yScale)
