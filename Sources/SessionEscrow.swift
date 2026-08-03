@@ -176,12 +176,34 @@ enum SessionEscrowPolicy {
     /// drain thread might still be touching.
     static let retrieveDrainStopTimeout: TimeInterval = 3.0
     /// Bounds the app-side `SessionEscrowClient.retrieve` round trip
-    /// end-to-end (connect is effectively immediate for local `AF_UNIX`,
-    /// this mostly covers the holder's own `retrieveDrainStopTimeout`
-    /// budget plus normal scheduling slop). Any timeout is treated as a
-    /// plain retrieval failure -- the reattach path falls back to spawning
-    /// fresh, never blocks restore indefinitely.
-    static let retrieveRecvTimeoutSeconds: Int = 5
+    /// end-to-end. Unlike the other generous timeouts in this file, the
+    /// generosity argument inverts here: `retrieve` runs SYNCHRONOUSLY on
+    /// the main thread during session restore, once per escrowed panel,
+    /// serially -- a present-but-unresponsive holder stalls launch by this
+    /// entire duration, per panel. The holder is a local same-machine
+    /// `AF_UNIX` socket that answers in microseconds when healthy, so 500ms
+    /// is already roughly 1000x a healthy round trip; the cost of a false
+    /// miss is just falling back to the scrollback-replay restore, not
+    /// data loss. Any timeout is treated as a plain retrieval failure --
+    /// the reattach path falls back to spawning fresh, never blocks
+    /// restore indefinitely.
+    static let retrieveRecvTimeout: TimeInterval = 0.5
+    /// How long a draining (app-is-gone) session waits to be reclaimed
+    /// before the holder gives up and closes its pty master. Elapsed time
+    /// alone cannot prove abandonment -- a machine that sleeps mid-relaunch,
+    /// or a user who quits and reopens much later, can legitimately exceed
+    /// 10 minutes, and a false expiry silently destroys a session someone
+    /// wanted (SIGHUP to the shell; only scrollback survives via the
+    /// fallback restore). One hour keeps the leak bounded while making
+    /// false retirement implausible for real relaunch flows. The durable
+    /// fix is explicit claim/renew reconciliation between app and holder,
+    /// not a timer -- tracked separately; this TTL is a stopgap until then.
+    static let unclaimedSessionTTL: TimeInterval = 3600
+    /// How often the holder sweeps for expired sessions.
+    static let reaperInterval: TimeInterval = 30
+    /// How long the holder waits, with an empty registry and no live
+    /// connections, before exiting.
+    static let idleExitGrace: TimeInterval = 30
 }
 
 // MARK: - Wire format
@@ -684,7 +706,7 @@ extension SessionEscrowClient {
     /// Synchronous and launch-time only, matching `SessionWALStore
     /// .readFallbackScrollbackText`'s contract -- never call this from a
     /// keystroke-hot path. Bounded by `SessionEscrowPolicy
-    /// .retrieveRecvTimeoutSeconds`; any failure (holder unreachable,
+    /// .retrieveRecvTimeout`; any failure (holder unreachable,
     /// unknown session, token mismatch, child already exited, timeout)
     /// returns nil so the caller can fall through to its existing
     /// spawn-fresh path unchanged.
@@ -698,7 +720,16 @@ extension SessionEscrowClient {
         }
         defer { close(connectionFD) }
 
-        var timeout = timeval(tv_sec: SessionEscrowPolicy.retrieveRecvTimeoutSeconds, tv_usec: 0)
+        // Sub-second timeout, so this must split whole seconds from the
+        // fractional remainder rather than truncating straight to
+        // `tv_sec` -- a bare `Int(retrieveRecvTimeout)` would silently
+        // become 0 seconds with no microsecond budget at all.
+        let recvTimeout = SessionEscrowPolicy.retrieveRecvTimeout
+        let recvTimeoutWholeSeconds = recvTimeout.rounded(.down)
+        var timeout = timeval(
+            tv_sec: Int(recvTimeoutWholeSeconds),
+            tv_usec: suseconds_t((recvTimeout - recvTimeoutWholeSeconds) * 1_000_000)
+        )
         setsockopt(connectionFD, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
         guard let requestFrame = EscrowWireFormat.encodeRetrieveRequestFrame(sessionId: sessionId, token: token),
@@ -797,6 +828,11 @@ enum SessionEscrowHolder {
         /// escrowing app might still be alive, and handing back the fd
         /// would risk two readers on the same pty master.
         var isDraining = false
+        /// Set (under `SessionEscrowHolder.registryLock`), at the same
+        /// point `isDraining` flips true, to the moment draining began.
+        /// Read by the reaper to decide whether an unclaimed session's
+        /// `SessionEscrowPolicy.unclaimedSessionTTL` has elapsed.
+        var drainingStartedAt: Date?
         /// Set (under `SessionEscrowHolder.registryLock`) to ask an active
         /// drain thread to stop after its next bounded read/poll cycle.
         var stopRequested = false
@@ -842,12 +878,32 @@ enum SessionEscrowHolder {
         }
     }
 
-    /// Guards `registry` and every `HeldSession`'s mutable fields
-    /// (`isDraining`, `stopRequested`, `closed`). Held only very briefly
-    /// (dictionary lookups/mutations, flag flips) -- never across a
-    /// blocking syscall.
+    /// Guards `registry`, `activeConnectionCount`, and every `HeldSession`'s
+    /// mutable fields (`isDraining`, `drainingStartedAt`, `stopRequested`,
+    /// `closed`). Held only very briefly (dictionary lookups/mutations,
+    /// flag flips, counter increments) -- never across a blocking syscall.
     private static let registryLock = NSLock()
     private static var registry: [String: HeldSession] = [:]
+    /// Count of `serve(connectionFD:)` threads currently running. Read by
+    /// the reaper alongside `registry.isEmpty` to decide whether the
+    /// holder has nothing left to hold. Guarded by `registryLock`.
+    private static var activeConnectionCount = 0
+    /// The moment the holder first observed `registry.isEmpty &&
+    /// activeConnectionCount == 0`, or nil if it isn't currently idle.
+    /// Reset the instant either becomes non-empty/non-zero. Only ever
+    /// touched from the reaper thread, so it needs no lock of its own.
+    private static var idleSince: Date?
+    /// Set once, under `registryLock`, in the SAME lock acquisition that
+    /// re-confirms the exit precondition (`registry.isEmpty &&
+    /// activeConnectionCount == 0` for `idleExitGrace`) right before
+    /// `reaperTick` calls `Darwin.exit(0)`. The accept loop in `run()`
+    /// checks this under that same lock when it would otherwise register a
+    /// new connection, so "decide to exit" and "stop accepting new
+    /// sessions" are atomic with respect to each other -- without this, a
+    /// connection could be accepted and register a pty fd in the window
+    /// between the reaper's snapshot and its `exit()` call, and `exit()`
+    /// would then destroy that live session.
+    private static var shuttingDown = false
 
     private enum FrameReadResult {
         case data(Data, Int32?)
@@ -889,13 +945,44 @@ enum SessionEscrowHolder {
         #if DEBUG
         dlog("session.escrow.holder.run listening socket=\(socketPath)")
         #endif
+        // Started before the accept loop below so its first sweep can only
+        // ever land after `reaperInterval` has elapsed -- comfortably
+        // longer than the app's own connect budget
+        // (`SessionEscrowPolicy.connectRetryCount` *
+        // `connectRetryDelay`), so the very first client to connect is
+        // always counted as an active connection before the reaper could
+        // ever consider this holder idle. See constraint 3 in the
+        // file-level "Reaper" doc comment.
+        startReaper()
         while true {
             let clientFD = accept(listenFD, nil, nil)
             guard clientFD >= 0 else { continue }
             #if DEBUG
             dlog("session.escrow.holder.accept connFD=\(clientFD)")
             #endif
+            registryLock.lock()
+            guard !shuttingDown else {
+                registryLock.unlock()
+                // The reaper has already committed to exiting (see
+                // `shuttingDown`'s doc comment) -- refuse this connection
+                // rather than register it into a process about to call
+                // `exit()`. The client's own connect retry/spawn-holder
+                // path handles a refused connection the same as any other
+                // unreachable holder.
+                #if DEBUG
+                dlog("session.escrow.holder.accept.refused connFD=\(clientFD) reason=shutting_down")
+                #endif
+                close(clientFD)
+                continue
+            }
+            activeConnectionCount += 1
+            registryLock.unlock()
             Thread.detachNewThread {
+                defer {
+                    registryLock.lock()
+                    activeConnectionCount -= 1
+                    registryLock.unlock()
+                }
                 serve(connectionFD: clientFD)
             }
         }
@@ -1030,6 +1117,7 @@ enum SessionEscrowHolder {
                 continue
             }
             session.isDraining = true
+            session.drainingStartedAt = Date()
             registryLock.unlock()
             Thread.detachNewThread {
                 drain(session: session)
@@ -1121,6 +1209,128 @@ enum SessionEscrowHolder {
             diff |= lhs[i] ^ rhs[i]
         }
         return diff == 0
+    }
+
+    // MARK: - Reaper (unclaimed session expiry + idle exit)
+
+    /// Started once from `run()`, before the accept loop, and never
+    /// stops. Wakes every `SessionEscrowPolicy.reaperInterval` to (1) close
+    /// out any session that has been draining, unclaimed, past
+    /// `SessionEscrowPolicy.unclaimedSessionTTL`, and (2) exit the holder
+    /// once it has had nothing to hold and no live connection for
+    /// `SessionEscrowPolicy.idleExitGrace`. Both halves of the fix for the
+    /// escrow-holder leak: without (1) an unclaimed session (crash, force
+    /// quit, a deleted tagged build, an update that reclaims nothing) is
+    /// held forever; without (2) the holder itself never exits even once
+    /// its registry is empty and nothing is connected to it.
+    private static func startReaper() {
+        Thread.detachNewThread {
+            while true {
+                Thread.sleep(forTimeInterval: SessionEscrowPolicy.reaperInterval)
+                reaperTick()
+            }
+        }
+    }
+
+    private static func reaperTick() {
+        retireExpiredSessions()
+
+        // Snapshot-then-decide is intentionally split into two lock
+        // acquisitions: the first (below) only updates `idleSince`
+        // bookkeeping and is fine to race a new `accept()`, since nothing
+        // irreversible happens here yet. The second, final re-check right
+        // before `exit()` is the one that must be atomic with the accept
+        // loop's own lock acquisition -- see `shuttingDown`'s doc comment.
+        registryLock.lock()
+        let registryIsEmpty = registry.isEmpty
+        let connectionCount = activeConnectionCount
+        registryLock.unlock()
+
+        // Hard precondition, not a heuristic: never exit while a session is
+        // still held or a connection is still live -- see the file-level
+        // "Non-negotiable safety constraints" this reaper exists to honor.
+        guard registryIsEmpty, connectionCount == 0 else {
+            idleSince = nil
+            return
+        }
+        guard let since = idleSince else {
+            idleSince = Date()
+            return
+        }
+        guard Date().timeIntervalSince(since) >= SessionEscrowPolicy.idleExitGrace else { return }
+
+        // Final re-check + the shutdown decision itself, in ONE lock
+        // acquisition: this is what makes "decide to exit" and "the accept
+        // loop stops registering new connections" atomic with respect to
+        // each other, closing the TOCTOU window a separate check-then-exit
+        // would leave open (accept + register could land in between).
+        registryLock.lock()
+        guard registry.isEmpty, activeConnectionCount == 0 else {
+            registryLock.unlock()
+            idleSince = nil
+            return
+        }
+        shuttingDown = true
+        registryLock.unlock()
+
+        #if DEBUG
+        dlog("session.escrow.holder.exit reason=idle")
+        #endif
+        Darwin.exit(0)
+    }
+
+    /// Closes out every draining session whose `drainingStartedAt` is
+    /// older than `SessionEscrowPolicy.unclaimedSessionTTL` -- no app ever
+    /// came back for it. Mirrors `handleRetrieveRequest`'s drain/retrieve
+    /// coordination exactly (remove-from-registry, request-stop, wait on
+    /// the semaphore, then close) so an expiry can never race a drain
+    /// thread's in-flight read the way a bare `close()` would. Unlike a
+    /// retrieval, nothing receives this fd, so `markHandedOff()` is never
+    /// called -- only `markClosedIfNeeded()`.
+    private static func retireExpiredSessions() {
+        let now = Date()
+        var expired: [HeldSession] = []
+        registryLock.lock()
+        for (sessionId, session) in registry {
+            if session.isDraining,
+               let startedAt = session.drainingStartedAt,
+               now.timeIntervalSince(startedAt) >= SessionEscrowPolicy.unclaimedSessionTTL {
+                expired.append(session)
+                registry.removeValue(forKey: sessionId)
+                session.stopRequested = true
+            }
+        }
+        registryLock.unlock()
+
+        for session in expired {
+            #if DEBUG
+            dlog("session.escrow.holder.session.expire session=\(session.sessionId.prefix(8))")
+            #endif
+            let stopped = session.drainStoppedSemaphore.wait(timeout: .now() + SessionEscrowPolicy.retrieveDrainStopTimeout) == .success
+            guard stopped else {
+                // The drain thread never acknowledged in time -- same
+                // situation `handleRetrieveRequest` guards against: it may
+                // still be mid-poll/read on this exact fd, so closing it
+                // here would be a use-after-close/fd-reuse hazard. Do NOT
+                // touch the fd. It is already out of `registry` (removed
+                // above) and `stopRequested` is already set, so the drain
+                // thread will still notice on its very next poll cycle,
+                // stop, and signal (harmlessly, to no waiter). `drain(session:)`
+                // holds its own strong reference to this `HeldSession` for
+                // as long as it runs, so the object cannot deallocate
+                // before that thread actually returns -- `HeldSession
+                // .deinit`'s safety-net close is what closes the fd, and it
+                // necessarily happens only after the drain thread is done
+                // touching it.
+                #if DEBUG
+                dlog("session.escrow.holder.session.expire.stop_timeout session=\(session.sessionId.prefix(8))")
+                #endif
+                continue
+            }
+            registryLock.lock()
+            session.markClosedIfNeeded()
+            registryLock.unlock()
+        }
     }
 
     /// Reads exactly `EscrowWireFormat.frameSize` bytes, looping over

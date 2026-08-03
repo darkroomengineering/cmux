@@ -68,10 +68,11 @@ When rebuilding GhosttyKit.xcframework, always use Release optimizations:
 cd ghostty && zig build -Demit-xcframework=true -Dxcframework-target=universal -Doptimize=ReleaseFast
 ```
 
-When rebuilding programad for release/bundling, always use ReleaseFast:
+The remote daemon (`programad-remote`) is Go, lives at `daemon/remote/`, and is only
+spawned per SSH connection — it is not resident locally. To rebuild its release assets:
 
 ```bash
-cd programad && zig build -Doptimize=ReleaseFast
+./scripts/build_remote_daemon_release_assets.sh
 ```
 
 `reload` = build the Debug app (tag required). Pass `--launch` to also kill existing and open:
