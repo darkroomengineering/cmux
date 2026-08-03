@@ -163,6 +163,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private var eventMonitor: Any?
     var trackingArea: NSTrackingArea?
     private var windowObserver: NSObjectProtocol?
+    private var screenParametersObserver: NSObjectProtocol?
     var lastScrollEventTime: CFTimeInterval = 0
     private var visibleInUI: Bool = true
     private var pendingSurfaceSize: CGSize?
@@ -381,6 +382,10 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             NotificationCenter.default.removeObserver(windowObserver)
             self.windowObserver = nil
         }
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+            self.screenParametersObserver = nil
+        }
         // Balance the cursor stack if the view is removed while hover is active
         if wordPathHoverActive {
             wordPathHoverActive = false
@@ -414,6 +419,19 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             queue: .main
         ) { [weak self] notification in
             self?.windowDidChangeScreen(notification)
+        }
+
+        // NSWindow.didChangeScreenNotification only fires when AppKit decides this
+        // window's screen changed. A window born on the wrong screen (e.g. session
+        // restore racing external-monitor enumeration at wake/login) never gets that
+        // notification because it never moves. NSApplication.didChangeScreenParametersNotification
+        // fires system-wide whenever display config settles, so it catches that case too.
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            self?.applicationDidChangeScreenParameters(notification)
         }
 
         if let surface = terminalSurface?.surface,
@@ -832,6 +850,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         if let windowObserver {
             NotificationCenter.default.removeObserver(windowObserver)
         }
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+        }
         if let trackingArea {
             removeTrackingArea(trackingArea)
         }
@@ -842,6 +863,28 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private func windowDidChangeScreen(_ notification: Notification) {
         guard let window else { return }
         guard let object = notification.object as? NSWindow, window == object else { return }
+        reassertDisplayIDAndScale()
+    }
+
+    // NSApplication.didChangeScreenParametersNotification has no per-window object to
+    // match against (unlike NSWindow.didChangeScreenNotification), so it can't reuse
+    // windowDidChangeScreen(_:)'s object guard. It fires whenever display configuration
+    // settles system-wide, which is exactly the case that self-heals a window that was
+    // born on the wrong screen at session restore (e.g. external monitor still
+    // enumerating at wake/login) and therefore never gets its own didChangeScreenNotification.
+    private func applicationDidChangeScreenParameters(_ notification: Notification) {
+        guard self.window != nil else { return }
+#if DEBUG
+        dlog(
+            "surface.view.screenParamsChanged surface=\(terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
+            "displayId=\(window?.screen?.displayID ?? 0)"
+        )
+#endif
+        reassertDisplayIDAndScale()
+    }
+
+    private func reassertDisplayIDAndScale() {
+        guard let window else { return }
         guard let screen = window.screen else { return }
         guard let surface = terminalSurface?.surface else { return }
 

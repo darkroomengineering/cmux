@@ -1152,6 +1152,21 @@ final class TerminalSurface: Identifiable, ObservableObject {
             }
         }
 
+        // Snapshot who owns the revived pty *before* ghostty takes the fd.
+        // When the shell itself is the foreground process group there is no
+        // live program left to re-arm mouse reporting after the scrollback
+        // replay below, so the modes that replay restores have to be disarmed.
+        // When a TUI is in the foreground it survived the relaunch inside the
+        // escrowed pty and still expects those modes -- leave them alone.
+        let revivedShellOwnsTerminal: Bool = {
+            guard let consumedReviveDescriptor else { return false }
+            let foregroundGroup = tcgetpgrp(consumedReviveDescriptor.masterFD)
+            // No answer (closed fd, no foreground group): prefer a usable
+            // prompt over a TUI's mouse, since the prompt is the common case.
+            guard foregroundGroup >= 0 else { return true }
+            return Int64(foregroundGroup) == consumedReviveDescriptor.childPID
+        }()
+
         createWithCommandAndWorkingDirectory()
 
         if surface == nil {
@@ -1187,6 +1202,40 @@ final class TerminalSurface: Identifiable, ObservableObject {
         TerminalSurfaceRegistry.shared.registerRuntimeSurface(createdSurface, ownerId: id)
         recordRuntimeSurfaceCreation()
 
+        // For vsync-driven rendering, Ghostty needs to know which display we're on so it can
+        // start a CVDisplayLink with the right refresh rate. If we don't set this early, the
+        // renderer can believe vsync is "running" but never deliver frames, which looks like a
+        // frozen terminal until focus/visibility changes force a synchronous draw.
+        //
+        // `view.window?.screen` can be transiently nil during early attachment; fall back to the
+        // primary screen so we always set *some* display ID, then update again on screen changes.
+        if let screen = view.window?.screen ?? NSScreen.main,
+           let displayID = screen.displayID,
+           displayID != 0 {
+            ghostty_surface_set_display_id(createdSurface, displayID)
+        }
+
+        // Size the grid BEFORE any scrollback replay below. `ghostty_surface_new`
+        // births every surface at a hardcoded 800x600 placeholder
+        // (`ghostty/src/apprt/embedded.zig`), so replaying a transcript first
+        // parses it against a grid that is not this pane's width. Soft-wrapped
+        // lines survive that -- a later resize reflows them -- but the absolute
+        // cursor addressing in any captured TUI redraw writes glyphs to cells
+        // chosen for the placeholder width, and no later resize can move them
+        // back. That is layout damage baked in at replay time, which is why it
+        // outlives every attempt to fix it by resizing the window.
+        ghostty_surface_set_content_scale(createdSurface, scaleFactors.x, scaleFactors.y)
+        let backingSize = view.convertToBacking(NSRect(origin: .zero, size: view.bounds.size)).size
+        let wpx = pixelDimension(from: backingSize.width)
+        let hpx = pixelDimension(from: backingSize.height)
+        if wpx > 0, hpx > 0 {
+            ghostty_surface_set_size(createdSurface, wpx, hpx)
+            lastPixelWidth = wpx
+            lastPixelHeight = hpx
+            lastXScale = scaleFactors.x
+            lastYScale = scaleFactors.y
+        }
+
         // Issue #182 slice 2: seed pre-crash scrollback into the fresh
         // surface's own screen/scrollback state via
         // `ghostty_surface_process_output` -- bypasses the pty entirely
@@ -1200,6 +1249,19 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
                 ghostty_surface_process_output(createdSurface, baseAddress, UInt(rawBuffer.count))
             }
+            // The seeded transcript is historical: any DECSET inside it was
+            // balanced by a DECRST that the relaunch-killed program never sent,
+            // so replaying it re-arms the mode in this fresh terminal for good.
+            // Disarm mouse tracking before live output resumes -- otherwise the
+            // revived shell's bare prompt fills with mouse motion reports.
+            if revivedShellOwnsTerminal {
+                let modeReset = Data(TerminalReplayModeReset.disableSequence.utf8)
+                modeReset.withUnsafeBytes { rawBuffer in
+                    guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
+                    ghostty_surface_process_output(createdSurface, baseAddress, UInt(rawBuffer.count))
+                }
+            }
+
             #if DEBUG
             dlog("session.escrow.revive.scrollback_seeded surface=\(id.uuidString.prefix(8)) bytes=\(data.count)")
             #endif
@@ -1231,31 +1293,6 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // Session scrollback replay must be one-shot. Reusing it on a later runtime
         // surface recreation would inject stale restored output into a live shell.
         additionalEnvironment.removeValue(forKey: SessionScrollbackReplayStore.environmentKey)
-
-        // For vsync-driven rendering, Ghostty needs to know which display we're on so it can
-        // start a CVDisplayLink with the right refresh rate. If we don't set this early, the
-        // renderer can believe vsync is "running" but never deliver frames, which looks like a
-        // frozen terminal until focus/visibility changes force a synchronous draw.
-        //
-        // `view.window?.screen` can be transiently nil during early attachment; fall back to the
-        // primary screen so we always set *some* display ID, then update again on screen changes.
-        if let screen = view.window?.screen ?? NSScreen.main,
-           let displayID = screen.displayID,
-           displayID != 0 {
-            ghostty_surface_set_display_id(createdSurface, displayID)
-        }
-
-        ghostty_surface_set_content_scale(createdSurface, scaleFactors.x, scaleFactors.y)
-        let backingSize = view.convertToBacking(NSRect(origin: .zero, size: view.bounds.size)).size
-        let wpx = pixelDimension(from: backingSize.width)
-        let hpx = pixelDimension(from: backingSize.height)
-        if wpx > 0, hpx > 0 {
-            ghostty_surface_set_size(createdSurface, wpx, hpx)
-            lastPixelWidth = wpx
-            lastPixelHeight = hpx
-            lastXScale = scaleFactors.x
-            lastYScale = scaleFactors.y
-        }
 
         // Some GhosttyKit builds can drop inherited font_size during post-create
         // config/scale reconciliation. If runtime points don't match the inherited
