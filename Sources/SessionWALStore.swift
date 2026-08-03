@@ -574,25 +574,35 @@ enum SessionWALCore {
     /// 1. UTF-8 continuation bytes (`0b10xxxxxx`) at the start mean the cut
     ///    landed inside a multi-byte scalar -- advance past all of them so
     ///    `String(decoding:as:)` never has to emit U+FFFD for an orphaned
-    ///    tail.
+    ///    tail. This is unambiguous (no valid UTF-8 text legitimately opens
+    ///    with a continuation byte), so it is not bounded.
     /// 2. CSI parameter/intermediate bytes (`0x30-0x3F`, `0x20-0x2F`) at the
     ///    start, with no preceding `ESC [` visible in this same buffer, mean
-    ///    the cut landed inside a control sequence. If a final byte
-    ///    (`0x40-0x7E`) shows up before the run breaks, drop straight
-    ///    through it and resume after -- those parameter bytes belong to a
-    ///    sequence whose head we don't have, not to displayable text. If the
-    ///    run breaks before a final byte turns up, this was not confidently
-    ///    a torn CSI run (could be plain leading digits), so it is left
-    ///    alone rather than risk eating real content.
+    ///    the cut *may* have landed inside a control sequence. If a final
+    ///    byte (`0x40-0x7E`) shows up within the next `csiTailScanCapBytes`
+    ///    bytes, drop straight through it and resume after. This case is
+    ///    genuinely ambiguous, unlike (1): space (`0x20`) is a legal CSI
+    ///    intermediate byte, so "123;456 Main St" and a torn
+    ///    `ESC[123;456 m`-style sequence are byte-for-byte indistinguishable
+    ///    at the front of a buffer -- there is no way to tell them apart by
+    ///    inspection. What *can* be bounded is the damage: real-world torn
+    ///    SGR params (e.g. `38;2;255;255;255`) are well under
+    ///    `csiTailScanCapBytes`, so if no final byte appears within that
+    ///    window, this is treated as plain text and left untouched --
+    ///    intentionally trading a small chance of leaving a torn escape in
+    ///    place against the much likelier case of eating real leading text.
     ///
-    /// Failure mode, stated honestly: this is a byte-prefix heuristic, not a
-    /// full parser carried over from the frame side of the cut. Worst case
-    /// it drops a handful of legitimate leading characters at the very top
-    /// of a restored delta (e.g. digits that happen to look like orphaned
-    /// CSI parameters), or -- on a pathological CSI run with no final byte
-    /// anywhere in the buffer -- leaves a torn escape in place. Both failure
-    /// modes are confined to the first few bytes of a replay; only the
-    /// leading edge is ever cut, so this cannot recur deeper in the delta.
+    /// Failure mode, stated honestly and now structurally bounded rather
+    /// than probabilistic: worst case, case (2) drops at most
+    /// `csiTailScanCapBytes` leading bytes of a restored delta (a torn CSI
+    /// run whose final byte happens to land inside the scan window but was
+    /// actually plain text), or leaves a torn escape in place (a torn CSI
+    /// run whose final byte lands outside the window). Both outcomes are
+    /// confined to the first `csiTailScanCapBytes` bytes of a replay; only
+    /// the leading edge is ever cut, so this cannot recur deeper in the
+    /// delta.
+    private static let csiTailScanCapBytes = 16
+
     private static func trimTornLeadingBytes(_ data: Data) -> Data {
         guard !data.isEmpty else { return data }
         var start = data.startIndex
@@ -605,17 +615,19 @@ enum SessionWALCore {
 
         // 2) Skip a leading, unterminated-from-our-view CSI parameter/
         // intermediate run (mid-escape-sequence cut) through its final byte,
-        // if one turns up. Only trips when the first surviving byte looks
-        // like a CSI parameter/intermediate byte -- plain text essentially
-        // never opens a delta with these ranges after a clean cut.
+        // if one turns up within the bounded scan window. Only trips when
+        // the first surviving byte looks like a CSI parameter/intermediate
+        // byte.
         let firstByte = data[start]
         let looksLikeCSITail = (0x30...0x3F).contains(firstByte) || (0x20...0x2F).contains(firstByte)
         if looksLikeCSITail {
+            let scanLimit = data.index(start, offsetBy: csiTailScanCapBytes, limitedBy: data.endIndex) ?? data.endIndex
             var cursor = start
-            while cursor < data.endIndex {
+            while cursor < scanLimit {
                 let byte = data[cursor]
                 if (0x40...0x7E).contains(byte) {
-                    // Final byte of the torn sequence -- drop through it.
+                    // Final byte of the torn sequence, found within the
+                    // bounded window -- drop through it.
                     start = data.index(after: cursor)
                     break
                 }
@@ -627,6 +639,10 @@ enum SessionWALCore {
                 }
                 cursor = data.index(after: cursor)
             }
+            // If the scan ran off the end of the bounded window without
+            // finding a final byte (and without hitting the `break` above),
+            // `start` is left untouched -- no trim. See the cap rationale
+            // in this function's doc comment.
         }
 
         return start > data.startIndex ? data.suffix(from: start) : data

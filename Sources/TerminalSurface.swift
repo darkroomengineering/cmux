@@ -1287,24 +1287,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // path that size is not proven final yet (`restoreSessionSnapshot`
         // runs before `setFrame(restoredFrame)`), so replay damage gets
         // baked in at the wrong width and survives every later resize. The
-        // deferred method still runs before the output tap is registered
-        // for the revive case (moved there too, below) so this replay text
-        // is never captured into the new session's own `wal.log`.
-        if let consumedReviveDescriptor {
-            pendingReviveSeed = (
-                text: consumedReviveDescriptor.scrollbackText ?? "",
-                resetModes: revivedShellOwnsTerminal,
-                workingDirectory: resolvedWorkingDirectory
-            )
-            if !SessionMachineryGate.isUnitTesting {
-                // Bounded fallback: covers a surface created already at its
-                // final size, where no further `updateSize` call ever lands
-                // to trigger the primary path in `seedRevivedScrollbackIfPending()`.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.seedRevivedScrollbackIfPending(trigger: "fallback-timer")
-                }
-            }
-        } else {
+        // actual `pendingReviveSeed` storage is armed last, near the end of
+        // this function -- see that site for why and for the accepted
+        // live-output interleaving tradeoff.
+        if consumedReviveDescriptor == nil {
             // Register the PTY output tap now that the runtime surface
             // definitely exists, wiring it into the session WAL writer. See
             // SessionOutputTapSpike.swift (SessionWALStore). The revive case
@@ -1363,6 +1349,45 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // transition nudges the renderer.
         view.forceRefreshSurface()
         ghostty_surface_refresh(createdSurface)
+
+        // restore-replay-residuals: arm the deferred revive seed LAST, after
+        // every other piece of post-creation setup above (WAL identity
+        // resolution, font/focus reconciliation, pending socket input
+        // flush, initial redraw kick). This closes a structural reentrancy
+        // window: if any layout path calls `updateSize` reentrantly *during*
+        // `createSurface` (unproven but untraced), it must find
+        // `pendingReviveSeed` still nil and no-op -- only the first
+        // `updateSize` call landing strictly after `createSurface` returns
+        // (or the fallback timer below) is allowed to trigger the seed.
+        //
+        // Accepted tradeoff, stated honestly: the pty is live from the
+        // moment `ghostty_surface_new` succeeds, so live output can render
+        // before this deferred historical seed runs -- the old inline seed
+        // had the same window, just at microsecond scale instead of up to
+        // ~150ms. Any live output painted during that window is overwritten
+        // when the seed finally runs (seeding always writes over whatever is
+        // currently on screen), so this is a one-time, cosmetic artifact,
+        // not data loss -- bounded by whichever comes first: the next
+        // `updateSize` call or the fallback below. The SIGWINCH nudge fired
+        // immediately after seeding (in `seedRevivedScrollbackIfPending`)
+        // makes any live TUI that survived the relaunch repaint over
+        // whatever artifacts remain. A true ordering barrier -- buffering
+        // all live pty output until the seed commits -- would need
+        // cooperation from ghostty itself and is disproportionate to a
+        // cosmetic, self-healing window.
+        if let consumedReviveDescriptor {
+            pendingReviveSeed = (
+                text: consumedReviveDescriptor.scrollbackText ?? "",
+                resetModes: revivedShellOwnsTerminal,
+                workingDirectory: resolvedWorkingDirectory
+            )
+            // Bounded fallback: covers a surface created already at its
+            // final size, where no further `updateSize` call ever lands to
+            // trigger the primary path in `seedRevivedScrollbackIfPending()`.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.seedRevivedScrollbackIfPending(trigger: "fallback-timer")
+            }
+        }
 
         NotificationCenter.default.post(
             name: .terminalSurfaceDidBecomeReady,

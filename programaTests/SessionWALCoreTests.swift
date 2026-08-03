@@ -185,6 +185,25 @@ final class SessionWALCoreTests: XCTestCase {
             (utf8Replayed ?? "").contains("\u{FFFD}"),
             "No replacement character should appear at a UTF-8 seam that was safely trimmed"
         )
+
+        // Scenario 3: the delta legitimately begins with a long digit run
+        // that is syntactically indistinguishable from a torn CSI parameter
+        // list until a 0x40-0x7E byte ('M' of "Main") turns up -- but that
+        // byte lands past the bounded scan window (csiTailScanCapBytes = 16;
+        // "12345678901234567;89 " is 21 bytes), so the trim must not fire
+        // and the full delta must survive untouched.
+        let longDigitPaths = makePaths()
+        try seedMeta(at: longDigitPaths)
+        let longDigitText = "12345678901234567;89 Main"
+        try Data(longDigitText.utf8).write(to: longDigitPaths.walURL)
+        try writeFrame("F", offset: 0, generation: 0, at: longDigitPaths)
+
+        let longDigitReplayed = SessionWALCore.readFrameAndDelta(at: longDigitPaths, walCapBytes: 4096)
+        XCTAssertEqual(
+            longDigitReplayed,
+            "F" + longDigitText,
+            "A delta whose leading run exceeds the bounded CSI-tail scan window must survive untrimmed, even though it is syntactically ambiguous with a torn escape"
+        )
     }
 
     private func makePaths() -> SessionWALPaths {
