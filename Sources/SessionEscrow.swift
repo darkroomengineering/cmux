@@ -176,17 +176,29 @@ enum SessionEscrowPolicy {
     /// drain thread might still be touching.
     static let retrieveDrainStopTimeout: TimeInterval = 3.0
     /// Bounds the app-side `SessionEscrowClient.retrieve` round trip
-    /// end-to-end (connect is effectively immediate for local `AF_UNIX`,
-    /// this mostly covers the holder's own `retrieveDrainStopTimeout`
-    /// budget plus normal scheduling slop). Any timeout is treated as a
-    /// plain retrieval failure -- the reattach path falls back to spawning
-    /// fresh, never blocks restore indefinitely.
-    static let retrieveRecvTimeoutSeconds: Int = 5
+    /// end-to-end. Unlike the other generous timeouts in this file, the
+    /// generosity argument inverts here: `retrieve` runs SYNCHRONOUSLY on
+    /// the main thread during session restore, once per escrowed panel,
+    /// serially -- a present-but-unresponsive holder stalls launch by this
+    /// entire duration, per panel. The holder is a local same-machine
+    /// `AF_UNIX` socket that answers in microseconds when healthy, so 500ms
+    /// is already roughly 1000x a healthy round trip; the cost of a false
+    /// miss is just falling back to the scrollback-replay restore, not
+    /// data loss. Any timeout is treated as a plain retrieval failure --
+    /// the reattach path falls back to spawning fresh, never blocks
+    /// restore indefinitely.
+    static let retrieveRecvTimeout: TimeInterval = 0.5
     /// How long a draining (app-is-gone) session waits to be reclaimed
-    /// before the holder gives up and closes its pty master. Generous on
-    /// purpose: a relaunch reconnects within seconds, so this only fires
-    /// for sessions no app is ever coming back for.
-    static let unclaimedSessionTTL: TimeInterval = 600
+    /// before the holder gives up and closes its pty master. Elapsed time
+    /// alone cannot prove abandonment -- a machine that sleeps mid-relaunch,
+    /// or a user who quits and reopens much later, can legitimately exceed
+    /// 10 minutes, and a false expiry silently destroys a session someone
+    /// wanted (SIGHUP to the shell; only scrollback survives via the
+    /// fallback restore). One hour keeps the leak bounded while making
+    /// false retirement implausible for real relaunch flows. The durable
+    /// fix is explicit claim/renew reconciliation between app and holder,
+    /// not a timer -- tracked separately; this TTL is a stopgap until then.
+    static let unclaimedSessionTTL: TimeInterval = 3600
     /// How often the holder sweeps for expired sessions.
     static let reaperInterval: TimeInterval = 30
     /// How long the holder waits, with an empty registry and no live
@@ -694,7 +706,7 @@ extension SessionEscrowClient {
     /// Synchronous and launch-time only, matching `SessionWALStore
     /// .readFallbackScrollbackText`'s contract -- never call this from a
     /// keystroke-hot path. Bounded by `SessionEscrowPolicy
-    /// .retrieveRecvTimeoutSeconds`; any failure (holder unreachable,
+    /// .retrieveRecvTimeout`; any failure (holder unreachable,
     /// unknown session, token mismatch, child already exited, timeout)
     /// returns nil so the caller can fall through to its existing
     /// spawn-fresh path unchanged.
@@ -708,7 +720,16 @@ extension SessionEscrowClient {
         }
         defer { close(connectionFD) }
 
-        var timeout = timeval(tv_sec: SessionEscrowPolicy.retrieveRecvTimeoutSeconds, tv_usec: 0)
+        // Sub-second timeout, so this must split whole seconds from the
+        // fractional remainder rather than truncating straight to
+        // `tv_sec` -- a bare `Int(retrieveRecvTimeout)` would silently
+        // become 0 seconds with no microsecond budget at all.
+        let recvTimeout = SessionEscrowPolicy.retrieveRecvTimeout
+        let recvTimeoutWholeSeconds = recvTimeout.rounded(.down)
+        var timeout = timeval(
+            tv_sec: Int(recvTimeoutWholeSeconds),
+            tv_usec: suseconds_t((recvTimeout - recvTimeoutWholeSeconds) * 1_000_000)
+        )
         setsockopt(connectionFD, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
         guard let requestFrame = EscrowWireFormat.encodeRetrieveRequestFrame(sessionId: sessionId, token: token),
