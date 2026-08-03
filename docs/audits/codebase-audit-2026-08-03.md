@@ -23,7 +23,15 @@ not maintainability. Findings here do not repeat that report.
 ## Remediation status (updated same day)
 
 - **H1** — shipped in PR #237: reaper + TTL (1h) + idle exit, plus fd-reuse and exit/accept race
-  fixes. Claim/renew reconciliation (the durable design) in progress on `perf/audit-backlog`.
+  fixes. Claim/renew reconciliation was built, then **dropped before shipping**: cross-model review
+  confirmed a 120s time-based reconcile destroys sessions that `programa snapshot restore` can
+  legitimately reattach at any later time (`v2SnapshotRestore` → `createMainWindow` →
+  `attemptSessionReattach`). Any automatic early drop conflicts with manual snapshot recovery —
+  the durable design needs explicit claims, not clocks. TTL remains the leak bound; tracked as an
+  issue.
+- **N6 addendum** — `STRIP_INSTALLED_PRODUCT` alone is inert under CI's plain `xcodebuild build`;
+  `DEPLOYMENT_POSTPROCESSING = YES` was required to make it fire. Verified locally: 110,546 local
+  symbols → 0, binary 57 MB → 33 MB.
 - **M4** — shipped in PR #237 (CLAUDE.md daemon section rewritten).
 - **H2, H3** — in progress on `perf/audit-backlog`.
 - **M2** — in progress on `perf/audit-backlog` (store relocation + `#if DEBUG` gating).
