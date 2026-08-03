@@ -315,6 +315,25 @@ jobs:
             "build-universal/Build/Products/Release/Programa.app/Contents/Resources/bin/programa" \
             "build-universal/Build/Products/Release/Programa.app/Contents/Resources/bin/ghostty"
 
+      - name: Archive dSYMs
+        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        run: |
+          set -euo pipefail
+          # dwarf-with-dsym (Release config) writes each target's .dSYM next to its
+          # product in Build/Products/Release — same derived-data layout the app
+          # build and architecture check above already rely on.
+          DSYM_DIR="build-universal/Build/Products/Release"
+          DSYM_ZIP="programa-dSYMs-${EFFECTIVE_BUILD}.zip"
+          DSYM_PATHS=()
+          while IFS= read -r -d '' path; do
+            DSYM_PATHS+=("$path")
+          done < <(find "$DSYM_DIR" -maxdepth 1 -name '*.dSYM' -print0)
+          if [ "${#DSYM_PATHS[@]}" -eq 0 ]; then
+            echo "No .dSYM bundles found under $DSYM_DIR" >&2
+            exit 1
+          fi
+          zip -r -y "$DSYM_ZIP" "${DSYM_PATHS[@]}"
+
       - name: Build remote daemon release assets and inject manifest
         if: steps.guard_release_assets.outputs.skip_all != 'true'
         run: |
@@ -525,6 +544,7 @@ jobs:
           path: |
             programa-macos.dmg
             programa-macos-*.dmg
+            programa-dSYMs-*.zip
             appcast.xml
             remote-daemon-assets/programad-remote-*
           if-no-files-found: error
@@ -585,6 +605,7 @@ jobs:
           preserve_order: true
           files: |
             programa-macos-*.dmg
+            programa-dSYMs-*.zip
             appcast.xml
             programa-macos.dmg
             remote-daemon-assets/programad-remote-darwin-arm64
