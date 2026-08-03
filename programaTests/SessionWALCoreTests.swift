@@ -139,6 +139,54 @@ final class SessionWALCoreTests: XCTestCase {
         )
     }
 
+    /// Reproduces the corrupted-restore symptom (transcript fragments at wrong
+    /// columns, mid-word garbage like "m0de"): the WAL delta returned by
+    /// `readFrameAndDelta` is a raw byte slice, so a `walOffset` that lands
+    /// mid-escape-sequence or mid-UTF-8-scalar leaks the orphaned tail bytes
+    /// into the replayed text instead of being trimmed.
+    func testFrameAndDeltaTrimsLeadingPartialEscapeAndUTF8() throws {
+        // Scenario 1: walOffset lands inside a CSI parameter run. The full WAL
+        // is a single (otherwise complete) SGR color-set sequence followed by
+        // plain content; offset 3 sits right after "ESC[3", so the delta's
+        // first bytes are the orphaned tail "8;5;196m" of that sequence.
+        let csiPaths = makePaths()
+        try seedMeta(at: csiPaths)
+        let walText = "\u{001B}[38;5;196mVISIBLE"
+        try Data(walText.utf8).write(to: csiPaths.walURL)
+        try writeFrame("HELLO", offset: 3, generation: 0, at: csiPaths)
+
+        let csiReplayed = SessionWALCore.readFrameAndDelta(at: csiPaths, walCapBytes: 4096)
+        XCTAssertEqual(
+            csiReplayed,
+            "HELLOVISIBLE",
+            "A delta beginning mid-CSI-sequence must drop the orphaned parameter/final bytes, not leak them as literal text"
+        )
+        XCTAssertFalse(
+            (csiReplayed ?? "").contains("8;5;196m"),
+            "The orphaned CSI parameter tail must never appear as literal replayed text"
+        )
+
+        // Scenario 2: walOffset lands inside a multi-byte UTF-8 scalar. "é" is
+        // encoded as the two bytes 0xC3 0xA9; offset 2 sits between them, so
+        // the delta's first byte is a lone UTF-8 continuation byte.
+        let utf8Paths = makePaths()
+        try seedMeta(at: utf8Paths)
+        let utf8WalText = "x\u{00E9}post"
+        try Data(utf8WalText.utf8).write(to: utf8Paths.walURL)
+        try writeFrame("PRE", offset: 2, generation: 0, at: utf8Paths)
+
+        let utf8Replayed = SessionWALCore.readFrameAndDelta(at: utf8Paths, walCapBytes: 4096)
+        XCTAssertEqual(
+            utf8Replayed,
+            "PREpost",
+            "A delta beginning mid-UTF-8-scalar must drop the orphaned continuation byte, not decode it as U+FFFD"
+        )
+        XCTAssertFalse(
+            (utf8Replayed ?? "").contains("\u{FFFD}"),
+            "No replacement character should appear at a UTF-8 seam that was safely trimmed"
+        )
+    }
+
     private func makePaths() -> SessionWALPaths {
         SessionWALPaths(
             sessionDirectory: temporaryRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
