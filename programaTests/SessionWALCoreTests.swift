@@ -139,6 +139,94 @@ final class SessionWALCoreTests: XCTestCase {
         )
     }
 
+    /// Reproduces the corrupted-restore symptom (transcript fragments at wrong
+    /// columns, mid-word garbage like "m0de"): the WAL delta returned by
+    /// `readFrameAndDelta` is a raw byte slice, so a `walOffset` that lands
+    /// mid-escape-sequence or mid-UTF-8-scalar leaks the orphaned tail bytes
+    /// into the replayed text instead of being trimmed.
+    func testFrameAndDeltaTrimsLeadingPartialEscapeAndUTF8() throws {
+        // Scenario 1: walOffset lands inside a CSI parameter run. The full WAL
+        // is a single (otherwise complete) SGR color-set sequence followed by
+        // plain content; offset 3 sits right after "ESC[3", so the delta's
+        // first bytes are the orphaned tail "8;5;196m" of that sequence.
+        let csiPaths = makePaths()
+        try seedMeta(at: csiPaths)
+        let walText = "\u{001B}[38;5;196mVISIBLE"
+        try Data(walText.utf8).write(to: csiPaths.walURL)
+        try writeFrame("HELLO", offset: 3, generation: 0, at: csiPaths)
+
+        let csiReplayed = SessionWALCore.readFrameAndDelta(at: csiPaths, walCapBytes: 4096)
+        XCTAssertEqual(
+            csiReplayed,
+            "HELLOVISIBLE",
+            "A delta beginning mid-CSI-sequence must drop the orphaned parameter/final bytes, not leak them as literal text"
+        )
+        XCTAssertFalse(
+            (csiReplayed ?? "").contains("8;5;196m"),
+            "The orphaned CSI parameter tail must never appear as literal replayed text"
+        )
+
+        // Scenario 2: walOffset lands inside a multi-byte UTF-8 scalar. "é" is
+        // encoded as the two bytes 0xC3 0xA9; offset 2 sits between them, so
+        // the delta's first byte is a lone UTF-8 continuation byte.
+        let utf8Paths = makePaths()
+        try seedMeta(at: utf8Paths)
+        let utf8WalText = "x\u{00E9}post"
+        try Data(utf8WalText.utf8).write(to: utf8Paths.walURL)
+        try writeFrame("PRE", offset: 2, generation: 0, at: utf8Paths)
+
+        let utf8Replayed = SessionWALCore.readFrameAndDelta(at: utf8Paths, walCapBytes: 4096)
+        XCTAssertEqual(
+            utf8Replayed,
+            "PREpost",
+            "A delta beginning mid-UTF-8-scalar must drop the orphaned continuation byte, not decode it as U+FFFD"
+        )
+        XCTAssertFalse(
+            (utf8Replayed ?? "").contains("\u{FFFD}"),
+            "No replacement character should appear at a UTF-8 seam that was safely trimmed"
+        )
+
+        // Scenario 3: the delta legitimately begins with a long digit run
+        // that is syntactically indistinguishable from a torn CSI parameter
+        // list until a 0x40-0x7E byte ('M' of "Main") turns up -- but that
+        // byte lands past the bounded scan window (csiTailScanCapBytes = 16;
+        // "12345678901234567;89 " is 21 bytes), so the trim must not fire
+        // and the full delta must survive untouched.
+        let longDigitPaths = makePaths()
+        try seedMeta(at: longDigitPaths)
+        let longDigitText = "12345678901234567;89 Main"
+        try Data(longDigitText.utf8).write(to: longDigitPaths.walURL)
+        try writeFrame("F", offset: 0, generation: 0, at: longDigitPaths)
+
+        let longDigitReplayed = SessionWALCore.readFrameAndDelta(at: longDigitPaths, walCapBytes: 4096)
+        XCTAssertEqual(
+            longDigitReplayed,
+            "F" + longDigitText,
+            "A delta whose leading run exceeds the bounded CSI-tail scan window must survive untrimmed, even though it is syntactically ambiguous with a torn escape"
+        )
+
+        // Scenario 4: the two trim causes must be mutually exclusive. The
+        // cut lands inside a multi-byte UTF-8 character ("é"), and what
+        // follows ("123Main") looks exactly like a torn CSI parameter run on
+        // its own (digits ending in 'M', a plausible final byte) -- but
+        // since the UTF-8 continuation-byte skip already consumed a byte,
+        // the CSI scan must not run at all. If it ran anyway it would
+        // additionally eat "123M" (finding 'M' as a bogus CSI final byte),
+        // leaving only "ain".
+        let mixedPaths = makePaths()
+        try seedMeta(at: mixedPaths)
+        let mixedWalText = "x\u{00E9}123Main"
+        try Data(mixedWalText.utf8).write(to: mixedPaths.walURL)
+        try writeFrame("F", offset: 2, generation: 0, at: mixedPaths)
+
+        let mixedReplayed = SessionWALCore.readFrameAndDelta(at: mixedPaths, walCapBytes: 4096)
+        XCTAssertEqual(
+            mixedReplayed,
+            "F123Main",
+            "A cut inside a UTF-8 character must only trim the continuation byte -- the CSI-tail scan must not also run and eat legitimate text that follows"
+        )
+    }
+
     private func makePaths() -> SessionWALPaths {
         SessionWALPaths(
             sessionDirectory: temporaryRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)

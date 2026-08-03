@@ -547,9 +547,119 @@ enum SessionWALCore {
             if delta.count > walCapBytes {
                 delta = delta.suffix(Int(walCapBytes))
             }
+            // Both raw byte cuts above (`walOffset` and the suffix cap) can
+            // land mid-escape-sequence or mid-UTF-8-scalar. Trim once, here,
+            // after both cuts are applied -- this single call site covers
+            // whichever cut produced the leading edge of `delta`.
+            delta = trimTornLeadingBytes(delta)
             guard !delta.isEmpty else { return frameText }
             return frameText + String(decoding: delta, as: UTF8.self)
         }
+    }
+
+    /// Trims a WAL delta's leading bytes so replay never starts with the
+    /// orphaned tail of a sequence torn by a raw byte cut. `readFrameAndDelta`
+    /// slices `wal.log` at two byte offsets that know nothing about ANSI or
+    /// UTF-8 structure (`walOffset`, captured mid-stream by
+    /// `finishFrameCapture`, and the `walCapBytes` suffix cap above) -- a cut
+    /// landing inside a CSI escape sequence or a multi-byte UTF-8 scalar
+    /// otherwise leaks the torn fragment into the terminal as literal text
+    /// (the "m0de"-style mid-word corruption users see after restore).
+    ///
+    /// This is a heuristic, not a stateful escape parser: it only looks at
+    /// the bytes at the very front of `data`, since a delta carries no
+    /// header saying whether its first byte is "on a boundary". Two
+    /// independent leading defects are corrected, and they are mutually
+    /// exclusive -- at most one ever fires per call:
+    ///
+    /// 1. UTF-8 continuation bytes (`0b10xxxxxx`) at the start mean the cut
+    ///    landed inside a multi-byte scalar -- advance past all of them so
+    ///    `String(decoding:as:)` never has to emit U+FFFD for an orphaned
+    ///    tail. This is unambiguous (no valid UTF-8 text legitimately opens
+    ///    with a continuation byte), so it is not bounded.
+    /// 2. CSI parameter/intermediate bytes (`0x30-0x3F`, `0x20-0x2F`) at the
+    ///    start, with no preceding `ESC [` visible in this same buffer, mean
+    ///    the cut *may* have landed inside a control sequence. If a final
+    ///    byte (`0x40-0x7E`) shows up within the next `csiTailScanCapBytes`
+    ///    bytes, drop straight through it and resume after. This case is
+    ///    genuinely ambiguous, unlike (1): space (`0x20`) is a legal CSI
+    ///    intermediate byte, so "123;456 Main St" and a torn
+    ///    `ESC[123;456 m`-style sequence are byte-for-byte indistinguishable
+    ///    at the front of a buffer -- there is no way to tell them apart by
+    ///    inspection. What *can* be bounded is the damage: real-world torn
+    ///    SGR params (e.g. `38;2;255;255;255`) are well under
+    ///    `csiTailScanCapBytes`, so if no final byte appears within that
+    ///    window, this is treated as plain text and left untouched --
+    ///    intentionally trading a small chance of leaving a torn escape in
+    ///    place against the much likelier case of eating real leading text.
+    ///
+    ///    Case (2) only ever runs when case (1) consumed nothing. Escape
+    ///    sequences are pure ASCII, so if the buffer opened with UTF-8
+    ///    continuation bytes, the cut was inside a multi-byte *character*,
+    ///    not inside an escape sequence -- whatever follows the character is
+    ///    ordinary text, and running the CSI scan against it can only ever
+    ///    eat legitimate content. (A cut inside "é" of "é123Main" would
+    ///    otherwise strip the continuation byte *and* scan into "123Main",
+    ///    finding 'M' as a bogus "final byte" and stripping "123M" too,
+    ///    leaving "ain".)
+    ///
+    /// Failure mode, stated honestly and now structurally bounded rather
+    /// than probabilistic: worst case, case (2) drops at most
+    /// `csiTailScanCapBytes` leading bytes of a restored delta (a torn CSI
+    /// run whose final byte happens to land inside the scan window but was
+    /// actually plain text), or leaves a torn escape in place (a torn CSI
+    /// run whose final byte lands outside the window). Both outcomes are
+    /// confined to the first `csiTailScanCapBytes` bytes of a replay; only
+    /// the leading edge is ever cut, so this cannot recur deeper in the
+    /// delta.
+    private static let csiTailScanCapBytes = 16
+
+    private static func trimTornLeadingBytes(_ data: Data) -> Data {
+        guard !data.isEmpty else { return data }
+        var start = data.startIndex
+
+        // 1) Skip leading UTF-8 continuation bytes (mid-scalar cut).
+        while start < data.endIndex, (data[start] & 0xC0) == 0x80 {
+            start = data.index(after: start)
+        }
+        guard start < data.endIndex else { return Data() }
+        let consumedContinuationBytes = start > data.startIndex
+
+        // 2) Skip a leading, unterminated-from-our-view CSI parameter/
+        // intermediate run (mid-escape-sequence cut) through its final byte,
+        // if one turns up within the bounded scan window. Only trips when
+        // (1) consumed nothing -- see this function's doc comment for why
+        // the two causes are mutually exclusive -- and the first surviving
+        // byte looks like a CSI parameter/intermediate byte.
+        let firstByte = data[start]
+        let looksLikeCSITail = !consumedContinuationBytes
+            && ((0x30...0x3F).contains(firstByte) || (0x20...0x2F).contains(firstByte))
+        if looksLikeCSITail {
+            let scanLimit = data.index(start, offsetBy: csiTailScanCapBytes, limitedBy: data.endIndex) ?? data.endIndex
+            var cursor = start
+            while cursor < scanLimit {
+                let byte = data[cursor]
+                if (0x40...0x7E).contains(byte) {
+                    // Final byte of the torn sequence, found within the
+                    // bounded window -- drop through it.
+                    start = data.index(after: cursor)
+                    break
+                }
+                guard (0x30...0x3F).contains(byte) || (0x20...0x2F).contains(byte) else {
+                    // Not a parameter/intermediate byte and no final byte
+                    // turned up first -- this was not actually a torn CSI
+                    // run. Leave `start` at its pre-branch value.
+                    break
+                }
+                cursor = data.index(after: cursor)
+            }
+            // If the scan ran off the end of the bounded window without
+            // finding a final byte (and without hitting the `break` above),
+            // `start` is left untouched -- no trim. See the cap rationale
+            // in this function's doc comment.
+        }
+
+        return start > data.startIndex ? data.suffix(from: start) : data
     }
 
     /// Test/production helper for committing frame metadata with the same
