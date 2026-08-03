@@ -872,6 +872,17 @@ enum SessionEscrowHolder {
     /// Reset the instant either becomes non-empty/non-zero. Only ever
     /// touched from the reaper thread, so it needs no lock of its own.
     private static var idleSince: Date?
+    /// Set once, under `registryLock`, in the SAME lock acquisition that
+    /// re-confirms the exit precondition (`registry.isEmpty &&
+    /// activeConnectionCount == 0` for `idleExitGrace`) right before
+    /// `reaperTick` calls `Darwin.exit(0)`. The accept loop in `run()`
+    /// checks this under that same lock when it would otherwise register a
+    /// new connection, so "decide to exit" and "stop accepting new
+    /// sessions" are atomic with respect to each other -- without this, a
+    /// connection could be accepted and register a pty fd in the window
+    /// between the reaper's snapshot and its `exit()` call, and `exit()`
+    /// would then destroy that live session.
+    private static var shuttingDown = false
 
     private enum FrameReadResult {
         case data(Data, Int32?)
@@ -929,6 +940,20 @@ enum SessionEscrowHolder {
             dlog("session.escrow.holder.accept connFD=\(clientFD)")
             #endif
             registryLock.lock()
+            guard !shuttingDown else {
+                registryLock.unlock()
+                // The reaper has already committed to exiting (see
+                // `shuttingDown`'s doc comment) -- refuse this connection
+                // rather than register it into a process about to call
+                // `exit()`. The client's own connect retry/spawn-holder
+                // path handles a refused connection the same as any other
+                // unreachable holder.
+                #if DEBUG
+                dlog("session.escrow.holder.accept.refused connFD=\(clientFD) reason=shutting_down")
+                #endif
+                close(clientFD)
+                continue
+            }
             activeConnectionCount += 1
             registryLock.unlock()
             Thread.detachNewThread {
@@ -1189,6 +1214,12 @@ enum SessionEscrowHolder {
     private static func reaperTick() {
         retireExpiredSessions()
 
+        // Snapshot-then-decide is intentionally split into two lock
+        // acquisitions: the first (below) only updates `idleSince`
+        // bookkeeping and is fine to race a new `accept()`, since nothing
+        // irreversible happens here yet. The second, final re-check right
+        // before `exit()` is the one that must be atomic with the accept
+        // loop's own lock acquisition -- see `shuttingDown`'s doc comment.
         registryLock.lock()
         let registryIsEmpty = registry.isEmpty
         let connectionCount = activeConnectionCount
@@ -1206,6 +1237,21 @@ enum SessionEscrowHolder {
             return
         }
         guard Date().timeIntervalSince(since) >= SessionEscrowPolicy.idleExitGrace else { return }
+
+        // Final re-check + the shutdown decision itself, in ONE lock
+        // acquisition: this is what makes "decide to exit" and "the accept
+        // loop stops registering new connections" atomic with respect to
+        // each other, closing the TOCTOU window a separate check-then-exit
+        // would leave open (accept + register could land in between).
+        registryLock.lock()
+        guard registry.isEmpty, activeConnectionCount == 0 else {
+            registryLock.unlock()
+            idleSince = nil
+            return
+        }
+        shuttingDown = true
+        registryLock.unlock()
+
         #if DEBUG
         dlog("session.escrow.holder.exit reason=idle")
         #endif
@@ -1239,7 +1285,27 @@ enum SessionEscrowHolder {
             #if DEBUG
             dlog("session.escrow.holder.session.expire session=\(session.sessionId.prefix(8))")
             #endif
-            _ = session.drainStoppedSemaphore.wait(timeout: .now() + SessionEscrowPolicy.retrieveDrainStopTimeout)
+            let stopped = session.drainStoppedSemaphore.wait(timeout: .now() + SessionEscrowPolicy.retrieveDrainStopTimeout) == .success
+            guard stopped else {
+                // The drain thread never acknowledged in time -- same
+                // situation `handleRetrieveRequest` guards against: it may
+                // still be mid-poll/read on this exact fd, so closing it
+                // here would be a use-after-close/fd-reuse hazard. Do NOT
+                // touch the fd. It is already out of `registry` (removed
+                // above) and `stopRequested` is already set, so the drain
+                // thread will still notice on its very next poll cycle,
+                // stop, and signal (harmlessly, to no waiter). `drain(session:)`
+                // holds its own strong reference to this `HeldSession` for
+                // as long as it runs, so the object cannot deallocate
+                // before that thread actually returns -- `HeldSession
+                // .deinit`'s safety-net close is what closes the fd, and it
+                // necessarily happens only after the drain thread is done
+                // touching it.
+                #if DEBUG
+                dlog("session.escrow.holder.session.expire.stop_timeout session=\(session.sessionId.prefix(8))")
+                #endif
+                continue
+            }
             registryLock.lock()
             session.markClosedIfNeeded()
             registryLock.unlock()
