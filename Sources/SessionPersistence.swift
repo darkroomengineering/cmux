@@ -592,6 +592,86 @@ enum SessionPersistenceStore {
     }
 }
 
+/// Disarms terminal modes that replayed scrollback can leave stuck "on".
+///
+/// Restored scrollback is a historical transcript, not a live stream. Every
+/// `DECSET` in it was meant to be balanced by a `DECRST` from the program that
+/// set it — but that program was killed by the relaunch and never got to send
+/// one. Replaying those bytes into a fresh terminal therefore re-arms the mode
+/// permanently.
+///
+/// Mouse tracking is the mode where this is visible: with 1003 (any-event
+/// motion) and 1006 (SGR encoding) armed and no TUI left to consume the
+/// reports, every mouse move is encoded and written to the pty as input. At a
+/// bare zsh prompt ZLE swallows the `ESC[<` prefix, so the prompt fills with
+/// literal `35;16;54M35;33;53M…` — the symptom seen after an update relaunch.
+///
+/// These sequences are fed into the terminal parser (never the pty), so the
+/// revived shell is undisturbed.
+enum TerminalReplayModeReset {
+    /// `DECRST` for every mouse tracking mode — X10 (9), VT200/normal (1000),
+    /// highlight (1001), button/cell-motion (1002), any-event/all-motion
+    /// (1003) — and every mouse report encoding — UTF-8 (1005), SGR (1006),
+    /// urxvt (1015), SGR-pixel (1016).
+    static let mouseReportingReset =
+        "\u{001B}[?9l"
+        + "\u{001B}[?1000l"
+        + "\u{001B}[?1001l"
+        + "\u{001B}[?1002l"
+        + "\u{001B}[?1003l"
+        + "\u{001B}[?1005l"
+        + "\u{001B}[?1006l"
+        + "\u{001B}[?1015l"
+        + "\u{001B}[?1016l"
+        // Focus reporting (1004) is the same failure shape as mouse tracking:
+        // left armed by a dead TUI, every focus change injects CSI I / CSI O
+        // into the revived shell as input.
+        + "\u{001B}[?1004l"
+
+    /// State that makes the grid itself render wrong when a transcript leaves
+    /// it armed. Ordered deliberately: leave the alternate screen first, so
+    /// everything after it applies to the primary screen the shell is on.
+    ///
+    /// A window resize clears only one of these. `Terminal.resize()` in ghostty
+    /// unconditionally resets the scrolling region, which is why a stuck
+    /// `DECSTBM` (tmux's constant companion) heals when you drag the window.
+    /// It never touches the active screen key, the wraparound bit, or the
+    /// charset — so a shell stranded on the alternate screen, or with autowrap
+    /// off, or with G0 left on line-drawing, stays broken through any number of
+    /// resizes. That asymmetry is the whole reason this bug looks unfixable to
+    /// some people and self-healing to others.
+    /// Two sequences here move the cursor, and both are handled deliberately.
+    ///
+    /// `ESC[?1047l` rather than `ESC[?1049l`: ghostty's 1049-disable branch
+    /// calls `restoreCursor()` unconditionally (`Terminal.zig:3022`), and
+    /// `restoreCursor` with nothing previously saved homes the cursor to (0,0)
+    /// (`Terminal.zig:1100`). Since most restarts involve no alternate screen
+    /// at all, emitting 1049l would drop the revived prompt on top of the
+    /// restored scrollback every time. 1047's switch is gated on the screen
+    /// actually changing (`switchScreen` returns null otherwise,
+    /// `Terminal.zig:2891`), so it is a true no-op when we are already on the
+    /// primary screen and still rescues a shell stranded on the alternate one.
+    ///
+    /// `ESC[r` ends with `setCursorPos(1, 1)` (`Terminal.zig:1619`), so the
+    /// margin reset is bracketed in DECSC/DECRC. The charset and origin resets
+    /// must come BEFORE the DECSC, because DECRC restores both from the save
+    /// (`Terminal.zig:1123-1124`) and would otherwise reinstate the bad ones.
+    static let layoutStateReset =
+        "\u{001B}[?1047l"   // leave the alternate screen if stranded on it
+        + "\u{001B}(B"      // G0 back to ASCII (undo line-drawing)
+        + "\u{001B})B"      // G1 back to ASCII
+        + "\u{001B}[?6l"    // DECOM: origin mode off
+        + "\u{001B}7"       // DECSC: save cursor, now with clean charset/origin
+        + "\u{001B}[?69l"   // DECLRMM: left/right margin mode off
+        + "\u{001B}[r"      // DECSTBM: full screen again (this homes the cursor)
+        + "\u{001B}8"       // DECRC: put the cursor back where the replay left it
+        + "\u{001B}[?7h"    // DECAWM: autowrap back on
+        + "\u{001B}[?25h"   // cursor visible
+
+    /// Everything a replayed transcript can leave armed, in one sequence.
+    static let disableSequence = layoutStateReset + mouseReportingReset
+}
+
 enum SessionScrollbackReplayStore {
     static let environmentKey = "PROGRAMA_RESTORE_SCROLLBACK_FILE"
     private static let directoryName = "programa-session-scrollback"
@@ -619,13 +699,16 @@ enum SessionScrollbackReplayStore {
         return ansiSafeReplayText(truncated)
     }
 
-    /// Preserve ANSI color state safely across replay boundaries.
+    /// Preserve ANSI color state safely across replay boundaries, and disarm
+    /// any terminal mode the replayed transcript leaves set (see
+    /// `TerminalReplayModeReset`).
     private static func ansiSafeReplayText(_ text: String) -> String {
         guard text.contains(ansiEscape) else { return text }
         var output = text
         if !output.hasPrefix(ansiReset) {
             output = ansiReset + output
         }
+        output += TerminalReplayModeReset.disableSequence
         if !output.hasSuffix(ansiReset) {
             output += ansiReset
         }
