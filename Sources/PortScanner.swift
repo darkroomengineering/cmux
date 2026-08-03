@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Batched port scanner that replaces per-shell `ps + lsof` scanning.
@@ -47,11 +48,26 @@ final class PortScanner: @unchecked Sendable {
     /// Periodic timer for agent-owned process trees that aren't attached to a TTY.
     private var agentScanTimer: DispatchSourceTimer?
 
+    /// Whether the app has any visible (non-occluded) window. Guarded by `queue`.
+    /// Starts `true` so the first tick before the observer reports in isn't skipped.
+    private var appVisible = true
+
+    /// Token for the occlusion-state observer registered in `init`.
+    private var occlusionObserver: NSObjectProtocol?
+
     /// Burst scan offsets in seconds from the start of the burst.
     /// Each scan fires at this absolute offset; the recursive scheduler
     /// converts to relative delays between consecutive scans.
     private static let burstOffsets: [Double] = [0.5, 1.5, 3, 5, 7.5, 10]
-    private static let agentRescanInterval: TimeInterval = 2
+    /// Recurring agent-scan cadence. Kept long: the kick/burst path above already
+    /// covers the interactive case (any prompt event triggers 6 scans within 10s),
+    /// so this timer only exists to catch ports opened mid-command with no prompt
+    /// event — 10s latency there is acceptable.
+    private static let agentRescanInterval: TimeInterval = 10
+
+    init() {
+        registerOcclusionObserver()
+    }
 
     // MARK: - Public API
 
@@ -280,7 +296,38 @@ final class PortScanner: @unchecked Sendable {
         timer.resume()
     }
 
+    /// Registers an observer for app-wide occlusion changes so the recurring
+    /// agent scan can skip ticks while no window is visible (fully occluded,
+    /// minimized, or hidden). The kick/burst path is unaffected.
+    private func registerOcclusionObserver() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let initiallyVisible = NSApp?.occlusionState.contains(.visible) ?? true
+            self.queue.async { self.appVisible = initiallyVisible }
+            self.occlusionObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didChangeOcclusionStateNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                let visible = NSApp?.occlusionState.contains(.visible) ?? true
+                self.queue.async { self.updateAppVisibilityLocked(visible) }
+            }
+        }
+    }
+
+    private func updateAppVisibilityLocked(_ visible: Bool) {
+        // Already on `queue`.
+        let wasVisible = appVisible
+        appVisible = visible
+        guard visible, !wasVisible, !trackedAgentWorkspaces.isEmpty else { return }
+        // Became visible again: catch up immediately, then resume the normal cadence.
+        runTrackedAgentScan()
+    }
+
     private func runTrackedAgentScan() {
+        // Already on `queue`.
+        guard appVisible else { return }
         let workspaceIds = trackedAgentWorkspaces
         guard !workspaceIds.isEmpty else {
             updateAgentScanTimerLocked()

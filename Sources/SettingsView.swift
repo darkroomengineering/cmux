@@ -2167,6 +2167,6 @@ struct SettingsRootView: View {
     }
 
     private func applyCurrentSettingsWindowStyle(to window: NSWindow) {
-        SettingsAboutTitlebarDebugStore.shared.applyCurrentOptions(to: window, for: .settings)
+        SettingsAboutTitlebarStyleStore.shared.applyCurrentOptions(to: window, for: .settings)
     }
 }

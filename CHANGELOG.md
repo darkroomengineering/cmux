@@ -6,6 +6,20 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-03
+
+### Fixed
+- Restarting the app no longer garbles terminals. Restored sessions used to replay whatever escape state a killed program left behind — stuck mouse reporting flooding the prompt with `35;16;54M` noise, a layout broken until you resized the window (and for some people not even then: a shell stranded on the alternate screen, or with wrapping off, stays broken through any resize). The replay now restores the terminal's modes to sane defaults, sizes the grid before replaying instead of after, and leaves programs that genuinely survived the restart untouched.
+- External monitors that wake up late no longer leave terminals with a wrong grid. The app now listens for display-configuration changes and re-applies the right scale, instead of trusting whatever screen was attached at window creation.
+
+### Changed
+- Hidden windows stop rendering. Minimizing a window, or fully covering it with another app, now tells the renderer to idle instead of drawing frames nobody can see.
+- The background port scan runs at a fraction of its old cost: every 10 seconds instead of every 2, and not at all while no Programa window is visible. Prompt-triggered scans are unchanged, so port badges stay fresh while you work.
+- The session-keeper process that preserves terminals across updates now cleans up after itself: it hands sessions back on relaunch, drops anything nobody reclaimed, and exits once it holds nothing — instead of accumulating forever. (If you ever saw stray `session-escrow-holder` processes in Activity Monitor, that's what this fixes.)
+- Release builds are stripped and dead-code-eliminated, with debug symbols archived separately for crash symbolication — a substantially smaller download.
+- Debug-only windows and controllers no longer ship in release builds at all.
+- `settings.json` schema now tells the truth: removed three documented keys that nothing ever read, and fixed two browser keys whose documented names never matched what the app parses (`openTerminalLinksInProgramaBrowser`, `interceptTerminalOpenCommandInProgramaBrowser`).
+
 ### Added
 - Session snapshot history: every launch now archives the previous window/workspace layout into `~/Library/Application Support/programa/session-history/` (best-effort, before anything can overwrite it), keeping the 10 newest. `programa snapshot list` shows archived snapshots (id, saved-at, clean/unclean shutdown, window/workspace/panel counts), and `programa snapshot restore [<id>|latest]` reopens one as new windows without touching anything already open. This recovers layouts previously lost to a cold boot, a forced shutdown, or a launch that skipped restore because it carried an explicit open intent. Also available over the socket as `snapshot.list`/`snapshot.restore`. Session snapshots now also record whether they were saved during an orderly quit.
 - `programa worktree open --all`: opens every worktree of the resolved repo as a workspace in one call, instead of one `<path-or-branch>` at a time. Idempotent and never steals focus, same as a single `worktree open`; mutually exclusive with a positional target and with `--focus`.

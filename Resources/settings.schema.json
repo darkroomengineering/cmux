@@ -41,16 +41,6 @@
           "default": false,
           "description": "Hide the workspace title bar and move controls into the sidebar."
         },
-        "keepWorkspaceOpenWhenClosingLastSurface": {
-          "type": "boolean",
-          "default": false,
-          "description": "When true, closing the last surface keeps the workspace open."
-        },
-        "focusPaneOnFirstClick": {
-          "type": "boolean",
-          "default": true,
-          "description": "When Programa is inactive, the first click can activate and focus the clicked pane."
-        },
         "preferredEditor": {
           "type": "string",
           "default": "",
@@ -65,11 +55,6 @@
           "type": "boolean",
           "default": true,
           "description": "Show a confirmation before quitting Programa."
-        },
-        "renameSelectsExistingName": {
-          "type": "boolean",
-          "default": true,
-          "description": "Select the current name when opening rename flows."
         },
         "commandPaletteSearchesAllSurfaces": {
           "type": "boolean",
@@ -288,12 +273,12 @@
           "default": "system",
           "description": "Embedded browser theme."
         },
-        "openTerminalLinksInCmuxBrowser": {
+        "openTerminalLinksInProgramaBrowser": {
           "type": "boolean",
           "default": true,
           "description": "Open clicked terminal links in the embedded browser."
         },
-        "interceptTerminalOpenCommandInCmuxBrowser": {
+        "interceptTerminalOpenCommandInProgramaBrowser": {
           "type": "boolean",
           "default": true,
           "description": "Intercept terminal open http(s) commands and route them through the embedded browser."
