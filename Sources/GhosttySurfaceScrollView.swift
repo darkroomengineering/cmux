@@ -166,6 +166,11 @@ final class GhosttySurfaceScrollView: NSView {
     private(set) var isActive = true
     private var lastFocusRefreshAt: CFTimeInterval = 0
     private var lastRequestedPortalOcclusionVisible: Bool?
+    /// Whether this surface's NSWindow is currently visible (not miniaturized,
+    /// not fully occluded, not on an inactive Space). Combined with the
+    /// intra-app pane visibility tracked on `surfaceView.isVisibleInUI` via
+    /// AND to decide the effective occlusion value pushed to ghostty.
+    private var isWindowVisible = true
     private var activeDropZone: DropZone?
     private var pendingDropZone: DropZone?
     private var dropZoneOverlayAnimationGeneration: UInt64 = 0
@@ -957,6 +962,30 @@ final class GhosttySurfaceScrollView: NSView {
         if window.isKeyWindow {
             scheduleAutomaticFirstResponderApply(reason: "viewDidMoveToWindow")
         }
+        windowObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let window = self.window else { return }
+            self.updateWindowVisibility(window.occlusionState.contains(.visible))
+        })
+        windowObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didMiniaturizeNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateWindowVisibility(false)
+        })
+        windowObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didDeminiaturizeNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let window = self.window else { return }
+            self.updateWindowVisibility(window.occlusionState.contains(.visible))
+        })
+        updateWindowVisibility(window.occlusionState.contains(.visible) && !window.isMiniaturized)
     }
 
     func attachSurface(_ terminalSurface: TerminalSurface) {
@@ -1649,13 +1678,40 @@ final class GhosttySurfaceScrollView: NSView {
         }
     }
 
+    /// Pushes ghostty's occlusion state to `paneVisible && isWindowVisible` if that
+    /// product has changed since the last push. Never called with either input
+    /// clobbering the other: window-visibility changes must not override the
+    /// intra-app pane state, and pane-visibility changes must not override the
+    /// window state.
+    private func applyEffectiveOcclusion() {
+        let effective = surfaceView.isVisibleInUI && isWindowVisible
+        guard lastRequestedPortalOcclusionVisible != effective else { return }
+        lastRequestedPortalOcclusionVisible = effective
+        surfaceView.terminalSurface?.setOcclusion(effective)
+#if DEBUG
+        dlog(
+            "terminal.occlusion surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
+            "effective=\(effective ? 1 : 0) paneVisible=\(surfaceView.isVisibleInUI ? 1 : 0) " +
+            "windowVisible=\(isWindowVisible ? 1 : 0)"
+        )
+#endif
+    }
+
+    /// Called when the hosting NSWindow's visibility changes (occlusion state,
+    /// miniaturize/deminiaturize). Updates only the window-visibility input and
+    /// recomputes the effective occlusion; does not touch the intra-app pane state.
+    private func updateWindowVisibility(_ visible: Bool) {
+        guard isWindowVisible != visible else { return }
+        isWindowVisible = visible
+        applyEffectiveOcclusion()
+    }
+
     func setVisibleInUI(_ visible: Bool) {
         let wasVisible = surfaceView.isVisibleInUI
         surfaceView.setVisibleInUI(visible)
         isHidden = !visible
-        if wasVisible != visible, lastRequestedPortalOcclusionVisible != visible {
-            lastRequestedPortalOcclusionVisible = visible
-            surfaceView.terminalSurface?.setOcclusion(visible)
+        if wasVisible != visible {
+            applyEffectiveOcclusion()
         }
 #if DEBUG
         if wasVisible != visible {
