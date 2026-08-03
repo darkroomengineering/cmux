@@ -204,6 +204,27 @@ final class SessionWALCoreTests: XCTestCase {
             "F" + longDigitText,
             "A delta whose leading run exceeds the bounded CSI-tail scan window must survive untrimmed, even though it is syntactically ambiguous with a torn escape"
         )
+
+        // Scenario 4: the two trim causes must be mutually exclusive. The
+        // cut lands inside a multi-byte UTF-8 character ("é"), and what
+        // follows ("123Main") looks exactly like a torn CSI parameter run on
+        // its own (digits ending in 'M', a plausible final byte) -- but
+        // since the UTF-8 continuation-byte skip already consumed a byte,
+        // the CSI scan must not run at all. If it ran anyway it would
+        // additionally eat "123M" (finding 'M' as a bogus CSI final byte),
+        // leaving only "ain".
+        let mixedPaths = makePaths()
+        try seedMeta(at: mixedPaths)
+        let mixedWalText = "x\u{00E9}123Main"
+        try Data(mixedWalText.utf8).write(to: mixedPaths.walURL)
+        try writeFrame("F", offset: 2, generation: 0, at: mixedPaths)
+
+        let mixedReplayed = SessionWALCore.readFrameAndDelta(at: mixedPaths, walCapBytes: 4096)
+        XCTAssertEqual(
+            mixedReplayed,
+            "F123Main",
+            "A cut inside a UTF-8 character must only trim the continuation byte -- the CSI-tail scan must not also run and eat legitimate text that follows"
+        )
     }
 
     private func makePaths() -> SessionWALPaths {

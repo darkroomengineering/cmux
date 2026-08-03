@@ -569,7 +569,8 @@ enum SessionWALCore {
     /// This is a heuristic, not a stateful escape parser: it only looks at
     /// the bytes at the very front of `data`, since a delta carries no
     /// header saying whether its first byte is "on a boundary". Two
-    /// independent leading defects are corrected:
+    /// independent leading defects are corrected, and they are mutually
+    /// exclusive -- at most one ever fires per call:
     ///
     /// 1. UTF-8 continuation bytes (`0b10xxxxxx`) at the start mean the cut
     ///    landed inside a multi-byte scalar -- advance past all of them so
@@ -592,6 +593,16 @@ enum SessionWALCore {
     ///    intentionally trading a small chance of leaving a torn escape in
     ///    place against the much likelier case of eating real leading text.
     ///
+    ///    Case (2) only ever runs when case (1) consumed nothing. Escape
+    ///    sequences are pure ASCII, so if the buffer opened with UTF-8
+    ///    continuation bytes, the cut was inside a multi-byte *character*,
+    ///    not inside an escape sequence -- whatever follows the character is
+    ///    ordinary text, and running the CSI scan against it can only ever
+    ///    eat legitimate content. (A cut inside "é" of "é123Main" would
+    ///    otherwise strip the continuation byte *and* scan into "123Main",
+    ///    finding 'M' as a bogus "final byte" and stripping "123M" too,
+    ///    leaving "ain".)
+    ///
     /// Failure mode, stated honestly and now structurally bounded rather
     /// than probabilistic: worst case, case (2) drops at most
     /// `csiTailScanCapBytes` leading bytes of a restored delta (a torn CSI
@@ -612,14 +623,17 @@ enum SessionWALCore {
             start = data.index(after: start)
         }
         guard start < data.endIndex else { return Data() }
+        let consumedContinuationBytes = start > data.startIndex
 
         // 2) Skip a leading, unterminated-from-our-view CSI parameter/
         // intermediate run (mid-escape-sequence cut) through its final byte,
         // if one turns up within the bounded scan window. Only trips when
-        // the first surviving byte looks like a CSI parameter/intermediate
-        // byte.
+        // (1) consumed nothing -- see this function's doc comment for why
+        // the two causes are mutually exclusive -- and the first surviving
+        // byte looks like a CSI parameter/intermediate byte.
         let firstByte = data[start]
-        let looksLikeCSITail = (0x30...0x3F).contains(firstByte) || (0x20...0x2F).contains(firstByte)
+        let looksLikeCSITail = !consumedContinuationBytes
+            && ((0x30...0x3F).contains(firstByte) || (0x20...0x2F).contains(firstByte))
         if looksLikeCSITail {
             let scanLimit = data.index(start, offsetBy: csiTailScanCapBytes, limitedBy: data.endIndex) ?? data.endIndex
             var cursor = start
