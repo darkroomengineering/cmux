@@ -66,6 +66,7 @@ jobs:
             # Milestone tag release: semver comes from the committed MARKETING_VERSION/tag.
             RELEASE_TAG="${GITHUB_REF_NAME}"
             IS_AUTO_SHIP="false"
+            EFFECTIVE_MARKETING_VERSION="${MARKETING_VERSION}"
           else
             # Auto-ship from main (workflow_run) or dry-run (workflow_dispatch): publish to a
             # single reused "rolling" release that is overwritten each ship, so the releases
@@ -73,14 +74,24 @@ jobs:
             # accumulating one release per commit.
             RELEASE_TAG="rolling"
             IS_AUTO_SHIP="true"
+            # Every auto-ship gets a DISTINCT user-visible version: keep the committed
+            # major.minor and replace the patch with the monotonic workflow run number.
+            # Shipping every rolling build as the same committed semver (e.g. "0.4.0")
+            # left users unable to tell builds apart in the about box and on the
+            # releases page. Injected at build time like EFFECTIVE_BUILD — never
+            # committed back, so no commit loop. Minor bumps stay manual milestones
+            # (scripts/bump-version.sh); the patch sequence continues across them,
+            # which keeps versions strictly increasing in Sparkle-visible order.
+            EFFECTIVE_MARKETING_VERSION="${MARKETING_VERSION%.*}.${GITHUB_RUN_NUMBER}"
           fi
 
           echo "MARKETING_VERSION=${MARKETING_VERSION}" >> "$GITHUB_ENV"
+          echo "EFFECTIVE_MARKETING_VERSION=${EFFECTIVE_MARKETING_VERSION}" >> "$GITHUB_ENV"
           echo "EFFECTIVE_BUILD=${EFFECTIVE_BUILD}" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
           echo "IS_AUTO_SHIP=${IS_AUTO_SHIP}" >> "$GITHUB_ENV"
 
-          echo "Marketing version: ${MARKETING_VERSION}"
+          echo "Marketing version: ${MARKETING_VERSION} (effective: ${EFFECTIVE_MARKETING_VERSION})"
           echo "Effective build: ${EFFECTIVE_BUILD}"
           echo "Release tag: ${RELEASE_TAG}"
           echo "Auto-ship: ${IS_AUTO_SHIP}"
@@ -334,6 +345,19 @@ jobs:
           fi
           zip -r -y "$DSYM_ZIP" "${DSYM_PATHS[@]}"
 
+      - name: Stamp effective version and build number in Info.plist
+        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        run: |
+          set -euo pipefail
+          APP_PLIST="build-universal/Build/Products/Release/Programa.app/Contents/Info.plist"
+          # No-op for tag releases (both values already match the committed ones).
+          # For auto-ship runs this stamps the monotonic run-derived build number AND
+          # the distinct per-ship marketing version (major.minor.run_number) without
+          # committing anything back to the repo. Must run BEFORE the remote-daemon
+          # manifest step below, which reads CFBundleShortVersionString.
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${EFFECTIVE_BUILD}" "$APP_PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${EFFECTIVE_MARKETING_VERSION}" "$APP_PLIST"
+
       - name: Build remote daemon release assets and inject manifest
         if: steps.guard_release_assets.outputs.skip_all != 'true'
         run: |
@@ -363,16 +387,6 @@ jobs:
           set -euo pipefail
           HELPER_BINARY="build-universal/Build/Products/Release/Programa.app/Contents/Resources/bin/ghostty"
           [ -x "$HELPER_BINARY" ] || { echo "Ghostty theme picker helper not found at $HELPER_BINARY" >&2; exit 1; }
-
-      - name: Set effective build number in Info.plist
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
-        run: |
-          set -euo pipefail
-          APP_PLIST="build-universal/Build/Products/Release/Programa.app/Contents/Info.plist"
-          # No-op for tag releases (EFFECTIVE_BUILD already matches the committed value).
-          # For auto-ship runs this stamps the monotonic run-derived build number without
-          # committing anything back to the repo.
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${EFFECTIVE_BUILD}" "$APP_PLIST"
 
       - name: Inject Sparkle keys into Info.plist
         if: steps.guard_release_assets.outputs.skip_all != 'true'
@@ -592,7 +606,7 @@ jobs:
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ env.IS_AUTO_SHIP == 'true' && 'Rolling (latest main)' || env.RELEASE_TAG }}
+          name: ${{ env.IS_AUTO_SHIP == 'true' && format('Rolling {0} (latest main)', env.EFFECTIVE_MARKETING_VERSION) || env.RELEASE_TAG }}
           make_latest: true
           # Sequential upload, and this order specifically:
           #   1. programa-macos-<build>.dmg — up before anything references it, so the new
