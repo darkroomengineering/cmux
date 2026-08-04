@@ -5,6 +5,9 @@ on:
     branches:
       - main
     paths:
+      # Bare "ghostty" is required to match submodule POINTER bumps; the glob
+      # only matches diffs inside the submodule tree (see ci.yml note).
+      - "ghostty"
       - "ghostty/**"
       - ".gitmodules"
       - "scripts/ensure-ghosttykit.sh"
@@ -13,6 +16,9 @@ on:
       - ".github/workflows/build-ghosttykit.yml"
   pull_request:
     paths:
+      # Bare "ghostty" is required to match submodule POINTER bumps; the glob
+      # only matches diffs inside the submodule tree (see ci.yml note).
+      - "ghostty"
       - "ghostty/**"
       - ".gitmodules"
       - "scripts/ensure-ghosttykit.sh"

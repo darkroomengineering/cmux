@@ -17,6 +17,12 @@ on:
       - "vendor/**"
       - "scripts/**"
       - "GhosttyTabs.xcodeproj/**"
+      # Both forms are required: "ghostty/**" matches file changes when the
+      # submodule content is diffed, but a submodule POINTER bump records the
+      # bare gitlink path "ghostty", which "ghostty/**" does not match --
+      # without the exact entry, fork-bump commits skip CI (and therefore
+      # never auto-ship).
+      - "ghostty"
       - "ghostty/**"
       - "vendor/bonsplit/**"
       - ".gitmodules"
@@ -34,6 +40,9 @@ on:
       - ".github/workflows/ci-macos-compat.yml"
       - ".github/workflows/build-ghosttykit.yml"
       - "GhosttyTabs.xcodeproj/**"
+      # Same as the push filter: the bare "ghostty" entry catches submodule
+      # pointer bumps, which "ghostty/**" alone misses.
+      - "ghostty"
       - "ghostty/**"
       - ".gitmodules"
   # On-demand runs, so the typing-lag regression can be measured on a branch
