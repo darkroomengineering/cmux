@@ -371,6 +371,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         tabId = newTabId
         attachedView?.tabId = newTabId
         surfaceView.tabId = newTabId
+        // Called on main (this whole method mutates main-thread-only view state) --
+        // satisfies GhosttySurfaceCallbackContext.updateTabId's main-thread contract.
+        surfaceCallbackContext?.takeUnretainedValue().updateTabId(newTabId)
     }
 
     private static func mergedNormalizedEnvironment(
@@ -1063,7 +1066,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         surfaceConfig.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
             nsview: Unmanaged.passUnretained(view).toOpaque()
         ))
-        let callbackContext = Unmanaged.passRetained(GhosttySurfaceCallbackContext(surfaceView: view, terminalSurface: self))
+        let callbackContext = Unmanaged.passRetained(GhosttySurfaceCallbackContext(surfaceId: id, tabId: tabId))
         surfaceConfig.userdata = callbackContext.toOpaque()
         surfaceCallbackContext?.release()
         surfaceCallbackContext = callbackContext
