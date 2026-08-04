@@ -96,6 +96,16 @@ extension Workspace {
     func restoreSessionSnapshot(_ snapshot: SessionWorkspaceSnapshot) {
         restoredTerminalScrollbackByPanelId.removeAll(keepingCapacity: false)
 
+        // Divider-race fix (restore-replay-residuals): bump the restore
+        // generation and open the settle gate before any panel/surface gets
+        // created below. Any surface revived via `attemptSessionReattach`
+        // during this pass (`TerminalSurface.createSurface`) registers itself
+        // under `restoreGeneration` and holds its one-shot scrollback seed
+        // until this same pass clears the gate below, after divider positions
+        // are applied. See `TerminalSurface.isSessionRestoreSettling`'s doc
+        // comment for the full race this closes.
+        let restoreGeneration = TerminalSurface.beginSessionRestorePass()
+
         let normalizedCurrentDirectory = snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !normalizedCurrentDirectory.isEmpty {
             currentDirectory = normalizedCurrentDirectory
@@ -117,6 +127,14 @@ extension Workspace {
         applyPendingReviewPanelSourceFixups(oldToNewPanelIds: oldToNewPanelIds)
         pruneSurfaceMetadata(validSurfaceIds: Set(panels.keys))
         applySessionDividerPositions(snapshotNode: snapshot.layout, liveNode: bonsplitController.treeSnapshot())
+
+        // Divider-race fix: give bonsplit's SwiftUI/AppKit relayout for the
+        // divider fractions just applied above one additional main-queue turn
+        // before releasing any surface gated under this restore pass -- see
+        // `TerminalSurface.isSessionRestoreSettling`'s doc comment.
+        DispatchQueue.main.async {
+            TerminalSurface.clearSessionRestoreGateAndFlushPendingSurfaces(generation: restoreGeneration)
+        }
 
         applyProcessTitle(snapshot.processTitle)
         setCustomTitle(snapshot.customTitle)
