@@ -4605,6 +4605,65 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         })
     }
 
+    /// Regression test for the ghostty IO-thread callback-context teardown race.
+    ///
+    /// Root cause: `GhosttySurfaceCallbackContext` (the per-surface userdata handed to
+    /// ghostty) used to hold `weak var surfaceView: GhosttyNSView?` and `weak var
+    /// terminalSurface: TerminalSurface?`. Ghostty's IO thread invokes callbacks that
+    /// read those weak refs SYNCHRONOUSLY, before any main-thread hop --
+    /// `runtimeReadClipboardCallback` read `callbackContext.runtimeSurface` directly, and
+    /// `handleAction`'s surface-target preamble read `callbackContext?.tabId` /
+    /// `.surfaceId` immediately (title/pwd/mouse-shape/progress actions dispatch from
+    /// ghostty's VT/IO path, not the main-thread `ghostty_app_tick` mailbox, so this runs
+    /// on the IO thread during ordinary prompt chatter). Reading/retaining a weak
+    /// reference to an object mid-deinit on another thread races Swift's ARC
+    /// weak-reference side tables and can corrupt them.
+    ///
+    /// This loops rapid window create/close under forced occlusion
+    /// (`PROGRAMA_FORCE_OCCLUDED=1`, honored by
+    /// `GhosttySurfaceScrollView.applyEffectiveOcclusion()`) with a live shell in each
+    /// window -- exactly the kind of concurrent IO-thread callback traffic vs. main-thread
+    /// teardown that used to race. Bounded to ~20 iterations: this is inherently
+    /// probabilistic, and a higher count would only buy marginal extra confidence at the
+    /// cost of runtime; it is not meant to chase local determinism.
+    ///
+    /// NOTE: against the CURRENT (reverted, pre-occluded-render) ghostty framework, the
+    /// crash this guards against is masked by incidental renderer serialization, so this
+    /// test is expected to pass reliably even without the fix. It is only expected to
+    /// fail reliably against the occluded-render ghostty framework -- see the companion
+    /// fix commit's repro loop for that comparison.
+    func testRapidWindowTeardownDoesNotRaceCallbackContext() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let hadCustomConfirmationHandler = appDelegate.debugCloseMainWindowConfirmationHandler != nil
+        appDelegate.debugCloseMainWindowConfirmationHandler = { _ in true }
+        defer {
+            if !hadCustomConfirmationHandler {
+                appDelegate.debugCloseMainWindowConfirmationHandler = nil
+            }
+        }
+
+        for iteration in 0..<20 {
+            let windowId = appDelegate.createMainWindow()
+            guard window(withId: windowId) != nil else {
+                XCTFail("iteration \(iteration): expected test window")
+                return
+            }
+            // Give the shell a brief window to start emitting its own startup/prompt OSC
+            // title+pwd chatter before tearing the surface down -- narrows the race
+            // window without making the test flaky-slow.
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+            closeWindow(withId: windowId)
+            XCTAssertNil(
+                appDelegate.tabManagerFor(windowId: windowId),
+                "iteration \(iteration): expected window to be fully torn down"
+            )
+        }
+    }
+
     /// Closes every currently-registered main window, including the app's own default
     /// window from its `WindowGroup` scene (which exists for the lifetime of the test
     /// process regardless of which test is running). Some tests need to assert on
