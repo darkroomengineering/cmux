@@ -21,6 +21,7 @@
 //     unregisters it from the broadcaster; `handleClient`'s existing read-loop teardown also
 //     unconditionally tears down any subscription on that connection (client-initiated close,
 //     or the app shutting the listener down).
+import Bonsplit
 import Foundation
 
 /// Event classes selectable via `subscribe`'s `classes` param (#167).
@@ -80,7 +81,7 @@ final class SocketConnection: @unchecked Sendable {
         let previous = self.subscription
         self.subscription = subscription
         stateLock.unlock()
-        previous?.teardown()
+        previous?.teardown(reason: "replaced_by_new_subscription")
     }
 
     func detachSubscription() {
@@ -88,7 +89,7 @@ final class SocketConnection: @unchecked Sendable {
         let previous = subscription
         subscription = nil
         stateLock.unlock()
-        previous?.teardown()
+        previous?.teardown(reason: "unsubscribed")
     }
 
     /// Called from `handleClient`'s `defer`, in addition to (and before) closing the raw fd.
@@ -98,7 +99,10 @@ final class SocketConnection: @unchecked Sendable {
         let previous = subscription
         subscription = nil
         stateLock.unlock()
-        previous?.teardown()
+        if previous != nil {
+            dilog("socket.conn", "teardown hadSubscription=true")
+        }
+        previous?.teardown(reason: "connection_closed")
     }
 }
 
@@ -167,7 +171,7 @@ final class EventSubscription: @unchecked Sendable {
                 droppedCount = 0
                 lock.unlock()
                 let droppedFrame: [String: Any] = ["event": "dropped", "count": count]
-                guard writeFrame(droppedFrame) else { teardown(); return }
+                guard writeFrame(droppedFrame) else { teardown(reason: "write_failure"); return }
                 continue
             }
             guard !pending.isEmpty else {
@@ -178,7 +182,7 @@ final class EventSubscription: @unchecked Sendable {
             let frame = pending.removeFirst()
             lock.unlock()
 
-            guard writeFrame(frame) else { teardown(); return }
+            guard writeFrame(frame) else { teardown(reason: "write_failure"); return }
         }
     }
 
@@ -190,12 +194,13 @@ final class EventSubscription: @unchecked Sendable {
 
     /// Idempotent. Called on write failure (client gone), on `unsubscribe`, and from
     /// `SocketConnection.teardown()` when the connection itself is closing.
-    func teardown() {
+    func teardown(reason: String = "unknown") {
         lock.lock()
         guard !isTornDown else { lock.unlock(); return }
         isTornDown = true
         pending.removeAll()
         lock.unlock()
+        dilog("socket.subscription", "teardown reason=\(reason) classes=\(classes.map(\.rawValue).sorted().joined(separator: ","))")
         SocketEventBroadcaster.shared.unregister(self)
     }
 }
