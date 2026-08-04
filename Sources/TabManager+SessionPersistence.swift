@@ -48,6 +48,7 @@ extension TabManager {
             clearWorkspaceGitProbe(key)
         }
         workspaceGitTrackedDirectoryByKey.removeAll()
+        workspaceGitMetadataLastRefreshedAt.removeAll()
 
         // Clear non-@Published state without touching tabs/selectedTabId yet.
         lastFocusedPanelByTab.removeAll()

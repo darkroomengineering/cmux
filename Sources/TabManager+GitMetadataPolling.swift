@@ -104,12 +104,13 @@ extension TabManager {
                 in: workspace,
                 activeProbeKeys: activeProbeKeys
             ) {
-                scheduleWorkspaceGitMetadataRefreshIfPossible(
+                if scheduleWorkspaceGitMetadataRefreshIfPossible(
                     workspaceId: workspace.id,
                     panelId: panelId,
                     reason: "periodicPoll"
-                )
-                scheduledAny = true
+                ) {
+                    scheduledAny = true
+                }
             }
             if scheduledAny {
                 workspaceGitMetadataLastRefreshedAt[workspace.id] = now
@@ -130,15 +131,16 @@ extension TabManager {
         )
         guard candidatePanelIds.contains(focusedPanelId) else { return }
 
-        scheduleWorkspaceGitMetadataRefreshIfPossible(
+        if scheduleWorkspaceGitMetadataRefreshIfPossible(
             workspaceId: workspace.id,
             panelId: focusedPanelId,
             reason: "selectedPeriodicPoll"
-        )
-        // Keeps the hidden-workspace tier's "last refreshed" timestamp fresh for the
-        // currently-selected workspace, so it doesn't immediately read as stale in
-        // refreshTrackedWorkspaceGitMetadata() the moment it stops being selected.
-        workspaceGitMetadataLastRefreshedAt[workspace.id] = Date()
+        ) {
+            // Keeps the hidden-workspace tier's "last refreshed" timestamp fresh for the
+            // currently-selected workspace, so it doesn't immediately read as stale in
+            // refreshTrackedWorkspaceGitMetadata() the moment it stops being selected.
+            workspaceGitMetadataLastRefreshedAt[workspace.id] = Date()
+        }
     }
 
     func refreshTrackedWorkspaceGitMetadataForTesting() {
@@ -262,16 +264,22 @@ extension TabManager {
         )
     }
 
+    /// Returns whether a refresh was actually scheduled — callers that stamp
+    /// `workspaceGitMetadataLastRefreshedAt` must only do so on `true`, or a
+    /// workspace whose panels all early-return here would be marked fresh
+    /// without any probe running, deferring its next real attempt by a full
+    /// hidden-refresh interval.
+    @discardableResult
     func scheduleWorkspaceGitMetadataRefreshIfPossible(
         workspaceId: UUID,
         panelId: UUID,
         reason: String,
         delays: [TimeInterval] = [0]
-    ) {
+    ) -> Bool {
         guard let workspace = workspace(withId: workspaceId),
               workspace.panels[panelId] != nil,
               let directory = gitProbeDirectory(for: workspace, panelId: panelId) else {
-            return
+            return false
         }
 
         scheduleWorkspaceGitMetadataRefresh(
@@ -281,5 +289,6 @@ extension TabManager {
             delays: delays,
             reason: reason
         )
+        return true
     }
 }
