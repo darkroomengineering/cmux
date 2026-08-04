@@ -13,9 +13,11 @@ When we change the fork, update this document and the parent submodule SHA.
 ## Current fork changes
 
 Fork rebased onto upstream `main` at `3509ccf78` (`v1.3.1-457-g3509ccf78`) on March 30, 2026.
-Current Programa pinned fork head: `ae3cc5d29` (`v1.3.1-473-gae3cc5d29`).
-Fork `main` keeps this pin reachable via merge commit `5c781d710`
-(`Retain layer-background pin ancestry on main`).
+Current Programa pinned fork head: `c25020f99` (occluded-render skip, August 4, 2026),
+reachable on the fork via branch `perf/occluded-update-frame-skip`. A
+retain-ancestry merge onto fork `main` (the `5c781d710` convention) has not
+been done for this pin yet — do one on the next fork-main touch so the pin
+survives branch cleanup.
 
 ### 1) macOS display link restart on display changes
 
@@ -112,7 +114,16 @@ tend to conflict together during rebases.
   - Allows the host app to provide the terminal background via `CALayer.backgroundColor` for instant coverage during view resizes, avoiding alpha double-stacking.
   - Replays the layer-background restore on top of the refreshed Ghostty base so Programa keeps the resize-coverage fix after the upstream sync.
 
-The fork branch HEAD is now the section 7 layer-background restore commit.
+### 8) Occluded-surface frame-generation skip
+
+- Commit: `c25020f99` (perf(renderer): skip frame generation for occluded surfaces, force full rebuild on re-visibility)
+- Files:
+  - `src/renderer/Thread.zig`
+- Summary:
+  - `renderCallback` skips `updateFrame` while `flags.visible` is false — previously every PTY output burst ran full frame generation (terminal mutex, render-state rebuild) for occluded surfaces, with only the GPU `drawFrame` gated. Dominant idle-CPU cost for hidden-but-busy agent panes.
+  - `drainMailbox`'s `.visible` false→true transition calls `renderer.markDirty()` to force one full rebuild at un-occlude. Terminal-side dirty tracking is level-triggered (bits accumulate until consumed; dimensions/viewport compared directly), so the skip is lossless; the forced rebuild additionally covers any renderer-side cache staleness.
+
+The fork branch HEAD is now the section 8 occluded-render skip commit.
 
 ## Upstreamed fork changes
 
@@ -165,6 +176,12 @@ These files change frequently upstream; be careful when rebasing the fork:
   - The initial `focused` plumbing has to stay aligned across the C config, embedded runtime surface,
     and macOS wrapper. If upstream refactors surface creation or post-create focus sync, re-check that
     background panes can start unfocused without synthesizing a focus-loss transition during creation.
+
+- `src/renderer/Thread.zig`
+  - The occluded-render skip guards the ONLY `updateFrame` call site at our base. Upstream `main`
+    has since added another caller (`renderNow`) plus more visibility-adjacent logic — on the next
+    upstream sync, re-apply the `flags.visible` guard to EVERY `updateFrame` call site, and keep the
+    `markDirty()` force on the occluded→visible transition in `drainMailbox`.
 
 - `src/termio/stream_handler.zig`
   - Keep DECSET 1004 enablement side-effect free. xterm-compatible focus reporting should only emit
