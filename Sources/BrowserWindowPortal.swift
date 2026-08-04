@@ -1865,10 +1865,7 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
     }
 
     func tearDown() {
-        removeGeometryObservers()
-        for webViewId in Array(entriesByWebViewId.keys) {
-            detachWebView(withId: webViewId)
-        }
+        tearDownEntries(ids: Array(entriesByWebViewId.keys), detach: detachWebView(withId:))
         hostView.removeFromSuperview()
         installedContainerView = nil
         installedReferenceView = nil
