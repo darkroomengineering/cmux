@@ -948,6 +948,7 @@ class TerminalController {
         listenerActivated = true
         let listenerSocket = newServerSocket
         print("TerminalController: Listening on \(activeSocketPath)")
+        dilog("socket.listener", "start path=\(activeSocketPath) accessMode=\(accessMode)")
         NotificationCenter.default.post(
             name: .socketListenerDidStart,
             object: self,
@@ -1110,6 +1111,7 @@ class TerminalController {
             serverSocket = -1
             return (socketToClose, socketPath)
         }
+        dilog("socket.listener", "stop path=\(socketPathToUnlink)")
         if socketToClose >= 0 {
             close(socketToClose)
         }
@@ -1296,6 +1298,10 @@ class TerminalController {
                     exitReason = shouldRearmForFatalErrno
                         ? "fatal_accept_error"
                         : "persistent_accept_failures"
+                    dilog(
+                        "socket.accept",
+                        "error classification=\(Self.acceptErrorClassification(errnoCode: errnoCode)) errno=\(errnoCode) action=rearm delayMs=\(delayMs) consecutiveFailures=\(consecutiveFailures)"
+                    )
                     withListenerState {
                         pendingAcceptLoopRearmGeneration = generation
                     }
@@ -1309,6 +1315,10 @@ class TerminalController {
                 if case .resumeAfterDelay(let delayMs) = recoveryAction {
                     exitReason = "accept_backoff_resume"
                     resumeRequested = true
+                    dilog(
+                        "socket.accept",
+                        "error classification=\(Self.acceptErrorClassification(errnoCode: errnoCode)) errno=\(errnoCode) action=resume delayMs=\(delayMs) consecutiveFailures=\(consecutiveFailures)"
+                    )
                     withListenerState {
                         pendingAcceptLoopResumeGeneration = generation
                     }
@@ -1370,6 +1380,7 @@ class TerminalController {
         generation: UInt64,
         delayMs: Int
     ) {
+        dilog("socket.accept", "rearm scheduled delayMs=\(delayMs) generation=\(generation)")
         let deadline = DispatchTime.now() + .milliseconds(delayMs)
         DispatchQueue.main.asyncAfter(deadline: deadline) { [weak self] in
             guard let self else { return }
@@ -1382,6 +1393,7 @@ class TerminalController {
 
             let restartMode = self.accessMode
 
+            dilog("socket.accept", "rearm executing path=\(restartPath)")
             self.stop()
             self.start(tabManager: tabManager, socketPath: restartPath, accessMode: restartMode)
         }
@@ -1403,6 +1415,15 @@ class TerminalController {
         defer { close(socket) }
         defer { connection.teardown() }
 
+        let peerPidDescription = peerPid.map { String($0) } ?? "unknown"
+        let connectionStart = Date()
+        var closeReason = "unknown"
+        dilog("socket.conn", "open pid=\(peerPidDescription)")
+        defer {
+            let durationMs = Int(Date().timeIntervalSince(connectionStart) * 1000)
+            dilog("socket.conn", "close pid=\(peerPidDescription) reason=\(closeReason) durationMs=\(durationMs)")
+        }
+
         // In cmuxOnly mode, verify the connecting process is a descendant of cmux.
         // In allowAll mode (env-var only), skip the ancestry check.
         if accessMode == .cmuxOnly {
@@ -1413,6 +1434,7 @@ class TerminalController {
                 guard isDescendant(pid) else {
                     let msg = "ERROR: Access denied — only processes started inside Programa can connect\n"
                     msg.withCString { ptr in _ = write(socket, ptr, strlen(ptr)) }
+                    closeReason = "access_denied"
                     return
                 }
             }
@@ -1427,6 +1449,7 @@ class TerminalController {
                 guard peerHasSameUID(socket) else {
                     let msg = "ERROR: Unable to verify client process\n"
                     msg.withCString { ptr in _ = write(socket, ptr, strlen(ptr)) }
+                    closeReason = "access_denied_unverified"
                     return
                 }
             }
@@ -1438,7 +1461,14 @@ class TerminalController {
 
         while ignoresListenerState || withListenerState({ isRunning }) {
             let bytesRead = read(socket, &buffer, buffer.count - 1)
-            guard bytesRead > 0 else { break }
+            if bytesRead <= 0 {
+                if bytesRead == 0 {
+                    closeReason = "eof"
+                } else {
+                    closeReason = "read_error errno=\(errno)"
+                }
+                break
+            }
 
             let chunk = String(bytes: buffer[0..<bytesRead], encoding: .utf8) ?? ""
             pending.append(chunk)
@@ -1457,6 +1487,9 @@ class TerminalController {
                 let response = processCommand(trimmed, connection: connection)
                 connection.writeLine(response)
             }
+        }
+        if closeReason == "unknown" {
+            closeReason = "listener_stopped"
         }
     }
 
