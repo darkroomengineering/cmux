@@ -1879,18 +1879,20 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
 
     func webViewAtWindowPoint(_ windowPoint: NSPoint) -> WKWebView? {
         guard ensureInstalled() else { return nil }
-        let point = hostView.convert(windowPoint, from: nil)
-        for subview in hostView.subviews.reversed() {
-            guard let container = subview as? WindowBrowserSlotView else { continue }
-            guard !container.isHidden else { continue }
-            guard container.frame.contains(point) else { continue }
-            guard let webView = entriesByWebViewId
-                .first(where: { _, entry in entry.containerView === container })?
-                .value
-                .webView else { continue }
-            return webView
-        }
-        return nil
+        return hitScanReversedSubviews(
+            at: windowPoint,
+            map: { subview -> WindowBrowserSlotView? in
+                guard let container = subview as? WindowBrowserSlotView, !container.isHidden else { return nil }
+                return container
+            },
+            resolve: { container, point in
+                guard container.frame.contains(point) else { return nil }
+                return self.entriesByWebViewId
+                    .first(where: { _, entry in entry.containerView === container })?
+                    .value
+                    .webView
+            }
+        )
     }
 }
 
