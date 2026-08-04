@@ -77,58 +77,42 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
     }
 
     private func installGeometryObservers(for window: NSWindow) {
-        guard geometryObservers.isEmpty else { return }
-
-        let center = NotificationCenter.default
-        geometryObservers.append(center.addObserver(
-            forName: NSWindow.didResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+        observeGeometryAffectingNotifications([
+            GeometryNotificationSpec(
+                name: NSWindow.didResizeNotification,
+                object: window
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSWindow.didEndLiveResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSWindow.didEndLiveResizeNotification,
+                object: window
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSSplitView.didResizeSubviewsNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSSplitView.didResizeSubviewsNotification,
+                object: nil
+            ) { [weak self] notification in
                 guard let self,
                       let splitView = notification.object as? NSSplitView,
                       let window = self.window,
                       splitView.window === window else { return }
                 self.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSView.frameDidChangeNotification,
-            object: hostView,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSView.frameDidChangeNotification,
+                object: hostView
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSView.boundsDidChangeNotification,
-            object: hostView,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSView.boundsDidChangeNotification,
+                object: hostView
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
+            },
+        ])
     }
 
     func scheduleExternalGeometrySynchronize() {
