@@ -3928,11 +3928,12 @@ final class TransientRecoveryRetryStateTests: XCTestCase {
         XCTAssertTrue(scheduleRetryIfNeeded(state: &state, newReason: "b", budget: 3, resetPolicy: .whenExhausted))
         XCTAssertEqual(state.remaining, 0)
 
-        XCTAssertFalse(
+        XCTAssertTrue(
             scheduleRetryIfNeeded(state: &state, newReason: "c", budget: 3, resetPolicy: .whenExhausted),
-            "Once fully exhausted, a new reason must not grant a fresh budget under whenExhausted"
+            "remaining==0 always grants a fresh budget under whenExhausted, even for a brand-new reason " +
+            "— Terminal doesn't track a reason at all, so remaining==0 is the only reset trigger"
         )
-        XCTAssertEqual(state.remaining, 0)
+        XCTAssertEqual(state.remaining, 2)
     }
 
     func testWhenExhaustedPolicyResetsOnceRemainingReachesZero() {
