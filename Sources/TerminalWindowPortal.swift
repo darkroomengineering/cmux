@@ -77,58 +77,42 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
     }
 
     private func installGeometryObservers(for window: NSWindow) {
-        guard geometryObservers.isEmpty else { return }
-
-        let center = NotificationCenter.default
-        geometryObservers.append(center.addObserver(
-            forName: NSWindow.didResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+        observeGeometryAffectingNotifications([
+            GeometryNotificationSpec(
+                name: NSWindow.didResizeNotification,
+                object: window
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSWindow.didEndLiveResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSWindow.didEndLiveResizeNotification,
+                object: window
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSSplitView.didResizeSubviewsNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSSplitView.didResizeSubviewsNotification,
+                object: nil
+            ) { [weak self] notification in
                 guard let self,
                       let splitView = notification.object as? NSSplitView,
                       let window = self.window,
                       splitView.window === window else { return }
                 self.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSView.frameDidChangeNotification,
-            object: hostView,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSView.frameDidChangeNotification,
+                object: hostView
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSView.boundsDidChangeNotification,
-            object: hostView,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSView.boundsDidChangeNotification,
+                object: hostView
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
+            },
+        ])
     }
 
     func scheduleExternalGeometrySynchronize() {
@@ -583,12 +567,16 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
         reason: String
     ) -> Bool {
         guard Self.transientRecoveryEnabled else { return false }
-        if entry.transientRecoveryRetriesRemaining == 0 {
-            entry.transientRecoveryRetriesRemaining = Self.transientRecoveryRetryBudget
-        }
-        guard entry.transientRecoveryRetriesRemaining > 0 else { return false }
+        var state = TransientRecoveryRetryState(remaining: entry.transientRecoveryRetriesRemaining, reason: nil)
+        let didSchedule = scheduleRetryIfNeeded(
+            state: &state,
+            newReason: reason,
+            budget: Self.transientRecoveryRetryBudget,
+            resetPolicy: .whenExhausted
+        )
+        entry.transientRecoveryRetriesRemaining = state.remaining
+        guard didSchedule else { return false }
 
-        entry.transientRecoveryRetriesRemaining -= 1
         entriesByHostedId[hostedId] = entry
 #if DEBUG
         dlog(
@@ -902,32 +890,33 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
 
     private func pruneDeadEntries() {
         let currentWindow = window
-        let deadHostedIds = entriesByHostedId.compactMap { hostedId, entry -> ObjectIdentifier? in
-            guard entry.hostedView != nil else { return hostedId }
-            guard let anchor = entry.anchorView else {
-                // The anchor has been fully deallocated (weak ref auto-nil'd), unlike a
-                // transient anchor that's merely off-tree (still alive, superview nil) and
-                // can be recovered on the next bind/sync. There is nothing left to
-                // reconcile against here, so always prune regardless of visibleInUI.
-                return hostedId
-            }
+        Self.pruneEntries(
+            ids: Array(entriesByHostedId.keys),
+            isDead: { hostedId in
+                guard let entry = self.entriesByHostedId[hostedId] else { return false }
+                guard entry.hostedView != nil else { return true }
+                guard let anchor = entry.anchorView else {
+                    // The anchor has been fully deallocated (weak ref auto-nil'd), unlike a
+                    // transient anchor that's merely off-tree (still alive, superview nil) and
+                    // can be recovered on the next bind/sync. There is nothing left to
+                    // reconcile against here, so always prune regardless of visibleInUI.
+                    return true
+                }
 
-            let anchorInvalidForCurrentHost =
-                anchor.window !== currentWindow ||
-                anchor.superview == nil ||
-                (installedReferenceView.map { !anchor.isDescendant(of: $0) } ?? false)
-            if anchorInvalidForCurrentHost {
-                // During aggressive tab drag/reorder churn, SwiftUI/AppKit can briefly
-                // detach/rehome anchor hosts while the terminal should stay visible.
-                // Avoid pruning those visible entries so sync/bind recovery can reattach.
-                return entry.visibleInUI ? nil : hostedId
-            }
-            return nil
-        }
-
-        for hostedId in deadHostedIds {
-            detachHostedView(withId: hostedId)
-        }
+                let anchorInvalidForCurrentHost =
+                    anchor.window !== currentWindow ||
+                    anchor.superview == nil ||
+                    (self.installedReferenceView.map { !anchor.isDescendant(of: $0) } ?? false)
+                if anchorInvalidForCurrentHost {
+                    // During aggressive tab drag/reorder churn, SwiftUI/AppKit can briefly
+                    // detach/rehome anchor hosts while the terminal should stay visible.
+                    // Avoid pruning those visible entries so sync/bind recovery can reattach.
+                    return !entry.visibleInUI
+                }
+                return false
+            },
+            detach: detachHostedView(withId:)
+        )
 
         let validAnchorIds = Set(entriesByHostedId.compactMap { _, entry in
             entry.anchorView.map { ObjectIdentifier($0) }
@@ -940,10 +929,7 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
     }
 
     func tearDown() {
-        removeGeometryObservers()
-        for hostedId in Array(entriesByHostedId.keys) {
-            detachHostedView(withId: hostedId)
-        }
+        tearDownEntries(ids: Array(entriesByHostedId.keys), detach: detachHostedView(withId:))
         NSLayoutConstraint.deactivate(installConstraints)
         installConstraints.removeAll()
         hostView.removeFromSuperview()
@@ -1016,21 +1002,22 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
 
     func viewAtWindowPoint(_ windowPoint: NSPoint) -> NSView? {
         guard ensureInstalled() else { return nil }
-        let point = hostView.convert(windowPoint, from: nil)
-
         // Restrict hit-testing to currently mapped entries so stale detached views
         // can't steal file-drop/mouse routing.
-        for subview in hostView.subviews.reversed() {
-            guard let hostedView = subview as? GhosttySurfaceScrollView else { continue }
-            let hostedId = ObjectIdentifier(hostedView)
-            guard entriesByHostedId[hostedId] != nil else { continue }
-            guard !hostedView.isHidden else { continue }
-            guard hostedView.frame.contains(point) else { continue }
-            let localPoint = hostedView.convert(point, from: hostView)
-            return hostedView.hitTest(localPoint) ?? hostedView
-        }
-
-        return nil
+        return hitScanReversedSubviews(
+            at: windowPoint,
+            map: { subview -> GhosttySurfaceScrollView? in
+                guard let hostedView = subview as? GhosttySurfaceScrollView,
+                      self.entriesByHostedId[ObjectIdentifier(hostedView)] != nil,
+                      !hostedView.isHidden else { return nil }
+                return hostedView
+            },
+            resolve: { hostedView, point in
+                guard hostedView.frame.contains(point) else { return nil }
+                let localPoint = hostedView.convert(point, from: self.hostView)
+                return hostedView.hitTest(localPoint) ?? hostedView
+            }
+        )
     }
 
     func terminalViewAtWindowPoint(_ windowPoint: NSPoint) -> GhosttyNSView? {

@@ -282,33 +282,23 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
     }
 
     private func installGeometryObservers(for window: NSWindow) {
-        guard geometryObservers.isEmpty else { return }
-
-        let center = NotificationCenter.default
-        geometryObservers.append(center.addObserver(
-            forName: NSWindow.didResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+        observeGeometryAffectingNotifications([
+            GeometryNotificationSpec(
+                name: NSWindow.didResizeNotification,
+                object: window
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSWindow.didEndLiveResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSWindow.didEndLiveResizeNotification,
+                object: window
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSSplitView.willResizeSubviewsNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSSplitView.willResizeSubviewsNotification,
+                object: nil
+            ) { [weak self] notification in
                 guard let self,
                       let splitView = notification.object as? NSSplitView,
                       let window = self.window else { return }
@@ -317,14 +307,11 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
                     window: window,
                     hostView: self.hostView
                 )
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSSplitView.didResizeSubviewsNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSSplitView.didResizeSubviewsNotification,
+                object: nil
+            ) { [weak self] notification in
                 guard let self,
                       let splitView = notification.object as? NSSplitView,
                       let window = self.window,
@@ -334,8 +321,8 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
                           hostView: self.hostView
                       ) else { return }
                 self.scheduleExternalGeometrySynchronize()
-            }
-        })
+            },
+        ])
     }
 
     private func scheduleExternalGeometrySynchronize() {
@@ -1248,21 +1235,28 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
         webView: WKWebView,
         reason: String
     ) -> Bool {
-        if entry.transientRecoveryReason != reason {
-            entry.transientRecoveryReason = reason
-            entry.transientRecoveryRetriesRemaining = Self.transientRecoveryRetryBudget
-        }
+        var state = TransientRecoveryRetryState(
+            remaining: entry.transientRecoveryRetriesRemaining,
+            reason: entry.transientRecoveryReason
+        )
+        let didSchedule = scheduleRetryIfNeeded(
+            state: &state,
+            newReason: reason,
+            budget: Self.transientRecoveryRetryBudget,
+            resetPolicy: .whenReasonChanges
+        )
+        entry.transientRecoveryReason = state.reason
+        entry.transientRecoveryRetriesRemaining = state.remaining
 #if DEBUG
-        if entry.transientRecoveryRetriesRemaining <= 0 {
+        if !didSchedule {
             dlog(
                 "browser.portal.sync.deferRecover.skip web=\(browserPortalDebugToken(webView)) " +
                 "reason=\(reason) exhausted=1"
             )
         }
 #endif
-        guard entry.transientRecoveryRetriesRemaining > 0 else { return false }
+        guard didSchedule else { return false }
 
-        entry.transientRecoveryRetriesRemaining -= 1
         entriesByWebViewId[webViewId] = entry
 #if DEBUG
         dlog(
@@ -1825,34 +1819,35 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
 
     private func pruneDeadEntries() {
         let currentWindow = window
-        let deadWebViewIds = entriesByWebViewId.compactMap { webViewId, entry -> ObjectIdentifier? in
-            guard entry.webView != nil else { return webViewId }
-            guard let container = entry.containerView else { return webViewId }
-            guard let anchor = entry.anchorView else {
-                // Workspace switching hides retiring browser portals before SwiftUI unmounts
-                // their anchor views. Keep the hidden WKWebView/slot alive so switching back
-                // can rebind the existing view instead of forcing a full WebKit reload.
-                return nil
-            }
-            if container.superview == nil || !container.isDescendant(of: hostView) {
-                return webViewId
-            }
-            let anchorInvalidForCurrentHost =
-                anchor.window !== currentWindow ||
-                anchor.superview == nil ||
-                (installedReferenceView.map { !anchor.isDescendant(of: $0) } ?? false)
-            if anchorInvalidForCurrentHost {
-                // Hidden browser portals can legitimately be off-tree between workspace
-                // deactivation and the next rebind. Preserve them until an explicit detach
-                // (panel close, window teardown, or web view replacement) says otherwise.
-                return nil
-            }
-            return nil
-        }
-
-        for webViewId in deadWebViewIds {
-            detachWebView(withId: webViewId)
-        }
+        Self.pruneEntries(
+            ids: Array(entriesByWebViewId.keys),
+            isDead: { webViewId in
+                guard let entry = self.entriesByWebViewId[webViewId] else { return false }
+                guard entry.webView != nil else { return true }
+                guard let container = entry.containerView else { return true }
+                guard let anchor = entry.anchorView else {
+                    // Workspace switching hides retiring browser portals before SwiftUI unmounts
+                    // their anchor views. Keep the hidden WKWebView/slot alive so switching back
+                    // can rebind the existing view instead of forcing a full WebKit reload.
+                    return false
+                }
+                if container.superview == nil || !container.isDescendant(of: self.hostView) {
+                    return true
+                }
+                let anchorInvalidForCurrentHost =
+                    anchor.window !== currentWindow ||
+                    anchor.superview == nil ||
+                    (self.installedReferenceView.map { !anchor.isDescendant(of: $0) } ?? false)
+                if anchorInvalidForCurrentHost {
+                    // Hidden browser portals can legitimately be off-tree between workspace
+                    // deactivation and the next rebind. Preserve them until an explicit detach
+                    // (panel close, window teardown, or web view replacement) says otherwise.
+                    return false
+                }
+                return false
+            },
+            detach: detachWebView(withId:)
+        )
 
         let validAnchorIds = Set(entriesByWebViewId.compactMap { _, entry in
             entry.anchorView.map { ObjectIdentifier($0) }
@@ -1865,10 +1860,7 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
     }
 
     func tearDown() {
-        removeGeometryObservers()
-        for webViewId in Array(entriesByWebViewId.keys) {
-            detachWebView(withId: webViewId)
-        }
+        tearDownEntries(ids: Array(entriesByWebViewId.keys), detach: detachWebView(withId:))
         hostView.removeFromSuperview()
         installedContainerView = nil
         installedReferenceView = nil
@@ -1895,18 +1887,20 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
 
     func webViewAtWindowPoint(_ windowPoint: NSPoint) -> WKWebView? {
         guard ensureInstalled() else { return nil }
-        let point = hostView.convert(windowPoint, from: nil)
-        for subview in hostView.subviews.reversed() {
-            guard let container = subview as? WindowBrowserSlotView else { continue }
-            guard !container.isHidden else { continue }
-            guard container.frame.contains(point) else { continue }
-            guard let webView = entriesByWebViewId
-                .first(where: { _, entry in entry.containerView === container })?
-                .value
-                .webView else { continue }
-            return webView
-        }
-        return nil
+        return hitScanReversedSubviews(
+            at: windowPoint,
+            map: { subview -> WindowBrowserSlotView? in
+                guard let container = subview as? WindowBrowserSlotView, !container.isHidden else { return nil }
+                return container
+            },
+            resolve: { container, point in
+                guard container.frame.contains(point) else { return nil }
+                return self.entriesByWebViewId
+                    .first(where: { _, entry in entry.containerView === container })?
+                    .value
+                    .webView
+            }
+        )
     }
 }
 

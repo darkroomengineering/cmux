@@ -3149,4 +3149,62 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
             "Workspace rebind should refresh the preserved browser without recreating its portal slot"
         )
     }
+
+    /// Pins the H4 isDead-policy divergence (nuclear-review N4) directly at the
+    /// `pruneDeadEntries` boundary: unlike `WindowTerminalPortal`, which treats a fully
+    /// deallocated anchor as dead (see
+    /// `TerminalWindowPortalLifecycleTests.testPruneDeadEntriesDetachesAnchorlessHostedView`),
+    /// `WindowBrowserPortal` deliberately keeps the entry alive so a hidden WKWebView
+    /// survives a workspace switch instead of forcing a WebKit reload storm. This test
+    /// exercises the *fully deallocated* anchor case (weak ref auto-nil'd), which is a
+    /// stronger signal than the merely-off-tree case already covered by
+    /// `testHiddenPortalEntrySurvivesAnchorRemovalUntilWorkspaceRebind` above.
+    func testPruneDeadEntriesPreservesWebViewWhenAnchorIsFullyDeallocated() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        let portal = WindowBrowserPortal(window: window)
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+
+        let webView1 = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let webView2 = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        // Allocate anchor2 before anchor1 is dropped so ARC can't reuse anchor1's freed
+        // memory address for anchor2 — an address reuse would make
+        // ObjectIdentifier(anchor2) alias the stale webViewByAnchorId[anchor1] entry and
+        // trip bind()'s unrelated "anchor replaced" detach path instead of exercising
+        // pruneDeadEntries' nil-anchor policy.
+        let anchor2 = NSView(frame: NSRect(x: 180, y: 20, width: 120, height: 80))
+
+        // Drop the anchor inside an autoreleasepool so the portal's weak reference
+        // actually nils out before pruneDeadEntries runs — AppKit teardown is not
+        // synchronous with the last strong-reference drop.
+        autoreleasepool {
+            var anchor1: NSView? = NSView(frame: NSRect(x: 20, y: 20, width: 120, height: 80))
+            contentView.addSubview(anchor1!)
+            portal.bind(webView: webView1, to: anchor1!, visibleInUI: true)
+
+            anchor1?.removeFromSuperview()
+            anchor1 = nil
+        }
+
+        contentView.addSubview(anchor2)
+        portal.bind(webView: webView2, to: anchor2, visibleInUI: true)
+
+        XCTAssertEqual(
+            portal.debugEntryCount(), 2,
+            "Browser must keep the anchorless entry alive (unlike Terminal) so a hidden " +
+            "WKWebView survives workspace switching without a reload"
+        )
+        XCTAssertTrue(
+            portal.webViewIds().contains(ObjectIdentifier(webView1)),
+            "The webView with a fully deallocated anchor must remain tracked, not pruned"
+        )
+    }
 }
