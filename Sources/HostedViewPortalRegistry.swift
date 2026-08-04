@@ -144,6 +144,89 @@ class HostedViewPortalRegistry: NSObject {
         }
         return viewIndex > referenceIndex
     }
+
+    /// H1: shared teardown loop shape. Removes geometry observers, then detaches every
+    /// currently-tracked id via the subclass-supplied `detach` closure (which already
+    /// owns per-entry cleanup, including reverse-map removal). Subclass-specific cleanup
+    /// that isn't provably identical between the two portals — Terminal's
+    /// `NSLayoutConstraint` deactivation, Browser's overlay/rendering-state teardown,
+    /// `hostView.removeFromSuperview()`, and nil'ing `installedContainerView`/
+    /// `installedReferenceView` — stays in each subclass's own `tearDown()`, called
+    /// around this helper.
+    func tearDownEntries<ID: Hashable>(ids: [ID], detach: (ID) -> Void) {
+        removeGeometryObservers()
+        for id in ids {
+            detach(id)
+        }
+    }
+
+    /// H2: declarative notification-registration helper. Collapses the
+    /// `NotificationCenter.default.addObserver(...) { MainActor.assumeIsolated { ... } }`
+    /// boilerplate that both `installGeometryObservers(for:)` implementations repeated
+    /// per-notification. Each subclass passes its own notification list as data — there
+    /// is no shared/default list, since Terminal and Browser observe different
+    /// notifications for different reasons.
+    struct GeometryNotificationSpec {
+        let name: Notification.Name
+        let object: NSObject?
+        let handler: (Notification) -> Void
+    }
+
+    func observeGeometryAffectingNotifications(_ specs: [GeometryNotificationSpec]) {
+        guard geometryObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        for spec in specs {
+            geometryObservers.append(center.addObserver(
+                forName: spec.name,
+                object: spec.object,
+                queue: .main
+            ) { notification in
+                MainActor.assumeIsolated {
+                    spec.handler(notification)
+                }
+            })
+        }
+    }
+
+    /// H3: shared hit-scan skeleton for `viewAtWindowPoint`/`webViewAtWindowPoint`.
+    /// Converts `windowPoint` into `hostViewForGeometry`'s coordinate space once, then
+    /// walks its subviews back-to-front (topmost first). `map` type-casts a subview and
+    /// applies any subclass-specific eligibility check (entry tracked, not hidden, ...),
+    /// returning `nil` to skip it. `resolve` receives the matched value and the
+    /// already-converted point and performs the frame-containment check plus the final
+    /// hit-test/lookup; returning `nil` continues the scan to the next subview instead of
+    /// stopping. `terminalViewAtWindowPoint` has no Browser counterpart and is not routed
+    /// through this helper.
+    func hitScanReversedSubviews<Match, Result>(
+        at windowPoint: NSPoint,
+        map: (NSView) -> Match?,
+        resolve: (Match, NSPoint) -> Result?
+    ) -> Result? {
+        let point = hostViewForGeometry.convert(windowPoint, from: nil)
+        for subview in hostViewForGeometry.subviews.reversed() {
+            guard let matched = map(subview) else { continue }
+            if let result = resolve(matched, point) {
+                return result
+            }
+        }
+        return nil
+    }
+
+    /// H4: generic dead-entry pruning skeleton. The base owns the iterate/detach shape;
+    /// each subclass's `isDead` closure captures its own (load-bearing, never-harmonized)
+    /// dead-entry policy. Notably: Terminal treats a fully deallocated anchor
+    /// (`anchorView == nil`) as dead, while Browser deliberately treats it as *not* dead
+    /// so a hidden `WKWebView` survives a workspace switch instead of forcing a reload —
+    /// see the divergent `isDead` closures at each call site.
+    static func pruneEntries<ID: Hashable>(
+        ids: [ID],
+        isDead: (ID) -> Bool,
+        detach: (ID) -> Void
+    ) {
+        for id in ids where isDead(id) {
+            detach(id)
+        }
+    }
 }
 
 /// Pure transient-recovery retry-budget state, shared by `WindowTerminalPortal` and
