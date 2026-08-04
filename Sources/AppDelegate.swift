@@ -6111,6 +6111,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     //   4. App-shortcut (lowest precedence, only reached once nothing above claimed the
     //      event): the flat table of ~55 `matchConfiguredShortcut`/digit/directional/tab
     //      checks, extracted verbatim into handleConfiguredAppShortcutActions(event:...).
+    // Snapshot of whether/how the command palette is claiming keyboard input for a given
+    // shortcut event's routed window. Extracted from the six interdependent booleans that used
+    // to be computed inline at the top of handleCustomShortcut(event:) so the precedence
+    // decisions below can read `commandPaletteState.isEffectiveInTargetWindow` etc. declaratively
+    // instead of re-deriving them. Values and their derivation are unchanged from before.
+    private struct CommandPaletteInteractionState {
+        let targetWindow: NSWindow?
+        let shortcutWindow: NSWindow?
+        let isVisibleInTargetWindow: Bool
+        let isPendingOpenInTargetWindow: Bool
+        let isOverlayVisibleInTargetWindow: Bool
+        let isResponderActiveInTargetWindow: Bool
+        let isInteractiveInTargetWindow: Bool
+        let isEffectiveInTargetWindow: Bool
+    }
+
+    private func makeCommandPaletteInteractionState(for event: NSEvent) -> CommandPaletteInteractionState {
+        let targetWindow = commandPaletteWindowForShortcutEvent(event)
+        let shortcutWindow = shouldHandleCommandPaletteShortcutEvent(
+            event,
+            paletteWindow: targetWindow
+        ) ? targetWindow : nil
+        let isVisibleInTargetWindow = shortcutWindow.map {
+            isCommandPaletteVisible(for: $0)
+        } ?? false
+        let isPendingOpenInTargetWindow = targetWindow.map {
+            isCommandPalettePendingOpen(for: $0)
+        } ?? false
+        let isOverlayVisibleInTargetWindow = targetWindow.map {
+            isCommandPaletteOverlayPresented(in: $0)
+        } ?? false
+        let isResponderActiveInTargetWindow = targetWindow.map {
+            isCommandPaletteResponderActive(in: $0)
+        } ?? false
+        let isInteractiveInTargetWindow =
+            isVisibleInTargetWindow
+            || isOverlayVisibleInTargetWindow
+            || isResponderActiveInTargetWindow
+        let isEffectiveInTargetWindow =
+            isInteractiveInTargetWindow
+            || isPendingOpenInTargetWindow
+        return CommandPaletteInteractionState(
+            targetWindow: targetWindow,
+            shortcutWindow: shortcutWindow,
+            isVisibleInTargetWindow: isVisibleInTargetWindow,
+            isPendingOpenInTargetWindow: isPendingOpenInTargetWindow,
+            isOverlayVisibleInTargetWindow: isOverlayVisibleInTargetWindow,
+            isResponderActiveInTargetWindow: isResponderActiveInTargetWindow,
+            isInteractiveInTargetWindow: isInteractiveInTargetWindow,
+            isEffectiveInTargetWindow: isEffectiveInTargetWindow
+        )
+    }
+
     private func handleCustomShortcut(event: NSEvent) -> Bool {
         // `charactersIgnoringModifiers` can be nil for some synthetic NSEvents and certain special keys.
         // Treat nil as "" and rely on keyCode/layout-aware fallback logic where needed.
@@ -6190,30 +6243,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         }
 
         let normalizedFlags = flags.subtracting([.numericPad, .function, .capsLock])
-        let commandPaletteTargetWindow = commandPaletteWindowForShortcutEvent(event)
-        let commandPaletteShortcutWindow = shouldHandleCommandPaletteShortcutEvent(
-            event,
-            paletteWindow: commandPaletteTargetWindow
-        ) ? commandPaletteTargetWindow : nil
-        let commandPaletteVisibleInTargetWindow = commandPaletteShortcutWindow.map {
-            isCommandPaletteVisible(for: $0)
-        } ?? false
-        let commandPalettePendingOpenInTargetWindow = commandPaletteTargetWindow.map {
-            isCommandPalettePendingOpen(for: $0)
-        } ?? false
-        let commandPaletteOverlayVisibleInTargetWindow = commandPaletteTargetWindow.map {
-            isCommandPaletteOverlayPresented(in: $0)
-        } ?? false
-        let commandPaletteResponderActiveInTargetWindow = commandPaletteTargetWindow.map {
-            isCommandPaletteResponderActive(in: $0)
-        } ?? false
-        let commandPaletteInteractiveInTargetWindow =
-            commandPaletteVisibleInTargetWindow
-            || commandPaletteOverlayVisibleInTargetWindow
-            || commandPaletteResponderActiveInTargetWindow
-        let commandPaletteEffectiveInTargetWindow =
-            commandPaletteInteractiveInTargetWindow
-            || commandPalettePendingOpenInTargetWindow
+        // The six interdependent booleans below (visible/pendingOpen/overlayVisible/
+        // responderActive/interactive/effective) describe whether -- and how -- the command
+        // palette is currently claiming keyboard input in the window this event is routed to.
+        // Precedence throughout the rest of this function reads off `commandPaletteState`
+        // declaratively instead of recomputing these checks inline.
+        let commandPaletteState = makeCommandPaletteInteractionState(for: event)
+        let commandPaletteTargetWindow = commandPaletteState.targetWindow
+        let commandPaletteShortcutWindow = commandPaletteState.shortcutWindow
+        let commandPaletteVisibleInTargetWindow = commandPaletteState.isVisibleInTargetWindow
+        let commandPalettePendingOpenInTargetWindow = commandPaletteState.isPendingOpenInTargetWindow
+        let commandPaletteOverlayVisibleInTargetWindow = commandPaletteState.isOverlayVisibleInTargetWindow
+        let commandPaletteResponderActiveInTargetWindow = commandPaletteState.isResponderActiveInTargetWindow
+        let commandPaletteInteractiveInTargetWindow = commandPaletteState.isInteractiveInTargetWindow
+        let commandPaletteEffectiveInTargetWindow = commandPaletteState.isEffectiveInTargetWindow
 
 #if DEBUG
         if event.keyCode == 36 || event.keyCode == 76 {
