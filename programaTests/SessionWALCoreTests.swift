@@ -227,6 +227,82 @@ final class SessionWALCoreTests: XCTestCase {
         )
     }
 
+    /// Reproduces the fallback-path variant of the corrupted-restore symptom:
+    /// `readFallbackScrollbackText`'s plain-tail fallback (no usable frame --
+    /// e.g. a session younger than the periodic frame-capture interval, or a
+    /// walGeneration mismatch after rotation) concatenates the rotated +
+    /// current WAL files and caps the result with a raw `.suffix(walCapBytes)`
+    /// cut, exactly like `readFrameAndDelta`'s offset/cap cuts -- but unlike
+    /// that path, it did not trim the result, so a cap-cut landing mid-escape
+    /// or mid-UTF-8 leaked literal garbage into the replayed scrollback.
+    func testFallbackScrollbackTextTrimsLeadingPartialEscapeAndUTF8() {
+        // The cap lands inside a CSI parameter run: capping to the last 8
+        // bytes of "\u{1B}[38;5;196mVISIBLE" leaves "196mVISIBLE" as the raw
+        // suffix... construct the combined bytes directly so the cut point is
+        // exact and lands mid-sequence.
+        let csiCombined = Data("\u{001B}[38;5;196mVISIBLE".utf8)
+        let csiReplayed = SessionWALCore.decodeFallbackScrollbackText(
+            rotated: nil,
+            current: csiCombined,
+            walCapBytes: Int64(csiCombined.count - 3)
+        )
+        XCTAssertEqual(
+            csiReplayed,
+            "VISIBLE",
+            "A cap cut landing mid-CSI-sequence must drop the orphaned parameter/final bytes, not leak them as literal text"
+        )
+        XCTAssertFalse(
+            (csiReplayed ?? "").contains(";196m"),
+            "The orphaned CSI parameter tail must never appear as literal replayed text"
+        )
+
+        // The cap lands inside a multi-byte UTF-8 scalar: "é" is 0xC3 0xA9;
+        // capping to the last 5 bytes of "x\u{00E9}post" leaves a lone
+        // continuation byte at the front.
+        let utf8Combined = Data("x\u{00E9}post".utf8)
+        let utf8Replayed = SessionWALCore.decodeFallbackScrollbackText(
+            rotated: nil,
+            current: utf8Combined,
+            walCapBytes: Int64(utf8Combined.count - 2)
+        )
+        XCTAssertEqual(
+            utf8Replayed,
+            "post",
+            "A cap cut landing mid-UTF-8-scalar must drop the orphaned continuation byte, not decode it as U+FFFD"
+        )
+        XCTAssertFalse(
+            (utf8Replayed ?? "").contains("\u{FFFD}"),
+            "No replacement character should appear at a UTF-8 seam that was safely trimmed"
+        )
+
+        // Rotated + current concatenation still combines and caps correctly
+        // when no trim is needed at all.
+        let untrimmedReplayed = SessionWALCore.decodeFallbackScrollbackText(
+            rotated: Data("rotated-".utf8),
+            current: Data("current".utf8),
+            walCapBytes: 4096
+        )
+        XCTAssertEqual(untrimmedReplayed, "rotated-current")
+
+        // Uncut data must never be trimmed, even when its genuine leading
+        // bytes are indistinguishable from a torn CSI tail: "196mVISIBLE"
+        // under a cap larger than the data starts at a real stream beginning
+        // and must survive intact.
+        let tornLookalike = SessionWALCore.decodeFallbackScrollbackText(
+            rotated: nil,
+            current: Data("196mVISIBLE".utf8),
+            walCapBytes: 4096
+        )
+        XCTAssertEqual(
+            tornLookalike,
+            "196mVISIBLE",
+            "The torn-CSI heuristic must only run when a suffix cut actually occurred"
+        )
+
+        // No bytes at all (never-written session) yields nil, not "".
+        XCTAssertNil(SessionWALCore.decodeFallbackScrollbackText(rotated: nil, current: nil, walCapBytes: 4096))
+    }
+
     private func makePaths() -> SessionWALPaths {
         SessionWALPaths(
             sessionDirectory: temporaryRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
