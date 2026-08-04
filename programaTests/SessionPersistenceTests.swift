@@ -525,103 +525,60 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNil(decoded.forwardHistoryURLStrings)
     }
 
-    func testScrollbackReplayEnvironmentWritesReplayFile() {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-scrollback-replay-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        let environment = SessionScrollbackReplayStore.replayEnvironment(
-            for: "line one\nline two\n",
-            tempDirectory: tempDir
-        )
-
-        let path = environment[SessionScrollbackReplayStore.environmentKey]
-        XCTAssertNotNil(path)
-        XCTAssertTrue(path?.hasPrefix(tempDir.path) == true)
-
-        guard let path else { return }
-        let contents = try? String(contentsOfFile: path, encoding: .utf8)
-        XCTAssertEqual(contents, "line one\nline two\n")
+    func testFreshSpawnScrollbackSeedPreparesText() {
+        let prepared = SessionFreshSpawnScrollbackSeed.preparedText(for: "line one\nline two\n")
+        XCTAssertEqual(prepared, "line one\nline two\n")
     }
 
-    func testScrollbackReplayEnvironmentSkipsWhitespaceOnlyContent() {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-scrollback-replay-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        let environment = SessionScrollbackReplayStore.replayEnvironment(
-            for: " \n\t  ",
-            tempDirectory: tempDir
-        )
-
-        XCTAssertTrue(environment.isEmpty)
+    func testFreshSpawnScrollbackSeedSkipsWhitespaceOnlyContent() {
+        XCTAssertNil(SessionFreshSpawnScrollbackSeed.preparedText(for: " \n\t  "))
+        XCTAssertNil(SessionFreshSpawnScrollbackSeed.preparedText(for: nil))
     }
 
-    func testScrollbackReplayEnvironmentPreservesANSIColorSequences() {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-scrollback-replay-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
+    func testFreshSpawnScrollbackSeedAddsTrailingNewlineWhenMissing() {
+        // No trailing newline in the source: the fresh shell's own first
+        // prompt must not be concatenated onto the last replayed line.
+        let prepared = SessionFreshSpawnScrollbackSeed.preparedText(for: "no trailing newline")
+        XCTAssertEqual(prepared, "no trailing newline\n")
+    }
 
+    func testFreshSpawnScrollbackSeedPreservesANSIColorSequences() {
         let red = "\u{001B}[31m"
         let reset = "\u{001B}[0m"
         let source = "\(red)RED\(reset)\n"
-        let environment = SessionScrollbackReplayStore.replayEnvironment(
-            for: source,
-            tempDirectory: tempDir
-        )
-
-        guard let path = environment[SessionScrollbackReplayStore.environmentKey] else {
-            XCTFail("Expected replay file path")
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(for: source) else {
+            XCTFail("Expected prepared seed text")
             return
         }
 
-        guard let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
-            XCTFail("Expected replay file contents")
-            return
-        }
-
-        XCTAssertTrue(contents.contains("\(red)RED\(reset)"))
-        XCTAssertTrue(contents.hasPrefix(reset))
-        XCTAssertTrue(contents.hasSuffix(reset))
+        XCTAssertTrue(prepared.contains("\(red)RED\(reset)"))
+        XCTAssertTrue(prepared.hasPrefix(reset))
+        XCTAssertTrue(prepared.hasSuffix(reset + "\n"), "Expected trailing SGR reset + newline")
     }
 
     /// A program killed by the relaunch never sends the DECRST that balances
     /// its mouse-tracking DECSET, so the saved transcript arms mouse reporting
     /// when it is replayed into the fresh terminal. With nothing left to
-    /// consume the reports, the revived shell's prompt fills with literal
-    /// `35;16;54M…` motion reports. The replay text must disarm them.
-    func testScrollbackReplayDisarmsStuckMouseTrackingModes() {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-scrollback-replay-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
+    /// consume the reports, the fresh shell's prompt fills with literal
+    /// `35;16;54M…` motion reports. The prepared seed text must disarm them.
+    func testFreshSpawnScrollbackSeedDisarmsStuckMouseTrackingModes() {
         // An unbalanced enable of any-event motion tracking + SGR encoding,
         // exactly as a TUI killed mid-run leaves it in the WAL tail.
         let source = "\u{001B}[?1003h\u{001B}[?1006hvim session\n"
-        let environment = SessionScrollbackReplayStore.replayEnvironment(
-            for: source,
-            tempDirectory: tempDir
-        )
-
-        guard let path = environment[SessionScrollbackReplayStore.environmentKey],
-              let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
-            XCTFail("Expected replay file contents")
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(for: source) else {
+            XCTFail("Expected prepared seed text")
             return
         }
 
         for mode in ["9", "1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016"] {
             XCTAssertTrue(
-                contents.contains("\u{001B}[?\(mode)l"),
-                "Replay text must disable mouse mode \(mode)"
+                prepared.contains("\u{001B}[?\(mode)l"),
+                "Prepared seed text must disable mouse mode \(mode)"
             )
         }
 
-        guard let enableIndex = contents.range(of: "\u{001B}[?1003h")?.upperBound,
-              let disableIndex = contents.range(of: "\u{001B}[?1003l")?.lowerBound else {
+        guard let enableIndex = prepared.range(of: "\u{001B}[?1003h")?.upperBound,
+              let disableIndex = prepared.range(of: "\u{001B}[?1003l")?.lowerBound else {
             XCTFail("Expected both the replayed enable and the disable")
             return
         }
@@ -636,24 +593,13 @@ final class SessionPersistenceTests: XCTestCase {
     /// active screen key, the wraparound bit and the charset are all untouched
     /// by `Terminal.resize()` — so a transcript that strands the shell on the
     /// alternate screen, or with autowrap off, stays broken through any number
-    /// of resizes unless the replay text disarms them itself.
-    func testScrollbackReplayRestoresLayoutAffectingTerminalState() {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-scrollback-replay-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
+    /// of resizes unless the prepared seed text disarms them itself.
+    func testFreshSpawnScrollbackSeedRestoresLayoutAffectingTerminalState() {
         // A vim-shaped tail: enter alt screen, set a scroll region, turn off
         // autowrap, switch G0 to line drawing -- then die without undoing any.
         let source = "\u{001B}[?1049h\u{001B}[1;40r\u{001B}[?7l\u{001B}(0status line\n"
-        let environment = SessionScrollbackReplayStore.replayEnvironment(
-            for: source,
-            tempDirectory: tempDir
-        )
-
-        guard let path = environment[SessionScrollbackReplayStore.environmentKey],
-              let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
-            XCTFail("Expected replay file contents")
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(for: source) else {
+            XCTFail("Expected prepared seed text")
             return
         }
 
@@ -665,15 +611,15 @@ final class SessionPersistenceTests: XCTestCase {
             ("\u{001B}[?1004l", "disable focus reporting"),
         ]
         for (sequence, purpose) in required {
-            XCTAssertTrue(contents.contains(sequence), "Replay text must \(purpose)")
+            XCTAssertTrue(prepared.contains(sequence), "Prepared seed text must \(purpose)")
         }
 
         // 1049l is specifically NOT used: ghostty's 1049-disable path restores
         // the cursor unconditionally, which homes it to (0,0) when nothing was
-        // saved -- dropping the revived prompt on top of the restored output on
-        // every restart that never involved an alternate screen.
+        // saved -- dropping the fresh shell's prompt on top of the restored
+        // output on every restart that never involved an alternate screen.
         XCTAssertFalse(
-            contents.contains("\u{001B}[?1049l"),
+            prepared.contains("\u{001B}[?1049l"),
             "1049l homes the cursor when no save exists; 1047l is the safe form"
         )
     }
@@ -682,27 +628,18 @@ final class SessionPersistenceTests: XCTestCase {
     /// bracketed in DECSC/DECRC or the cursor lands at the top of the screen.
     /// The charset and origin resets must precede the DECSC, because DECRC
     /// restores both from the save and would otherwise reinstate the bad ones.
-    func testScrollbackReplayBracketsCursorMovingResets() {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-scrollback-replay-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: tempDir) }
-
-        let environment = SessionScrollbackReplayStore.replayEnvironment(
-            for: "\u{001B}[?7l\u{001B}(0output\n",
-            tempDirectory: tempDir
-        )
-
-        guard let path = environment[SessionScrollbackReplayStore.environmentKey],
-              let contents = try? String(contentsOfFile: path, encoding: .utf8) else {
-            XCTFail("Expected replay file contents")
+    func testFreshSpawnScrollbackSeedBracketsCursorMovingResets() {
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "\u{001B}[?7l\u{001B}(0output\n"
+        ) else {
+            XCTFail("Expected prepared seed text")
             return
         }
 
-        guard let charsetReset = contents.range(of: "\u{001B}(B")?.lowerBound,
-              let save = contents.range(of: "\u{001B}7")?.lowerBound,
-              let marginReset = contents.range(of: "\u{001B}[r")?.lowerBound,
-              let restore = contents.range(of: "\u{001B}8")?.lowerBound else {
+        guard let charsetReset = prepared.range(of: "\u{001B}(B")?.lowerBound,
+              let save = prepared.range(of: "\u{001B}7")?.lowerBound,
+              let marginReset = prepared.range(of: "\u{001B}[r")?.lowerBound,
+              let restore = prepared.range(of: "\u{001B}8")?.lowerBound else {
             XCTFail("Expected charset reset, DECSC, margin reset and DECRC")
             return
         }

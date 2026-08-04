@@ -152,18 +152,6 @@ _cmux_ports_kick_via_relay() {
     _cmux_relay_rpc_bg "surface.ports_kick" "$params"
 }
 
-_cmux_restore_scrollback_once() {
-    local path="${PROGRAMA_RESTORE_SCROLLBACK_FILE:-}"
-    [[ -n "$path" ]] || return 0
-    unset PROGRAMA_RESTORE_SCROLLBACK_FILE
-
-    if [[ -r "$path" ]]; then
-        /bin/cat -- "$path" 2>/dev/null || true
-        /bin/rm -f -- "$path" >/dev/null 2>&1 || true
-    fi
-}
-_cmux_restore_scrollback_once
-
 _cmux_now() {
     print -r -- "${EPOCHSECONDS:-$SECONDS}"
 }
