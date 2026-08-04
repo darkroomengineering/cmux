@@ -14,10 +14,9 @@ When we change the fork, update this document and the parent submodule SHA.
 
 Fork rebased onto upstream `main` at `3509ccf78` (`v1.3.1-457-g3509ccf78`) on March 30, 2026.
 Current Programa pinned fork head: `c25020f99` (occluded-render skip, August 4, 2026),
-reachable on the fork via branch `perf/occluded-update-frame-skip`. A
-retain-ancestry merge onto fork `main` (the `5c781d710` convention) has not
-been done for this pin yet — do one on the next fork-main touch so the pin
-survives branch cleanup.
+reachable on the fork via branch `perf/occluded-update-frame-skip` and via the
+retain-ancestry merge `363d56e5d` on fork `main`
+(`Retain occluded-render pin ancestry on main`, the `5c781d710` convention).
 
 ### 1) macOS display link restart on display changes
 
