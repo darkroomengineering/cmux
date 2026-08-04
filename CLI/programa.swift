@@ -6646,19 +6646,6 @@ struct ProgramaCLI {
         return true
     }
 
-    /// Escape and quote a string for safe embedding in a v1 socket command.
-    /// The socket tokenizer treats `\` and `"` as special inside quoted strings,
-    /// so both must be escaped before wrapping in double quotes. Newlines and
-    /// carriage returns must also be escaped since the socket protocol uses
-    /// newline as the message terminator.
-    private func socketQuote(_ s: String) -> String {
-        let escaped = s
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-        return "\"\(escaped)\""
-    }
     /// Shared scan loop for `parseOption`/`parseRepeatedOption`: walks `args`,
     /// collecting every value that follows `name` (honoring a `--` terminator)
     /// and returning the leftover args with those option/value pairs removed.
@@ -6709,7 +6696,7 @@ struct ProgramaCLI {
         args.map { $0 == from ? to : $0 }
     }
 
-    /// Unescape CLI escape sequences to match legacy v1 send behavior.
+    /// Unescape CLI escape sequences for send behavior.
     /// \n and \r → carriage return (Enter), \t → tab.
     private func unescapeSendText(_ text: String) -> String {
         return text

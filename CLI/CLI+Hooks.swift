@@ -2560,49 +2560,41 @@ extension ProgramaCLI {
             print("{}")
 
         case "session-end":
-            do {
-                // Final cleanup when Codex process exits (e.g. Ctrl+C or kill), covering
-                // the case where Stop never fires. If Stop already consumed the session,
-                // consumedSession is nil here and we skip to avoid wiping the completion
-                // notification that Stop just delivered.
-                let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
-                let fallbackWorkspaceId = try? resolvePreferredWorkspaceIdForClaudeHook(
-                    preferred: mappedSession?.workspaceId,
-                    fallback: workspaceArg,
+            // Final cleanup when Codex process exits (e.g. Ctrl+C or kill), covering
+            // the case where Stop never fires. If Stop already consumed the session,
+            // consumedSession is nil here and we skip to avoid wiping the completion
+            // notification that Stop just delivered.
+            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+            let fallbackWorkspaceId = try? resolvePreferredWorkspaceIdForClaudeHook(
+                preferred: mappedSession?.workspaceId,
+                fallback: workspaceArg,
+                client: client
+            )
+            let fallbackSurfaceId: String? = {
+                guard let fallbackWorkspaceId else { return nil }
+                return try? resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: mappedSession?.surfaceId,
+                    fallback: surfaceArg,
+                    workspaceId: fallbackWorkspaceId,
                     client: client
                 )
-                let fallbackSurfaceId: String? = {
-                    guard let fallbackWorkspaceId else { return nil }
-                    return try? resolvePreferredSurfaceIdForClaudeHook(
-                        preferred: mappedSession?.surfaceId,
-                        fallback: surfaceArg,
-                        workspaceId: fallbackWorkspaceId,
-                        client: client
-                    )
-                }()
-                let consumedSession = try? sessionStore.consume(
-                    sessionId: parsedInput.sessionId,
-                    workspaceId: fallbackWorkspaceId,
-                    surfaceId: fallbackSurfaceId
-                )
-                if let consumedSession {
-                    let workspaceId = consumedSession.workspaceId
-                    let agentPIDKey = codexAgentPIDKey(sessionId: parsedInput.sessionId ?? consumedSession.sessionId)
-                    _ = try? clearCodexStatus(client: client, workspaceId: workspaceId)
-                    _ = try? client.sendV2(method: "workspace.clear_agent_pid", params: ["workspace_id": workspaceId, "key": agentPIDKey])
-                    _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
-                    if !consumedSession.surfaceId.isEmpty {
-                        clearAgentState(client: client, workspaceId: workspaceId, surfaceId: consumedSession.surfaceId)
-                    }
+            }()
+            let consumedSession = try? sessionStore.consume(
+                sessionId: parsedInput.sessionId,
+                workspaceId: fallbackWorkspaceId,
+                surfaceId: fallbackSurfaceId
+            )
+            if let consumedSession {
+                let workspaceId = consumedSession.workspaceId
+                let agentPIDKey = codexAgentPIDKey(sessionId: parsedInput.sessionId ?? consumedSession.sessionId)
+                _ = try? clearCodexStatus(client: client, workspaceId: workspaceId)
+                _ = try? client.sendV2(method: "workspace.clear_agent_pid", params: ["workspace_id": workspaceId, "key": agentPIDKey])
+                _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
+                if !consumedSession.surfaceId.isEmpty {
+                    clearAgentState(client: client, workspaceId: workspaceId, surfaceId: consumedSession.surfaceId)
                 }
-                print("{}")
-            } catch {
-                if shouldIgnoreClaudeHookTeardownError(error) {
-                    print("{}")
-                    return
-                }
-                throw error
             }
+            print("{}")
 
         case "help", "--help", "-h":
             print("programa codex-hook <session-start|prompt-submit|stop|notification|session-end> [--workspace <id>] [--surface <id>]")
@@ -3020,45 +3012,37 @@ extension ProgramaCLI {
             print("{}")
 
         case "session-end":
-            do {
-                let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
-                let fallbackWorkspaceId = try? resolvePreferredWorkspaceIdForClaudeHook(
-                    preferred: mappedSession?.workspaceId,
-                    fallback: workspaceArg,
+            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+            let fallbackWorkspaceId = try? resolvePreferredWorkspaceIdForClaudeHook(
+                preferred: mappedSession?.workspaceId,
+                fallback: workspaceArg,
+                client: client
+            )
+            let fallbackSurfaceId: String? = {
+                guard let fallbackWorkspaceId else { return nil }
+                return try? resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: mappedSession?.surfaceId,
+                    fallback: surfaceArg,
+                    workspaceId: fallbackWorkspaceId,
                     client: client
                 )
-                let fallbackSurfaceId: String? = {
-                    guard let fallbackWorkspaceId else { return nil }
-                    return try? resolvePreferredSurfaceIdForClaudeHook(
-                        preferred: mappedSession?.surfaceId,
-                        fallback: surfaceArg,
-                        workspaceId: fallbackWorkspaceId,
-                        client: client
-                    )
-                }()
-                let consumedSession = try? sessionStore.consume(
-                    sessionId: parsedInput.sessionId,
-                    workspaceId: fallbackWorkspaceId,
-                    surfaceId: fallbackSurfaceId
-                )
-                if let consumedSession {
-                    let workspaceId = consumedSession.workspaceId
-                    let agentPIDKey = opencodeAgentPIDKey(sessionId: parsedInput.sessionId ?? consumedSession.sessionId)
-                    _ = try? clearOpenCodeStatus(client: client, workspaceId: workspaceId)
-                    _ = try? client.sendV2(method: "workspace.clear_agent_pid", params: ["workspace_id": workspaceId, "key": agentPIDKey])
-                    _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
-                    if !consumedSession.surfaceId.isEmpty {
-                        clearAgentState(client: client, workspaceId: workspaceId, surfaceId: consumedSession.surfaceId)
-                    }
+            }()
+            let consumedSession = try? sessionStore.consume(
+                sessionId: parsedInput.sessionId,
+                workspaceId: fallbackWorkspaceId,
+                surfaceId: fallbackSurfaceId
+            )
+            if let consumedSession {
+                let workspaceId = consumedSession.workspaceId
+                let agentPIDKey = opencodeAgentPIDKey(sessionId: parsedInput.sessionId ?? consumedSession.sessionId)
+                _ = try? clearOpenCodeStatus(client: client, workspaceId: workspaceId)
+                _ = try? client.sendV2(method: "workspace.clear_agent_pid", params: ["workspace_id": workspaceId, "key": agentPIDKey])
+                _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
+                if !consumedSession.surfaceId.isEmpty {
+                    clearAgentState(client: client, workspaceId: workspaceId, surfaceId: consumedSession.surfaceId)
                 }
-                print("{}")
-            } catch {
-                if shouldIgnoreClaudeHookTeardownError(error) {
-                    print("{}")
-                    return
-                }
-                throw error
             }
+            print("{}")
 
         case "help", "--help", "-h":
             print("programa opencode-hook <session-start|prompt-submit|stop|notification|session-end> [--cwd <path>] [--session <id>] [--workspace <id>] [--surface <id>]")

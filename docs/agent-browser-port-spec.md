@@ -21,9 +21,9 @@ history; see `docs/v2-api-migration.md` for the current (v2-only) state.
 
 ## Validation Status
 
-As of February 12, 2026:
-1. `./scripts/run-tests-v1.sh` passes on `programa-vm`.
-2. `./scripts/run-tests-v2.sh` passes on `programa-vm`.
+As of February 12, 2026 (the v1 suite below was later removed 2026-07-08; see historical note above):
+1. `./scripts/run-tests-v1.sh` passed on `programa-vm`.
+2. `./scripts/run-tests-v2.sh` passes on `programa-vm` — this is the current (and only) suite today.
 3. Browser parity suites passing in v2: `test_browser_api_comprehensive.py`, `test_browser_api_p0.py`, `test_browser_api_extended_families.py`, `test_browser_api_unsupported_matrix.py`, and `test_browser_cli_agent_port.py`.
 4. Visual suite note: `tests/test_visual_screenshots.py` and `tests_v2/test_visual_screenshots.py` both report D12 (`Nested: Close Top of T-shape`) as a known non-blocking VM failure when it reproduces (`VIEW_DETACHED`).
 
@@ -412,9 +412,9 @@ Hard invariant:
 3. v1 suites still pass with shim active.
 4. No regressions in existing window/workspace/surface workflows.
 
-Planned verification commands at implementation completion:
+Planned verification commands at implementation completion (v1 suite referenced below was removed
+2026-07-08; the current invocation is just the first line):
 1. `ssh programa-vm 'cd /Users/programa/GhosttyTabs && ./scripts/run-tests-v2.sh'`
-2. `ssh programa-vm 'cd /Users/programa/GhosttyTabs && ./scripts/run-tests-v1.sh'`
 
 ## Decision Log (Locked - February 12, 2026)
 

@@ -3182,9 +3182,10 @@ class TabManager: ObservableObject {
 
 }
 
-// MARK: - Direction Types for Backwards Compatibility
+// MARK: - Split & Resize Direction Types
 
-/// Split direction for backwards compatibility with old API
+/// Core direction type used throughout split creation: which side of the pane
+/// the new pane is inserted on, and whether that split is horizontal or vertical.
 enum SplitDirection {
     case left, right, up, down
 
@@ -3203,7 +3204,7 @@ enum SplitDirection {
     }
 }
 
-/// Resize direction for backwards compatibility
+/// Core direction type used when resizing a pane's divider.
 enum ResizeDirection {
     case left, right, up, down
 
