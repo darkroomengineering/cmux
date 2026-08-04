@@ -61,10 +61,45 @@ extension TabManager {
         selectedWorkspaceGitMetadataPollTimer = timer
     }
 
+    /// Pure tier decision for the background sweep: should this workspace's periodic
+    /// git metadata sweep be skipped this tick? Extracted for direct unit testing
+    /// (no live TabManager/workspace needed).
+    ///
+    /// - Selected workspace: never skipped -- it's also freshened every
+    ///   `selectedWorkspaceGitMetadataPollInterval` (5s) by the dedicated selected-workspace
+    ///   poll, so this just keeps the 30s sweep consistent for it too.
+    /// - Hidden workspace with no recorded refresh yet: never skipped (so newly tracked
+    ///   workspaces aren't starved).
+    /// - Hidden workspace refreshed within `hiddenRefreshInterval`: skipped (this is the
+    ///   perf win -- 10x fewer background git spawns for workspaces the user isn't looking at).
+    /// - Hidden workspace stale beyond `hiddenRefreshInterval`: not skipped (badges must not
+    ///   go stale forever).
+    static func shouldSkipHiddenWorkspaceGitMetadataSweep(
+        isSelected: Bool,
+        lastRefreshedAt: Date?,
+        now: Date,
+        hiddenRefreshInterval: TimeInterval
+    ) -> Bool {
+        guard !isSelected else { return false }
+        guard let lastRefreshedAt else { return false }
+        return now.timeIntervalSince(lastRefreshedAt) < hiddenRefreshInterval
+    }
+
     private func refreshTrackedWorkspaceGitMetadata() {
         let activeProbeKeys = Set(workspaceGitProbeGenerationByKey.keys)
+        let selectedWorkspaceId = selectedWorkspace?.id
+        let now = Date()
 
         for workspace in tabs {
+            let shouldSkip = Self.shouldSkipHiddenWorkspaceGitMetadataSweep(
+                isSelected: workspace.id == selectedWorkspaceId,
+                lastRefreshedAt: workspaceGitMetadataLastRefreshedAt[workspace.id],
+                now: now,
+                hiddenRefreshInterval: Self.hiddenWorkspaceGitMetadataRefreshInterval
+            )
+            guard !shouldSkip else { continue }
+
+            var scheduledAny = false
             for panelId in trackedWorkspaceGitMetadataPollCandidatePanelIds(
                 in: workspace,
                 activeProbeKeys: activeProbeKeys
@@ -74,6 +109,10 @@ extension TabManager {
                     panelId: panelId,
                     reason: "periodicPoll"
                 )
+                scheduledAny = true
+            }
+            if scheduledAny {
+                workspaceGitMetadataLastRefreshedAt[workspace.id] = now
             }
         }
     }
@@ -96,6 +135,10 @@ extension TabManager {
             panelId: focusedPanelId,
             reason: "selectedPeriodicPoll"
         )
+        // Keeps the hidden-workspace tier's "last refreshed" timestamp fresh for the
+        // currently-selected workspace, so it doesn't immediately read as stale in
+        // refreshTrackedWorkspaceGitMetadata() the moment it stops being selected.
+        workspaceGitMetadataLastRefreshedAt[workspace.id] = Date()
     }
 
     func refreshTrackedWorkspaceGitMetadataForTesting() {
