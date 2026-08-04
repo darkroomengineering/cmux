@@ -886,32 +886,33 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
 
     private func pruneDeadEntries() {
         let currentWindow = window
-        let deadHostedIds = entriesByHostedId.compactMap { hostedId, entry -> ObjectIdentifier? in
-            guard entry.hostedView != nil else { return hostedId }
-            guard let anchor = entry.anchorView else {
-                // The anchor has been fully deallocated (weak ref auto-nil'd), unlike a
-                // transient anchor that's merely off-tree (still alive, superview nil) and
-                // can be recovered on the next bind/sync. There is nothing left to
-                // reconcile against here, so always prune regardless of visibleInUI.
-                return hostedId
-            }
+        Self.pruneEntries(
+            ids: Array(entriesByHostedId.keys),
+            isDead: { hostedId in
+                guard let entry = self.entriesByHostedId[hostedId] else { return false }
+                guard entry.hostedView != nil else { return true }
+                guard let anchor = entry.anchorView else {
+                    // The anchor has been fully deallocated (weak ref auto-nil'd), unlike a
+                    // transient anchor that's merely off-tree (still alive, superview nil) and
+                    // can be recovered on the next bind/sync. There is nothing left to
+                    // reconcile against here, so always prune regardless of visibleInUI.
+                    return true
+                }
 
-            let anchorInvalidForCurrentHost =
-                anchor.window !== currentWindow ||
-                anchor.superview == nil ||
-                (installedReferenceView.map { !anchor.isDescendant(of: $0) } ?? false)
-            if anchorInvalidForCurrentHost {
-                // During aggressive tab drag/reorder churn, SwiftUI/AppKit can briefly
-                // detach/rehome anchor hosts while the terminal should stay visible.
-                // Avoid pruning those visible entries so sync/bind recovery can reattach.
-                return entry.visibleInUI ? nil : hostedId
-            }
-            return nil
-        }
-
-        for hostedId in deadHostedIds {
-            detachHostedView(withId: hostedId)
-        }
+                let anchorInvalidForCurrentHost =
+                    anchor.window !== currentWindow ||
+                    anchor.superview == nil ||
+                    (self.installedReferenceView.map { !anchor.isDescendant(of: $0) } ?? false)
+                if anchorInvalidForCurrentHost {
+                    // During aggressive tab drag/reorder churn, SwiftUI/AppKit can briefly
+                    // detach/rehome anchor hosts while the terminal should stay visible.
+                    // Avoid pruning those visible entries so sync/bind recovery can reattach.
+                    return !entry.visibleInUI
+                }
+                return false
+            },
+            detach: detachHostedView(withId:)
+        )
 
         let validAnchorIds = Set(entriesByHostedId.compactMap { _, entry in
             entry.anchorView.map { ObjectIdentifier($0) }
