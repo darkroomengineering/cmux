@@ -615,6 +615,7 @@ extension Workspace {
               let socketPath = meta.escrowSocketPath,
               let tokenHex = meta.escrowToken,
               let childPID = meta.childPID else {
+            dilog("escrow.reattach", "session=\(oldSessionId.prefix(8)) outcome=fallback reason=not_escrowed")
             return nil
         }
         guard let masterFD = SessionEscrowClient.retrieve(
@@ -622,6 +623,7 @@ extension Workspace {
             tokenHex: tokenHex,
             socketPath: socketPath
         ) else {
+            dilog("escrow.reattach", "session=\(oldSessionId.prefix(8)) outcome=fallback reason=retrieve_failed")
             return nil
         }
 
@@ -646,6 +648,7 @@ extension Workspace {
             // granted the retrieve, so the child is simply unrecoverable
             // for the rest of this launch: an accepted, rare degradation
             // rather than ever risking a double-issue of the same fd.
+            dilog("escrow.reattach", "session=\(oldSessionId.prefix(8)) outcome=fallback reason=panel_creation_failed")
             return nil
         }
 
@@ -655,6 +658,7 @@ extension Workspace {
         // the new panel above has its own fresh WAL directory going
         // forward under a new id, so the old one is dead weight.
         SessionWALStore.shared.discardOrphanedSession(sessionId: oldSessionId)
+        dilog("escrow.reattach", "session=\(oldSessionId.prefix(8)) outcome=revived newPanel=\(terminalPanel.id.uuidString.prefix(8))")
         return terminalPanel.id
     }
 
