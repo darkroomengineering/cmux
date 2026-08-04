@@ -111,6 +111,22 @@ enum DragOverlayRoutingPolicy {
             return false
         }
     }
+
+    /// Event types that are passive pointer motion/tracking notifications and can
+    /// never be a drag-motion event per `isPortalDragEvent` above (which only
+    /// accepts left/right/otherMouseDragged). Callers can use this to skip
+    /// drag-pasteboard IPC for these types with no change in outcome, since
+    /// `shouldPassThroughPortalHitTesting` would always resolve to `false` for
+    /// them regardless of pasteboard contents.
+    static func isPassiveMouseEventType(_ eventType: NSEvent.EventType?) -> Bool {
+        guard let eventType else { return false }
+        switch eventType {
+        case .mouseMoved, .mouseEntered, .mouseExited, .cursorUpdate:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 enum SidebarDragLifecycleNotification {

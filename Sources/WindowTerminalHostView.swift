@@ -158,8 +158,33 @@ final class WindowTerminalHostView: NSView {
 
         clearActiveDividerCursor(restoreArrow: true)
 
-        let dragPasteboardTypes = NSPasteboard(name: .drag).types
         let eventType = currentEvent?.type
+
+        // PERF: passive pointer notifications (mouseMoved/mouseEntered/mouseExited/
+        // cursorUpdate) can never satisfy isPortalDragEvent in
+        // DragOverlayRoutingPolicy.shouldPassThroughPortalHitTesting (it only
+        // accepts left/right/otherMouseDragged), so the result below is always
+        // `false` for them regardless of pasteboard contents. Skip the
+        // NSPasteboard(name: .drag) IPC round trip for just these types — a real
+        // cost at up to 120Hz mouseMoved — and fall through to the same final
+        // hitTest the drag-pasteboard branch would have produced. Drag events and
+        // a nil/ambiguous currentEvent (e.g. mid NSDraggingSession, where the
+        // pasteboard check may be the only signal) are untouched and still read
+        // the pasteboard exactly as before.
+        if DragOverlayRoutingPolicy.isPassiveMouseEventType(eventType) {
+            let hitView = super.hitTest(point)
+#if DEBUG
+            logDragRouteDecision(
+                passThrough: false,
+                eventType: eventType,
+                pasteboardTypes: nil,
+                hitView: hitView
+            )
+#endif
+            return hitView === self ? nil : hitView
+        }
+
+        let dragPasteboardTypes = NSPasteboard(name: .drag).types
         let shouldPassThrough = DragOverlayRoutingPolicy.shouldPassThroughPortalHitTesting(
             pasteboardTypes: dragPasteboardTypes,
             eventType: eventType

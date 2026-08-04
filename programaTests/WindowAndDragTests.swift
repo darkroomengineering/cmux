@@ -844,6 +844,58 @@ final class WindowDragHandleHitTests: XCTestCase {
 
 
 @MainActor
+final class DragOverlayRoutingPolicyPassiveMouseEventTests: XCTestCase {
+    // Covers the WIN-1 perf fast path in WindowTerminalHostView.hitTest: passive
+    // pointer notifications never satisfy isPortalDragEvent (only left/right/
+    // otherMouseDragged do), so shouldPassThroughPortalHitTesting always
+    // resolves to false for them regardless of pasteboard contents. This locks
+    // that equivalence so the hitTest skip cannot silently diverge if either
+    // policy function changes independently.
+    func testPassiveEventTypesAreClassifiedAsPassive() {
+        for eventType: NSEvent.EventType in [.mouseMoved, .mouseEntered, .mouseExited, .cursorUpdate] {
+            XCTAssertTrue(
+                DragOverlayRoutingPolicy.isPassiveMouseEventType(eventType),
+                "\(eventType) should be classified as a passive mouse event"
+            )
+        }
+    }
+
+    func testDragMotionEventTypesAreNotClassifiedAsPassive() {
+        for eventType: NSEvent.EventType in [.leftMouseDragged, .rightMouseDragged, .otherMouseDragged] {
+            XCTAssertFalse(
+                DragOverlayRoutingPolicy.isPassiveMouseEventType(eventType),
+                "\(eventType) must not be classified as passive"
+            )
+        }
+    }
+
+    func testNilEventTypeIsNotClassifiedAsPassive() {
+        XCTAssertFalse(DragOverlayRoutingPolicy.isPassiveMouseEventType(nil))
+    }
+
+    func testShouldPassThroughPortalHitTestingIsAlwaysFalseForPassiveEventTypesRegardlessOfPasteboardContents() {
+        let relevantPasteboardTypes: [[NSPasteboard.PasteboardType]] = [
+            [DragOverlayRoutingPolicy.bonsplitTabTransferType],
+            [DragOverlayRoutingPolicy.sidebarTabReorderType],
+        ]
+        for eventType: NSEvent.EventType in [.mouseMoved, .mouseEntered, .mouseExited, .cursorUpdate] {
+            for pasteboardTypes in relevantPasteboardTypes {
+                XCTAssertFalse(
+                    DragOverlayRoutingPolicy.shouldPassThroughPortalHitTesting(
+                        pasteboardTypes: pasteboardTypes,
+                        eventType: eventType
+                    ),
+                    "Passive event \(eventType) must never pass through portal hit-testing, " +
+                    "even with relevant pasteboard types present -- this is what makes the " +
+                    "pasteboard read skippable for these event types in WindowTerminalHostView.hitTest"
+                )
+            }
+        }
+    }
+}
+
+
+@MainActor
 final class DraggableFolderHitTests: XCTestCase {
     func testFolderHitTestReturnsContainerWhenInsideBounds() {
         let folderView = DraggableFolderNSView(directory: "/tmp")

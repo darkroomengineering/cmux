@@ -485,6 +485,71 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
         XCTAssertFalse(GitMetadataProber.shouldSkipWorkspacePullRequestLookup(branch: "release/master-fix"))
     }
 
+    // Covers the WIN-2 perf tier decision in TabManager+GitMetadataPolling.swift:
+    // refreshTrackedWorkspaceGitMetadata() skips non-selected (hidden) workspaces
+    // that were refreshed recently, but must never skip the selected workspace and
+    // must never let a hidden workspace go stale beyond hiddenRefreshInterval.
+    func testShouldSkipHiddenWorkspaceGitMetadataSweepSelectedWorkspaceNeverSkipped() {
+        let now = Date()
+        XCTAssertFalse(
+            TabManager.shouldSkipHiddenWorkspaceGitMetadataSweep(
+                isSelected: true,
+                lastRefreshedAt: now,
+                now: now,
+                hiddenRefreshInterval: 300
+            ),
+            "Selected workspace must always be swept regardless of recency"
+        )
+        XCTAssertFalse(
+            TabManager.shouldSkipHiddenWorkspaceGitMetadataSweep(
+                isSelected: true,
+                lastRefreshedAt: nil,
+                now: now,
+                hiddenRefreshInterval: 300
+            )
+        )
+    }
+
+    func testShouldSkipHiddenWorkspaceGitMetadataSweepHiddenAndFreshIsSkipped() {
+        let now = Date()
+        let lastRefreshedAt = now.addingTimeInterval(-60) // 1 minute ago, within the 5-minute tier
+        XCTAssertTrue(
+            TabManager.shouldSkipHiddenWorkspaceGitMetadataSweep(
+                isSelected: false,
+                lastRefreshedAt: lastRefreshedAt,
+                now: now,
+                hiddenRefreshInterval: 300
+            ),
+            "Hidden workspace refreshed recently should be skipped this tick"
+        )
+    }
+
+    func testShouldSkipHiddenWorkspaceGitMetadataSweepHiddenAndStaleIsNotSkipped() {
+        let now = Date()
+        let lastRefreshedAt = now.addingTimeInterval(-301) // just past the 5-minute tier
+        XCTAssertFalse(
+            TabManager.shouldSkipHiddenWorkspaceGitMetadataSweep(
+                isSelected: false,
+                lastRefreshedAt: lastRefreshedAt,
+                now: now,
+                hiddenRefreshInterval: 300
+            ),
+            "Hidden workspace stale beyond the tier interval must not go stale forever"
+        )
+    }
+
+    func testShouldSkipHiddenWorkspaceGitMetadataSweepHiddenAndNeverRefreshedIsNotSkipped() {
+        XCTAssertFalse(
+            TabManager.shouldSkipHiddenWorkspaceGitMetadataSweep(
+                isSelected: false,
+                lastRefreshedAt: nil,
+                now: Date(),
+                hiddenRefreshInterval: 300
+            ),
+            "A hidden workspace with no recorded refresh yet must not be starved"
+        )
+    }
+
     func testTrackedWorkspaceGitMetadataPollCandidatesIncludeMainAndMasterPanels() throws {
         let manager = TabManager()
         guard let workspace = manager.selectedWorkspace,

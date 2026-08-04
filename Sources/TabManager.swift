@@ -512,6 +512,13 @@ class TabManager: ObservableObject {
     static let initialWorkspaceGitProbeDelays: [TimeInterval] = [0, 0.5, 1.5, 3.0, 6.0, 10.0]
     static let workspaceGitMetadataPollInterval: TimeInterval = 30
     static let selectedWorkspaceGitMetadataPollInterval: TimeInterval = 5
+    /// Tiered-cadence trade-off (perf quick win): hidden (non-selected) workspaces are
+    /// skipped by the 30s sweep unless their last refresh is older than this interval,
+    /// cutting background git subprocess spawns for hidden workspaces roughly 10x (30s -> 5min)
+    /// in exchange for their sidebar git badges lagging up to 5 minutes while hidden. The
+    /// selected workspace is unaffected -- it keeps refreshing every
+    /// `selectedWorkspaceGitMetadataPollInterval` (5s) regardless of this value.
+    static let hiddenWorkspaceGitMetadataRefreshInterval: TimeInterval = 300
     @Published var selectedTabId: UUID? {
         willSet {
 #if DEBUG
@@ -617,6 +624,10 @@ class TabManager: ObservableObject {
     var workspaceGitProbeGenerationByKey: [WorkspaceGitProbeKey: UUID] = [:]
     var workspaceGitProbeTimersByKey: [WorkspaceGitProbeKey: [DispatchSourceTimer]] = [:]
     var workspaceGitTrackedDirectoryByKey: [WorkspaceGitProbeKey: String] = [:]
+    /// Last time each workspace (keyed by workspace id) had a git metadata refresh
+    /// scheduled, via either the periodic background sweep or the selected-workspace
+    /// poll. Backs the tiered hidden-workspace cadence in `refreshTrackedWorkspaceGitMetadata()`.
+    var workspaceGitMetadataLastRefreshedAt: [UUID: Date] = [:]
 
     // Recent tab history for back/forward navigation (like browser history)
     var tabHistory: [UUID] = []
@@ -1265,6 +1276,7 @@ class TabManager: ObservableObject {
         workspaceGitTrackedDirectoryByKey = workspaceGitTrackedDirectoryByKey.filter { key, _ in
             key.workspaceId != workspaceId
         }
+        workspaceGitMetadataLastRefreshedAt.removeValue(forKey: workspaceId)
     }
 
     private func applyWorkspaceGitMetadataSnapshot(
