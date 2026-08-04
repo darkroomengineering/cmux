@@ -14,6 +14,24 @@ struct CLIError: Error, CustomStringConvertible {
     var description: String { message }
 }
 
+/// A `connect()`/`stat()` syscall failure, carrying the raw `errno` so callers can decide
+/// whether the failure is worth retrying (ECONNREFUSED/ENOENT during an app-restart window)
+/// without parsing the human-readable message string.
+struct SocketConnectError: Error, CustomStringConvertible {
+    let errnoValue: Int32
+    let message: String
+
+    var description: String { message }
+
+    /// True for failures typical of the brief window while the app process is restarting
+    /// (auto-update relaunch or crash recovery): the socket file hasn't been recreated yet
+    /// (ENOENT) or nothing is listening on it yet (ECONNREFUSED). Any other failure (wrong
+    /// file type, ownership mismatch, permission) is not transient and should fail immediately.
+    var isTransient: Bool {
+        errnoValue == ECONNREFUSED || errnoValue == ENOENT
+    }
+}
+
 enum CLIIDFormat: String {
     case refs
     case uuids
@@ -431,6 +449,29 @@ final class SocketClient {
         try connectOnce()
     }
 
+    /// Like `connect()`, but retries a transient failure (ECONNREFUSED/ENOENT -- see
+    /// `SocketConnectError.isTransient`) up to 3 total attempts spread over ~1.5s
+    /// (250ms/500ms/750ms delays before each retry), bounding added worst-case latency to
+    /// ~1.5s. Covers the brief window while the app process is restarting (auto-update
+    /// relaunch or crash recovery) so a one-shot command doesn't fail outright just because
+    /// it raced the relaunch. Never retries once a connection has been established, and
+    /// never retries a non-transient failure (permission, wrong file type) -- those fail
+    /// immediately exactly as `connect()` does today.
+    func connectWithTransientRetry() throws {
+        if socketFD >= 0 { return }
+        let retryDelays: [TimeInterval] = [0.25, 0.5, 0.75]
+        var attempt = 0
+        while true {
+            do {
+                try connectOnce()
+                return
+            } catch let error as SocketConnectError where error.isTransient && attempt < retryDelays.count {
+                Thread.sleep(forTimeInterval: retryDelays[attempt])
+                attempt += 1
+            }
+        }
+    }
+
     func close() {
         if socketFD >= 0 {
             Darwin.close(socketFD)
@@ -516,7 +557,8 @@ final class SocketClient {
         // Verify socket is owned by the current user to prevent fake-socket attacks.
         var st = stat()
         guard stat(path, &st) == 0 else {
-            throw CLIError(message: "Socket not found at \(path)")
+            let statErrno = errno
+            throw SocketConnectError(errnoValue: statErrno, message: "Socket not found at \(path)")
         }
         guard (st.st_mode & mode_t(S_IFMT)) == mode_t(S_IFSOCK) else {
             throw CLIError(message: "Path exists at \(path) but is not a Unix socket")
@@ -558,7 +600,8 @@ final class SocketClient {
         let connectErrno = errno
         Darwin.close(socketFD)
         socketFD = -1
-        throw CLIError(
+        throw SocketConnectError(
+            errnoValue: connectErrno,
             message: "Failed to connect to socket at \(path) (\(String(cString: strerror(connectErrno))), errno \(connectErrno))"
         )
     }
@@ -1164,6 +1207,10 @@ struct CommandContext {
     /// about this distinction today.
     let idFormatArgProvided: Bool
     let windowId: String?
+    /// Explicit `--password` value, if any. Only `watch-events`' reconnect loop needs this
+    /// today, to re-run `authenticateClientIfNeeded` after re-establishing a dropped
+    /// connection (auth is per-connection, not per-process).
+    let socketPasswordArg: String?
 }
 
 enum CLICommandConnectionPolicy {
@@ -1614,7 +1661,7 @@ struct ProgramaCLI {
         let resolvedSocketPath = resolveSocketPath()
 
         let client = SocketClient(path: resolvedSocketPath)
-        try client.connect()
+        try client.connectWithTransientRetry()
         defer { client.close() }
 
         try authenticateClientIfNeeded(
@@ -1636,7 +1683,8 @@ struct ProgramaCLI {
             jsonOutput: jsonOutput,
             idFormat: idFormat,
             idFormatArgProvided: idFormatArg != nil,
-            windowId: windowId
+            windowId: windowId,
+            socketPasswordArg: socketPasswordArg
         )
         try execute(ctx)
     }
@@ -3441,7 +3489,7 @@ struct ProgramaCLI {
 
             CommandDescriptor(
                 names: ["watch-events"],
-                helpLines: ["watch-events [--agent-state] [--workspace-lifecycle] [--output <surface_id[,surface_id...]>]"],
+                helpLines: ["watch-events [--agent-state] [--workspace-lifecycle] [--output <surface_id[,surface_id...]>] [--no-reconnect]"],
                 argumentContract: .watchEvents,
                 detailedUsage: """
                 Usage: programa watch-events [flags]
@@ -3451,14 +3499,24 @@ struct ProgramaCLI {
                 another machine). Casual "wait for one thing" callers should use
                 `wait-surface`/`prompt-agent` instead; this command holds the connection
                 open indefinitely and prints one JSON event per line until interrupted
-                (Ctrl-C) or the app disconnects.
+                (Ctrl-C) or the process gives up reconnecting.
 
-                Flags (at least one required):
+                Flags (at least one of --agent-state/--workspace-lifecycle/--output required):
                   --agent-state                    Agent working/blocked/idle transitions
                   --workspace-lifecycle             Workspace created/closed/renamed
                   --output <surface_id[,surface_id...]>
                                                     Coalesced output for specific surfaces
                                                     (not available for "all surfaces" -- see docs)
+                  --no-reconnect                    Exit on disconnect instead of the default
+                                                    auto-reconnect (for scripts that want to
+                                                    observe and handle drops themselves)
+
+                By default, if the connection drops (app restart, network hiccup, or the
+                1-hour idle read timeout) the command prints a notice to stderr and
+                automatically reconnects and resubscribes with capped exponential backoff,
+                rather than exiting. Pass --no-reconnect to restore the old exit-on-drop
+                behavior. Stdout only ever contains event lines (or JSON, in --json mode);
+                reconnect notices always go to stderr.
 
                 If the per-connection event queue overflows (a slow/disconnected reader),
                 a synthetic {"event":"dropped","count":N} line is printed -- re-sync with
@@ -3467,10 +3525,12 @@ struct ProgramaCLI {
                 Example:
                   programa watch-events --agent-state
                   programa watch-events --output surface:2,surface:3
+                  programa watch-events --agent-state --no-reconnect
                 """,
                 execute: { ctx in
                     let agentState = self.hasFlag(ctx.commandArgs, name: "--agent-state")
                     let workspaceLifecycle = self.hasFlag(ctx.commandArgs, name: "--workspace-lifecycle")
+                    let noReconnect = self.hasFlag(ctx.commandArgs, name: "--no-reconnect")
                     let (outputArg, _) = self.parseOption(ctx.commandArgs, name: "--output")
 
                     var classes: [String] = []
@@ -3495,29 +3555,58 @@ struct ProgramaCLI {
                     }
                     params["classes"] = classes
 
-                    try ctx.client.sendV2RequestOnly(method: "subscribe", params: params)
-                    let ackLine = try ctx.client.readEventLine(timeout: 10)
-                    if ctx.jsonOutput {
-                        print(ackLine)
-                    } else {
+                    // Sends the subscribe request and reads its ack. Shared by the initial
+                    // subscribe and every reconnect below, so a resubscribe after a dropped
+                    // connection goes through the exact same path as first connect: the ack is
+                    // parsed and checked for `ok: true` before we consider the (re)subscribe
+                    // successful, and the raw ack line is never written to stdout -- stdout is
+                    // events-only, both to preserve that contract on first connect and to avoid
+                    // a stray non-event JSON object landing mid-stream on a later resubscribe.
+                    func subscribeAndAck() throws {
+                        try ctx.client.sendV2RequestOnly(method: "subscribe", params: params)
+                        let ackLine = try ctx.client.readEventLine(timeout: 10)
+                        if ackLine.hasPrefix("ERROR:") {
+                            throw CLIError(message: ackLine)
+                        }
+                        guard let ackData = ackLine.data(using: .utf8),
+                              let ack = try? JSONSerialization.jsonObject(with: ackData) as? [String: Any] else {
+                            throw CLIError(message: "Invalid subscribe ack: \(ackLine)")
+                        }
+                        guard (ack["ok"] as? Bool) == true else {
+                            if let error = ack["error"] as? [String: Any] {
+                                let code = (error["code"] as? String) ?? "error"
+                                let message = (error["message"] as? String) ?? "Subscribe rejected"
+                                throw CLIError(message: "\(code): \(message)")
+                            }
+                            throw CLIError(message: "Subscribe rejected: \(ackLine)")
+                        }
                         FileHandle.standardError.write("Subscribed: \(classes.joined(separator: ", "))\n".data(using: .utf8)!)
                     }
 
-                    // Long-lived: reads and prints one pushed event frame per line until the
-                    // connection closes or the process is interrupted (Ctrl-C). Each frame is
-                    // already a complete JSON object (see SocketEventBroadcaster.encodeFrame),
-                    // so JSON mode just echoes the raw line.
-                    while true {
-                        let line = try ctx.client.readEventLine(timeout: 3600)
-                        guard !line.isEmpty else { continue }
+                    // Reconnect failures that won't resolve themselves on retry: wrong
+                    // password / unconfigured password (auth.login's auth_failed/
+                    // auth_required/auth_unconfigured), the cmux-ancestry "unsafe socket"
+                    // rejection (raw "ERROR: Access denied ..." preamble), and an explicit
+                    // subscribe-ack rejection (invalid_params -- retrying with the same
+                    // params will never succeed). Everything else (ECONNREFUSED/ENOENT while
+                    // the app restarts, EOF, read timeouts) is transient and keeps retrying
+                    // indefinitely as designed.
+                    func isPermanentReconnectFailure(_ error: Error) -> Bool {
+                        let description = String(describing: error)
+                        if description.hasPrefix("ERROR: Access denied") { return true }
+                        let permanentCodes = ["auth_failed:", "auth_required:", "auth_unconfigured:", "invalid_params:"]
+                        return permanentCodes.contains { description.hasPrefix($0) }
+                    }
+
+                    func printEvent(_ line: String) {
                         if ctx.jsonOutput {
                             print(line)
-                            continue
+                            return
                         }
                         guard let data = line.data(using: .utf8),
                               let frame = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                             print(line)
-                            continue
+                            return
                         }
                         let event = (frame["event"] as? String) ?? "event"
                         let rest = frame.filter { $0.key != "event" }
@@ -3525,6 +3614,66 @@ struct ProgramaCLI {
                             .map { "\($0.key)=\($0.value)" }
                             .joined(separator: " ")
                         print("[\(event)] \(rest)")
+                    }
+
+                    var connectedAt = Date()
+                    try subscribeAndAck()
+
+                    // Long-lived: reads and prints one pushed event frame per line until the
+                    // connection closes or the process is interrupted (Ctrl-C). Each frame is
+                    // already a complete JSON object (see SocketEventBroadcaster.encodeFrame),
+                    // so JSON mode just echoes the raw line.
+                    //
+                    // Any disconnect (EOF, a transport error, or the 3600s idle read timeout
+                    // firing after an hour of silence) lands here. By default we don't let any
+                    // of those kill the process: print one stderr notice, reconnect+resubscribe
+                    // with capped exponential backoff, and keep streaming. --no-reconnect
+                    // restores the historical exit-on-drop behavior for scripts that want to
+                    // observe and handle drops themselves.
+                    while true {
+                        do {
+                            let line = try ctx.client.readEventLine(timeout: 3600)
+                            guard !line.isEmpty else { continue }
+                            printEvent(line)
+                        } catch {
+                            if noReconnect { throw error }
+
+                            let elapsedSeconds = Int(Date().timeIntervalSince(connectedAt))
+                            let reason = String(describing: error)
+                            FileHandle.standardError.write(
+                                "programa: event stream disconnected (\(reason)) after \(elapsedSeconds)s; reconnecting…\n".data(using: .utf8)!
+                            )
+
+                            ctx.client.close()
+                            var backoffSeconds = 0.5
+                            var consecutivePermanentFailures = 0
+                            while true {
+                                do {
+                                    try ctx.client.connectWithTransientRetry()
+                                    try self.authenticateClientIfNeeded(
+                                        ctx.client,
+                                        explicitPassword: ctx.socketPasswordArg,
+                                        socketPath: ctx.client.socketPath
+                                    )
+                                    connectedAt = Date()
+                                    try subscribeAndAck()
+                                    break
+                                } catch {
+                                    ctx.client.close()
+                                    let permanent = isPermanentReconnectFailure(error)
+                                    consecutivePermanentFailures = permanent ? consecutivePermanentFailures + 1 : 0
+                                    FileHandle.standardError.write(
+                                        "programa: reconnect attempt failed (\(error))\(permanent ? " [not retryable]" : "")\n".data(using: .utf8)!
+                                    )
+                                    if permanent && consecutivePermanentFailures >= 3 {
+                                        throw error
+                                    }
+                                    Thread.sleep(forTimeInterval: backoffSeconds + Double.random(in: 0...0.1))
+                                    backoffSeconds = min(backoffSeconds * 2, 5.0)
+                                }
+                            }
+                            FileHandle.standardError.write("programa: event stream reconnected\n".data(using: .utf8)!)
+                        }
                     }
                 }
             ),
@@ -7179,7 +7328,7 @@ struct ProgramaCLI {
                 args,
                 command: command,
                 valueFlags: ["output"],
-                booleanFlags: ["agent-state", "workspace-lifecycle"],
+                booleanFlags: ["agent-state", "workspace-lifecycle", "no-reconnect"],
                 allowEquals: false
             )
             guard parsed.positional.isEmpty else {
