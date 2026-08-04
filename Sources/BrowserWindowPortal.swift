@@ -1812,34 +1812,35 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
 
     private func pruneDeadEntries() {
         let currentWindow = window
-        let deadWebViewIds = entriesByWebViewId.compactMap { webViewId, entry -> ObjectIdentifier? in
-            guard entry.webView != nil else { return webViewId }
-            guard let container = entry.containerView else { return webViewId }
-            guard let anchor = entry.anchorView else {
-                // Workspace switching hides retiring browser portals before SwiftUI unmounts
-                // their anchor views. Keep the hidden WKWebView/slot alive so switching back
-                // can rebind the existing view instead of forcing a full WebKit reload.
-                return nil
-            }
-            if container.superview == nil || !container.isDescendant(of: hostView) {
-                return webViewId
-            }
-            let anchorInvalidForCurrentHost =
-                anchor.window !== currentWindow ||
-                anchor.superview == nil ||
-                (installedReferenceView.map { !anchor.isDescendant(of: $0) } ?? false)
-            if anchorInvalidForCurrentHost {
-                // Hidden browser portals can legitimately be off-tree between workspace
-                // deactivation and the next rebind. Preserve them until an explicit detach
-                // (panel close, window teardown, or web view replacement) says otherwise.
-                return nil
-            }
-            return nil
-        }
-
-        for webViewId in deadWebViewIds {
-            detachWebView(withId: webViewId)
-        }
+        Self.pruneEntries(
+            ids: Array(entriesByWebViewId.keys),
+            isDead: { webViewId in
+                guard let entry = self.entriesByWebViewId[webViewId] else { return false }
+                guard entry.webView != nil else { return true }
+                guard let container = entry.containerView else { return true }
+                guard let anchor = entry.anchorView else {
+                    // Workspace switching hides retiring browser portals before SwiftUI unmounts
+                    // their anchor views. Keep the hidden WKWebView/slot alive so switching back
+                    // can rebind the existing view instead of forcing a full WebKit reload.
+                    return false
+                }
+                if container.superview == nil || !container.isDescendant(of: self.hostView) {
+                    return true
+                }
+                let anchorInvalidForCurrentHost =
+                    anchor.window !== currentWindow ||
+                    anchor.superview == nil ||
+                    (self.installedReferenceView.map { !anchor.isDescendant(of: $0) } ?? false)
+                if anchorInvalidForCurrentHost {
+                    // Hidden browser portals can legitimately be off-tree between workspace
+                    // deactivation and the next rebind. Preserve them until an explicit detach
+                    // (panel close, window teardown, or web view replacement) says otherwise.
+                    return false
+                }
+                return false
+            },
+            detach: detachWebView(withId:)
+        )
 
         let validAnchorIds = Set(entriesByWebViewId.compactMap { _, entry in
             entry.anchorView.map { ObjectIdentifier($0) }
