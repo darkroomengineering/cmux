@@ -3905,6 +3905,85 @@ final class TerminalWindowPortalLifecycleTests: XCTestCase {
     }
 }
 
+/// Pure unit tests for `TransientRecoveryRetryState`/`scheduleRetryIfNeeded`, the shared
+/// H5 abstraction behind `WindowTerminalPortal` and `WindowBrowserPortal`'s transient
+/// hide-recovery retry budgets (nuclear-review N4). No view/window fixtures needed: the
+/// function only mutates a plain struct. Terminal uses `.whenExhausted` (a bare retry
+/// counter, no reason tracking); Browser uses `.whenReasonChanges` (a new reason gets its
+/// own full budget). These tests pin both policies so a future edit can't accidentally
+/// harmonize them.
+final class TransientRecoveryRetryStateTests: XCTestCase {
+    func testWhenExhaustedPolicyIgnoresReasonChangesUntilBudgetIsSpent() {
+        var state = TransientRecoveryRetryState(remaining: 0, reason: nil)
+
+        XCTAssertTrue(scheduleRetryIfNeeded(state: &state, newReason: "a", budget: 3, resetPolicy: .whenExhausted))
+        XCTAssertEqual(state.remaining, 2, "First call after remaining==0 should reset to budget, then consume one")
+
+        XCTAssertTrue(scheduleRetryIfNeeded(state: &state, newReason: "b", budget: 3, resetPolicy: .whenExhausted))
+        XCTAssertEqual(
+            state.remaining, 1,
+            "whenExhausted must not reset on a reason change alone — only remaining==0 resets"
+        )
+
+        XCTAssertTrue(scheduleRetryIfNeeded(state: &state, newReason: "b", budget: 3, resetPolicy: .whenExhausted))
+        XCTAssertEqual(state.remaining, 0)
+
+        XCTAssertFalse(
+            scheduleRetryIfNeeded(state: &state, newReason: "c", budget: 3, resetPolicy: .whenExhausted),
+            "Once fully exhausted, a new reason must not grant a fresh budget under whenExhausted"
+        )
+        XCTAssertEqual(state.remaining, 0)
+    }
+
+    func testWhenExhaustedPolicyResetsOnceRemainingReachesZero() {
+        var state = TransientRecoveryRetryState(remaining: 0, reason: nil)
+        for _ in 0..<3 {
+            XCTAssertTrue(scheduleRetryIfNeeded(state: &state, newReason: "same", budget: 3, resetPolicy: .whenExhausted))
+        }
+        XCTAssertEqual(state.remaining, 0)
+
+        XCTAssertTrue(
+            scheduleRetryIfNeeded(state: &state, newReason: "same", budget: 3, resetPolicy: .whenExhausted),
+            "remaining==0 should always grant a fresh budget under whenExhausted, even for the same reason"
+        )
+        XCTAssertEqual(state.remaining, 2)
+    }
+
+    func testWhenReasonChangesPolicyResetsBudgetOnEveryNewReason() {
+        var state = TransientRecoveryRetryState(remaining: 0, reason: nil)
+
+        XCTAssertTrue(scheduleRetryIfNeeded(state: &state, newReason: "tinyFrame", budget: 2, resetPolicy: .whenReasonChanges))
+        XCTAssertEqual(state.remaining, 1)
+        XCTAssertEqual(state.reason, "tinyFrame")
+
+        XCTAssertTrue(scheduleRetryIfNeeded(state: &state, newReason: "tinyFrame", budget: 2, resetPolicy: .whenReasonChanges))
+        XCTAssertEqual(state.remaining, 0, "Same reason should keep draining the existing budget, not reset it")
+
+        XCTAssertFalse(
+            scheduleRetryIfNeeded(state: &state, newReason: "tinyFrame", budget: 2, resetPolicy: .whenReasonChanges),
+            "Same reason with an exhausted budget must not retry"
+        )
+
+        XCTAssertTrue(
+            scheduleRetryIfNeeded(state: &state, newReason: "anchorHidden", budget: 2, resetPolicy: .whenReasonChanges),
+            "A different reason must get its own fresh budget under whenReasonChanges, even though the previous one was exhausted"
+        )
+        XCTAssertEqual(state.remaining, 1)
+        XCTAssertEqual(state.reason, "anchorHidden")
+    }
+
+    func testWhenReasonChangesPolicyDoesNotResetOnRepeatedIdenticalReason() {
+        var state = TransientRecoveryRetryState(remaining: 5, reason: "outsideHostBounds")
+
+        XCTAssertTrue(
+            scheduleRetryIfNeeded(state: &state, newReason: "outsideHostBounds", budget: 12, resetPolicy: .whenReasonChanges)
+        )
+        XCTAssertEqual(
+            state.remaining, 4,
+            "An unchanged reason must simply decrement the existing budget, not reset it to a fresh 12"
+        )
+    }
+}
 
 final class TerminalOpenURLTargetResolutionTests: XCTestCase {
     func testResolvesHTTPSAsEmbeddedBrowser() throws {

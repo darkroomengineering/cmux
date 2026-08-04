@@ -145,3 +145,54 @@ class HostedViewPortalRegistry: NSObject {
         return viewIndex > referenceIndex
     }
 }
+
+/// Pure transient-recovery retry-budget state, shared by `WindowTerminalPortal` and
+/// `WindowBrowserPortal`. Both subclasses hide a hosted view/web view when a geometry
+/// sync pass can't place it (missing anchor, host bounds not ready, tiny frame, ...),
+/// but grant a bounded number of retries before treating the hide as final, so a
+/// genuinely-transient hiccup doesn't get stuck hidden. Only the counter/reason
+/// bookkeeping lives here — the actual "schedule a deferred re-sync" side effect stays
+/// in each subclass's wrapper around `scheduleRetryIfNeeded`.
+struct TransientRecoveryRetryState {
+    var remaining: Int
+    var reason: String?
+}
+
+/// The reset-budget policy differs between the two portals and is never harmonized:
+/// Terminal only tracks a bare retry counter (no reason), so it resets the budget once
+/// it's fully spent. Browser tracks the retry *reason* too, and resets the budget
+/// whenever the reason changes — so a different kind of transient hiccup (e.g.
+/// `anchorHidden` following `tinyFrame`) gets its own full budget rather than sharing
+/// leftover retries from an unrelated cause.
+enum TransientRecoveryResetPolicy {
+    /// Terminal: reset only when `remaining == 0`.
+    case whenExhausted
+    /// Browser: reset whenever the incoming reason differs from the stored one.
+    case whenReasonChanges
+}
+
+/// Returns `true` if a retry was scheduled (and decrements `state.remaining`), `false`
+/// if the budget is exhausted for the current reason. Mutates `state` in place; has no
+/// view/window/notification access, so it is directly unit-testable.
+@discardableResult
+func scheduleRetryIfNeeded(
+    state: inout TransientRecoveryRetryState,
+    newReason: String,
+    budget: Int,
+    resetPolicy: TransientRecoveryResetPolicy
+) -> Bool {
+    let shouldReset: Bool
+    switch resetPolicy {
+    case .whenExhausted:
+        shouldReset = state.remaining == 0
+    case .whenReasonChanges:
+        shouldReset = state.reason != newReason
+    }
+    if shouldReset {
+        state.remaining = budget
+    }
+    state.reason = newReason
+    guard state.remaining > 0 else { return false }
+    state.remaining -= 1
+    return true
+}
