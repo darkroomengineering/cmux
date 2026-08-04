@@ -111,7 +111,7 @@ import Bonsplit
 ///
 /// ## Restore fallback
 /// `Workspace+Persistence.swift`'s `createPanel(from:inPane:)` already
-/// replays saved scrollback text via `SessionScrollbackReplayStore`. When a
+/// replays saved scrollback text via `SessionFreshSpawnScrollbackSeed`. When a
 /// persisted `SessionPanelSnapshot.terminal?.scrollback` is missing or blank
 /// (the app died before the next autosave/clean-quit snapshot captured it),
 /// it falls back to `SessionWALStore.shared.readFallbackScrollbackText(sessionId:)`
@@ -120,7 +120,7 @@ import Bonsplit
 /// TerminalSurface.id`). That method prefers a captured frame + WAL delta
 /// (see "Periodic frame capture" above) when a usable one exists, and falls
 /// back to the plain WAL tail otherwise. Either way the returned text is fed
-/// through the exact same `SessionScrollbackReplayStore`/
+/// through the exact same `SessionFreshSpawnScrollbackSeed`/
 /// `SessionPersistencePolicy` ANSI-safe truncation path as clean-quit
 /// scrollback, so this is purely an alternative source of the same kind of
 /// text, not a parallel restore path.
