@@ -3174,6 +3174,13 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
         }
 
         let webView1 = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let webView2 = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        // Allocate anchor2 before anchor1 is dropped so ARC can't reuse anchor1's freed
+        // memory address for anchor2 — an address reuse would make
+        // ObjectIdentifier(anchor2) alias the stale webViewByAnchorId[anchor1] entry and
+        // trip bind()'s unrelated "anchor replaced" detach path instead of exercising
+        // pruneDeadEntries' nil-anchor policy.
+        let anchor2 = NSView(frame: NSRect(x: 180, y: 20, width: 120, height: 80))
 
         // Drop the anchor inside an autoreleasepool so the portal's weak reference
         // actually nils out before pruneDeadEntries runs — AppKit teardown is not
@@ -3187,8 +3194,6 @@ final class BrowserWindowPortalLifecycleTests: XCTestCase {
             anchor1 = nil
         }
 
-        let webView2 = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
-        let anchor2 = NSView(frame: NSRect(x: 180, y: 20, width: 120, height: 80))
         contentView.addSubview(anchor2)
         portal.bind(webView: webView2, to: anchor2, visibleInUI: true)
 
