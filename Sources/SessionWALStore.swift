@@ -614,6 +614,35 @@ enum SessionWALCore {
     /// delta.
     private static let csiTailScanCapBytes = 16
 
+    /// Pure "concat rotated+current, cap to `walCapBytes`, trim any torn
+    /// leading edge, decode" step behind `SessionWALStore
+    /// .readFallbackScrollbackText`'s plain-tail fallback (used when no
+    /// frame+delta replay is available -- see that function's doc comment).
+    /// Extracted out of the singleton/file-system-coupled store method so it
+    /// is directly unit-testable: the raw-byte suffix cut below has the exact
+    /// same torn-escape/torn-UTF-8 hazard `readFrameAndDelta` already guards
+    /// against at its own cut sites (~554) -- this call site was previously
+    /// missing that guard, leaking orphaned CSI/UTF-8 fragments as literal
+    /// replayed text.
+    static func decodeFallbackScrollbackText(
+        rotated: Data?,
+        current: Data?,
+        walCapBytes: Int64 = SessionWALPolicy.walCapBytes
+    ) -> String? {
+        var combined = Data()
+        if let rotated { combined.append(rotated) }
+        if let current { combined.append(current) }
+        guard !combined.isEmpty else { return nil }
+        if combined.count > walCapBytes {
+            // Only a suffix cut can tear an escape sequence or UTF-8 scalar;
+            // uncut data starts at a genuine stream beginning, where the torn-CSI
+            // heuristic would misread legitimate leading text (e.g. "123Main")
+            // as an orphaned parameter run and eat it.
+            combined = trimTornLeadingBytes(combined.suffix(Int(walCapBytes)))
+        }
+        return String(decoding: combined, as: UTF8.self)
+    }
+
     private static func trimTornLeadingBytes(_ data: Data) -> Data {
         guard !data.isEmpty else { return data }
         var start = data.startIndex
@@ -980,18 +1009,9 @@ final class SessionWALStore {
             return frameReplay
         }
         guard let paths = SessionWALPaths.make(sessionId: sessionId) else { return nil }
-        var combined = Data()
-        if let rotated = try? Data(contentsOf: paths.walRotatedURL) {
-            combined.append(rotated)
-        }
-        if let current = try? Data(contentsOf: paths.walURL) {
-            combined.append(current)
-        }
-        guard !combined.isEmpty else { return nil }
-        if combined.count > SessionWALPolicy.walCapBytes {
-            combined = combined.suffix(Int(SessionWALPolicy.walCapBytes))
-        }
-        return String(decoding: combined, as: UTF8.self)
+        let rotated = try? Data(contentsOf: paths.walRotatedURL)
+        let current = try? Data(contentsOf: paths.walURL)
+        return SessionWALCore.decodeFallbackScrollbackText(rotated: rotated, current: current)
     }
 
     /// Prefers a captured frame + WAL delta over the plain tail. Returns nil

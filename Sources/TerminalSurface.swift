@@ -239,6 +239,23 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// still needs this set so the post-seed SIGWINCH nudge below still
     /// fires and the output tap still gets registered.
     private var pendingReviveSeed: (text: String, resetModes: Bool, workingDirectory: String?)?
+    /// restore-replay-residuals (divider-race fix, garbled residual spinner
+    /// output on multi-pane restore): `true` while this surface's
+    /// `pendingReviveSeed` must not be consumed yet, because
+    /// `TerminalSurface.isSessionRestoreSettling` was active when this surface
+    /// was created -- the split tree's persisted divider fractions
+    /// (`Workspace+Persistence.applySessionDividerPositions`) may not have
+    /// finished propagating through SwiftUI/AppKit relayout, so any
+    /// `updateSize` landing this early can still be at the wrong
+    /// (pre-restore-divider) width. While gated, `seedRevivedScrollbackIfPending`
+    /// no-ops for every trigger, and the fallback timer re-arms itself instead
+    /// of firing early (see `scheduleReviveSeedFallbackTimer`). Cleared by
+    /// `TerminalSurface.clearSessionRestoreGateAndFlushPendingSurfaces(generation:)`,
+    /// which also immediately re-attempts the seed.
+    private var isGatedForSessionRestoreSettle = false
+    /// The restore generation this surface is gated under; nil once ungated.
+    /// See `TerminalSurface.currentSessionRestoreGeneration`.
+    private var gatedRestoreGeneration: Int?
     /// restore-replay-residuals: the revived pty's foreground process group
     /// and child pid, snapshotted in `createSurface` before ghostty takes
     /// ownership of the fd. Consumed exactly once by
@@ -373,6 +390,96 @@ final class TerminalSurface: Identifiable, ObservableObject {
             merged[key] = value
         }
         return merged
+    }
+
+    // MARK: - Session-restore divider-settle gate (restore-replay-residuals)
+    //
+    // Fixes the multi-pane restore race where a revived surface's one-shot
+    // `pendingReviveSeed` was consumed at the FIRST post-creation `updateSize`
+    // call -- which, for any pane in a non-50/50 split, lands at bonsplit's
+    // default divider fraction, not the persisted one
+    // (`Workspace+Persistence.restoreSessionSnapshot` applies persisted divider
+    // positions only after every pane's panels already exist). Replaying
+    // \r-overwritten spinner output at a narrower-than-capture width makes every
+    // wrapped frame visible instead of overwritten -- the exact garbled/repeated
+    // "thinking" spinner symptom. A generation counter (not a plain bool) so two
+    // restores overlapping in time (e.g. multiple windows relaunching at once)
+    // can't have one restore's gate-clear prematurely release a still-in-flight
+    // sibling restore's surfaces.
+
+    /// Bumped once per `restoreSessionSnapshot` pass; the resulting value gates
+    /// every surface that pass revives via `attemptSessionReattach`.
+    static var currentSessionRestoreGeneration = 0
+    /// Number of restore passes that have not yet finished applying divider
+    /// positions + settled one extra main-queue turn. A counter, not a bool:
+    /// app relaunch restores many workspaces back-to-back, and each pass must
+    /// keep the gate open until its own clear runs -- a later pass starting
+    /// must not let an earlier pass's clear release surfaces early, nor may an
+    /// earlier pass's clear close the gate on a later in-flight pass.
+    private static var settlingRestorePassCount = 0
+    /// `true` while any restore pass is still settling.
+    static var isSessionRestoreSettling: Bool { settlingRestorePassCount > 0 }
+    /// Called by `Workspace+Persistence.restoreSessionSnapshot` at the top of
+    /// each pass, before any panel/surface is created.
+    static func beginSessionRestorePass() -> Int {
+        currentSessionRestoreGeneration += 1
+        settlingRestorePassCount += 1
+        return currentSessionRestoreGeneration
+    }
+    /// Surfaces gated under the *current* generation, so
+    /// `clearSessionRestoreGateAndFlushPendingSurfaces(generation:)` can nudge
+    /// exactly the surfaces belonging to the restore pass it is closing out.
+    /// Weak: a surface torn down mid-restore must not be kept alive here.
+    private static var surfacesAwaitingRestoreSettle = NSHashTable<TerminalSurface>.weakObjects()
+
+    /// Called by `Workspace+Persistence.restoreSessionSnapshot` after
+    /// `applySessionDividerPositions` has run and one additional main-queue
+    /// turn has elapsed. Releases exactly the surfaces gated under
+    /// `generation` -- each restore pass clears its own generation, so
+    /// back-to-back workspace restores (app relaunch) can't strand an earlier
+    /// pass's surfaces on the fallback-timer ceiling.
+    static func clearSessionRestoreGateAndFlushPendingSurfaces(generation: Int) {
+        settlingRestorePassCount = max(0, settlingRestorePassCount - 1)
+        let pending = surfacesAwaitingRestoreSettle.allObjects.filter { $0.gatedRestoreGeneration == generation }
+        for surface in pending {
+            surfacesAwaitingRestoreSettle.remove(surface)
+        }
+        for surface in pending {
+            surface.isGatedForSessionRestoreSettle = false
+            surface.gatedRestoreGeneration = nil
+            surface.seedRevivedScrollbackIfPending(trigger: "restore-settle-gate-cleared")
+        }
+    }
+
+    /// Bounded fallback re-arm ceiling for `scheduleReviveSeedFallbackTimer`:
+    /// 40 attempts * 0.15s = 6s. A gate still open after 6s means
+    /// `restoreSessionSnapshot` never reached its clear call for this
+    /// generation (a bug elsewhere) -- force the seed through rather than hold
+    /// it forever.
+    private static let reviveSeedFallbackMaxAttempts = 40
+
+    /// restore-replay-residuals: bounded fallback that guarantees
+    /// `pendingReviveSeed` eventually gets consumed even if no `updateSize`
+    /// call ever lands (a surface created already at its final size). While
+    /// `isGatedForSessionRestoreSettle` is still active, firing here would
+    /// just reintroduce the divider-race this gate exists to close, so the
+    /// timer re-arms itself instead of consuming, up to
+    /// `reviveSeedFallbackMaxAttempts`.
+    private func scheduleReviveSeedFallbackTimer(attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self else { return }
+            if self.isGatedForSessionRestoreSettle, attempt < Self.reviveSeedFallbackMaxAttempts {
+                self.scheduleReviveSeedFallbackTimer(attempt: attempt + 1)
+                return
+            }
+            if self.isGatedForSessionRestoreSettle {
+                // Ceiling reached -- force through rather than hold the seed
+                // forever; see `reviveSeedFallbackMaxAttempts`'s doc comment.
+                self.isGatedForSessionRestoreSettle = false
+                self.gatedRestoreGeneration = nil
+            }
+            self.seedRevivedScrollbackIfPending(trigger: "fallback-timer")
+        }
     }
 
     static let managedTerminalType = "xterm-256color"
@@ -1390,12 +1497,22 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 resetModes: revivedShellOwnsTerminal,
                 workingDirectory: resolvedWorkingDirectory
             )
+            // Divider-race fix: if this surface is being created as part of an
+            // in-flight `restoreSessionSnapshot` pass, gate seed consumption
+            // until that pass explicitly clears it (after divider positions
+            // are applied + one settled main-queue turn) -- see
+            // `isGatedForSessionRestoreSettle`'s doc comment.
+            if TerminalSurface.isSessionRestoreSettling {
+                isGatedForSessionRestoreSettle = true
+                gatedRestoreGeneration = TerminalSurface.currentSessionRestoreGeneration
+                TerminalSurface.surfacesAwaitingRestoreSettle.add(self)
+            }
             // Bounded fallback: covers a surface created already at its
             // final size, where no further `updateSize` call ever lands to
             // trigger the primary path in `seedRevivedScrollbackIfPending()`.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                self?.seedRevivedScrollbackIfPending(trigger: "fallback-timer")
-            }
+            // Also the safety net if the gate above is somehow never cleared
+            // -- see `scheduleReviveSeedFallbackTimer`'s bounded re-arm.
+            scheduleReviveSeedFallbackTimer()
         }
 
         NotificationCenter.default.post(
@@ -1502,7 +1619,16 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// - a bounded fallback timer (`"fallback-timer"`, scheduled at the end
     ///   of `createSurface`) for the case where no `updateSize` call ever
     ///   arrives.
+    /// - `"restore-settle-gate-cleared"`, from
+    ///   `TerminalSurface.clearSessionRestoreGateAndFlushPendingSurfaces(generation:)`,
+    ///   for a surface that arrived at every other trigger while still gated.
+    ///
+    /// Divider-race fix: no-ops entirely while `isGatedForSessionRestoreSettle`
+    /// is still active, regardless of which trigger calls in -- an `updateSize`
+    /// landing during an in-flight `restoreSessionSnapshot` pass can still be at
+    /// bonsplit's pre-restore-divider width, not the persisted one.
     private func seedRevivedScrollbackIfPending(trigger: String) {
+        guard !isGatedForSessionRestoreSettle else { return }
         guard let pending = pendingReviveSeed else { return }
         pendingReviveSeed = nil
         guard let surface else { return }
