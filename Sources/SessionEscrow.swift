@@ -181,13 +181,28 @@ enum SessionEscrowPolicy {
     /// the main thread during session restore, once per escrowed panel,
     /// serially -- a present-but-unresponsive holder stalls launch by this
     /// entire duration, per panel. The holder is a local same-machine
-    /// `AF_UNIX` socket that answers in microseconds when healthy, so 500ms
-    /// is already roughly 1000x a healthy round trip; the cost of a false
-    /// miss is just falling back to the scrollback-replay restore, not
-    /// data loss. Any timeout is treated as a plain retrieval failure --
-    /// the reattach path falls back to spawning fresh, never blocks
-    /// restore indefinitely.
-    static let retrieveRecvTimeout: TimeInterval = 0.5
+    /// `AF_UNIX` socket that answers in microseconds when healthy, so this
+    /// budget only ever gets spent on a genuinely dead/wedged holder; the
+    /// cost of a false miss is just falling back to the scrollback-replay
+    /// restore, not data loss.
+    ///
+    /// INVARIANT: this MUST exceed `retrieveDrainStopTimeout` plus margin.
+    /// `handleRetrieveRequest` can legitimately take up to
+    /// `retrieveDrainStopTimeout` to stop a session's drain thread before
+    /// it ever sends a response -- if the client's own recv timeout were
+    /// shorter (or too close), the client would abandon and close its
+    /// socket while the holder is still doing correct, in-progress work,
+    /// and the eventual send would either land in a closed connection
+    /// (kernel drops the queued `SCM_RIGHTS` fd -- the session is silently
+    /// lost) or, without `SO_NOSIGPIPE`/`SIG_IGN`, raise `SIGPIPE` and kill
+    /// the holder outright, dropping every OTHER escrowed session it still
+    /// holds too. A real relaunch hit exactly this: holder finishes in
+    /// (0.5s, 3.0s], client had already timed out and closed. Serial
+    /// main-thread restore means the only cost of this bound being large is
+    /// added latency on a genuinely dead holder (once, not per panel worth
+    /// avoiding) -- a dead holder costing 5s once is a far better trade than
+    /// a live-but-slow holder costing the session.
+    static let retrieveRecvTimeout: TimeInterval = 5.0
     /// How long a draining (app-is-gone) session waits to be reclaimed
     /// before the holder gives up and closes its pty master. Elapsed time
     /// alone cannot prove abandonment -- a machine that sleeps mid-relaunch,
@@ -341,6 +356,7 @@ enum UnixDomainFDPassing {
     static func connect(to socketPath: String) -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
+        suppressSigPipe(on: fd)
         guard var addr = makeSockaddr(path: socketPath) else {
             close(fd)
             return nil
@@ -357,6 +373,26 @@ enum UnixDomainFDPassing {
         return fd
     }
 
+    /// Sets `SO_NOSIGPIPE` on `fd` so a write/send to a peer that has
+    /// already hung up returns `EPIPE` instead of raising `SIGPIPE` on this
+    /// process. Belt-and-suspenders alongside the holder's process-wide
+    /// `signal(SIGPIPE, SIG_IGN)` (see `SessionEscrowHolder.run`'s doc
+    /// comment) -- applied here, at every socket's creation, so it covers
+    /// the app-side client sockets too (which do not install a process-wide
+    /// ignore) and so it is never accidentally missed on one fd while a
+    /// future change adds another socket path. Best-effort: failure here
+    /// just means the process-wide ignore (holder side) or the caller's own
+    /// error handling (client side, which already treats a failed `send` as
+    /// an ordinary degrade-and-retry case) is what protects against SIGPIPE
+    /// instead. Mirrors the established pattern in
+    /// `TerminalController.probeSocketCommand`.
+    static func suppressSigPipe(on fd: Int32) {
+        var noSigPipe: Int32 = 1
+        _ = withUnsafePointer(to: &noSigPipe) { ptr in
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, ptr, socklen_t(MemoryLayout<Int32>.size))
+        }
+    }
+
     /// Binds and listens on `socketPath`. Removes a stale socket file first
     /// (the caller is expected to have already confirmed nothing is
     /// listening there via a `connect` probe). Returns nil on any failure.
@@ -364,6 +400,7 @@ enum UnixDomainFDPassing {
         unlink(socketPath)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
+        suppressSigPipe(on: fd)
         guard var addr = makeSockaddr(path: socketPath) else {
             close(fd)
             return nil
@@ -711,11 +748,19 @@ extension SessionEscrowClient {
     /// returns nil so the caller can fall through to its existing
     /// spawn-fresh path unchanged.
     static func retrieve(sessionId: String, tokenHex: String, socketPath: String) -> Int32? {
-        guard let token = decodeHexToken(tokenHex) else { return nil }
+        let attemptStartedAt = Date()
+        let timeoutMs = Int(SessionEscrowPolicy.retrieveRecvTimeout * 1000)
+        dilog("escrow.retrieve", "attempt session=\(sessionId.prefix(8)) socket=\(socketPath) timeoutMs=\(timeoutMs)")
+        func logOutcome(_ outcome: String) {
+            let elapsedMs = Int(Date().timeIntervalSince(attemptStartedAt) * 1000)
+            dilog("escrow.retrieve", "outcome session=\(sessionId.prefix(8)) result=\(outcome) elapsedMs=\(elapsedMs)")
+        }
+        guard let token = decodeHexToken(tokenHex) else {
+            logOutcome("error_bad_token_hex")
+            return nil
+        }
         guard let connectionFD = UnixDomainFDPassing.connect(to: socketPath) else {
-            #if DEBUG
-            dlog("session.escrow.retrieve.fail session=\(sessionId.prefix(8)) reason=no_connection")
-            #endif
+            logOutcome("error_no_connection")
             return nil
         }
         defer { close(connectionFD) }
@@ -734,9 +779,7 @@ extension SessionEscrowClient {
 
         guard let requestFrame = EscrowWireFormat.encodeRetrieveRequestFrame(sessionId: sessionId, token: token),
               UnixDomainFDPassing.send(fd: nil, payload: requestFrame, over: connectionFD) else {
-            #if DEBUG
-            dlog("session.escrow.retrieve.fail session=\(sessionId.prefix(8)) reason=send errno=\(errno)")
-            #endif
+            logOutcome("error_send errno=\(errno)")
             return nil
         }
 
@@ -747,18 +790,22 @@ extension SessionEscrowClient {
             case .data(let chunk, let chunkFD):
                 guard !chunk.isEmpty else {
                     if let chunkFD { close(chunkFD) }
-                    #if DEBUG
-                    dlog("session.escrow.retrieve.fail session=\(sessionId.prefix(8)) reason=empty_chunk")
-                    #endif
+                    logOutcome("eof")
                     return nil
                 }
                 collected.append(chunk)
                 if receivedFD == nil { receivedFD = chunkFD }
-            case .eof, .error, .timeout:
+            case .eof:
                 if let receivedFD { close(receivedFD) }
-                #if DEBUG
-                dlog("session.escrow.retrieve.fail session=\(sessionId.prefix(8)) reason=recv")
-                #endif
+                logOutcome("eof")
+                return nil
+            case .timeout:
+                if let receivedFD { close(receivedFD) }
+                logOutcome("timeout")
+                return nil
+            case .error:
+                if let receivedFD { close(receivedFD) }
+                logOutcome("error_recv errno=\(errno)")
                 return nil
             }
         }
@@ -769,14 +816,10 @@ extension SessionEscrowClient {
               decoded.retrieveGranted == true,
               let receivedFD else {
             if let receivedFD { close(receivedFD) }
-            #if DEBUG
-            dlog("session.escrow.retrieve.denied session=\(sessionId.prefix(8))")
-            #endif
+            logOutcome("denied")
             return nil
         }
-        #if DEBUG
-        dlog("session.escrow.retrieve.granted session=\(sessionId.prefix(8)) fd=\(receivedFD)")
-        #endif
+        logOutcome("granted fd=\(receivedFD)")
         return receivedFD
     }
 
@@ -926,6 +969,24 @@ enum SessionEscrowHolder {
     }
 
     private static func run(socketPath: String) -> Never {
+        // Must happen before ANY socket work below. A holder that finishes
+        // a retrieval inside `handleRetrieveRequest`'s
+        // `retrieveDrainStopTimeout` window but after the client itself
+        // gave up and closed its socket (see `SessionEscrowPolicy
+        // .retrieveRecvTimeout`'s doc comment) would otherwise raise
+        // `SIGPIPE` on the eventual `send`/`sendmsg` -- default disposition
+        // kills this process outright, which SIGHUPs every OTHER escrowed
+        // child this holder still has open, not just the one send that
+        // failed. `SO_NOSIGPIPE` (set per-socket below, see
+        // `UnixDomainFDPassing.suppressSigPipe`) is belt-and-suspenders on
+        // top of this process-wide ignore, not a substitute for it: this
+        // line is what keeps a late send from ever being fatal in the first
+        // place, on every fd this process touches, including ones a future
+        // change might forget to tag individually.
+        signal(SIGPIPE, SIG_IGN)
+        #if DEBUG
+        dlog("session.escrow.holder.sigpipe_ignored")
+        #endif
         guard bindOrDetectExistingHolder(socketPath: socketPath) == false else {
             // Another holder is already live at this path (this process
             // lost a spawn race, or was spawned redundantly by a second
@@ -957,6 +1018,7 @@ enum SessionEscrowHolder {
         while true {
             let clientFD = accept(listenFD, nil, nil)
             guard clientFD >= 0 else { continue }
+            UnixDomainFDPassing.suppressSigPipe(on: clientFD)
             #if DEBUG
             dlog("session.escrow.holder.accept connFD=\(clientFD)")
             #endif
@@ -1016,15 +1078,11 @@ enum SessionEscrowHolder {
         readLoop: while true {
             switch readFrame(connectionFD: connectionFD) {
             case .eof:
-                #if DEBUG
-                dlog("session.escrow.holder.death connFD=\(connectionFD) reason=eof sessions=\(registeredSessionIds.count)")
-                #endif
+                dilog("escrow.conn", "death connFD=\(connectionFD) reason=eof drainedCount=\(registeredSessionIds.count)")
                 break readLoop
             case .timeout:
                 if Date().timeIntervalSince(lastActivity) >= SessionEscrowPolicy.heartbeatStaleAfter {
-                    #if DEBUG
-                    dlog("session.escrow.holder.death connFD=\(connectionFD) reason=heartbeat_stale sessions=\(registeredSessionIds.count)")
-                    #endif
+                    dilog("escrow.conn", "death connFD=\(connectionFD) reason=heartbeat_stale drainedCount=\(registeredSessionIds.count)")
                     break readLoop
                 }
             case .data(let payload, let fd):
@@ -1116,9 +1174,11 @@ enum SessionEscrowHolder {
                 registryLock.unlock()
                 continue
             }
+            let startedAt = Date()
             session.isDraining = true
-            session.drainingStartedAt = Date()
+            session.drainingStartedAt = startedAt
             registryLock.unlock()
+            dilog("escrow.drain", "begin session=\(sessionId.prefix(8)) at=\(startedAt.timeIntervalSince1970)")
             Thread.detachNewThread {
                 drain(session: session)
             }
@@ -1135,29 +1195,26 @@ enum SessionEscrowHolder {
     /// file-level "Drain/retrieve coordination" doc comment before finally
     /// sending the fd back over `connectionFD`.
     private static func handleRetrieveRequest(connectionFD: Int32, sessionId: String, token: [UInt8]) {
+        dilog("escrow.retrieve", "request session=\(sessionId.prefix(8))")
+        func deny(reason: String) {
+            dilog("escrow.retrieve", "deny session=\(sessionId.prefix(8)) reason=\(reason)")
+            sendRetrieveResponse(granted: false, sessionId: sessionId, fd: nil, over: connectionFD)
+        }
+
         registryLock.lock()
         guard let session = registry[sessionId] else {
             registryLock.unlock()
-            #if DEBUG
-            dlog("session.escrow.holder.retrieve.deny session=\(sessionId.prefix(8)) reason=unknown")
-            #endif
-            sendRetrieveResponse(granted: false, sessionId: sessionId, fd: nil, over: connectionFD)
+            deny(reason: "unknown")
             return
         }
         guard constantTimeTokensEqual(session.token, token) else {
             registryLock.unlock()
-            #if DEBUG
-            dlog("session.escrow.holder.retrieve.deny session=\(sessionId.prefix(8)) reason=token_mismatch")
-            #endif
-            sendRetrieveResponse(granted: false, sessionId: sessionId, fd: nil, over: connectionFD)
+            deny(reason: "token_mismatch")
             return
         }
         guard session.isDraining else {
             registryLock.unlock()
-            #if DEBUG
-            dlog("session.escrow.holder.retrieve.deny session=\(sessionId.prefix(8)) reason=not_draining")
-            #endif
-            sendRetrieveResponse(granted: false, sessionId: sessionId, fd: nil, over: connectionFD)
+            deny(reason: "not_draining")
             return
         }
         // Remove immediately: no second caller can ever observe this
@@ -1167,7 +1224,10 @@ enum SessionEscrowHolder {
         session.stopRequested = true
         registryLock.unlock()
 
+        let waitStartedAt = Date()
         let stopped = session.drainStoppedSemaphore.wait(timeout: .now() + SessionEscrowPolicy.retrieveDrainStopTimeout) == .success
+        let waitElapsedMs = Int(Date().timeIntervalSince(waitStartedAt) * 1000)
+        dilog("escrow.retrieve", "drain_stop_wait session=\(sessionId.prefix(8)) stopped=\(stopped) elapsedMs=\(waitElapsedMs)")
         guard stopped else {
             // The drain thread never acknowledged in time. Do not hand back
             // an fd that thread might still be touching -- deny. (The
@@ -1177,25 +1237,58 @@ enum SessionEscrowHolder {
             // This session is simply no longer retrievable once removed
             // above -- an acceptable best-effort degradation, never a
             // correctness risk.)
-            #if DEBUG
-            dlog("session.escrow.holder.retrieve.deny session=\(sessionId.prefix(8)) reason=drain_stop_timeout")
-            #endif
-            sendRetrieveResponse(granted: false, sessionId: sessionId, fd: nil, over: connectionFD)
+            deny(reason: "drain_stop_timeout")
             return
         }
 
-        registryLock.lock()
-        session.markHandedOff()
-        registryLock.unlock()
-        #if DEBUG
-        dlog("session.escrow.holder.retrieve.grant session=\(sessionId.prefix(8)) fd=\(session.fd)")
-        #endif
-        sendRetrieveResponse(granted: true, sessionId: sessionId, fd: session.fd, over: connectionFD)
+        // Do NOT mark this session handed off until the send that carries
+        // its fd has actually been confirmed to land -- see this method's
+        // doc comment and the file-level "Drain/retrieve coordination" doc
+        // comment. The drain thread has already fully stopped by this
+        // point (we just waited on `drainStoppedSemaphore` above), so the
+        // fd is quiescent and it is safe to either hand it off or restart
+        // draining on it, depending on what the send below actually does.
+        let sendSucceeded = sendRetrieveResponse(granted: true, sessionId: sessionId, fd: session.fd, over: connectionFD)
+        if sendSucceeded {
+            registryLock.lock()
+            session.markHandedOff()
+            registryLock.unlock()
+            dilog("escrow.retrieve", "grant session=\(sessionId.prefix(8)) fd=\(session.fd) sendSucceeded=true")
+        } else {
+            // The client already closed its end (it gave up waiting -- see
+            // `SessionEscrowPolicy.retrieveRecvTimeout`'s invariant, which
+            // makes this vanishingly rare in practice but not impossible),
+            // or some other send failure occurred. The session was already
+            // removed from the registry above so no other caller could
+            // race it; putting it back and restarting a drain thread on
+            // the same (still fully open, never-closed) fd keeps it
+            // retrievable on a later relaunch instead of leaking the child
+            // forever. Safe specifically because the prior drain thread
+            // has unconditionally finished (confirmed via the semaphore
+            // wait above) before this fd is touched again.
+            registryLock.lock()
+            session.isDraining = false
+            session.stopRequested = false
+            session.drainingStartedAt = nil
+            registry[sessionId] = session
+            registryLock.unlock()
+            beginDraining(sessionIds: [sessionId])
+            dilog("escrow.retrieve", "grant_send_failed session=\(sessionId.prefix(8)) fd=\(session.fd) reinserted=true")
+        }
     }
 
-    private static func sendRetrieveResponse(granted: Bool, sessionId: String, fd: Int32?, over connectionFD: Int32) {
-        guard let frame = EscrowWireFormat.encodeRetrieveResponseFrame(sessionId: sessionId, granted: granted) else { return }
-        _ = UnixDomainFDPassing.send(fd: granted ? fd : nil, payload: frame, over: connectionFD)
+    /// Returns whether the response frame (and, when granted, its
+    /// `SCM_RIGHTS` fd) was actually sent successfully. Callers MUST check
+    /// this -- see `handleRetrieveRequest`'s post-send handling -- rather
+    /// than assuming a queued send always lands: the client may have
+    /// already closed its end (abandoned after its own recv timeout, or a
+    /// genuine socket error), in which case the kernel silently drops the
+    /// in-flight ancillary fd and the session must not be treated as
+    /// handed off.
+    @discardableResult
+    private static func sendRetrieveResponse(granted: Bool, sessionId: String, fd: Int32?, over connectionFD: Int32) -> Bool {
+        guard let frame = EscrowWireFormat.encodeRetrieveResponseFrame(sessionId: sessionId, granted: granted) else { return false }
+        return UnixDomainFDPassing.send(fd: granted ? fd : nil, payload: frame, over: connectionFD)
     }
 
     /// Fixed-length, no-early-exit byte compare so a token check's timing

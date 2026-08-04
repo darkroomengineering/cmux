@@ -640,4 +640,79 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
             userInfo: [NSLocalizedDescriptionKey: "\(operation) failed: \(String(cString: strerror(errno)))"]
         )
     }
+
+    // MARK: - Session escrow: SIGPIPE-safe retrieve-response send (issue #182)
+
+    /// Regression for a real relaunch incident: the escrow holder
+    /// (`SessionEscrowHolder.handleRetrieveRequest`) can finish stopping a
+    /// session's drain thread (bounded by `SessionEscrowPolicy
+    /// .retrieveDrainStopTimeout`, 3s) after the app-side client has
+    /// already given up waiting and closed its end of the connection (see
+    /// `SessionEscrowPolicy.retrieveRecvTimeout`'s invariant comment).
+    /// Writing the retrieve-response frame into that now-peer-closed
+    /// connection raises `SIGPIPE` unless the accepted socket has
+    /// `SO_NOSIGPIPE` set -- default disposition kills the WHOLE holder
+    /// process, dropping every OTHER escrowed session it still holds, not
+    /// just the one send that failed.
+    ///
+    /// This reproduces the exact primitive sequence
+    /// `SessionEscrowHolder.run()`'s accept loop uses
+    /// (`UnixDomainFDPassing.bindListening` -> `.connect` -> raw
+    /// `accept()` -> `UnixDomainFDPassing.suppressSigPipe(on:)`) against a
+    /// peer that has already hung up, and asserts the send fails cleanly
+    /// (`false`, `EPIPE`) rather than crashing. Confirmed separately
+    /// (outside this test, not committed) that omitting the
+    /// `suppressSigPipe` call reproduces a hard process crash (terminated
+    /// by `SIGPIPE`) on this exact sequence -- deliberately not exercised
+    /// as a literal "red without the fix" commit here, since a crash would
+    /// take down the entire shared XCTest process for this whole test
+    /// bundle, not just this one test method.
+    func testEscrowRetrieveResponseSendSurvivesClosedPeerWithoutCrashing() {
+        let socketPath = makeSocketPath("escrow-nosigpipe")
+        defer { unlink(socketPath) }
+
+        guard let listenFD = UnixDomainFDPassing.bindListening(socketPath: socketPath) else {
+            XCTFail("bindListening failed")
+            return
+        }
+        defer { close(listenFD) }
+
+        guard let clientFD = UnixDomainFDPassing.connect(to: socketPath) else {
+            XCTFail("connect failed")
+            return
+        }
+
+        let acceptedFD = accept(listenFD, nil, nil)
+        guard acceptedFD >= 0 else {
+            close(clientFD)
+            XCTFail("accept failed")
+            return
+        }
+        defer { close(acceptedFD) }
+
+        // Mirrors `SessionEscrowHolder.run()`'s accept loop exactly: every
+        // accepted connection gets `SO_NOSIGPIPE` before it's ever handed
+        // to `serve(connectionFD:)`.
+        UnixDomainFDPassing.suppressSigPipe(on: acceptedFD)
+
+        // The app-side client abandoning the connection -- `retrieve()`
+        // closes its socket via `defer` on every exit path, including a
+        // timeout -- so the holder's `acceptedFD` is now writing into a
+        // peer that has already hung up.
+        close(clientFD)
+
+        guard let frame = EscrowWireFormat.encodeRetrieveResponseFrame(
+            sessionId: String(repeating: "a", count: EscrowWireFormat.sessionIdSize),
+            granted: false
+        ) else {
+            XCTFail("failed to encode frame")
+            return
+        }
+
+        let sendResult = UnixDomainFDPassing.send(fd: nil, payload: frame, over: acceptedFD)
+
+        // Reaching this assertion at all is most of the point -- pre-fix,
+        // the process does not survive the `send` call above.
+        XCTAssertFalse(sendResult, "send to a closed peer must fail cleanly (EPIPE), not succeed")
+    }
 }
