@@ -940,10 +940,7 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
     }
 
     func tearDown() {
-        removeGeometryObservers()
-        for hostedId in Array(entriesByHostedId.keys) {
-            detachHostedView(withId: hostedId)
-        }
+        tearDownEntries(ids: Array(entriesByHostedId.keys), detach: detachHostedView(withId:))
         NSLayoutConstraint.deactivate(installConstraints)
         installConstraints.removeAll()
         hostView.removeFromSuperview()
