@@ -733,6 +733,37 @@ final class SessionEscrowClient {
 // MARK: - App-side retrieval (issue #182 slice 2)
 
 extension SessionEscrowClient {
+    /// Time-bounded circuit breaker state for `retrieve`, keyed by holder
+    /// socket path -- see `retrieve`'s "Escrow follow-up" doc comment for
+    /// the rationale. `retrieve` itself is only ever called from the
+    /// main-thread session-restore path (`Workspace+Persistence.swift`'s
+    /// `attemptSessionReattach`), one call at a time, so nothing here is
+    /// actually contended in production; the lock exists purely so tests
+    /// (which may probe from a background accept thread) never have to
+    /// reason about a data race, at negligible cost on the real serial
+    /// restore path.
+    /// Monotonic (`DispatchTime.now()`, backed by `CLOCK_UPTIME_RAW`) rather
+    /// than wall-clock `Date` -- a backward clock jump (NTP sync, sleep/wake,
+    /// manual clock change) must not keep the circuit open longer than
+    /// `circuitBreakerWindow` actually elapsed.
+    private static var recentRetrieveTimeoutsByPath: [String: DispatchTime] = [:]
+    private static let circuitBreakerLock = NSLock()
+    /// How long a path stays "open" (skipped without connecting) after a
+    /// recorded timeout. Comfortably covers a full serial restore sweep
+    /// (bounded by panel count in a real workspace) while not permanently
+    /// blacklisting a holder that recovers -- the window doubling as the
+    /// only reset mechanism is deliberate, see `retrieve`'s doc comment.
+    private static let circuitBreakerWindow: TimeInterval = 60.0
+
+    /// Test-only: clears breaker state so test cases don't leak it into
+    /// each other, and lets a test simulate the window elapsing without an
+    /// actual 60s sleep by re-arming a fresh state instead.
+    static func resetCircuitBreakerForTesting() {
+        circuitBreakerLock.lock()
+        recentRetrieveTimeoutsByPath.removeAll()
+        circuitBreakerLock.unlock()
+    }
+
     /// One-shot fd retrieval for the reattach path
     /// (`Workspace+Persistence.swift`'s `createPanel(from:inPane:)`). Opens
     /// a FRESH connection to the holder's socket -- the previous app
@@ -747,14 +778,52 @@ extension SessionEscrowClient {
     /// unknown session, token mismatch, child already exited, timeout)
     /// returns nil so the caller can fall through to its existing
     /// spawn-fresh path unchanged.
-    static func retrieve(sessionId: String, tokenHex: String, socketPath: String) -> Int32? {
+    ///
+    /// Escrow follow-up (issue tracker #6, post-#182): app-launch restore
+    /// (`Workspace+Persistence.swift`'s `attemptSessionReattach`) calls this
+    /// SERIALLY on the main thread, once per escrowed panel, and nearly
+    /// every panel shares the SAME deterministic holder socket path. A
+    /// missing/stale socket fails fast (`connect` returns nil immediately,
+    /// see `UnixDomainFDPassing.connect`'s doc comment) -- the
+    /// `retrieveRecvTimeout` cost is only ever paid when a holder ACCEPTS
+    /// the connection but never answers (wedged). Without a breaker, N
+    /// sessions against one wedged holder cost N * `retrieveRecvTimeout` of
+    /// main-thread stall at launch. `recentRetrieveTimeoutsByPath` makes
+    /// that a one-time cost per launch per path: once a path has timed out,
+    /// every other `retrieve` call against that SAME path within
+    /// `circuitBreakerWindow` returns nil immediately, without even
+    /// attempting to connect. The window is intentionally short and
+    /// self-healing rather than a manual reset -- 60s comfortably covers a
+    /// full serial restore sweep (bounded by how many panels a real
+    /// workspace has) while not permanently blacklisting a holder that
+    /// recovers (e.g. survives a transient hang and answers normally on the
+    /// next real request after this launch).
+    static func retrieve(
+        sessionId: String,
+        tokenHex: String,
+        socketPath: String,
+        recvTimeout: TimeInterval = SessionEscrowPolicy.retrieveRecvTimeout
+    ) -> Int32? {
         let attemptStartedAt = Date()
-        let timeoutMs = Int(SessionEscrowPolicy.retrieveRecvTimeout * 1000)
+        let timeoutMs = Int(recvTimeout * 1000)
         dilog("escrow.retrieve", "attempt session=\(sessionId.prefix(8)) socket=\(socketPath) timeoutMs=\(timeoutMs)")
         func logOutcome(_ outcome: String) {
             let elapsedMs = Int(Date().timeIntervalSince(attemptStartedAt) * 1000)
             dilog("escrow.retrieve", "outcome session=\(sessionId.prefix(8)) result=\(outcome) elapsedMs=\(elapsedMs)")
         }
+
+        circuitBreakerLock.lock()
+        let recordedOpenedAt = recentRetrieveTimeoutsByPath[socketPath]
+        circuitBreakerLock.unlock()
+        if let openedAt = recordedOpenedAt {
+            let sinceNs = DispatchTime.now().uptimeNanoseconds &- openedAt.uptimeNanoseconds
+            let sinceMs = Int(sinceNs / 1_000_000)
+            if sinceNs < UInt64(circuitBreakerWindow * 1_000_000_000) {
+                dilog("escrow.retrieve", "skipped session=\(sessionId.prefix(8)) reason=circuit_open path_failed_ago_ms=\(sinceMs)")
+                return nil
+            }
+        }
+
         guard let token = decodeHexToken(tokenHex) else {
             logOutcome("error_bad_token_hex")
             return nil
@@ -767,9 +836,8 @@ extension SessionEscrowClient {
 
         // Sub-second timeout, so this must split whole seconds from the
         // fractional remainder rather than truncating straight to
-        // `tv_sec` -- a bare `Int(retrieveRecvTimeout)` would silently
-        // become 0 seconds with no microsecond budget at all.
-        let recvTimeout = SessionEscrowPolicy.retrieveRecvTimeout
+        // `tv_sec` -- a bare `Int(recvTimeout)` would silently become 0
+        // seconds with no microsecond budget at all.
         let recvTimeoutWholeSeconds = recvTimeout.rounded(.down)
         var timeout = timeval(
             tv_sec: Int(recvTimeoutWholeSeconds),
@@ -801,6 +869,10 @@ extension SessionEscrowClient {
                 return nil
             case .timeout:
                 if let receivedFD { close(receivedFD) }
+                circuitBreakerLock.lock()
+                recentRetrieveTimeoutsByPath[socketPath] = DispatchTime.now()
+                circuitBreakerLock.unlock()
+                dilog("escrow.retrieve", "circuit_opened session=\(sessionId.prefix(8)) path=\(socketPath)")
                 logOutcome("timeout")
                 return nil
             case .error:

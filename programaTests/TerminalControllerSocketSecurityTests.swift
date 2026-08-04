@@ -715,4 +715,143 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         // the process does not survive the `send` call above.
         XCTAssertFalse(sendResult, "send to a closed peer must fail cleanly (EPIPE), not succeed")
     }
+
+    // MARK: - Session escrow: per-socket-path circuit breaker (escrow follow-up #6)
+
+    /// Thread-safe bookkeeping for the background "wedged holder" accept
+    /// loop below: it accepts every connection but never responds, so a
+    /// `retrieve()` call against it always times out rather than seeing EOF
+    /// -- the exact failure mode the circuit breaker exists for.
+    private final class AcceptedConnections: @unchecked Sendable {
+        private let lock = NSLock()
+        private var fds: [Int32] = []
+
+        func append(_ fd: Int32) {
+            lock.lock()
+            fds.append(fd)
+            lock.unlock()
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return fds.count
+        }
+
+        func closeAll() {
+            lock.lock()
+            let all = fds
+            fds = []
+            lock.unlock()
+            for fd in all { close(fd) }
+        }
+
+        /// Polls (bounded) until the accept thread has recorded at least
+        /// `expected` connections, or `timeout` elapses. A plain `count`
+        /// read races the accept thread: `retrieve()` returning (its recv
+        /// timeout having elapsed) only guarantees the kernel completed the
+        /// connection, not that this thread's `accept()` call has returned
+        /// and appended the fd yet. Returns whatever count was actually
+        /// observed so the caller's assertion message stays meaningful on
+        /// a genuine failure.
+        func waitForCount(atLeast expected: Int, timeout: TimeInterval = 2.0) -> Int {
+            let deadline = Date().addingTimeInterval(timeout)
+            while true {
+                let current = count
+                if current >= expected || Date() >= deadline {
+                    return current
+                }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+        }
+    }
+
+    /// Regression for the escrow follow-up ("per-socket-path circuit
+    /// breaker for wedged holders"): app-launch restore
+    /// (`Workspace+Persistence.swift`'s `attemptSessionReattach`) calls
+    /// `SessionEscrowClient.retrieve` SERIALLY on the main thread, once per
+    /// escrowed panel, and almost every panel shares the SAME deterministic
+    /// holder socket path. Without a breaker, N sessions against one
+    /// wedged (accepts but never answers) holder would each pay the full
+    /// `retrieveRecvTimeout` -- N times the stall for one dead holder.
+    ///
+    /// This drives a real wedged holder (accepts, never responds) against
+    /// an injectable short `recvTimeout` (avoiding the real 5s
+    /// `SessionEscrowPolicy.retrieveRecvTimeout`) and asserts: the first
+    /// retrieve pays the full timeout and opens the breaker for that path;
+    /// a second retrieve against the SAME path returns near-instantly
+    /// without attempting a new connection at all (the listener sees no
+    /// second connection); and after resetting the breaker, a retrieve
+    /// against that path attempts a genuinely fresh connect again.
+    func testEscrowRetrieveCircuitBreakerSkipsSecondCallToWedgedHolder() {
+        SessionEscrowClient.resetCircuitBreakerForTesting()
+        defer { SessionEscrowClient.resetCircuitBreakerForTesting() }
+
+        let socketPath = makeSocketPath("escrow-cb")
+        defer { unlink(socketPath) }
+
+        guard let listenFD = UnixDomainFDPassing.bindListening(socketPath: socketPath) else {
+            XCTFail("bindListening failed")
+            return
+        }
+
+        let accepted = AcceptedConnections()
+        let holderThread = Thread {
+            while true {
+                let clientFD = accept(listenFD, nil, nil)
+                guard clientFD >= 0 else { break }
+                // Wedged: accept the connection but never send a response
+                // and never close it -- the client's own recv timeout is
+                // the only thing that ever ends this connection.
+                accepted.append(clientFD)
+            }
+        }
+        holderThread.start()
+        defer {
+            close(listenFD) // unblocks the accept() loop so the thread exits
+            accepted.closeAll()
+        }
+
+        let sessionId = String(repeating: "a", count: EscrowWireFormat.sessionIdSize)
+        let tokenHex = String(repeating: "00", count: EscrowWireFormat.tokenSize)
+        let shortTimeout: TimeInterval = 0.2
+
+        let firstStart = Date()
+        let firstResult = SessionEscrowClient.retrieve(
+            sessionId: sessionId,
+            tokenHex: tokenHex,
+            socketPath: socketPath,
+            recvTimeout: shortTimeout
+        )
+        let firstElapsed = Date().timeIntervalSince(firstStart)
+        XCTAssertNil(firstResult, "a wedged holder must never grant a retrieval")
+        XCTAssertGreaterThanOrEqual(firstElapsed, shortTimeout, "first retrieve must actually wait out the recv timeout")
+        XCTAssertEqual(accepted.waitForCount(atLeast: 1), 1, "the wedged holder must have accepted exactly one connection so far")
+
+        let secondStart = Date()
+        let secondResult = SessionEscrowClient.retrieve(
+            sessionId: sessionId,
+            tokenHex: tokenHex,
+            socketPath: socketPath,
+            recvTimeout: shortTimeout
+        )
+        let secondElapsed = Date().timeIntervalSince(secondStart)
+        XCTAssertNil(secondResult)
+        XCTAssertLessThan(secondElapsed, 0.15, "second retrieve against the same path must be skipped by the open breaker, not pay another timeout (still well under the 0.2s injected timeout)")
+        XCTAssertEqual(accepted.count, 1, "an open breaker must prevent a second connection attempt to the wedged holder")
+
+        SessionEscrowClient.resetCircuitBreakerForTesting()
+
+        let thirdStart = Date()
+        let thirdResult = SessionEscrowClient.retrieve(
+            sessionId: sessionId,
+            tokenHex: tokenHex,
+            socketPath: socketPath,
+            recvTimeout: shortTimeout
+        )
+        let thirdElapsed = Date().timeIntervalSince(thirdStart)
+        XCTAssertNil(thirdResult)
+        XCTAssertGreaterThanOrEqual(thirdElapsed, shortTimeout, "after resetting the breaker, retrieve must attempt a genuinely fresh connect")
+        XCTAssertEqual(accepted.waitForCount(atLeast: 2), 2, "the reset breaker must allow a new connection attempt, which the holder accepts")
+    }
 }
