@@ -567,12 +567,16 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
         reason: String
     ) -> Bool {
         guard Self.transientRecoveryEnabled else { return false }
-        if entry.transientRecoveryRetriesRemaining == 0 {
-            entry.transientRecoveryRetriesRemaining = Self.transientRecoveryRetryBudget
-        }
-        guard entry.transientRecoveryRetriesRemaining > 0 else { return false }
+        var state = TransientRecoveryRetryState(remaining: entry.transientRecoveryRetriesRemaining, reason: nil)
+        let didSchedule = scheduleRetryIfNeeded(
+            state: &state,
+            newReason: reason,
+            budget: Self.transientRecoveryRetryBudget,
+            resetPolicy: .whenExhausted
+        )
+        entry.transientRecoveryRetriesRemaining = state.remaining
+        guard didSchedule else { return false }
 
-        entry.transientRecoveryRetriesRemaining -= 1
         entriesByHostedId[hostedId] = entry
 #if DEBUG
         dlog(
