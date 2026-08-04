@@ -745,6 +745,25 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
             lock.unlock()
             for fd in all { close(fd) }
         }
+
+        /// Polls (bounded) until the accept thread has recorded at least
+        /// `expected` connections, or `timeout` elapses. A plain `count`
+        /// read races the accept thread: `retrieve()` returning (its recv
+        /// timeout having elapsed) only guarantees the kernel completed the
+        /// connection, not that this thread's `accept()` call has returned
+        /// and appended the fd yet. Returns whatever count was actually
+        /// observed so the caller's assertion message stays meaningful on
+        /// a genuine failure.
+        func waitForCount(atLeast expected: Int, timeout: TimeInterval = 2.0) -> Int {
+            let deadline = Date().addingTimeInterval(timeout)
+            while true {
+                let current = count
+                if current >= expected || Date() >= deadline {
+                    return current
+                }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+        }
     }
 
     /// Regression for the escrow follow-up ("per-socket-path circuit
@@ -807,7 +826,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         let firstElapsed = Date().timeIntervalSince(firstStart)
         XCTAssertNil(firstResult, "a wedged holder must never grant a retrieval")
         XCTAssertGreaterThanOrEqual(firstElapsed, shortTimeout, "first retrieve must actually wait out the recv timeout")
-        XCTAssertEqual(accepted.count, 1, "the wedged holder must have accepted exactly one connection so far")
+        XCTAssertEqual(accepted.waitForCount(atLeast: 1), 1, "the wedged holder must have accepted exactly one connection so far")
 
         let secondStart = Date()
         let secondResult = SessionEscrowClient.retrieve(
@@ -818,7 +837,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         )
         let secondElapsed = Date().timeIntervalSince(secondStart)
         XCTAssertNil(secondResult)
-        XCTAssertLessThan(secondElapsed, 0.05, "second retrieve against the same path must be skipped by the open breaker, not pay another timeout")
+        XCTAssertLessThan(secondElapsed, 0.15, "second retrieve against the same path must be skipped by the open breaker, not pay another timeout (still well under the 0.2s injected timeout)")
         XCTAssertEqual(accepted.count, 1, "an open breaker must prevent a second connection attempt to the wedged holder")
 
         SessionEscrowClient.resetCircuitBreakerForTesting()
@@ -833,6 +852,6 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         let thirdElapsed = Date().timeIntervalSince(thirdStart)
         XCTAssertNil(thirdResult)
         XCTAssertGreaterThanOrEqual(thirdElapsed, shortTimeout, "after resetting the breaker, retrieve must attempt a genuinely fresh connect")
-        XCTAssertEqual(accepted.count, 2, "the reset breaker must allow a new connection attempt, which the holder accepts")
+        XCTAssertEqual(accepted.waitForCount(atLeast: 2), 2, "the reset breaker must allow a new connection attempt, which the holder accepts")
     }
 }

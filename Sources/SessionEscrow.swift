@@ -742,7 +742,11 @@ extension SessionEscrowClient {
     /// (which may probe from a background accept thread) never have to
     /// reason about a data race, at negligible cost on the real serial
     /// restore path.
-    private static var recentRetrieveTimeoutsByPath: [String: Date] = [:]
+    /// Monotonic (`DispatchTime.now()`, backed by `CLOCK_UPTIME_RAW`) rather
+    /// than wall-clock `Date` -- a backward clock jump (NTP sync, sleep/wake,
+    /// manual clock change) must not keep the circuit open longer than
+    /// `circuitBreakerWindow` actually elapsed.
+    private static var recentRetrieveTimeoutsByPath: [String: DispatchTime] = [:]
     private static let circuitBreakerLock = NSLock()
     /// How long a path stays "open" (skipped without connecting) after a
     /// recorded timeout. Comfortably covers a full serial restore sweep
@@ -812,8 +816,9 @@ extension SessionEscrowClient {
         let recordedOpenedAt = recentRetrieveTimeoutsByPath[socketPath]
         circuitBreakerLock.unlock()
         if let openedAt = recordedOpenedAt {
-            let sinceMs = Int(Date().timeIntervalSince(openedAt) * 1000)
-            if sinceMs < Int(circuitBreakerWindow * 1000) {
+            let sinceNs = DispatchTime.now().uptimeNanoseconds &- openedAt.uptimeNanoseconds
+            let sinceMs = Int(sinceNs / 1_000_000)
+            if sinceNs < UInt64(circuitBreakerWindow * 1_000_000_000) {
                 dilog("escrow.retrieve", "skipped session=\(sessionId.prefix(8)) reason=circuit_open path_failed_ago_ms=\(sinceMs)")
                 return nil
             }
@@ -865,7 +870,7 @@ extension SessionEscrowClient {
             case .timeout:
                 if let receivedFD { close(receivedFD) }
                 circuitBreakerLock.lock()
-                recentRetrieveTimeoutsByPath[socketPath] = Date()
+                recentRetrieveTimeoutsByPath[socketPath] = DispatchTime.now()
                 circuitBreakerLock.unlock()
                 dilog("escrow.retrieve", "circuit_opened session=\(sessionId.prefix(8)) path=\(socketPath)")
                 logOutcome("timeout")
