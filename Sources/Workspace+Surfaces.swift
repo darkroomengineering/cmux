@@ -316,7 +316,8 @@ extension Workspace {
         focus: Bool? = nil,
         workingDirectory: String? = nil,
         startupEnvironment: [String: String] = [:],
-        reviveDescriptor: TerminalSurfaceReviveDescriptor? = nil
+        reviveDescriptor: TerminalSurfaceReviveDescriptor? = nil,
+        pendingScrollbackSeedText: String? = nil
     ) -> TerminalPanel? {
         let shouldFocusNewTab = focus ?? (bonsplitController.focusedPaneId == paneId)
         let previousFocusedPanelId = focusedPanelId
@@ -334,7 +335,8 @@ extension Workspace {
             portOrdinal: portOrdinal,
             initialCommand: remoteTerminalStartupCommand,
             additionalEnvironment: startupEnvironment,
-            reviveDescriptor: reviveDescriptor
+            reviveDescriptor: reviveDescriptor,
+            pendingScrollbackSeedText: pendingScrollbackSeedText
         )
         configureTerminalPanel(newPanel)
         panels[newPanel.id] = newPanel

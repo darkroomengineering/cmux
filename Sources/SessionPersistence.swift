@@ -672,38 +672,40 @@ enum TerminalReplayModeReset {
     static let disableSequence = layoutStateReset + mouseReportingReset
 }
 
-enum SessionScrollbackReplayStore {
-    static let environmentKey = "PROGRAMA_RESTORE_SCROLLBACK_FILE"
-    private static let directoryName = "programa-session-scrollback"
+/// Prepares fallback-restore scrollback text (pre-crash / clean-quit
+/// transcript for a session whose child did not survive to be reattached)
+/// for injection into a freshly spawned surface's revive-seed path
+/// (`TerminalSurface.pendingReviveSeed` / `seedRevivedScrollbackIfPending`),
+/// instead of the old temp-file + `PROGRAMA_RESTORE_SCROLLBACK_FILE` +
+/// shell-rc-`cat` mechanism this replaces (formerly
+/// `SessionScrollbackReplayStore`). A pure text transform now -- no temp
+/// files, no environment variables, no shell integration involved -- because
+/// the seed path bypasses the pty entirely (`ghostty_surface_process_output`)
+/// exactly like the escrow-revive path already does. See
+/// `TerminalSurface.createSurface`'s fresh-seed arm for how the result is
+/// consumed and why `resetModes: false` is passed there (the mode reset is
+/// already baked into this text, below).
+enum SessionFreshSpawnScrollbackSeed {
     private static let ansiEscape = "\u{001B}"
     private static let ansiReset = "\u{001B}[0m"
 
-    static func replayEnvironment(
-        for scrollback: String?,
-        tempDirectory: URL = FileManager.default.temporaryDirectory
-    ) -> [String: String] {
-        guard let replayText = normalizedScrollback(scrollback) else { return [:] }
-        guard let replayFileURL = writeReplayFile(
-            contents: replayText,
-            tempDirectory: tempDirectory
-        ) else {
-            return [:]
-        }
-        return [environmentKey: replayFileURL.path]
-    }
-
-    private static func normalizedScrollback(_ scrollback: String?) -> String? {
+    /// Returns nil when there is nothing usable to seed (missing, blank, or
+    /// only whitespace) -- callers should treat nil as "spawn a plain fresh
+    /// terminal, no seed".
+    static func preparedText(for scrollback: String?) -> String? {
         guard let scrollback else { return nil }
         guard scrollback.contains(where: { !$0.isWhitespace }) else { return nil }
         guard let truncated = SessionPersistencePolicy.truncatedScrollback(scrollback) else { return nil }
         return ansiSafeReplayText(truncated)
     }
 
-    /// Preserve ANSI color state safely across replay boundaries, and disarm
-    /// any terminal mode the replayed transcript leaves set (see
-    /// `TerminalReplayModeReset`).
+    /// Preserve ANSI color state safely across replay boundaries, disarm any
+    /// terminal mode the replayed transcript leaves set (see
+    /// `TerminalReplayModeReset`), and guarantee a trailing newline so the
+    /// fresh shell's own first prompt lands on its own line below the
+    /// replayed text rather than concatenated onto its last line.
     private static func ansiSafeReplayText(_ text: String) -> String {
-        guard text.contains(ansiEscape) else { return text }
+        guard text.contains(ansiEscape) else { return ensuringTrailingNewline(text) }
         var output = text
         if !output.hasPrefix(ansiReset) {
             output = ansiReset + output
@@ -712,26 +714,10 @@ enum SessionScrollbackReplayStore {
         if !output.hasSuffix(ansiReset) {
             output += ansiReset
         }
-        return output
+        return ensuringTrailingNewline(output)
     }
 
-    private static func writeReplayFile(contents: String, tempDirectory: URL) -> URL? {
-        guard let data = contents.data(using: .utf8) else { return nil }
-        let directory = tempDirectory.appendingPathComponent(directoryName, isDirectory: true)
-
-        do {
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true,
-                attributes: nil
-            )
-            let fileURL = directory
-                .appendingPathComponent(UUID().uuidString, isDirectory: false)
-                .appendingPathExtension("txt")
-            try data.write(to: fileURL, options: .atomic)
-            return fileURL
-        } catch {
-            return nil
-        }
+    private static func ensuringTrailingNewline(_ text: String) -> String {
+        text.hasSuffix("\n") ? text : text + "\n"
     }
 }

@@ -6,18 +6,6 @@ if set -q PROGRAMA_SHELL_INTEGRATION; and test "$PROGRAMA_SHELL_INTEGRATION" = 0
     set _cmux_integration_enabled 0
 end
 
-function _cmux_restore_scrollback_once
-    set -l path "$PROGRAMA_RESTORE_SCROLLBACK_FILE"
-    test -n "$path"; or return 0
-    set -e PROGRAMA_RESTORE_SCROLLBACK_FILE
-
-    if test -r "$path"
-        /bin/cat -- "$path" 2>/dev/null
-        /bin/rm -f -- "$path" >/dev/null 2>&1
-    end
-end
-_cmux_restore_scrollback_once
-
 if test "$_cmux_integration_enabled" != 0
     set -g _CMUX_SEND_TOOL ""
     if command -sq ncat

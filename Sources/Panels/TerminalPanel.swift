@@ -96,7 +96,8 @@ final class TerminalPanel: Panel, ObservableObject {
         initialCommand: String? = nil,
         initialEnvironmentOverrides: [String: String] = [:],
         additionalEnvironment: [String: String] = [:],
-        reviveDescriptor: TerminalSurfaceReviveDescriptor? = nil
+        reviveDescriptor: TerminalSurfaceReviveDescriptor? = nil,
+        pendingScrollbackSeedText: String? = nil
     ) {
         let surface = TerminalSurface(
             tabId: workspaceId,
@@ -106,7 +107,8 @@ final class TerminalPanel: Panel, ObservableObject {
             initialCommand: initialCommand,
             initialEnvironmentOverrides: initialEnvironmentOverrides,
             additionalEnvironment: additionalEnvironment,
-            reviveDescriptor: reviveDescriptor
+            reviveDescriptor: reviveDescriptor,
+            pendingScrollbackSeedText: pendingScrollbackSeedText
         )
         surface.portOrdinal = portOrdinal
         self.init(workspaceId: workspaceId, surface: surface)

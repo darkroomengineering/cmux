@@ -507,12 +507,16 @@ extension Workspace {
             let scrollbackText = hasStoredScrollback
                 ? snapshot.terminal?.scrollback
                 : SessionWALStore.shared.readFallbackScrollbackText(sessionId: snapshot.id.uuidString)
-            let replayEnvironment = SessionScrollbackReplayStore.replayEnvironment(for: scrollbackText)
+            // Routed through the fresh surface's revive-seed path
+            // (`TerminalSurface.pendingReviveSeed` / `seedRevivedScrollbackIfPending`)
+            // instead of the old temp-file + shell-rc `cat` mechanism --
+            // see `SessionFreshSpawnScrollbackSeed`'s doc comment.
+            let preparedSeedText = SessionFreshSpawnScrollbackSeed.preparedText(for: scrollbackText)
             guard let terminalPanel = newTerminalSurface(
                 inPane: paneId,
                 focus: false,
                 workingDirectory: workingDirectory,
-                startupEnvironment: replayEnvironment
+                pendingScrollbackSeedText: preparedSeedText
             ) else {
                 return nil
             }

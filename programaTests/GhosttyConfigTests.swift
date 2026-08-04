@@ -1000,8 +1000,8 @@ final class GhosttyTerminalStartupEnvironmentTests: XCTestCase {
         XCTAssertTrue(protectedKeys.contains("TERM_PROGRAM"))
     }
 
-    func testMergedStartupEnvironmentAllowsSessionReplayAndInitialEnvCMUXKeys() {
-        let replayPath = "/tmp/programa-replay-\(UUID().uuidString)"
+    func testMergedStartupEnvironmentAllowsArbitraryAdditionalAndInitialEnvCMUXKeys() {
+        let arbitraryValue = "arbitrary-\(UUID().uuidString)"
         let merged = TerminalSurface.mergedStartupEnvironment(
             base: [
                 "PATH": "/usr/bin",
@@ -1009,14 +1009,14 @@ final class GhosttyTerminalStartupEnvironmentTests: XCTestCase {
             ],
             protectedKeys: ["PATH", "PROGRAMA_SURFACE_ID"],
             additionalEnvironment: [
-                SessionScrollbackReplayStore.environmentKey: replayPath
+                "PROGRAMA_TEST_ADDITIONAL_ENV_KEY": arbitraryValue
             ],
             initialEnvironmentOverrides: [
                 "PROGRAMA_INITIAL_ENV_TOKEN": "token-123"
             ]
         )
 
-        XCTAssertEqual(merged[SessionScrollbackReplayStore.environmentKey], replayPath)
+        XCTAssertEqual(merged["PROGRAMA_TEST_ADDITIONAL_ENV_KEY"], arbitraryValue)
         XCTAssertEqual(merged["PROGRAMA_INITIAL_ENV_TOKEN"], "token-123")
     }
 
