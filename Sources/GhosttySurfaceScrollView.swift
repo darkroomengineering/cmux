@@ -937,6 +937,13 @@ final class GhosttySurfaceScrollView: NSView {
             dlog("find.window.didBecomeKey surface=\(self.surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") searchActive=\(searchActive) focusTarget=\(self.searchFocusTarget) firstResponder=\(String(describing: self.window?.firstResponder))")
 #endif
             self.scheduleAutomaticFirstResponderApply(reason: "didBecomeKey")
+            // A window cannot become key while miniaturized or fully occluded, so becoming
+            // key implies visible. This corrects spurious occlusion=false notifications
+            // that AppKit can deliver to other windows during a new-window creation burst.
+#if DEBUG
+            dlog("terminal.occlusion.recheck-on-key surface=\(self.surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")")
+#endif
+            self.updateWindowVisibility(true)
         })
         windowObservers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification,
@@ -968,7 +975,7 @@ final class GhosttySurfaceScrollView: NSView {
             queue: .main
         ) { [weak self] _ in
             guard let self, let window = self.window else { return }
-            self.updateWindowVisibility(window.occlusionState.contains(.visible))
+            self.updateWindowVisibility(window.occlusionState.contains(.visible) || window.isKeyWindow)
         })
         windowObservers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didMiniaturizeNotification,
@@ -983,9 +990,9 @@ final class GhosttySurfaceScrollView: NSView {
             queue: .main
         ) { [weak self] _ in
             guard let self, let window = self.window else { return }
-            self.updateWindowVisibility(window.occlusionState.contains(.visible))
+            self.updateWindowVisibility(window.occlusionState.contains(.visible) || window.isKeyWindow)
         })
-        updateWindowVisibility(window.occlusionState.contains(.visible) && !window.isMiniaturized)
+        updateWindowVisibility((window.occlusionState.contains(.visible) || window.isKeyWindow) && !window.isMiniaturized)
     }
 
     func attachSurface(_ terminalSurface: TerminalSurface) {
