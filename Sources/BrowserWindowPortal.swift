@@ -282,33 +282,23 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
     }
 
     private func installGeometryObservers(for window: NSWindow) {
-        guard geometryObservers.isEmpty else { return }
-
-        let center = NotificationCenter.default
-        geometryObservers.append(center.addObserver(
-            forName: NSWindow.didResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+        observeGeometryAffectingNotifications([
+            GeometryNotificationSpec(
+                name: NSWindow.didResizeNotification,
+                object: window
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSWindow.didEndLiveResizeNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSWindow.didEndLiveResizeNotification,
+                object: window
+            ) { [weak self] _ in
                 self?.scheduleExternalGeometrySynchronize()
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSSplitView.willResizeSubviewsNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSSplitView.willResizeSubviewsNotification,
+                object: nil
+            ) { [weak self] notification in
                 guard let self,
                       let splitView = notification.object as? NSSplitView,
                       let window = self.window else { return }
@@ -317,14 +307,11 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
                     window: window,
                     hostView: self.hostView
                 )
-            }
-        })
-        geometryObservers.append(center.addObserver(
-            forName: NSSplitView.didResizeSubviewsNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            MainActor.assumeIsolated {
+            },
+            GeometryNotificationSpec(
+                name: NSSplitView.didResizeSubviewsNotification,
+                object: nil
+            ) { [weak self] notification in
                 guard let self,
                       let splitView = notification.object as? NSSplitView,
                       let window = self.window,
@@ -334,8 +321,8 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
                           hostView: self.hostView
                       ) else { return }
                 self.scheduleExternalGeometrySynchronize()
-            }
-        })
+            },
+        ])
     }
 
     private func scheduleExternalGeometrySynchronize() {
