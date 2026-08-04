@@ -634,7 +634,11 @@ enum SessionWALCore {
         if let current { combined.append(current) }
         guard !combined.isEmpty else { return nil }
         if combined.count > walCapBytes {
-            combined = combined.suffix(Int(walCapBytes))
+            // Only a suffix cut can tear an escape sequence or UTF-8 scalar;
+            // uncut data starts at a genuine stream beginning, where the torn-CSI
+            // heuristic would misread legitimate leading text (e.g. "123Main")
+            // as an orphaned parameter run and eat it.
+            combined = trimTornLeadingBytes(combined.suffix(Int(walCapBytes)))
         }
         return String(decoding: combined, as: UTF8.self)
     }
