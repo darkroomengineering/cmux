@@ -8,14 +8,7 @@ final class DiagnosticsLogTests: XCTestCase {
     }
 
     private func waitForQueue(_ log: DiagnosticsLog) {
-        let expectation = expectation(description: "diagnostics queue drained")
-        // The log's internal queue is serial; scheduling work after our log calls and
-        // waiting for it to run guarantees all prior writes have completed on disk.
-        DispatchQueue(label: "test.drain", qos: .utility).async {
-            Thread.sleep(forTimeInterval: 0.2)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 2.0)
+        log.flush()
     }
 
     func testWritesLandInFileAtPath() {

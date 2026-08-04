@@ -52,7 +52,11 @@ public final class DiagnosticsLog: @unchecked Sendable {
     /// Logs `category message` on the diagnostics queue. Never blocks the caller.
     public func log(_ category: String, _ message: String) {
         let ts = Self.formatter.string(from: Date())
-        let line = "\(ts) \(category) \(message)\n"
+        // One record per line, always: embedded newlines in logged values (e.g. a
+        // hostile path in an env override) must not be able to forge records.
+        let sanitized = message.replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+        let line = "\(ts) \(category) \(sanitized)\n"
         queue.async { [self] in
             guard let data = line.data(using: .utf8) else { return }
 
@@ -70,10 +74,20 @@ public final class DiagnosticsLog: @unchecked Sendable {
                 try? handle.write(contentsOf: data)
                 try? handle.close()
             } else {
-                FileManager.default.createFile(atPath: fileURL.path, contents: data)
+                FileManager.default.createFile(
+                    atPath: fileURL.path,
+                    contents: data,
+                    attributes: [.posixPermissions: 0o600]
+                )
             }
             currentBytes += UInt64(data.count)
         }
+    }
+
+    /// Blocks until every enqueued write has hit the file. Test seam; also safe
+    /// to call before collecting the log for a bug report.
+    public func flush() {
+        queue.sync {}
     }
 
     /// Runs on `queue`. Overwrites the previous rotated file and resets the byte counter.
