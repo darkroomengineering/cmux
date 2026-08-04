@@ -238,10 +238,14 @@ signed, notarized, and published as the latest GitHub release via `.github/workf
 (triggered by `workflow_run` on `CI` completing with `conclusion: success`, on `branches: [main]`).
 There is no nightly/beta channel — if something ships broken, fix it forward on `main` and the
 next green CI run auto-ships the fix. Auto-ship builds get a monotonic build number derived from
-the run ID (injected into `Info.plist` at build time, never committed) and publish to a single,
-reused `rolling` GitHub release that is overwritten each ship and marked "latest" — so the
-releases page stays clean (one `rolling` entry plus permanent milestone `v*` tags) and
-`releases/latest/download/*` always resolves to the newest green build.
+the run ID AND a distinct user-visible version — the committed major.minor with the patch
+replaced by the workflow run number (e.g. `0.4.213`) — both injected into `Info.plist` at
+build time, never committed. They publish to a single, reused `rolling` GitHub release
+(titled with the effective version) that is overwritten each ship and marked "latest" — so
+the releases page stays clean (one `rolling` entry plus permanent milestone `v*` tags) and
+`releases/latest/download/*` always resolves to the newest green build. Every ship is
+therefore distinguishable in the about box and on the releases page; only minor/major bumps
+remain manual milestones.
 
 Milestone marketing-version bumps (e.g. `0.15.0` → `0.16.0`) are still done manually and can
 optionally be tagged as a `vX.Y.Z` marker, which the same `release.yml` also builds on tag push:
