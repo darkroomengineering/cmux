@@ -6530,6 +6530,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     // ~55 app-level shortcut checks (lowest precedence phase; only reached once the palette
     // and browser/terminal pre-checks above have declined the event). Evaluation order is
     // preserved exactly: this is pure code motion, not a reordering. Refs #95.
+    //
+    // Precedence is now expressed as two explicit ordered arrays of
+    // KeyboardShortcutSettings.Action (split by the two hardcoded legacy Ctrl+Tab checks, which
+    // aren't driven by the Action enum) instead of a flat if-chain. handleConfiguredShortcutAction
+    // below is an *exhaustive* switch over Action, so the compiler now forces every future case
+    // to be handled (even if only to opt out) instead of silently no-op'ing like the old if-chain
+    // would for a forgotten case.
+    private static let appShortcutPrecedenceOrderBeforeLegacyTabNavigation: [KeyboardShortcutSettings.Action] = [
+        .commandPalette, .goToWorkspace, .quit, .openSettings, .reloadConfiguration, .toggleFullScreen,
+        .toggleSidebar, .newTab, .newClaudeWorkspace, .newWindow, .openFolder, .showNotifications, .sendFeedback,
+        .jumpToUnread, .triggerFlash, .nextSurface, .prevSurface, .toggleTerminalCopyMode, .nextSidebarTab,
+        .prevSidebarTab, .renameWorkspace, .editWorkspaceDescription, .closeOtherTabsInPane, .closeTab,
+        .closeWorkspace, .closeWindow, .renameTab, .selectWorkspaceByNumber, .selectSurfaceByNumber,
+        .focusLeft, .focusRight, .focusUp, .focusDown, .toggleSplitZoom, .splitRight, .splitDown,
+        .splitBrowserRight, .splitBrowserDown,
+    ]
+
+    private static let appShortcutPrecedenceOrderAfterLegacyTabNavigation: [KeyboardShortcutSettings.Action] = [
+        .newSurface, .openBrowser, .focusBrowserAddressBar, .browserBack, .browserForward, .browserReload,
+        .toggleBrowserDeveloperTools, .showBrowserJavaScriptConsole, .toggleReactGrab, .browserZoomIn,
+        .browserZoomOut, .browserZoomReset, .find, .findNext, .findPrevious, .hideFind, .useSelectionForFind,
+        .reopenClosedBrowserPanel,
+    ]
+
     private func handleConfiguredAppShortcutActions(
         event: NSEvent,
         commandPaletteTargetWindow: NSWindow?,
@@ -6540,417 +6564,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             return true
         }
 
-        if matchConfiguredShortcut(event: event, action: .commandPalette) {
-            let targetWindow = commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-            requestCommandPaletteCommands(preferredWindow: targetWindow, source: "shortcut.commandPalette")
-            return true
-        }
-
-        if !hasFocusedAddressBarInShortcutContext,
-           matchConfiguredShortcut(event: event, action: .goToWorkspace) {
-            let targetWindow = commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-            requestCommandPaletteSwitcher(preferredWindow: targetWindow, source: "shortcut.goToWorkspace")
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .quit) {
-            return handleQuitShortcutWarning()
-        }
-        if matchConfiguredShortcut(event: event, action: .openSettings) {
-            openPreferencesWindow(debugSource: "shortcut.openSettings")
-            return true
-        }
-        if matchConfiguredShortcut(event: event, action: .reloadConfiguration) {
-            GhosttyApp.shared.reloadConfiguration(source: "shortcut.reloadConfiguration")
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .toggleFullScreen) {
-            guard let targetWindow = mainWindowForShortcutEvent(event) else {
-                return false
+        for action in Self.appShortcutPrecedenceOrderBeforeLegacyTabNavigation {
+            if let result = handleConfiguredShortcutAction(
+                action,
+                event: event,
+                commandPaletteTargetWindow: commandPaletteTargetWindow,
+                hasFocusedAddressBarInShortcutContext: hasFocusedAddressBarInShortcutContext
+            ) {
+                return result
             }
-            targetWindow.toggleFullScreen(nil)
-            return true
         }
 
-        // Primary UI shortcuts
-        if matchConfiguredShortcut(event: event, action: .toggleSidebar) {
-            _ = toggleSidebarInActiveMainWindow()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .newTab) {
-#if DEBUG
-            dlog("shortcut.action name=newWorkspace \(debugShortcutRouteSnapshot(event: event))")
-#endif
-            // Cmd+N semantics:
-            // - If there are no main windows, create a new window.
-            // - Otherwise, create a new workspace in the active window.
-            if mainWindowContexts.isEmpty {
-                #if DEBUG
-                logWorkspaceCreationRouting(
-                    phase: "fallback_new_window",
-                    source: "shortcut.cmdN",
-                    reason: "no_main_windows",
-                    event: event,
-                    chosenContext: nil
-                )
-                #endif
-                openNewMainWindow(nil)
-            } else if addWorkspaceInPreferredMainWindow(event: event, debugSource: "shortcut.cmdN") == nil {
-                #if DEBUG
-                logWorkspaceCreationRouting(
-                    phase: "fallback_new_window",
-                    source: "shortcut.cmdN",
-                    reason: "workspace_creation_returned_nil",
-                    event: event,
-                    chosenContext: nil
-                )
-                #endif
-                openNewMainWindow(nil)
-            }
-            return true
-        }
-
-        // New Claude Code Workspace: Cmd+Shift+C
-        // Instantly creates a new workspace in the current workspace's working
-        // directory and boots Claude Code into it (no pool, no hidden workspace). Refs #137.
-        if matchConfiguredShortcut(event: event, action: .newClaudeWorkspace) {
-#if DEBUG
-            dlog("shortcut.action name=newClaudeWorkspace \(debugShortcutRouteSnapshot(event: event))")
-#endif
-            createClaudeWorkspace(event: event, debugSource: "shortcut.cmdShiftC")
-            return true
-        }
-
-        // New Window: Cmd+Shift+N
-        // Handled here instead of relying on SwiftUI's CommandGroup menu item because
-        // after a browser panel has been shown, SwiftUI's menu dispatch can silently
-        // consume the key equivalent without firing the action closure.
-        if matchConfiguredShortcut(event: event, action: .newWindow) {
-            openNewMainWindow(nil)
-            return true
-        }
-
-        // Open Folder: Cmd+O
-        // Handled here to prevent AppKit's default NSDocumentController from opening
-        // the Documents folder when SwiftUI menu dispatch fails due to focus bugs.
-        if matchConfiguredShortcut(event: event, action: .openFolder) {
-            showOpenFolderPanel()
-            return true
-        }
-
-        // Check Show Notifications shortcut
-        if matchConfiguredShortcut(event: event, action: .showNotifications) {
-            toggleNotificationsPopover(animated: false, anchorView: fullscreenControlsViewModel?.notificationsAnchorView)
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .sendFeedback) {
-            guard let targetContext = preferredMainWindowContextForShortcuts(event: event),
-                  let targetWindow = targetContext.window ?? windowForMainWindowId(targetContext.windowId) else {
-                return false
-            }
-            setActiveMainWindow(targetWindow)
-            bringToFront(targetWindow)
-            NotificationCenter.default.post(name: .feedbackComposerRequested, object: targetWindow)
-            return true
-        }
-
-        // Check Jump to Unread shortcut
-        if matchConfiguredShortcut(event: event, action: .jumpToUnread) {
-#if DEBUG
-            if ProcessInfo.processInfo.environment["PROGRAMA_UI_TEST_JUMP_UNREAD_SETUP"] == "1" {
-                writeJumpUnreadTestData(["jumpUnreadShortcutHandled": "1"])
-            }
-#endif
-            jumpToLatestUnread()
-            return true
-        }
-
-        // Flash the currently focused panel so the user can visually confirm focus.
-        if matchConfiguredShortcut(event: event, action: .triggerFlash) {
-            tabManager?.triggerFocusFlash()
-            return true
-        }
-
-        // Surface navigation: Cmd+Shift+] / Cmd+Shift+[
-        if matchConfiguredShortcut(event: event, action: .nextSurface) {
-            tabManager?.selectNextSurface()
-            return true
-        }
-        if matchConfiguredShortcut(event: event, action: .prevSurface) {
-            tabManager?.selectPreviousSurface()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .toggleTerminalCopyMode) {
-            let handled = tabManager?.toggleFocusedTerminalCopyMode() ?? false
-#if DEBUG
-            dlog(
-                "shortcut.action name=toggleTerminalCopyMode handled=\(handled ? 1 : 0) " +
-                "\(debugShortcutRouteSnapshot(event: event))"
-            )
-#endif
-            // Only consume when a focused terminal actually handled the toggle.
-            // Otherwise allow the event to continue through the responder chain.
-            return handled
-        }
-
-        // Workspace navigation: Cmd+Ctrl+] / Cmd+Ctrl+[
-        if matchConfiguredShortcut(event: event, action: .nextSidebarTab) {
-#if DEBUG
-            let selected = tabManager?.selectedTabId.map { String($0.uuidString.prefix(5)) } ?? "nil"
-            dlog(
-                "ws.shortcut dir=next repeat=\(event.isARepeat ? 1 : 0) keyCode=\(event.keyCode) selected=\(selected)"
-            )
-#endif
-            tabManager?.selectNextTab()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .prevSidebarTab) {
-#if DEBUG
-            let selected = tabManager?.selectedTabId.map { String($0.uuidString.prefix(5)) } ?? "nil"
-            dlog(
-                "ws.shortcut dir=prev repeat=\(event.isARepeat ? 1 : 0) keyCode=\(event.keyCode) selected=\(selected)"
-            )
-#endif
-            tabManager?.selectPreviousTab()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .renameWorkspace) {
-            return requestRenameWorkspaceViaCommandPalette(
-                preferredWindow: commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-            )
-        }
-
-        if matchConfiguredShortcut(event: event, action: .editWorkspaceDescription) {
-#if DEBUG
-            dlog(
-                "shortcut.editWorkspaceDescription matched target={\(debugWindowToken(commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow))} " +
-                "\(debugShortcutRouteSnapshot(event: event))"
-            )
-#endif
-            return requestEditWorkspaceDescriptionViaCommandPalette(
-                preferredWindow: commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-            )
-        }
-
-        if matchConfiguredShortcut(event: event, action: .closeOtherTabsInPane) {
-            if let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow,
-               targetWindow.identifier?.rawValue == "cmux.settings" {
-                targetWindow.performClose(nil)
-            } else {
-                let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-                if let terminalContext = focusedTerminalShortcutContext(preferredWindow: targetWindow) {
-                    terminalContext.tabManager.closeOtherTabsInFocusedPaneWithConfirmation()
-                } else {
-                    tabManager?.closeOtherTabsInFocusedPaneWithConfirmation()
-                }
-            }
-            return true
-        }
-
-        // Cmd+W must close the focused panel even if first-responder momentarily lags on a
-        // browser NSTextView during split focus transitions.
-        if matchConfiguredShortcut(event: event, action: .closeTab) {
-            let targetWindow = resolvedShortcutEventWindow(event) ?? NSApp.keyWindow ?? NSApp.mainWindow
-            let routedManager = preferredMainWindowContextForShortcutRouting(event: event)?.tabManager ?? tabManager
-            // Browser popup windows primarily intercept Cmd+W in BrowserPopupPanel.
-            // This AppDelegate path is a fallback for cases where AppKit routes the
-            // event through the global shortcut handler first.
-            if let targetWindow = [targetWindow, NSApp.keyWindow]
-                .compactMap({ $0 })
-                .first(where: { $0.identifier?.rawValue == "programa.browser-popup" }) {
-#if DEBUG
-                dlog("shortcut.cmdW route=browserPopup")
-#endif
-                targetWindow.performClose(nil)
-                return true
-            } else if let targetWindow,
-               programaWindowShouldOwnCloseShortcut(targetWindow) {
-                targetWindow.performClose(nil)
-            } else {
-                if let routedManager {
-#if DEBUG
-                    let selectedWorkspace = routedManager.selectedWorkspace
-                    dlog(
-                        "shortcut.cmdW route=workspaceModel workspace=\(selectedWorkspace?.id.uuidString.prefix(5) ?? "nil") " +
-                        "panel=\(selectedWorkspace?.focusedPanelId?.uuidString.prefix(5) ?? "nil") " +
-                        "selected=\(routedManager.selectedTabId?.uuidString.prefix(5) ?? "nil")"
-                    )
-#endif
-                    routedManager.closeCurrentPanelWithConfirmation()
-                } else {
-#if DEBUG
-                    dlog("shortcut.cmdW route=noManager")
-#endif
-                    return false
-                }
-            }
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .closeWorkspace) {
-            tabManager?.closeCurrentWorkspaceWithConfirmation()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .closeWindow) {
-            // `event.window` is often nil for synthetic/XCUITest key events that only carry a
-            // windowNumber; fall back through the same windowNumber-aware resolver the rest of
-            // the shortcut-routing code uses so Cmd+Ctrl+W targets the event's actual window
-            // instead of silently no-op'ing when NSApp.keyWindow/mainWindow are stale.
-            guard let targetWindow = mainWindowForShortcutEvent(event) ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow else {
-                NSSound.beep()
-                return true
-            }
-            closeWindowWithConfirmation(targetWindow)
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .renameTab) {
-            // Keep Cmd+R browser reload behavior when a browser panel is focused.
-            if tabManager?.focusedBrowserPanel != nil {
-                return false
-            }
-            let targetWindow = commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-            requestCommandPaletteRenameTab(preferredWindow: targetWindow, source: "shortcut.renameTab")
-            return true
-        }
-
-        // Numeric shortcuts for specific workspaces (9 = last workspace)
-        // Always consume the event when the digit matches to prevent Ghostty's
-        // goto_tab fallback from creating a new window when the index is out of bounds.
-        if let digit = numberedConfiguredShortcutDigit(event: event, action: .selectWorkspaceByNumber) {
-            if let manager = tabManager,
-               let targetIndex = WorkspaceShortcutMapper.workspaceIndex(forDigit: digit, workspaceCount: manager.tabs.count) {
-#if DEBUG
-                dlog(
-                    "shortcut.action name=workspaceDigit digit=\(digit) targetIndex=\(targetIndex) manager=\(debugManagerToken(manager)) \(debugShortcutRouteSnapshot(event: event))"
-                )
-#endif
-                manager.selectTab(at: targetIndex)
-            }
-            return true
-        }
-
-        // Numeric shortcuts for surfaces within the focused pane (9 = last)
-        if let digit = numberedConfiguredShortcutDigit(event: event, action: .selectSurfaceByNumber) {
-            if digit == 9 {
-                tabManager?.selectLastSurface()
-            } else {
-                tabManager?.selectSurface(at: digit - 1)
-            }
-            return true
-        }
-
-        // Pane focus navigation (defaults to Cmd+Option+Arrow, but can be customized to letter/number keys).
-        if matchConfiguredDirectionalShortcut(
-            event: event,
-            action: .focusLeft,
-            arrowGlyph: "←",
-            arrowKeyCode: 123
-        ) || (ghosttyGotoSplitLeftShortcut.map { matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "←", arrowKeyCode: 123) } ?? false) {
-            tabManager?.movePaneFocus(direction: .left)
-#if DEBUG
-            recordGotoSplitMoveIfNeeded(direction: .left)
-#endif
-            return true
-        }
-        if matchConfiguredDirectionalShortcut(
-            event: event,
-            action: .focusRight,
-            arrowGlyph: "→",
-            arrowKeyCode: 124
-        ) || (ghosttyGotoSplitRightShortcut.map { matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "→", arrowKeyCode: 124) } ?? false) {
-            tabManager?.movePaneFocus(direction: .right)
-#if DEBUG
-            recordGotoSplitMoveIfNeeded(direction: .right)
-#endif
-            return true
-        }
-        if matchConfiguredDirectionalShortcut(
-            event: event,
-            action: .focusUp,
-            arrowGlyph: "↑",
-            arrowKeyCode: 126
-        ) || (ghosttyGotoSplitUpShortcut.map { matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "↑", arrowKeyCode: 126) } ?? false) {
-            tabManager?.movePaneFocus(direction: .up)
-#if DEBUG
-            recordGotoSplitMoveIfNeeded(direction: .up)
-#endif
-            return true
-        }
-        if matchConfiguredDirectionalShortcut(
-            event: event,
-            action: .focusDown,
-            arrowGlyph: "↓",
-            arrowKeyCode: 125
-        ) || (ghosttyGotoSplitDownShortcut.map { matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "↓", arrowKeyCode: 125) } ?? false) {
-            tabManager?.movePaneFocus(direction: .down)
-#if DEBUG
-            recordGotoSplitMoveIfNeeded(direction: .down)
-#endif
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .toggleSplitZoom) {
-            _ = tabManager?.toggleFocusedSplitZoom()
-#if DEBUG
-            recordGotoSplitZoomIfNeeded()
-#endif
-            return true
-        }
-
-        // Split actions: Cmd+D / Cmd+Shift+D
-        if matchConfiguredShortcut(event: event, action: .splitRight) {
-#if DEBUG
-            dlog("shortcut.action name=splitRight \(debugShortcutRouteSnapshot(event: event))")
-#endif
-            if shouldSuppressSplitShortcutForTransientTerminalFocusState(direction: .right) {
-                return true
-            }
-            _ = performSplitShortcut(
-                direction: .right,
-                preferredWindow: event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-            )
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .splitDown) {
-#if DEBUG
-            dlog("shortcut.action name=splitDown \(debugShortcutRouteSnapshot(event: event))")
-#endif
-            if shouldSuppressSplitShortcutForTransientTerminalFocusState(direction: .down) {
-                return true
-            }
-            _ = performSplitShortcut(
-                direction: .down,
-                preferredWindow: event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-            )
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .splitBrowserRight) {
-#if DEBUG
-            dlog("shortcut.action name=splitBrowserRight \(debugShortcutRouteSnapshot(event: event))")
-#endif
-            _ = performBrowserSplitShortcut(direction: .right)
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .splitBrowserDown) {
-#if DEBUG
-            dlog("shortcut.action name=splitBrowserDown \(debugShortcutRouteSnapshot(event: event))")
-#endif
-            _ = performBrowserSplitShortcut(direction: .down)
-            return true
-        }
-
-        // Surface navigation (legacy Ctrl+Tab support)
+        // Surface navigation (legacy Ctrl+Tab support). Not driven by KeyboardShortcutSettings.Action,
+        // so it can't live in the switch below -- kept as plain checks in their original position.
         if matchTabShortcut(event: event, shortcut: StoredShortcut(key: "\t", command: false, shift: false, option: false, control: true)) {
             tabManager?.selectNextSurface()
             return true
@@ -6960,152 +6586,806 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             return true
         }
 
-        // New surface: Cmd+T
-        if matchConfiguredShortcut(event: event, action: .newSurface) {
-            tabManager?.newSurface()
-            return true
-        }
-
-        // Open browser: Cmd+Shift+L
-        if matchConfiguredShortcut(event: event, action: .openBrowser) {
-            _ = openBrowserAndFocusAddressBar(insertAtEnd: true)
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .focusBrowserAddressBar) {
-            if let focusedPanel = tabManager?.focusedBrowserPanel {
-                focusBrowserAddressBar(in: focusedPanel)
-                return true
+        for action in Self.appShortcutPrecedenceOrderAfterLegacyTabNavigation {
+            if let result = handleConfiguredShortcutAction(
+                action,
+                event: event,
+                commandPaletteTargetWindow: commandPaletteTargetWindow,
+                hasFocusedAddressBarInShortcutContext: hasFocusedAddressBarInShortcutContext
+            ) {
+                return result
             }
-
-            if let browserAddressBarFocusedPanelId,
-               focusBrowserAddressBar(panelId: browserAddressBarFocusedPanelId) {
-                return true
-            }
-
-            if openBrowserAndFocusAddressBar(insertAtEnd: true) != nil {
-                return true
-            }
-        }
-
-        if matchConfiguredShortcut(event: event, action: .browserBack) {
-            guard let focusedBrowserPanel = tabManager?.focusedBrowserPanel else {
-                return false
-            }
-            focusedBrowserPanel.goBack()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .browserForward) {
-            guard let focusedBrowserPanel = tabManager?.focusedBrowserPanel else {
-                return false
-            }
-            focusedBrowserPanel.goForward()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .browserReload) {
-            guard let focusedBrowserPanel = tabManager?.focusedBrowserPanel else {
-                return false
-            }
-            focusedBrowserPanel.reload()
-            return true
-        }
-
-        // Safari defaults:
-        // - Option+Command+I => Show/Toggle Web Inspector
-        // - Option+Command+C => Show JavaScript Console
-        if matchConfiguredShortcut(event: event, action: .toggleBrowserDeveloperTools) {
-#if DEBUG
-            logDeveloperToolsShortcutSnapshot(phase: "toggle.pre", event: event)
-#endif
-            let didHandle = tabManager?.toggleDeveloperToolsFocusedBrowser() ?? false
-#if DEBUG
-            logDeveloperToolsShortcutSnapshot(phase: "toggle.post", event: event, didHandle: didHandle)
-            DispatchQueue.main.async { [weak self] in
-                self?.logDeveloperToolsShortcutSnapshot(phase: "toggle.tick", didHandle: didHandle)
-            }
-#endif
-            if !didHandle { NSSound.beep() }
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .showBrowserJavaScriptConsole) {
-#if DEBUG
-            logDeveloperToolsShortcutSnapshot(phase: "console.pre", event: event)
-#endif
-            let didHandle = tabManager?.showJavaScriptConsoleFocusedBrowser() ?? false
-#if DEBUG
-            logDeveloperToolsShortcutSnapshot(phase: "console.post", event: event, didHandle: didHandle)
-            DispatchQueue.main.async { [weak self] in
-                self?.logDeveloperToolsShortcutSnapshot(phase: "console.tick", didHandle: didHandle)
-            }
-#endif
-            if !didHandle { NSSound.beep() }
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .toggleReactGrab) {
-            let didHandle = tabManager?.toggleReactGrabFromCurrentFocus() ?? false
-            if !didHandle { NSSound.beep() }
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .browserZoomIn) {
-            return tabManager?.zoomInFocusedBrowser() ?? false
-        }
-
-        if matchConfiguredShortcut(event: event, action: .browserZoomOut) {
-            return tabManager?.zoomOutFocusedBrowser() ?? false
-        }
-
-        if matchConfiguredShortcut(event: event, action: .browserZoomReset) {
-            return tabManager?.resetZoomFocusedBrowser() ?? false
-        }
-
-        if matchConfiguredShortcut(event: event, action: .find) {
-            guard !shouldLetFocusedBrowserOwnFindShortcut(event) else {
-                return false
-            }
-            tabManager?.startSearch()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .findNext) {
-            guard !shouldLetFocusedBrowserOwnFindShortcut(event) else {
-                return false
-            }
-            tabManager?.findNext()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .findPrevious) {
-            guard !shouldLetFocusedBrowserOwnFindShortcut(event) else {
-                return false
-            }
-            tabManager?.findPrevious()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .hideFind) {
-            guard !shouldLetFocusedBrowserOwnFindShortcut(event) else {
-                return false
-            }
-            tabManager?.hideFind()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .useSelectionForFind) {
-            tabManager?.searchSelection()
-            return true
-        }
-
-        if matchConfiguredShortcut(event: event, action: .reopenClosedBrowserPanel) {
-            _ = tabManager?.reopenMostRecentlyClosedBrowserPanel()
-            return true
         }
 
         return false
+    }
+
+    // Exhaustive dispatch for a single KeyboardShortcutSettings.Action: returns nil when this
+    // action's configured shortcut doesn't match the event (or, for .focusBrowserAddressBar,
+    // when it matches but none of its sub-branches handled it -- see that case below), in which
+    // case the caller continues to the next action in precedence order. Returns non-nil the
+    // moment an action's shortcut matches and terminally handles (or declines) the event, exactly
+    // mirroring the early-return behavior of the original if-chain.
+    private func handleConfiguredShortcutAction(
+        _ action: KeyboardShortcutSettings.Action,
+        event: NSEvent,
+        commandPaletteTargetWindow: NSWindow?,
+        hasFocusedAddressBarInShortcutContext: Bool
+    ) -> Bool? {
+        switch action {
+        case .commandPalette:
+            return handleCommandPaletteShortcutAction(event: event, commandPaletteTargetWindow: commandPaletteTargetWindow)
+        case .goToWorkspace:
+            return handleGoToWorkspaceShortcutAction(
+                event: event,
+                commandPaletteTargetWindow: commandPaletteTargetWindow,
+                hasFocusedAddressBarInShortcutContext: hasFocusedAddressBarInShortcutContext
+            )
+        case .quit:
+            return handleQuitShortcutAction(event: event)
+        case .openSettings:
+            return handleOpenSettingsShortcutAction(event: event)
+        case .reloadConfiguration:
+            return handleReloadConfigurationShortcutAction(event: event)
+        case .toggleFullScreen:
+            return handleToggleFullScreenShortcutAction(event: event)
+        case .toggleSidebar:
+            return handleToggleSidebarShortcutAction(event: event)
+        case .newTab:
+            return handleNewTabShortcutAction(event: event)
+        case .newClaudeWorkspace:
+            return handleNewClaudeWorkspaceShortcutAction(event: event)
+        case .newWindow:
+            return handleNewWindowShortcutAction(event: event)
+        case .openFolder:
+            return handleOpenFolderShortcutAction(event: event)
+        case .showNotifications:
+            return handleShowNotificationsShortcutAction(event: event)
+        case .sendFeedback:
+            return handleSendFeedbackShortcutAction(event: event)
+        case .jumpToUnread:
+            return handleJumpToUnreadShortcutAction(event: event)
+        case .triggerFlash:
+            return handleTriggerFlashShortcutAction(event: event)
+        case .nextSurface:
+            return handleNextSurfaceShortcutAction(event: event)
+        case .prevSurface:
+            return handlePrevSurfaceShortcutAction(event: event)
+        case .toggleTerminalCopyMode:
+            return handleToggleTerminalCopyModeShortcutAction(event: event)
+        case .nextSidebarTab:
+            return handleNextSidebarTabShortcutAction(event: event)
+        case .prevSidebarTab:
+            return handlePrevSidebarTabShortcutAction(event: event)
+        case .renameWorkspace:
+            return handleRenameWorkspaceShortcutAction(event: event, commandPaletteTargetWindow: commandPaletteTargetWindow)
+        case .editWorkspaceDescription:
+            return handleEditWorkspaceDescriptionShortcutAction(event: event, commandPaletteTargetWindow: commandPaletteTargetWindow)
+        case .closeOtherTabsInPane:
+            return handleCloseOtherTabsInPaneShortcutAction(event: event)
+        case .closeTab:
+            return handleCloseTabShortcutAction(event: event)
+        case .closeWorkspace:
+            return handleCloseWorkspaceShortcutAction(event: event)
+        case .closeWindow:
+            return handleCloseWindowShortcutAction(event: event)
+        case .renameTab:
+            return handleRenameTabShortcutAction(event: event, commandPaletteTargetWindow: commandPaletteTargetWindow)
+        case .selectWorkspaceByNumber:
+            return handleSelectWorkspaceByNumberShortcutAction(event: event)
+        case .selectSurfaceByNumber:
+            return handleSelectSurfaceByNumberShortcutAction(event: event)
+        case .focusLeft:
+            return handleFocusLeftShortcutAction(event: event)
+        case .focusRight:
+            return handleFocusRightShortcutAction(event: event)
+        case .focusUp:
+            return handleFocusUpShortcutAction(event: event)
+        case .focusDown:
+            return handleFocusDownShortcutAction(event: event)
+        case .toggleSplitZoom:
+            return handleToggleSplitZoomShortcutAction(event: event)
+        case .splitRight:
+            return handleSplitRightShortcutAction(event: event)
+        case .splitDown:
+            return handleSplitDownShortcutAction(event: event)
+        case .splitBrowserRight:
+            return handleSplitBrowserRightShortcutAction(event: event)
+        case .splitBrowserDown:
+            return handleSplitBrowserDownShortcutAction(event: event)
+        case .newSurface:
+            return handleNewSurfaceShortcutAction(event: event)
+        case .openBrowser:
+            return handleOpenBrowserShortcutAction(event: event)
+        case .focusBrowserAddressBar:
+            return handleFocusBrowserAddressBarShortcutAction(event: event)
+        case .browserBack:
+            return handleBrowserBackShortcutAction(event: event)
+        case .browserForward:
+            return handleBrowserForwardShortcutAction(event: event)
+        case .browserReload:
+            return handleBrowserReloadShortcutAction(event: event)
+        case .toggleBrowserDeveloperTools:
+            return handleToggleBrowserDeveloperToolsShortcutAction(event: event)
+        case .showBrowserJavaScriptConsole:
+            return handleShowBrowserJavaScriptConsoleShortcutAction(event: event)
+        case .toggleReactGrab:
+            return handleToggleReactGrabShortcutAction(event: event)
+        case .browserZoomIn:
+            return handleBrowserZoomInShortcutAction(event: event)
+        case .browserZoomOut:
+            return handleBrowserZoomOutShortcutAction(event: event)
+        case .browserZoomReset:
+            return handleBrowserZoomResetShortcutAction(event: event)
+        case .find:
+            return handleFindShortcutAction(event: event)
+        case .findNext:
+            return handleFindNextShortcutAction(event: event)
+        case .findPrevious:
+            return handleFindPreviousShortcutAction(event: event)
+        case .hideFind:
+            return handleHideFindShortcutAction(event: event)
+        case .useSelectionForFind:
+            return handleUseSelectionForFindShortcutAction(event: event)
+        case .reopenClosedBrowserPanel:
+            return handleReopenClosedBrowserPanelShortcutAction(event: event)
+        case .openReview:
+            // Only reachable via the command palette registry (see ContentView.swift's
+            // "palette.openReviewPanel" command) -- there is no app-level shortcut-monitor entry
+            // for it, matching the old if-chain, which never checked this action either.
+            return nil
+        }
+    }
+
+    private func handleCommandPaletteShortcutAction(event: NSEvent, commandPaletteTargetWindow: NSWindow?) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .commandPalette) else { return nil }
+        let targetWindow = commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+        requestCommandPaletteCommands(preferredWindow: targetWindow, source: "shortcut.commandPalette")
+        return true
+    }
+
+    private func handleGoToWorkspaceShortcutAction(
+        event: NSEvent,
+        commandPaletteTargetWindow: NSWindow?,
+        hasFocusedAddressBarInShortcutContext: Bool
+    ) -> Bool? {
+        guard !hasFocusedAddressBarInShortcutContext,
+              matchConfiguredShortcut(event: event, action: .goToWorkspace) else { return nil }
+        let targetWindow = commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+        requestCommandPaletteSwitcher(preferredWindow: targetWindow, source: "shortcut.goToWorkspace")
+        return true
+    }
+
+    private func handleQuitShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .quit) else { return nil }
+        return handleQuitShortcutWarning()
+    }
+
+    private func handleOpenSettingsShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .openSettings) else { return nil }
+        openPreferencesWindow(debugSource: "shortcut.openSettings")
+        return true
+    }
+
+    private func handleReloadConfigurationShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .reloadConfiguration) else { return nil }
+        GhosttyApp.shared.reloadConfiguration(source: "shortcut.reloadConfiguration")
+        return true
+    }
+
+    private func handleToggleFullScreenShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .toggleFullScreen) else { return nil }
+        guard let targetWindow = mainWindowForShortcutEvent(event) else {
+            return false
+        }
+        targetWindow.toggleFullScreen(nil)
+        return true
+    }
+
+    private func handleToggleSidebarShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .toggleSidebar) else { return nil }
+        _ = toggleSidebarInActiveMainWindow()
+        return true
+    }
+
+    private func handleNewTabShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .newTab) else { return nil }
+#if DEBUG
+        dlog("shortcut.action name=newWorkspace \(debugShortcutRouteSnapshot(event: event))")
+#endif
+        // Cmd+N semantics:
+        // - If there are no main windows, create a new window.
+        // - Otherwise, create a new workspace in the active window.
+        if mainWindowContexts.isEmpty {
+            #if DEBUG
+            logWorkspaceCreationRouting(
+                phase: "fallback_new_window",
+                source: "shortcut.cmdN",
+                reason: "no_main_windows",
+                event: event,
+                chosenContext: nil
+            )
+            #endif
+            openNewMainWindow(nil)
+        } else if addWorkspaceInPreferredMainWindow(event: event, debugSource: "shortcut.cmdN") == nil {
+            #if DEBUG
+            logWorkspaceCreationRouting(
+                phase: "fallback_new_window",
+                source: "shortcut.cmdN",
+                reason: "workspace_creation_returned_nil",
+                event: event,
+                chosenContext: nil
+            )
+            #endif
+            openNewMainWindow(nil)
+        }
+        return true
+    }
+
+    // New Claude Code Workspace: Cmd+Shift+C
+    // Instantly creates a new workspace in the current workspace's working
+    // directory and boots Claude Code into it (no pool, no hidden workspace). Refs #137.
+    private func handleNewClaudeWorkspaceShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .newClaudeWorkspace) else { return nil }
+#if DEBUG
+        dlog("shortcut.action name=newClaudeWorkspace \(debugShortcutRouteSnapshot(event: event))")
+#endif
+        createClaudeWorkspace(event: event, debugSource: "shortcut.cmdShiftC")
+        return true
+    }
+
+    // New Window: Cmd+Shift+N
+    // Handled here instead of relying on SwiftUI's CommandGroup menu item because
+    // after a browser panel has been shown, SwiftUI's menu dispatch can silently
+    // consume the key equivalent without firing the action closure.
+    private func handleNewWindowShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .newWindow) else { return nil }
+        openNewMainWindow(nil)
+        return true
+    }
+
+    // Open Folder: Cmd+O
+    // Handled here to prevent AppKit's default NSDocumentController from opening
+    // the Documents folder when SwiftUI menu dispatch fails due to focus bugs.
+    private func handleOpenFolderShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .openFolder) else { return nil }
+        showOpenFolderPanel()
+        return true
+    }
+
+    private func handleShowNotificationsShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .showNotifications) else { return nil }
+        toggleNotificationsPopover(animated: false, anchorView: fullscreenControlsViewModel?.notificationsAnchorView)
+        return true
+    }
+
+    private func handleSendFeedbackShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .sendFeedback) else { return nil }
+        guard let targetContext = preferredMainWindowContextForShortcuts(event: event),
+              let targetWindow = targetContext.window ?? windowForMainWindowId(targetContext.windowId) else {
+            return false
+        }
+        setActiveMainWindow(targetWindow)
+        bringToFront(targetWindow)
+        NotificationCenter.default.post(name: .feedbackComposerRequested, object: targetWindow)
+        return true
+    }
+
+    private func handleJumpToUnreadShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .jumpToUnread) else { return nil }
+#if DEBUG
+        if ProcessInfo.processInfo.environment["PROGRAMA_UI_TEST_JUMP_UNREAD_SETUP"] == "1" {
+            writeJumpUnreadTestData(["jumpUnreadShortcutHandled": "1"])
+        }
+#endif
+        jumpToLatestUnread()
+        return true
+    }
+
+    // Flash the currently focused panel so the user can visually confirm focus.
+    private func handleTriggerFlashShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .triggerFlash) else { return nil }
+        tabManager?.triggerFocusFlash()
+        return true
+    }
+
+    // Surface navigation: Cmd+Shift+] / Cmd+Shift+[
+    private func handleNextSurfaceShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .nextSurface) else { return nil }
+        tabManager?.selectNextSurface()
+        return true
+    }
+
+    private func handlePrevSurfaceShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .prevSurface) else { return nil }
+        tabManager?.selectPreviousSurface()
+        return true
+    }
+
+    private func handleToggleTerminalCopyModeShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .toggleTerminalCopyMode) else { return nil }
+        let handled = tabManager?.toggleFocusedTerminalCopyMode() ?? false
+#if DEBUG
+        dlog(
+            "shortcut.action name=toggleTerminalCopyMode handled=\(handled ? 1 : 0) " +
+            "\(debugShortcutRouteSnapshot(event: event))"
+        )
+#endif
+        // Only consume when a focused terminal actually handled the toggle.
+        // Otherwise allow the event to continue through the responder chain.
+        return handled
+    }
+
+    // Workspace navigation: Cmd+Ctrl+] / Cmd+Ctrl+[
+    private func handleNextSidebarTabShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .nextSidebarTab) else { return nil }
+#if DEBUG
+        let selected = tabManager?.selectedTabId.map { String($0.uuidString.prefix(5)) } ?? "nil"
+        dlog(
+            "ws.shortcut dir=next repeat=\(event.isARepeat ? 1 : 0) keyCode=\(event.keyCode) selected=\(selected)"
+        )
+#endif
+        tabManager?.selectNextTab()
+        return true
+    }
+
+    private func handlePrevSidebarTabShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .prevSidebarTab) else { return nil }
+#if DEBUG
+        let selected = tabManager?.selectedTabId.map { String($0.uuidString.prefix(5)) } ?? "nil"
+        dlog(
+            "ws.shortcut dir=prev repeat=\(event.isARepeat ? 1 : 0) keyCode=\(event.keyCode) selected=\(selected)"
+        )
+#endif
+        tabManager?.selectPreviousTab()
+        return true
+    }
+
+    private func handleRenameWorkspaceShortcutAction(event: NSEvent, commandPaletteTargetWindow: NSWindow?) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .renameWorkspace) else { return nil }
+        return requestRenameWorkspaceViaCommandPalette(
+            preferredWindow: commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+        )
+    }
+
+    private func handleEditWorkspaceDescriptionShortcutAction(event: NSEvent, commandPaletteTargetWindow: NSWindow?) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .editWorkspaceDescription) else { return nil }
+#if DEBUG
+        dlog(
+            "shortcut.editWorkspaceDescription matched target={\(debugWindowToken(commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow))} " +
+            "\(debugShortcutRouteSnapshot(event: event))"
+        )
+#endif
+        return requestEditWorkspaceDescriptionViaCommandPalette(
+            preferredWindow: commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+        )
+    }
+
+    private func handleCloseOtherTabsInPaneShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .closeOtherTabsInPane) else { return nil }
+        if let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow,
+           targetWindow.identifier?.rawValue == "cmux.settings" {
+            targetWindow.performClose(nil)
+        } else {
+            let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+            if let terminalContext = focusedTerminalShortcutContext(preferredWindow: targetWindow) {
+                terminalContext.tabManager.closeOtherTabsInFocusedPaneWithConfirmation()
+            } else {
+                tabManager?.closeOtherTabsInFocusedPaneWithConfirmation()
+            }
+        }
+        return true
+    }
+
+    // Cmd+W must close the focused panel even if first-responder momentarily lags on a
+    // browser NSTextView during split focus transitions.
+    private func handleCloseTabShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .closeTab) else { return nil }
+        let targetWindow = resolvedShortcutEventWindow(event) ?? NSApp.keyWindow ?? NSApp.mainWindow
+        let routedManager = preferredMainWindowContextForShortcutRouting(event: event)?.tabManager ?? tabManager
+        // Browser popup windows primarily intercept Cmd+W in BrowserPopupPanel.
+        // This AppDelegate path is a fallback for cases where AppKit routes the
+        // event through the global shortcut handler first.
+        if let targetWindow = [targetWindow, NSApp.keyWindow]
+            .compactMap({ $0 })
+            .first(where: { $0.identifier?.rawValue == "programa.browser-popup" }) {
+#if DEBUG
+            dlog("shortcut.cmdW route=browserPopup")
+#endif
+            targetWindow.performClose(nil)
+            return true
+        } else if let targetWindow,
+           programaWindowShouldOwnCloseShortcut(targetWindow) {
+            targetWindow.performClose(nil)
+        } else {
+            if let routedManager {
+#if DEBUG
+                let selectedWorkspace = routedManager.selectedWorkspace
+                dlog(
+                    "shortcut.cmdW route=workspaceModel workspace=\(selectedWorkspace?.id.uuidString.prefix(5) ?? "nil") " +
+                    "panel=\(selectedWorkspace?.focusedPanelId?.uuidString.prefix(5) ?? "nil") " +
+                    "selected=\(routedManager.selectedTabId?.uuidString.prefix(5) ?? "nil")"
+                )
+#endif
+                routedManager.closeCurrentPanelWithConfirmation()
+            } else {
+#if DEBUG
+                dlog("shortcut.cmdW route=noManager")
+#endif
+                return false
+            }
+        }
+        return true
+    }
+
+    private func handleCloseWorkspaceShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .closeWorkspace) else { return nil }
+        tabManager?.closeCurrentWorkspaceWithConfirmation()
+        return true
+    }
+
+    private func handleCloseWindowShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .closeWindow) else { return nil }
+        // `event.window` is often nil for synthetic/XCUITest key events that only carry a
+        // windowNumber; fall back through the same windowNumber-aware resolver the rest of
+        // the shortcut-routing code uses so Cmd+Ctrl+W targets the event's actual window
+        // instead of silently no-op'ing when NSApp.keyWindow/mainWindow are stale.
+        guard let targetWindow = mainWindowForShortcutEvent(event) ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow else {
+            NSSound.beep()
+            return true
+        }
+        closeWindowWithConfirmation(targetWindow)
+        return true
+    }
+
+    private func handleRenameTabShortcutAction(event: NSEvent, commandPaletteTargetWindow: NSWindow?) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .renameTab) else { return nil }
+        // Keep Cmd+R browser reload behavior when a browser panel is focused.
+        if tabManager?.focusedBrowserPanel != nil {
+            return false
+        }
+        let targetWindow = commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+        requestCommandPaletteRenameTab(preferredWindow: targetWindow, source: "shortcut.renameTab")
+        return true
+    }
+
+    // Numeric shortcuts for specific workspaces (9 = last workspace)
+    // Always consume the event when the digit matches to prevent Ghostty's
+    // goto_tab fallback from creating a new window when the index is out of bounds.
+    private func handleSelectWorkspaceByNumberShortcutAction(event: NSEvent) -> Bool? {
+        guard let digit = numberedConfiguredShortcutDigit(event: event, action: .selectWorkspaceByNumber) else { return nil }
+        if let manager = tabManager,
+           let targetIndex = WorkspaceShortcutMapper.workspaceIndex(forDigit: digit, workspaceCount: manager.tabs.count) {
+#if DEBUG
+            dlog(
+                "shortcut.action name=workspaceDigit digit=\(digit) targetIndex=\(targetIndex) manager=\(debugManagerToken(manager)) \(debugShortcutRouteSnapshot(event: event))"
+            )
+#endif
+            manager.selectTab(at: targetIndex)
+        }
+        return true
+    }
+
+    // Numeric shortcuts for surfaces within the focused pane (9 = last)
+    private func handleSelectSurfaceByNumberShortcutAction(event: NSEvent) -> Bool? {
+        guard let digit = numberedConfiguredShortcutDigit(event: event, action: .selectSurfaceByNumber) else { return nil }
+        if digit == 9 {
+            tabManager?.selectLastSurface()
+        } else {
+            tabManager?.selectSurface(at: digit - 1)
+        }
+        return true
+    }
+
+    // Pane focus navigation (defaults to Cmd+Option+Arrow, but can be customized to letter/number keys).
+    // Shared by the four directional focus actions below -- they differ only by arrow glyph/key code,
+    // NavigationDirection, the configured ghostty goto_split shortcut to also match against, and which
+    // direction to record for goto_split debug telemetry.
+    private func handleDirectionalFocusShortcutAction(
+        event: NSEvent,
+        action: KeyboardShortcutSettings.Action,
+        arrowGlyph: String,
+        arrowKeyCode: UInt16,
+        direction: NavigationDirection,
+        ghosttyGotoSplitShortcut: StoredShortcut?
+    ) -> Bool? {
+        guard matchConfiguredDirectionalShortcut(
+            event: event,
+            action: action,
+            arrowGlyph: arrowGlyph,
+            arrowKeyCode: arrowKeyCode
+        ) || (ghosttyGotoSplitShortcut.map {
+            matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: arrowGlyph, arrowKeyCode: arrowKeyCode)
+        } ?? false) else { return nil }
+        tabManager?.movePaneFocus(direction: direction)
+#if DEBUG
+        recordGotoSplitMoveIfNeeded(direction: direction)
+#endif
+        return true
+    }
+
+    private func handleFocusLeftShortcutAction(event: NSEvent) -> Bool? {
+        handleDirectionalFocusShortcutAction(
+            event: event,
+            action: .focusLeft,
+            arrowGlyph: "←",
+            arrowKeyCode: 123,
+            direction: .left,
+            ghosttyGotoSplitShortcut: ghosttyGotoSplitLeftShortcut
+        )
+    }
+
+    private func handleFocusRightShortcutAction(event: NSEvent) -> Bool? {
+        handleDirectionalFocusShortcutAction(
+            event: event,
+            action: .focusRight,
+            arrowGlyph: "→",
+            arrowKeyCode: 124,
+            direction: .right,
+            ghosttyGotoSplitShortcut: ghosttyGotoSplitRightShortcut
+        )
+    }
+
+    private func handleFocusUpShortcutAction(event: NSEvent) -> Bool? {
+        handleDirectionalFocusShortcutAction(
+            event: event,
+            action: .focusUp,
+            arrowGlyph: "↑",
+            arrowKeyCode: 126,
+            direction: .up,
+            ghosttyGotoSplitShortcut: ghosttyGotoSplitUpShortcut
+        )
+    }
+
+    private func handleFocusDownShortcutAction(event: NSEvent) -> Bool? {
+        handleDirectionalFocusShortcutAction(
+            event: event,
+            action: .focusDown,
+            arrowGlyph: "↓",
+            arrowKeyCode: 125,
+            direction: .down,
+            ghosttyGotoSplitShortcut: ghosttyGotoSplitDownShortcut
+        )
+    }
+
+    private func handleToggleSplitZoomShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .toggleSplitZoom) else { return nil }
+        _ = tabManager?.toggleFocusedSplitZoom()
+#if DEBUG
+        recordGotoSplitZoomIfNeeded()
+#endif
+        return true
+    }
+
+    // Split actions: Cmd+D / Cmd+Shift+D. Shared by splitRight/splitDown -- they differ only by
+    // SplitDirection and the debug-log action name.
+    private func handleSplitShortcutAction(
+        event: NSEvent,
+        action: KeyboardShortcutSettings.Action,
+        direction: SplitDirection,
+        debugActionName: String
+    ) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: action) else { return nil }
+#if DEBUG
+        dlog("shortcut.action name=\(debugActionName) \(debugShortcutRouteSnapshot(event: event))")
+#endif
+        if shouldSuppressSplitShortcutForTransientTerminalFocusState(direction: direction) {
+            return true
+        }
+        _ = performSplitShortcut(
+            direction: direction,
+            preferredWindow: event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+        )
+        return true
+    }
+
+    private func handleSplitRightShortcutAction(event: NSEvent) -> Bool? {
+        handleSplitShortcutAction(event: event, action: .splitRight, direction: .right, debugActionName: "splitRight")
+    }
+
+    private func handleSplitDownShortcutAction(event: NSEvent) -> Bool? {
+        handleSplitShortcutAction(event: event, action: .splitDown, direction: .down, debugActionName: "splitDown")
+    }
+
+    // Browser split actions. Shared by splitBrowserRight/splitBrowserDown -- they differ only by
+    // SplitDirection and the debug-log action name.
+    private func handleBrowserSplitShortcutAction(
+        event: NSEvent,
+        action: KeyboardShortcutSettings.Action,
+        direction: SplitDirection,
+        debugActionName: String
+    ) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: action) else { return nil }
+#if DEBUG
+        dlog("shortcut.action name=\(debugActionName) \(debugShortcutRouteSnapshot(event: event))")
+#endif
+        _ = performBrowserSplitShortcut(direction: direction)
+        return true
+    }
+
+    private func handleSplitBrowserRightShortcutAction(event: NSEvent) -> Bool? {
+        handleBrowserSplitShortcutAction(event: event, action: .splitBrowserRight, direction: .right, debugActionName: "splitBrowserRight")
+    }
+
+    private func handleSplitBrowserDownShortcutAction(event: NSEvent) -> Bool? {
+        handleBrowserSplitShortcutAction(event: event, action: .splitBrowserDown, direction: .down, debugActionName: "splitBrowserDown")
+    }
+
+    // New surface: Cmd+T
+    private func handleNewSurfaceShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .newSurface) else { return nil }
+        tabManager?.newSurface()
+        return true
+    }
+
+    // Open browser: Cmd+Shift+L
+    private func handleOpenBrowserShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .openBrowser) else { return nil }
+        _ = openBrowserAndFocusAddressBar(insertAtEnd: true)
+        return true
+    }
+
+    private func handleFocusBrowserAddressBarShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .focusBrowserAddressBar) else { return nil }
+        if let focusedPanel = tabManager?.focusedBrowserPanel {
+            focusBrowserAddressBar(in: focusedPanel)
+            return true
+        }
+
+        if let browserAddressBarFocusedPanelId,
+           focusBrowserAddressBar(panelId: browserAddressBarFocusedPanelId) {
+            return true
+        }
+
+        if openBrowserAndFocusAddressBar(insertAtEnd: true) != nil {
+            return true
+        }
+
+        // Matched but none of the branches above handled it -- fall through to the next action in
+        // precedence order, exactly like the original if-chain (which had no trailing `return`
+        // statement in this specific case and so fell out of the enclosing `if` block).
+        return nil
+    }
+
+    private func handleBrowserBackShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .browserBack) else { return nil }
+        guard let focusedBrowserPanel = tabManager?.focusedBrowserPanel else {
+            return false
+        }
+        focusedBrowserPanel.goBack()
+        return true
+    }
+
+    private func handleBrowserForwardShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .browserForward) else { return nil }
+        guard let focusedBrowserPanel = tabManager?.focusedBrowserPanel else {
+            return false
+        }
+        focusedBrowserPanel.goForward()
+        return true
+    }
+
+    private func handleBrowserReloadShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .browserReload) else { return nil }
+        guard let focusedBrowserPanel = tabManager?.focusedBrowserPanel else {
+            return false
+        }
+        focusedBrowserPanel.reload()
+        return true
+    }
+
+    // Safari defaults:
+    // - Option+Command+I => Show/Toggle Web Inspector
+    // - Option+Command+C => Show JavaScript Console
+    private func handleToggleBrowserDeveloperToolsShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .toggleBrowserDeveloperTools) else { return nil }
+#if DEBUG
+        logDeveloperToolsShortcutSnapshot(phase: "toggle.pre", event: event)
+#endif
+        let didHandle = tabManager?.toggleDeveloperToolsFocusedBrowser() ?? false
+#if DEBUG
+        logDeveloperToolsShortcutSnapshot(phase: "toggle.post", event: event, didHandle: didHandle)
+        DispatchQueue.main.async { [weak self] in
+            self?.logDeveloperToolsShortcutSnapshot(phase: "toggle.tick", didHandle: didHandle)
+        }
+#endif
+        if !didHandle { NSSound.beep() }
+        return true
+    }
+
+    private func handleShowBrowserJavaScriptConsoleShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .showBrowserJavaScriptConsole) else { return nil }
+#if DEBUG
+        logDeveloperToolsShortcutSnapshot(phase: "console.pre", event: event)
+#endif
+        let didHandle = tabManager?.showJavaScriptConsoleFocusedBrowser() ?? false
+#if DEBUG
+        logDeveloperToolsShortcutSnapshot(phase: "console.post", event: event, didHandle: didHandle)
+        DispatchQueue.main.async { [weak self] in
+            self?.logDeveloperToolsShortcutSnapshot(phase: "console.tick", didHandle: didHandle)
+        }
+#endif
+        if !didHandle { NSSound.beep() }
+        return true
+    }
+
+    private func handleToggleReactGrabShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .toggleReactGrab) else { return nil }
+        let didHandle = tabManager?.toggleReactGrabFromCurrentFocus() ?? false
+        if !didHandle { NSSound.beep() }
+        return true
+    }
+
+    // Browser zoom actions. Shared by browserZoomIn/Out/Reset -- they differ only by which
+    // TabManager zoom method to invoke.
+    private func handleBrowserZoomShortcutAction(
+        event: NSEvent,
+        action: KeyboardShortcutSettings.Action,
+        zoom: (TabManager) -> Bool
+    ) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: action) else { return nil }
+        guard let tabManager else { return false }
+        return zoom(tabManager)
+    }
+
+    private func handleBrowserZoomInShortcutAction(event: NSEvent) -> Bool? {
+        handleBrowserZoomShortcutAction(event: event, action: .browserZoomIn) { $0.zoomInFocusedBrowser() }
+    }
+
+    private func handleBrowserZoomOutShortcutAction(event: NSEvent) -> Bool? {
+        handleBrowserZoomShortcutAction(event: event, action: .browserZoomOut) { $0.zoomOutFocusedBrowser() }
+    }
+
+    private func handleBrowserZoomResetShortcutAction(event: NSEvent) -> Bool? {
+        handleBrowserZoomShortcutAction(event: event, action: .browserZoomReset) { $0.resetZoomFocusedBrowser() }
+    }
+
+    private func handleFindShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .find) else { return nil }
+        guard !shouldLetFocusedBrowserOwnFindShortcut(event) else {
+            return false
+        }
+        tabManager?.startSearch()
+        return true
+    }
+
+    private func handleFindNextShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .findNext) else { return nil }
+        guard !shouldLetFocusedBrowserOwnFindShortcut(event) else {
+            return false
+        }
+        tabManager?.findNext()
+        return true
+    }
+
+    private func handleFindPreviousShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .findPrevious) else { return nil }
+        guard !shouldLetFocusedBrowserOwnFindShortcut(event) else {
+            return false
+        }
+        tabManager?.findPrevious()
+        return true
+    }
+
+    private func handleHideFindShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .hideFind) else { return nil }
+        guard !shouldLetFocusedBrowserOwnFindShortcut(event) else {
+            return false
+        }
+        tabManager?.hideFind()
+        return true
+    }
+
+    private func handleUseSelectionForFindShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .useSelectionForFind) else { return nil }
+        tabManager?.searchSelection()
+        return true
+    }
+
+    private func handleReopenClosedBrowserPanelShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .reopenClosedBrowserPanel) else { return nil }
+        _ = tabManager?.reopenMostRecentlyClosedBrowserPanel()
+        return true
     }
 
     private func shouldSuppressSplitShortcutForTransientTerminalFocusState(direction: SplitDirection) -> Bool {
