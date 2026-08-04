@@ -138,6 +138,7 @@
 		NRBR0001 /* InspectorDock.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRBR0002 /* InspectorDock.swift */; };
 		NRBR0003 /* BrowserWebDialogPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRBR0004 /* BrowserWebDialogPresenter.swift */; };
 		NRBR0005 /* BrowserProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRBR0006 /* BrowserProfileStore.swift */; };
+		1MPW0001 /* BrowserImportWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1MPW0002 /* BrowserImportWizardView.swift */; };
 		NRBR0007 /* BrowserHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRBR0008 /* BrowserHistoryStore.swift */; };
 		NRBR0009 /* BrowserDownloadDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRBR0010 /* BrowserDownloadDelegate.swift */; };
 		NRBR0011 /* BrowserPanelWebDelegates.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRBR0012 /* BrowserPanelWebDelegates.swift */; };
@@ -523,6 +524,7 @@
 		NRBR0002 /* InspectorDock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/InspectorDock.swift; sourceTree = "<group>"; };
 		NRBR0004 /* BrowserWebDialogPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserWebDialogPresenter.swift; sourceTree = "<group>"; };
 		NRBR0006 /* BrowserProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserProfileStore.swift; sourceTree = "<group>"; };
+		1MPW0002 /* BrowserImportWizardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserImportWizardView.swift; sourceTree = "<group>"; };
 		NRBR0008 /* BrowserHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserHistoryStore.swift; sourceTree = "<group>"; };
 		NRBR0010 /* BrowserDownloadDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserDownloadDelegate.swift; sourceTree = "<group>"; };
 		NRBR0012 /* BrowserPanelWebDelegates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserPanelWebDelegates.swift; sourceTree = "<group>"; };
@@ -993,6 +995,7 @@
 				NRBR0002 /* InspectorDock.swift */,
 				NRBR0004 /* BrowserWebDialogPresenter.swift */,
 				NRBR0006 /* BrowserProfileStore.swift */,
+				1MPW0002 /* BrowserImportWizardView.swift */,
 				NRBR0008 /* BrowserHistoryStore.swift */,
 				NRBR0010 /* BrowserDownloadDelegate.swift */,
 				NRBR0012 /* BrowserPanelWebDelegates.swift */,
@@ -1480,6 +1483,7 @@
 				NRBR0001 /* InspectorDock.swift in Sources */,
 				NRBR0003 /* BrowserWebDialogPresenter.swift in Sources */,
 				NRBR0005 /* BrowserProfileStore.swift in Sources */,
+				1MPW0001 /* BrowserImportWizardView.swift in Sources */,
 				NRBR0007 /* BrowserHistoryStore.swift in Sources */,
 				NRBR0009 /* BrowserDownloadDelegate.swift in Sources */,
 				NRBR0011 /* BrowserPanelWebDelegates.swift in Sources */,
