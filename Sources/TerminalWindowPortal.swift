@@ -997,21 +997,22 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
 
     func viewAtWindowPoint(_ windowPoint: NSPoint) -> NSView? {
         guard ensureInstalled() else { return nil }
-        let point = hostView.convert(windowPoint, from: nil)
-
         // Restrict hit-testing to currently mapped entries so stale detached views
         // can't steal file-drop/mouse routing.
-        for subview in hostView.subviews.reversed() {
-            guard let hostedView = subview as? GhosttySurfaceScrollView else { continue }
-            let hostedId = ObjectIdentifier(hostedView)
-            guard entriesByHostedId[hostedId] != nil else { continue }
-            guard !hostedView.isHidden else { continue }
-            guard hostedView.frame.contains(point) else { continue }
-            let localPoint = hostedView.convert(point, from: hostView)
-            return hostedView.hitTest(localPoint) ?? hostedView
-        }
-
-        return nil
+        return hitScanReversedSubviews(
+            at: windowPoint,
+            map: { subview -> GhosttySurfaceScrollView? in
+                guard let hostedView = subview as? GhosttySurfaceScrollView,
+                      self.entriesByHostedId[ObjectIdentifier(hostedView)] != nil,
+                      !hostedView.isHidden else { return nil }
+                return hostedView
+            },
+            resolve: { hostedView, point in
+                guard hostedView.frame.contains(point) else { return nil }
+                let localPoint = hostedView.convert(point, from: self.hostView)
+                return hostedView.hitTest(localPoint) ?? hostedView
+            }
+        )
     }
 
     func terminalViewAtWindowPoint(_ windowPoint: NSPoint) -> GhosttyNSView? {
