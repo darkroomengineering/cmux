@@ -1235,21 +1235,28 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
         webView: WKWebView,
         reason: String
     ) -> Bool {
-        if entry.transientRecoveryReason != reason {
-            entry.transientRecoveryReason = reason
-            entry.transientRecoveryRetriesRemaining = Self.transientRecoveryRetryBudget
-        }
+        var state = TransientRecoveryRetryState(
+            remaining: entry.transientRecoveryRetriesRemaining,
+            reason: entry.transientRecoveryReason
+        )
+        let didSchedule = scheduleRetryIfNeeded(
+            state: &state,
+            newReason: reason,
+            budget: Self.transientRecoveryRetryBudget,
+            resetPolicy: .whenReasonChanges
+        )
+        entry.transientRecoveryReason = state.reason
+        entry.transientRecoveryRetriesRemaining = state.remaining
 #if DEBUG
-        if entry.transientRecoveryRetriesRemaining <= 0 {
+        if !didSchedule {
             dlog(
                 "browser.portal.sync.deferRecover.skip web=\(browserPortalDebugToken(webView)) " +
                 "reason=\(reason) exhausted=1"
             )
         }
 #endif
-        guard entry.transientRecoveryRetriesRemaining > 0 else { return false }
+        guard didSchedule else { return false }
 
-        entry.transientRecoveryRetriesRemaining -= 1
         entriesByWebViewId[webViewId] = entry
 #if DEBUG
         dlog(
