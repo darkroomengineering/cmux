@@ -808,6 +808,17 @@ extension SessionEscrowClient {
             dilog("escrow.retrieve", "outcome session=\(sessionId.prefix(8)) result=\(outcome) elapsedMs=\(elapsedMs)")
         }
 
+        circuitBreakerLock.lock()
+        let recordedOpenedAt = recentRetrieveTimeoutsByPath[socketPath]
+        circuitBreakerLock.unlock()
+        if let openedAt = recordedOpenedAt {
+            let sinceMs = Int(Date().timeIntervalSince(openedAt) * 1000)
+            if sinceMs < Int(circuitBreakerWindow * 1000) {
+                dilog("escrow.retrieve", "skipped session=\(sessionId.prefix(8)) reason=circuit_open path_failed_ago_ms=\(sinceMs)")
+                return nil
+            }
+        }
+
         guard let token = decodeHexToken(tokenHex) else {
             logOutcome("error_bad_token_hex")
             return nil
@@ -853,6 +864,10 @@ extension SessionEscrowClient {
                 return nil
             case .timeout:
                 if let receivedFD { close(receivedFD) }
+                circuitBreakerLock.lock()
+                recentRetrieveTimeoutsByPath[socketPath] = Date()
+                circuitBreakerLock.unlock()
+                dilog("escrow.retrieve", "circuit_opened session=\(sessionId.prefix(8)) path=\(socketPath)")
                 logOutcome("timeout")
                 return nil
             case .error:
