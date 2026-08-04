@@ -3557,15 +3557,45 @@ struct ProgramaCLI {
 
                     // Sends the subscribe request and reads its ack. Shared by the initial
                     // subscribe and every reconnect below, so a resubscribe after a dropped
-                    // connection goes through the exact same path as first connect.
+                    // connection goes through the exact same path as first connect: the ack is
+                    // parsed and checked for `ok: true` before we consider the (re)subscribe
+                    // successful, and the raw ack line is never written to stdout -- stdout is
+                    // events-only, both to preserve that contract on first connect and to avoid
+                    // a stray non-event JSON object landing mid-stream on a later resubscribe.
                     func subscribeAndAck() throws {
                         try ctx.client.sendV2RequestOnly(method: "subscribe", params: params)
                         let ackLine = try ctx.client.readEventLine(timeout: 10)
-                        if ctx.jsonOutput {
-                            print(ackLine)
-                        } else {
-                            FileHandle.standardError.write("Subscribed: \(classes.joined(separator: ", "))\n".data(using: .utf8)!)
+                        if ackLine.hasPrefix("ERROR:") {
+                            throw CLIError(message: ackLine)
                         }
+                        guard let ackData = ackLine.data(using: .utf8),
+                              let ack = try? JSONSerialization.jsonObject(with: ackData) as? [String: Any] else {
+                            throw CLIError(message: "Invalid subscribe ack: \(ackLine)")
+                        }
+                        guard (ack["ok"] as? Bool) == true else {
+                            if let error = ack["error"] as? [String: Any] {
+                                let code = (error["code"] as? String) ?? "error"
+                                let message = (error["message"] as? String) ?? "Subscribe rejected"
+                                throw CLIError(message: "\(code): \(message)")
+                            }
+                            throw CLIError(message: "Subscribe rejected: \(ackLine)")
+                        }
+                        FileHandle.standardError.write("Subscribed: \(classes.joined(separator: ", "))\n".data(using: .utf8)!)
+                    }
+
+                    // Reconnect failures that won't resolve themselves on retry: wrong
+                    // password / unconfigured password (auth.login's auth_failed/
+                    // auth_required/auth_unconfigured), the cmux-ancestry "unsafe socket"
+                    // rejection (raw "ERROR: Access denied ..." preamble), and an explicit
+                    // subscribe-ack rejection (invalid_params -- retrying with the same
+                    // params will never succeed). Everything else (ECONNREFUSED/ENOENT while
+                    // the app restarts, EOF, read timeouts) is transient and keeps retrying
+                    // indefinitely as designed.
+                    func isPermanentReconnectFailure(_ error: Error) -> Bool {
+                        let description = String(describing: error)
+                        if description.hasPrefix("ERROR: Access denied") { return true }
+                        let permanentCodes = ["auth_failed:", "auth_required:", "auth_unconfigured:", "invalid_params:"]
+                        return permanentCodes.contains { description.hasPrefix($0) }
                     }
 
                     func printEvent(_ line: String) {
@@ -3616,6 +3646,7 @@ struct ProgramaCLI {
 
                             ctx.client.close()
                             var backoffSeconds = 0.5
+                            var consecutivePermanentFailures = 0
                             while true {
                                 do {
                                     try ctx.client.connectWithTransientRetry()
@@ -3629,6 +3660,14 @@ struct ProgramaCLI {
                                     break
                                 } catch {
                                     ctx.client.close()
+                                    let permanent = isPermanentReconnectFailure(error)
+                                    consecutivePermanentFailures = permanent ? consecutivePermanentFailures + 1 : 0
+                                    FileHandle.standardError.write(
+                                        "programa: reconnect attempt failed (\(error))\(permanent ? " [not retryable]" : "")\n".data(using: .utf8)!
+                                    )
+                                    if permanent && consecutivePermanentFailures >= 3 {
+                                        throw error
+                                    }
                                     Thread.sleep(forTimeInterval: backoffSeconds + Double.random(in: 0...0.1))
                                     backoffSeconds = min(backoffSeconds * 2, 5.0)
                                 }
