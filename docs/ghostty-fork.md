@@ -13,20 +13,31 @@ When we change the fork, update this document and the parent submodule SHA.
 ## Current fork changes
 
 Fork rebased onto upstream `main` at `3509ccf78` (`v1.3.1-457-g3509ccf78`) on March 30, 2026.
-Current Programa pinned fork head: `b64213c5a` (surface revival path).
+Current Programa pinned fork head: `08bac45e9` (occluded-render throttle, see section 8).
 
 The section 8 occluded-render skip (`c25020f99`, branch
 `perf/occluded-update-frame-skip`, retain-ancestry merge `363d56e5d` on fork
-`main`) was pinned on August 4, 2026 and REVERTED the same day: on CI's
-virtual display every surface is permanently occluded, and skipping
-updateFrame there removed incidental render-thread serialization that had
-masked a pre-existing Swift-side window-teardown race (refcount side-table
-corruption — "Object was retained too many times" / weak-reference-table
-crashes in AppDelegateShortcutRoutingTests' rapid window create/close tests).
-Re-land only after that race is fixed at the source in the app's
-surface/window teardown; do not band-aid by re-adding renderer throttling.
-The prebuilt release and checksum pin for `c25020f99` remain valid for the
-re-land.
+`main`) was pinned on August 4, 2026 and REVERTED the same day. The initial
+write-up attributed the CI failures to a Swift-side window-teardown race
+masked by incidental render-thread serialization; closer reading of the
+renderer code found the actual mechanism instead: on CI's virtual display
+every surface is permanently occluded, and the hard skip left
+`ghostty_surface_read_text` (used by the app's socket event-subscription
+polling; locks `renderer_state.mutex`) hanging forever, because
+`scrollbar_dirty` is set inside `updateFrame` but only cleared inside
+`drawFrame`, and `drawFrame` is *also* gated off while invisible — the skip
+left that state machine with no live half. (A separate, unrelated
+use-after-free via stale surface userdata in the `.scrollbar` mailbox path
+was also found and fixed app-side during this investigation.)
+
+Section 8 was re-landed on August 5, 2026 as a throttle instead of a hard
+skip (`08bac45e9`, branch `perf/occluded-update-frame-throttle`): call
+`updateFrame` on every wakeup while visible (unchanged from upstream), but
+at most once per 250ms while occluded, so anything gated behind
+`updateFrame` — including the scrollbar handshake above — keeps making
+forward progress instead of stalling. See section 8 below for the full
+rationale. The prebuilt release and checksum pin for `c25020f99` are no
+longer relevant; `08bac45e9` has its own pin.
 
 ### 1) macOS display link restart on display changes
 
@@ -123,16 +134,19 @@ tend to conflict together during rebases.
   - Allows the host app to provide the terminal background via `CALayer.backgroundColor` for instant coverage during view resizes, avoiding alpha double-stacking.
   - Replays the layer-background restore on top of the refreshed Ghostty base so Programa keeps the resize-coverage fix after the upstream sync.
 
-### 8) Occluded-surface frame-generation skip
+### 8) Occluded-surface frame-generation throttle
 
-- Commit: `c25020f99` (perf(renderer): skip frame generation for occluded surfaces, force full rebuild on re-visibility)
+- Commit: `08bac45e9` (perf(renderer): throttle instead of skip frame generation for occluded surfaces), superseding the reverted `c25020f99` skip on branch `perf/occluded-update-frame-throttle`
 - Files:
   - `src/renderer/Thread.zig`
 - Summary:
-  - `renderCallback` skips `updateFrame` while `flags.visible` is false — previously every PTY output burst ran full frame generation (terminal mutex, render-state rebuild) for occluded surfaces, with only the GPU `drawFrame` gated. Dominant idle-CPU cost for hidden-but-busy agent panes.
-  - `drainMailbox`'s `.visible` false→true transition calls `renderer.markDirty()` to force one full rebuild at un-occlude. Terminal-side dirty tracking is level-triggered (bits accumulate until consumed; dimensions/viewport compared directly), so the skip is lossless; the forced rebuild additionally covers any renderer-side cache staleness.
+  - `renderCallback` previously called `updateFrame` unconditionally on every wakeup (i.e. every PTY output burst), even for surfaces the app has told us are fully occluded. That call locks the terminal mutex, consumes dirty tracking, and rebuilds render state — the dominant idle-CPU cost for hidden-but-busy surfaces (e.g. background agent panes).
+  - The first attempt at fixing this (`c25020f99`) hard-skipped `updateFrame` entirely while occluded. That broke anything with only half its state machine living inside `updateFrame`: `scrollbar_dirty` is set inside `updateFrame` (generic.zig) but only cleared inside `drawFrame`, and `drawFrame` is *also* gated off while invisible. On CI, where every surface is permanently occluded on the virtual display, this manifested as `ghostty_surface_read_text` (locks `renderer_state.mutex`; used by the app's socket event-subscription polling) hanging indefinitely.
+  - The current implementation throttles instead of skipping: `updateFrame` still runs on every wakeup while visible (unchanged from upstream), and while occluded it runs at most once per `OCCLUDED_UPDATE_INTERVAL_MS` (250ms / 4Hz), tracked via a monotonic `std.time.Instant` timestamp on `Thread` that resets to `null` on the visible→occluded transition so the first occluded update fires immediately. PTY-burst wakeups for a busy hidden surface can arrive at 60-120Hz, so this is a ~95-98% reduction in frame-generation work — nearly all of the CPU win of the hard skip — while guaranteeing anything gated behind `updateFrame` keeps making forward progress.
+  - `drainMailbox`'s `.visible` false→true transition still calls `renderer.markDirty()` to force one full rebuild at un-occlude, unchanged from the original skip implementation. Terminal-side dirty tracking is level-triggered (bits accumulate until consumed; dimensions/viewport compared directly), so this remains correctness-optional but cheap insurance against renderer-side cache staleness.
+  - Merge gate for this fork branch is 3 consecutive green CI runs before it lands on fork `main` — the failure mode that motivated the throttle (CI hangs on an occluded virtual display) is probabilistic, not deterministic.
 
-The fork branch HEAD is now the section 8 occluded-render skip commit.
+The fork branch HEAD is now the section 8 occluded-render throttle commit.
 
 ## Upstreamed fork changes
 
@@ -187,10 +201,14 @@ These files change frequently upstream; be careful when rebasing the fork:
     background panes can start unfocused without synthesizing a focus-loss transition during creation.
 
 - `src/renderer/Thread.zig`
-  - The occluded-render skip guards the ONLY `updateFrame` call site at our base. Upstream `main`
-    has since added another caller (`renderNow`) plus more visibility-adjacent logic — on the next
-    upstream sync, re-apply the `flags.visible` guard to EVERY `updateFrame` call site, and keep the
-    `markDirty()` force on the occluded→visible transition in `drainMailbox`.
+  - The occluded-render throttle guards the ONLY `updateFrame` call site at our base
+    (`renderCallback`). Upstream `main` has since added another caller (`renderNow`) plus more
+    visibility-adjacent logic — on the next upstream sync, re-apply the same throttle (call on every
+    wakeup while visible, at most once per `OCCLUDED_UPDATE_INTERVAL_MS` while occluded, using the
+    `last_occluded_update` timestamp on `Thread`) to EVERY `updateFrame` call site, not just
+    `renderCallback`. Do NOT go back to a hard `flags.visible` skip — see section 8 above for why
+    that broke `ghostty_surface_read_text` polling on CI's permanently-occluded virtual display.
+    Keep the `markDirty()` force on the occluded→visible transition in `drainMailbox`.
 
 - `src/termio/stream_handler.zig`
   - Keep DECSET 1004 enablement side-effect free. xterm-compatible focus reporting should only emit
