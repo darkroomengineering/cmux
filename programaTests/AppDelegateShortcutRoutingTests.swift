@@ -4623,9 +4623,18 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
     /// (`PROGRAMA_FORCE_OCCLUDED=1`, honored by
     /// `GhosttySurfaceScrollView.applyEffectiveOcclusion()`) with a live shell in each
     /// window -- exactly the kind of concurrent IO-thread callback traffic vs. main-thread
-    /// teardown that used to race. Bounded to ~20 iterations: this is inherently
-    /// probabilistic, and a higher count would only buy marginal extra confidence at the
-    /// cost of runtime; it is not meant to chase local determinism.
+    /// teardown that used to race. This same rapid create/close shape is also the one the
+    /// `windowObserverGeneration` guard in `GhosttySurfaceScrollView.viewDidMoveToWindow`
+    /// targets (a second, distinct teardown-race mechanism: an
+    /// `NSNotificationCenter.addObserver(queue: .main)` block already handed off to the
+    /// main `OperationQueue` before `removeObserver` runs for it). Making that exact
+    /// enqueue race deterministic would require a dedicated seam into
+    /// `GhosttySurfaceScrollView`'s private observer bookkeeping that doesn't exist today,
+    /// so per the test-quality policy for cases where a targeted deterministic repro isn't
+    /// practical yet, this tripwire's iteration count is bumped modestly (20 -> 28) instead
+    /// of adding a new seam-dependent test. Bounded rather than large: this is inherently
+    /// probabilistic, and a much higher count would only buy marginal extra confidence at
+    /// the cost of runtime; it is not meant to chase local determinism.
     ///
     /// NOTE: against the CURRENT (reverted, pre-occluded-render) ghostty framework, the
     /// crash this guards against is masked by incidental renderer serialization, so this
@@ -4646,7 +4655,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             }
         }
 
-        for iteration in 0..<20 {
+        for iteration in 0..<28 {
             let windowId = appDelegate.createMainWindow()
             guard window(withId: windowId) != nil else {
                 XCTFail("iteration \(iteration): expected test window")

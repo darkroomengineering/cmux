@@ -151,6 +151,18 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
     private var observers: [NSObjectProtocol] = []
     private var windowObservers: [NSObjectProtocol] = []
+    // Teardown-race guard (forensic evidence: 6/7 CI minidumps traced to a
+    // NotificationCenter.addObserver(queue: .main) block reached via
+    // _dispatch_call_block_and_release touching reused memory). NotificationCenter's
+    // removeObserver does NOT cancel a block already handed off to the main
+    // OperationQueue — during rapid window create/close, a block enqueued against
+    // the *previous* window/registration batch can still run after
+    // viewDidMoveToWindow has already torn down and re-registered observers for a
+    // new window. Every block captures the generation live at its own registration
+    // and no-ops if the instance has since moved on to a newer generation. Live
+    // (current) blocks always match, so #241 occlusion-heal semantics on
+    // didBecomeKey/didChangeOcclusionState are unaffected.
+    private var windowObserverGeneration: UInt64 = 0
     private var isLiveScrolling = false
     private var lastSentRow: Int?
     /// Tracks whether the user has scrolled away from the bottom to review scrollback.
@@ -696,6 +708,7 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        windowObserverGeneration &+= 1
         deferredSearchOverlayMutationWorkItem?.cancel()
         imageTransferIndicatorShowWorkItem?.cancel()
         dropZoneOverlayView.removeFromSuperview()
@@ -925,13 +938,15 @@ final class GhosttySurfaceScrollView: NSView {
         super.viewDidMoveToWindow()
         windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
         windowObservers.removeAll()
+        windowObserverGeneration &+= 1
+        let observerGeneration = windowObserverGeneration
         guard let window else { return }
         windowObservers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification,
             object: window,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
+            guard let self, self.windowObserverGeneration == observerGeneration else { return }
             let searchActive = self.surfaceView.terminalSurface?.searchState != nil
 #if DEBUG
             dlog("find.window.didBecomeKey surface=\(self.surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") searchActive=\(searchActive) focusTarget=\(self.searchFocusTarget) firstResponder=\(String(describing: self.window?.firstResponder))")
@@ -950,7 +965,8 @@ final class GhosttySurfaceScrollView: NSView {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            guard let self, let window = self.window else { return }
+            guard let self, self.windowObserverGeneration == observerGeneration,
+                  let window = self.window else { return }
             let searchActive = self.surfaceView.terminalSurface?.searchState != nil
             // Losing key window does not always trigger first-responder resignation, so force
             // the focused terminal view to yield responder to keep Ghostty cursor/focus state in sync.
@@ -974,7 +990,8 @@ final class GhosttySurfaceScrollView: NSView {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            guard let self, let window = self.window else { return }
+            guard let self, self.windowObserverGeneration == observerGeneration,
+                  let window = self.window else { return }
             self.updateWindowVisibility(window.occlusionState.contains(.visible) || window.isKeyWindow)
         })
         windowObservers.append(NotificationCenter.default.addObserver(
@@ -982,14 +999,16 @@ final class GhosttySurfaceScrollView: NSView {
             object: window,
             queue: .main
         ) { [weak self] _ in
-            self?.updateWindowVisibility(false)
+            guard let self, self.windowObserverGeneration == observerGeneration else { return }
+            self.updateWindowVisibility(false)
         })
         windowObservers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didDeminiaturizeNotification,
             object: window,
             queue: .main
         ) { [weak self] _ in
-            guard let self, let window = self.window else { return }
+            guard let self, self.windowObserverGeneration == observerGeneration,
+                  let window = self.window else { return }
             self.updateWindowVisibility(window.occlusionState.contains(.visible) || window.isKeyWindow)
         })
         updateWindowVisibility((window.occlusionState.contains(.visible) || window.isKeyWindow) && !window.isMiniaturized)
