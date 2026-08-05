@@ -2186,6 +2186,50 @@ final class WorkspaceSplitWorkingDirectoryTests: XCTestCase {
         throw XCTSkip("Debug-only regression test")
 #endif
     }
+
+    /// Regression test for the occluded-render re-land crash: 6 identical CI minidumps
+    /// symbolicated to `objc_retain` `EXC_BAD_ACCESS` in
+    /// `GhosttySurfaceCallbackContext.tabId.getter`, reached from
+    /// `GhosttyApp.callbackContext(from:)` resolving a `ghostty_surface_userdata` pointer
+    /// whose backing context had already been released by teardown. This exercises the
+    /// exact stale-pointer shape: capture the live userdata pointer, tear the surface down
+    /// through the real teardown path, then resolve that same pointer and assert it comes
+    /// back `nil` instead of dereferencing freed memory.
+    func testStaleSurfaceUserdataResolvesToNilInsteadOfCrashing() throws {
+#if DEBUG
+        let workspace = Workspace()
+        guard let sourcePanelId = workspace.focusedPanelId,
+              let sourcePanel = workspace.terminalPanel(for: sourcePanelId) else {
+            XCTFail("Expected focused terminal panel")
+            return
+        }
+
+        let window = try hostTerminalPanelInWindow(sourcePanel)
+        defer { window.orderOut(nil) }
+
+        guard let userdata = sourcePanel.surface.debugCallbackUserdataPointer() else {
+            XCTFail("Expected a live callback-context userdata pointer before teardown")
+            return
+        }
+
+        XCTAssertTrue(
+            GhosttyApp.debugCallbackContextResolves(from: userdata),
+            "Expected the live userdata pointer to resolve before teardown"
+        )
+
+        // Tear down through the real teardown path: this is the same release site
+        // (performSurfaceTeardown/liveSurfaceForGhosttyAccess's sibling) that frees the
+        // callback context in production.
+        sourcePanel.surface.replaceSurfaceWithFreedPointerForTesting()
+
+        XCTAssertFalse(
+            GhosttyApp.debugCallbackContextResolves(from: userdata),
+            "Expected a stale userdata pointer to resolve to nil instead of dereferencing freed memory"
+        )
+#else
+        throw XCTSkip("Debug-only regression test")
+#endif
+    }
 }
 
 

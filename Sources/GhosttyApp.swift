@@ -66,6 +66,81 @@ final class GhosttySurfaceCallbackContext {
     }
 }
 
+/// Registry of currently-live `GhosttySurfaceCallbackContext` userdata pointers.
+///
+/// Ghostty can invoke callbacks carrying a surface's `ghostty_surface_userdata` pointer
+/// well after the surface itself has been torn down -- e.g. a `.scrollbar` surface message
+/// enqueued by the renderer thread (ghostty/src/renderer/generic.zig:1477-1483) and later
+/// drained on main via `App.tick` -> `drainMailbox` -> `Surface.updateScrollbar` ->
+/// `performAction`, or a clipboard read/confirm callback invoked synchronously off-main
+/// (see `runtimeReadClipboardCallback` and `confirm_read_clipboard_cb` below). Resolving
+/// `Unmanaged.fromOpaque(_:).takeUnretainedValue()` on a pointer whose backing object was
+/// already released is undefined behavior: it crashed as an `objc_retain` `EXC_BAD_ACCESS`
+/// in `GhosttySurfaceCallbackContext.tabId.getter` in 6 identical CI minidumps (and once as
+/// `doesNotRecognizeSelector`, when the freed page had been reused by a live object of a
+/// different class).
+///
+/// `read_clipboard_cb`/`confirm_read_clipboard_cb` resolve this off the ghostty IO thread
+/// (see the "off-main" comment on `runtimeReadClipboardCallback` below, and
+/// `GhosttySurfaceCallbackContext`'s own doc comment) -- so a main-actor-only registry is
+/// NOT sound here. This uses a lock instead. `register`/`release`/`resolve` all take the
+/// same lock, and `resolve` copies out the needed value fields (`surfaceId`/`tabId`) into a
+/// plain struct while still holding it, so no caller anywhere ever sees a strong/unretained
+/// reference to the live class outside that critical section -- a concurrent `release` can
+/// never race a concurrent `resolve` into observing a pointer as "live" and then reading a
+/// freed object.
+enum GhosttySurfaceUserdataRegistry {
+    private static let lock = NSLock()
+    private static var livePointers: Set<UnsafeMutableRawPointer> = []
+
+    /// Call once, right after creating the context, before handing its pointer to ghostty
+    /// (`ghostty_surface_new`/`ghostty_surface_config_s.userdata`).
+    static func register(_ pointer: UnsafeMutableRawPointer) {
+        lock.lock()
+        livePointers.insert(pointer)
+        lock.unlock()
+    }
+
+    /// Unregisters `unmanaged`'s pointer and releases it, atomically with respect to
+    /// `resolve(from:)`. Use this instead of calling `.release()` directly at every
+    /// teardown site, so a concurrent resolver can never observe a pointer as live after
+    /// it's been freed.
+    static func release(_ unmanaged: Unmanaged<GhosttySurfaceCallbackContext>?) {
+        guard let unmanaged else { return }
+        let pointer = unmanaged.toOpaque()
+        lock.lock()
+        livePointers.remove(pointer)
+        lock.unlock()
+        unmanaged.release()
+    }
+
+    /// Resolves `pointer` to a value snapshot of its `GhosttySurfaceCallbackContext`, or
+    /// `nil` if `pointer` is nil or stale (already torn down). Safe to call from any
+    /// thread.
+    static func resolve(from pointer: UnsafeMutableRawPointer?) -> GhosttySurfaceCallbackSnapshot? {
+        guard let pointer else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        guard livePointers.contains(pointer) else {
+#if DEBUG
+            dlog("surface.userdata stale pointer rejected ptr=\(pointer)")
+#endif
+            return nil
+        }
+        let context = Unmanaged<GhosttySurfaceCallbackContext>.fromOpaque(pointer).takeUnretainedValue()
+        return GhosttySurfaceCallbackSnapshot(surfaceId: context.surfaceId, tabId: context.tabId)
+    }
+}
+
+/// Value snapshot of a `GhosttySurfaceCallbackContext`, taken atomically with the liveness
+/// check in `GhosttySurfaceUserdataRegistry.resolve(from:)`. Callers never see the live
+/// class reference itself, so there's no way to retain (or read a property of) a
+/// `GhosttySurfaceCallbackContext` from outside that registry's lock.
+struct GhosttySurfaceCallbackSnapshot {
+    let surfaceId: UUID
+    let tabId: UUID?
+}
+
 // Minimal Ghostty wrapper for terminal rendering
 // This uses libghostty (GhosttyKit.xcframework) for actual terminal emulation
 
@@ -1486,9 +1561,8 @@ class GhosttyApp {
         }
     }
 
-    private static func callbackContext(from userdata: UnsafeMutableRawPointer?) -> GhosttySurfaceCallbackContext? {
-        guard let userdata else { return nil }
-        return Unmanaged<GhosttySurfaceCallbackContext>.fromOpaque(userdata).takeUnretainedValue()
+    private static func callbackContext(from userdata: UnsafeMutableRawPointer?) -> GhosttySurfaceCallbackSnapshot? {
+        GhosttySurfaceUserdataRegistry.resolve(from: userdata)
     }
 
     // MARK: - Main-thread-only live object resolution
@@ -2234,4 +2308,16 @@ class GhosttyApp {
             "\(timestamp) seq=\(sequence) t+\(String(format: "%.3f", uptimeMs))ms thread=\(threadLabel) frame60=\(frame60) frame120=\(frame120) cmux bg: \(message)\n"
         backgroundLogWriter.append(line)
     }
+
+#if DEBUG
+    /// Test-only seam exposing the private `callbackContext(from:)` resolution (which
+    /// wraps `GhosttySurfaceUserdataRegistry.resolve(from:)`) so tests can verify a stale
+    /// userdata pointer resolves to `nil` instead of dereferencing freed memory. Widened
+    /// from `private` to an internal, DEBUG-only static func rather than exposing the
+    /// registry or the callback context type directly, matching the DEBUG-only test
+    /// scaffolding pattern used elsewhere (e.g. `TerminalSurface.replaceSurfaceWithFreedPointerForTesting`).
+    static func debugCallbackContextResolves(from userdata: UnsafeMutableRawPointer?) -> Bool {
+        callbackContext(from: userdata) != nil
+    }
+#endif
 }

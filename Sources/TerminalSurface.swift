@@ -653,7 +653,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 "registryOwner=\(registeredOwnerToken)"
             )
 #endif
-            callbackContext?.release()
+            GhosttySurfaceUserdataRegistry.release(callbackContext)
             return nil
         }
         return surface
@@ -903,7 +903,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 "workspace=\(tabId.uuidString.prefix(5))"
             )
 #endif
-            callbackContext?.release()
+            GhosttySurfaceUserdataRegistry.release(callbackContext)
             tapContext?.release()
             return
         }
@@ -911,7 +911,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
 #if DEBUG
         if runtimeSurfaceFreedOutOfBandForTesting {
             runtimeSurfaceFreedOutOfBandForTesting = false
-            callbackContext?.release()
+            GhosttySurfaceUserdataRegistry.release(callbackContext)
             tapContext?.release()
             return
         }
@@ -933,7 +933,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
             // it's torn down.
             SessionWALStore.shared.unregister(surface: surfaceToFree, surfaceId: surfaceIdForTap, deleteDirectory: true)
             ghostty_surface_free(surfaceToFree)
-            callbackContext?.release()
+            GhosttySurfaceUserdataRegistry.release(callbackContext)
             tapContext?.release()
 #if DEBUG
             dlog(
@@ -1156,8 +1156,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
             nsview: Unmanaged.passUnretained(view).toOpaque()
         ))
         let callbackContext = Unmanaged.passRetained(GhosttySurfaceCallbackContext(surfaceId: id, tabId: tabId))
+        GhosttySurfaceUserdataRegistry.register(callbackContext.toOpaque())
         surfaceConfig.userdata = callbackContext.toOpaque()
-        surfaceCallbackContext?.release()
+        GhosttySurfaceUserdataRegistry.release(surfaceCallbackContext)
         surfaceCallbackContext = callbackContext
         surfaceConfig.scale_factor = scaleFactors.layer
         surfaceConfig.context = surfaceContext
@@ -1418,7 +1419,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
             pendingReviveSeed = nil
             pendingReviveWinchPGID = nil
             pendingReviveWinchChildPID = nil
-            surfaceCallbackContext?.release()
+            GhosttySurfaceUserdataRegistry.release(surfaceCallbackContext)
             surfaceCallbackContext = nil
             print("Failed to create ghostty surface")
             #if DEBUG
@@ -2363,6 +2364,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
         needsConfirmCloseOverrideForTesting = value
     }
 
+    /// Test-only seam exposing the raw `ghostty_surface_userdata` pointer this surface
+    /// currently owns, so a test can capture it before teardown and then attempt to
+    /// resolve it afterward (`GhosttyApp.debugCallbackContextResolves(from:)`) to prove a
+    /// stale pointer is rejected instead of dereferencing freed memory.
+    @MainActor
+    func debugCallbackUserdataPointer() -> UnsafeMutableRawPointer? {
+        surfaceCallbackContext?.toOpaque()
+    }
+
     /// Test-only helper to deterministically simulate a released runtime surface.
     @MainActor
     func releaseSurfaceForTesting() {
@@ -2372,7 +2382,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         outputTapContext = nil
 
         guard let surfaceToFree = surface else {
-            callbackContext?.release()
+            GhosttySurfaceUserdataRegistry.release(callbackContext)
             tapContext?.release()
             return
         }
@@ -2382,7 +2392,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // Test-only teardown, not a real close: keep the WAL directory.
         SessionWALStore.shared.unregister(surface: surfaceToFree, surfaceId: id.uuidString)
         ghostty_surface_free(surfaceToFree)
-        callbackContext?.release()
+        GhosttySurfaceUserdataRegistry.release(callbackContext)
         tapContext?.release()
     }
 
@@ -2398,7 +2408,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         outputTapContext = nil
 
         guard let surfaceToFree = surface else {
-            callbackContext?.release()
+            GhosttySurfaceUserdataRegistry.release(callbackContext)
             tapContext?.release()
             return
         }
@@ -2408,7 +2418,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         SessionWALStore.shared.unregister(surface: surfaceToFree, surfaceId: id.uuidString)
         ghostty_surface_free(surfaceToFree)
         runtimeSurfaceFreedOutOfBandForTesting = true
-        callbackContext?.release()
+        GhosttySurfaceUserdataRegistry.release(callbackContext)
         tapContext?.release()
     }
 #endif
