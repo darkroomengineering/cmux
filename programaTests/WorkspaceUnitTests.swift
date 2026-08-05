@@ -2195,6 +2195,14 @@ final class WorkspaceSplitWorkingDirectoryTests: XCTestCase {
     /// exact stale-pointer shape: capture the live userdata pointer, tear the surface down
     /// through the real teardown path, then resolve that same pointer and assert it comes
     /// back `nil` instead of dereferencing freed memory.
+    ///
+    /// Mechanism note: the fix originally shipped in #262 kept a `Set` of live pointers and
+    /// still dereferenced `context.tabId` (the crash site above) under the registry's lock.
+    /// A follow-up made `GhosttySurfaceUserdataRegistry` own the `(surfaceId, tabId)` data
+    /// directly in a dictionary keyed by pointer, so `resolve(from:)` is now a pure lookup
+    /// that never dereferences the pointer as an object at all -- this test's assertions
+    /// are unchanged, but the "instead of crashing" is now structurally guaranteed rather
+    /// than dependent on the liveness check running before the dereference.
     func testStaleSurfaceUserdataResolvesToNilInsteadOfCrashing() throws {
 #if DEBUG
         let workspace = Workspace()
@@ -2225,6 +2233,48 @@ final class WorkspaceSplitWorkingDirectoryTests: XCTestCase {
         XCTAssertFalse(
             GhosttyApp.debugCallbackContextResolves(from: userdata),
             "Expected a stale userdata pointer to resolve to nil instead of dereferencing freed memory"
+        )
+#else
+        throw XCTSkip("Debug-only regression test")
+#endif
+    }
+
+    /// Pins new behavior from the registry redesign: `TerminalSurface.updateWorkspaceId`
+    /// must propagate the new `tabId` into `GhosttySurfaceUserdataRegistry`'s own snapshot,
+    /// not just onto the (no-longer-read-by-callbacks) `GhosttySurfaceCallbackContext`
+    /// instance, or a callback resolving this pointer after a workspace reassignment would
+    /// see a stale `tabId`.
+    func testSurfaceUserdataResolvesUpdatedTabIdAfterWorkspaceReassignment() throws {
+#if DEBUG
+        let workspace = Workspace()
+        guard let sourcePanelId = workspace.focusedPanelId,
+              let sourcePanel = workspace.terminalPanel(for: sourcePanelId) else {
+            XCTFail("Expected focused terminal panel")
+            return
+        }
+
+        let window = try hostTerminalPanelInWindow(sourcePanel)
+        defer { window.orderOut(nil) }
+
+        guard let userdata = sourcePanel.surface.debugCallbackUserdataPointer() else {
+            XCTFail("Expected a live callback-context userdata pointer")
+            return
+        }
+
+        let originalTabId = GhosttyApp.debugCallbackContextTabId(from: userdata)
+
+        let reassignedTabId = UUID()
+        sourcePanel.surface.updateWorkspaceId(reassignedTabId)
+
+        XCTAssertNotEqual(
+            originalTabId,
+            reassignedTabId,
+            "Test setup invariant: the reassigned tabId must actually differ from the original"
+        )
+        XCTAssertEqual(
+            GhosttyApp.debugCallbackContextTabId(from: userdata),
+            reassignedTabId,
+            "Expected the registry's stored snapshot to reflect the reassigned tabId, since callbacks resolve tabId from the registry, not from the callback-context instance"
         )
 #else
         throw XCTSkip("Debug-only regression test")

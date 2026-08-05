@@ -385,9 +385,11 @@ final class TerminalSurface: Identifiable, ObservableObject {
         tabId = newTabId
         attachedView?.tabId = newTabId
         surfaceView.tabId = newTabId
-        // Called on main (this whole method mutates main-thread-only view state) --
-        // satisfies GhosttySurfaceCallbackContext.updateTabId's main-thread contract.
-        surfaceCallbackContext?.takeUnretainedValue().updateTabId(newTabId)
+        // Keep the registry's snapshot in sync so callbacks resolving this pointer see the
+        // new tabId -- the registry (not this object) is what callbacks actually read.
+        if let pointer = surfaceCallbackContext?.toOpaque() {
+            GhosttySurfaceUserdataRegistry.updateTabId(pointer: pointer, tabId: newTabId)
+        }
     }
 
     private static func mergedNormalizedEnvironment(
@@ -1155,8 +1157,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
         surfaceConfig.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
             nsview: Unmanaged.passUnretained(view).toOpaque()
         ))
-        let callbackContext = Unmanaged.passRetained(GhosttySurfaceCallbackContext(surfaceId: id, tabId: tabId))
-        GhosttySurfaceUserdataRegistry.register(callbackContext.toOpaque())
+        let callbackContext = Unmanaged.passRetained(GhosttySurfaceCallbackContext(surfaceId: id))
+        GhosttySurfaceUserdataRegistry.register(callbackContext.toOpaque(), surfaceId: id, tabId: tabId)
         surfaceConfig.userdata = callbackContext.toOpaque()
         GhosttySurfaceUserdataRegistry.release(surfaceCallbackContext)
         surfaceCallbackContext = callbackContext

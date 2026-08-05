@@ -38,35 +38,20 @@ private func programaRuntimeReadClipboardCallback(
 // `(tabId, surfaceId)` through the tab manager / workspace panels registry -- see
 // `GhosttyApp.resolveTerminalPanel(tabId:surfaceId:)` and friends.
 final class GhosttySurfaceCallbackContext {
-    /// Immutable for the lifetime of the surface.
+    /// Immutable for the lifetime of the surface. Kept only as an identity/lifetime token
+    /// for `Unmanaged.passRetained`/`.release()` bookkeeping -- callbacks resolve
+    /// `(surfaceId, tabId)` from `GhosttySurfaceUserdataRegistry`'s own dictionary (see its
+    /// doc comment), never by dereferencing this object, so it carries no mutable state of
+    /// its own.
     let surfaceId: UUID
 
-    // `tabId` can change (a surface can be reassigned to a different workspace via
-    // `TerminalSurface.updateWorkspaceId`). Written only from main; read from any thread,
-    // so it's guarded by a lock rather than left as a plain `var`.
-    private let tabIdLock = NSLock()
-    private var _tabId: UUID?
-
-    init(surfaceId: UUID, tabId: UUID?) {
+    init(surfaceId: UUID) {
         self.surfaceId = surfaceId
-        self._tabId = tabId
-    }
-
-    var tabId: UUID? {
-        tabIdLock.lock()
-        defer { tabIdLock.unlock() }
-        return _tabId
-    }
-
-    /// Must only be called from the main thread.
-    func updateTabId(_ newTabId: UUID?) {
-        tabIdLock.lock()
-        _tabId = newTabId
-        tabIdLock.unlock()
     }
 }
 
-/// Registry of currently-live `GhosttySurfaceCallbackContext` userdata pointers.
+/// Registry of currently-live `GhosttySurfaceCallbackContext` userdata pointers, mapped to
+/// a value snapshot of the data callbacks need (`surfaceId`/`tabId`).
 ///
 /// Ghostty can invoke callbacks carrying a surface's `ghostty_surface_userdata` pointer
 /// well after the surface itself has been torn down -- e.g. a `.scrollbar` surface message
@@ -81,23 +66,27 @@ final class GhosttySurfaceCallbackContext {
 /// different class).
 ///
 /// `read_clipboard_cb`/`confirm_read_clipboard_cb` resolve this off the ghostty IO thread
-/// (see the "off-main" comment on `runtimeReadClipboardCallback` below, and
-/// `GhosttySurfaceCallbackContext`'s own doc comment) -- so a main-actor-only registry is
-/// NOT sound here. This uses a lock instead. `register`/`release`/`resolve` all take the
-/// same lock, and `resolve` copies out the needed value fields (`surfaceId`/`tabId`) into a
-/// plain struct while still holding it, so no caller anywhere ever sees a strong/unretained
-/// reference to the live class outside that critical section -- a concurrent `release` can
-/// never race a concurrent `resolve` into observing a pointer as "live" and then reading a
-/// freed object.
+/// (see the "off-main" comment on `runtimeReadClipboardCallback` below) -- so a
+/// main-actor-only registry is NOT sound here. This uses a lock instead. Unlike the
+/// original fix (#262), the registry now OWNS the data: `register`/`updateTabId` store the
+/// snapshot directly, keyed by pointer, so `resolve(from:)` is a pure dictionary lookup --
+/// it never calls `Unmanaged.fromOpaque(_:).takeUnretainedValue()` and never touches the
+/// `GhosttySurfaceCallbackContext` instance at all. This removes two defects the pointer-set
+/// version had: (1) the DEBUG stale-pointer `dlog` used to fire while `lock` was held, and
+/// dlog does synchronous real-time file I/O -- on the frequent stale-teardown path under
+/// surface churn that serialized every ghostty callback on file I/O; now the log is emitted
+/// after the lock is released. (2) `resolve` used to read `context.tabId`, which took the
+/// context's own lock while still holding the registry lock (a nested-lock pattern) and
+/// required dereferencing a pointer that is exactly what we're trying to make un-dereferenceable.
 enum GhosttySurfaceUserdataRegistry {
     private static let lock = NSLock()
-    private static var livePointers: Set<UnsafeMutableRawPointer> = []
+    private static var liveContexts: [UnsafeMutableRawPointer: GhosttySurfaceCallbackSnapshot] = [:]
 
     /// Call once, right after creating the context, before handing its pointer to ghostty
     /// (`ghostty_surface_new`/`ghostty_surface_config_s.userdata`).
-    static func register(_ pointer: UnsafeMutableRawPointer) {
+    static func register(_ pointer: UnsafeMutableRawPointer, surfaceId: UUID, tabId: UUID?) {
         lock.lock()
-        livePointers.insert(pointer)
+        liveContexts[pointer] = GhosttySurfaceCallbackSnapshot(surfaceId: surfaceId, tabId: tabId)
         lock.unlock()
     }
 
@@ -109,33 +98,46 @@ enum GhosttySurfaceUserdataRegistry {
         guard let unmanaged else { return }
         let pointer = unmanaged.toOpaque()
         lock.lock()
-        livePointers.remove(pointer)
+        liveContexts.removeValue(forKey: pointer)
         lock.unlock()
         unmanaged.release()
     }
 
-    /// Resolves `pointer` to a value snapshot of its `GhosttySurfaceCallbackContext`, or
-    /// `nil` if `pointer` is nil or stale (already torn down). Safe to call from any
-    /// thread.
+    /// Updates the stored snapshot's `tabId` for an already-registered pointer, so a
+    /// surface reassigned to a different workspace (`TerminalSurface.updateWorkspaceId`)
+    /// doesn't leave callbacks resolving a stale `tabId`. No-op if `pointer` isn't
+    /// currently registered (e.g. called racing a teardown).
+    static func updateTabId(pointer: UnsafeMutableRawPointer, tabId: UUID?) {
+        lock.lock()
+        if let existing = liveContexts[pointer] {
+            liveContexts[pointer] = GhosttySurfaceCallbackSnapshot(surfaceId: existing.surfaceId, tabId: tabId)
+        }
+        lock.unlock()
+    }
+
+    /// Resolves `pointer` to a value snapshot, or `nil` if `pointer` is nil or stale
+    /// (already torn down). Safe to call from any thread. Does the minimum work under
+    /// `lock` (a dictionary lookup/copy) and never dereferences the pointer as an object --
+    /// the DEBUG stale-pointer log, if it fires, is emitted after the lock is released.
     static func resolve(from pointer: UnsafeMutableRawPointer?) -> GhosttySurfaceCallbackSnapshot? {
         guard let pointer else { return nil }
         lock.lock()
-        defer { lock.unlock() }
-        guard livePointers.contains(pointer) else {
+        let snapshot = liveContexts[pointer]
+        lock.unlock()
 #if DEBUG
+        if snapshot == nil {
             dlog("surface.userdata stale pointer rejected ptr=\(pointer)")
-#endif
-            return nil
         }
-        let context = Unmanaged<GhosttySurfaceCallbackContext>.fromOpaque(pointer).takeUnretainedValue()
-        return GhosttySurfaceCallbackSnapshot(surfaceId: context.surfaceId, tabId: context.tabId)
+#endif
+        return snapshot
     }
 }
 
-/// Value snapshot of a `GhosttySurfaceCallbackContext`, taken atomically with the liveness
-/// check in `GhosttySurfaceUserdataRegistry.resolve(from:)`. Callers never see the live
-/// class reference itself, so there's no way to retain (or read a property of) a
-/// `GhosttySurfaceCallbackContext` from outside that registry's lock.
+/// Value snapshot of the data a callback needs for a live `GhosttySurfaceCallbackContext`
+/// pointer, owned directly by `GhosttySurfaceUserdataRegistry`'s dictionary. Callers never
+/// see the live class reference itself -- there's no way to retain (or read a property of)
+/// a `GhosttySurfaceCallbackContext` from a callback at all, since `resolve(from:)` never
+/// dereferences the pointer.
 struct GhosttySurfaceCallbackSnapshot {
     let surfaceId: UUID
     let tabId: UUID?
@@ -2318,6 +2320,16 @@ class GhosttyApp {
     /// scaffolding pattern used elsewhere (e.g. `TerminalSurface.replaceSurfaceWithFreedPointerForTesting`).
     static func debugCallbackContextResolves(from userdata: UnsafeMutableRawPointer?) -> Bool {
         callbackContext(from: userdata) != nil
+    }
+
+    /// Test-only seam exposing the resolved snapshot's `tabId`, so a test can verify
+    /// `TerminalSurface.updateWorkspaceId` propagates through to
+    /// `GhosttySurfaceUserdataRegistry.updateTabId(pointer:tabId:)` and is visible to a
+    /// subsequent `resolve(from:)` -- i.e. the same pointer callbacks would see. Callers
+    /// should first assert `debugCallbackContextResolves(from:)` to distinguish "pointer is
+    /// stale" from "tabId happens to be nil".
+    static func debugCallbackContextTabId(from userdata: UnsafeMutableRawPointer?) -> UUID? {
+        callbackContext(from: userdata)?.tabId
     }
 #endif
 }
