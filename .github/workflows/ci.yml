@@ -357,6 +357,28 @@ jobs:
           mkdir -p /tmp/programa-unit-xcresults
           cp -R "$HOME/.local/state/ghostty/crash" /tmp/programa-unit-xcresults/ghostty-crash 2>/dev/null || true
 
+      - name: Collect debug symbols for crash symbolication
+        if: failure()
+        # The crash reports above are sentry-native minidumps, which are useless
+        # without the exact binary that produced them: a CI-only Debug build that
+        # exists nowhere else. Two separate investigations of the same crash-loop
+        # burned hours doing unsymbolicated image-offset matching because this
+        # step did not exist. Copy the built products (Debug carries DWARF inside
+        # the binaries) plus any dSYMs, so `lldb -o "target create --core <dmp>"`
+        # can resolve frames to function names.
+        run: |
+          set -uo pipefail
+          DERIVED="${PROGRAMA_DERIVED_DATA_DIR:-$HOME/Library/Developer/Xcode/DerivedData}"
+          OUT=/tmp/programa-unit-xcresults/symbols
+          mkdir -p "$OUT"
+          find "$DERIVED" -maxdepth 5 -type d \( -name '*.app' -o -name '*.dSYM' \) -print0 2>/dev/null \
+            | xargs -0 -I{} cp -R {} "$OUT/" 2>/dev/null || true
+          # UUID index so a dump's debug_id can be matched to a file without
+          # unpacking every bundle.
+          find "$OUT" -type f -perm +111 -print0 2>/dev/null \
+            | xargs -0 dwarfdump --uuid 2>/dev/null > "$OUT/uuids.txt" || true
+          du -sh "$OUT" || true
+
       - name: Upload unit-test result bundles on failure
         if: failure()
         uses: actions/upload-artifact@v4
