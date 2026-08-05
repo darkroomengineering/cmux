@@ -24,23 +24,45 @@ private func programaRuntimeReadClipboardCallback(
 
 // Widened from private to internal: also constructed directly from
 // TerminalSurface.swift (Nuclear Review #97 split).
+//
+// DATA-ONLY. Ghostty's IO thread invokes callbacks (clipboard, actions) that read this
+// object SYNCHRONOUSLY, before any main-thread hop. It must therefore never hold a
+// reference -- weak or strong -- to a Swift UI/runtime object such as `GhosttyNSView` or
+// `TerminalSurface`. Reading a weak reference to an object that may be mid-deinit on
+// another thread races Swift's ARC weak-reference side table; this is exactly what used
+// to crash rapid window create/close cycles ("Object was retained too many times",
+// "Weak reference loaded from ... not in the weak references table"). Mirrors
+// `SessionWALStore.Context`'s data-only contract (see its doc comment).
+//
+// Live objects are resolved only from inside a main-thread hop, by looking up
+// `(tabId, surfaceId)` through the tab manager / workspace panels registry -- see
+// `GhosttyApp.resolveTerminalPanel(tabId:surfaceId:)` and friends.
 final class GhosttySurfaceCallbackContext {
-    weak var surfaceView: GhosttyNSView?
-    weak var terminalSurface: TerminalSurface?
+    /// Immutable for the lifetime of the surface.
     let surfaceId: UUID
 
-    init(surfaceView: GhosttyNSView, terminalSurface: TerminalSurface) {
-        self.surfaceView = surfaceView
-        self.terminalSurface = terminalSurface
-        self.surfaceId = terminalSurface.id
+    // `tabId` can change (a surface can be reassigned to a different workspace via
+    // `TerminalSurface.updateWorkspaceId`). Written only from main; read from any thread,
+    // so it's guarded by a lock rather than left as a plain `var`.
+    private let tabIdLock = NSLock()
+    private var _tabId: UUID?
+
+    init(surfaceId: UUID, tabId: UUID?) {
+        self.surfaceId = surfaceId
+        self._tabId = tabId
     }
 
     var tabId: UUID? {
-        terminalSurface?.tabId ?? surfaceView?.tabId
+        tabIdLock.lock()
+        defer { tabIdLock.unlock() }
+        return _tabId
     }
 
-    var runtimeSurface: ghostty_surface_t? {
-        terminalSurface?.surface ?? surfaceView?.terminalSurface?.surface
+    /// Must only be called from the main thread.
+    func updateTabId(_ newTabId: UUID?) {
+        tabIdLock.lock()
+        _tabId = newTabId
+        tabIdLock.unlock()
     }
 }
 
@@ -93,13 +115,36 @@ class GhosttyApp {
         _ location: ghostty_clipboard_e,
         _ state: UnsafeMutableRawPointer?
     ) -> Bool {
-        guard let callbackContext = Self.callbackContext(from: userdata),
-              let requestSurface = callbackContext.runtimeSurface else { return false }
+        // Only value fields are read here, off-main -- see GhosttySurfaceCallbackContext's
+        // doc comment. All live-object resolution (including the ghostty_surface_t itself)
+        // happens on main below.
+        guard let callbackContext = Self.callbackContext(from: userdata) else { return false }
+        let callbackSurfaceId = callbackContext.surfaceId
+        let callbackTabId = callbackContext.tabId
 
         DispatchQueue.main.async {
+            let terminalSurface = MainActor.assumeIsolated {
+                Self.resolveTerminalSurface(tabId: callbackTabId, surfaceId: callbackSurfaceId)
+            }
+            // Deviation from the pre-fix synchronous behavior: we can no longer tell
+            // off-main whether the surface is still live, so this callback always
+            // returns `true` (accepted) below rather than synchronously falling back to
+            // `false` when the surface is already gone. If resolution fails here, the
+            // read silently completes as a no-op instead -- ghostty's clipboard-read
+            // request is simply never fulfilled, matching what already happened when the
+            // surface went away mid-flight in the old code.
+            guard let requestSurface: ghostty_surface_t = MainActor.assumeIsolated({
+                () -> ghostty_surface_t? in
+                terminalSurface?.liveSurfaceForGhosttyAccess(reason: "clipboard.read")
+            }) else { return }
+
             func completeClipboardRequest(with text: String) {
                 let finish = {
-                    guard callbackContext.runtimeSurface == requestSurface else { return }
+                    let currentSurface: ghostty_surface_t? = MainActor.assumeIsolated {
+                        () -> ghostty_surface_t? in
+                        terminalSurface?.liveSurfaceForGhosttyAccess(reason: "clipboard.complete")
+                    }
+                    guard currentSurface == requestSurface else { return }
                     text.withCString { ptr in
                         ghostty_surface_complete_clipboard_request(requestSurface, ptr, state, false)
                     }
@@ -129,7 +174,7 @@ class GhosttyApp {
             case .fileURLs(let fileURLs):
                 let operation = TerminalImageTransferOperation()
                 MainActor.assumeIsolated {
-                    callbackContext.terminalSurface?.hostedView.beginImageTransferIndicator(
+                    terminalSurface?.hostedView.beginImageTransferIndicator(
                         for: operation,
                         onCancel: {
                             completeClipboardRequest(with: "")
@@ -138,7 +183,7 @@ class GhosttyApp {
                 }
 
                 let target = MainActor.assumeIsolated {
-                    callbackContext.terminalSurface?.resolvedImageTransferTarget() ?? .local
+                    terminalSurface?.resolvedImageTransferTarget() ?? .local
                 }
                 let plan = TerminalImageTransferPlanner.plan(
                     fileURLs: fileURLs,
@@ -150,7 +195,7 @@ class GhosttyApp {
                     operation: operation,
                     uploadWorkspaceRemote: { fileURLs, operation, finish in
                         guard let workspace = MainActor.assumeIsolated({
-                            callbackContext.terminalSurface?.owningWorkspace()
+                            terminalSurface?.owningWorkspace()
                         }) else {
                             finish(.failure(NSError(domain: "programa.remote.paste", code: 3)))
                             GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
@@ -177,7 +222,7 @@ class GhosttyApp {
                     },
                     insertText: { text in
                         MainActor.assumeIsolated {
-                            callbackContext.terminalSurface?.hostedView.endImageTransferIndicator(
+                            terminalSurface?.hostedView.endImageTransferIndicator(
                                 for: operation
                             )
                         }
@@ -185,13 +230,13 @@ class GhosttyApp {
                     },
                     onFailure: { _ in
                         MainActor.assumeIsolated {
-                            callbackContext.terminalSurface?.hostedView.endImageTransferIndicator(
+                            terminalSurface?.hostedView.endImageTransferIndicator(
                                 for: operation
                             )
                         }
                         NSSound.beep()
 #if DEBUG
-                        dlog("terminal.remotePasteUpload.failed surface=\(callbackContext.surfaceId.uuidString.prefix(5))")
+                        dlog("terminal.remotePasteUpload.failed surface=\(callbackSurfaceId.uuidString.prefix(5))")
 #endif
                         completeClipboardRequest(with: "")
                     }
@@ -318,10 +363,23 @@ class GhosttyApp {
         )
         runtimeConfig.confirm_read_clipboard_cb = { userdata, content, state, _ in
             guard let content else { return }
-            guard let callbackContext = GhosttyApp.callbackContext(from: userdata),
-                  let surface = callbackContext.runtimeSurface else { return }
+            guard let callbackContext = GhosttyApp.callbackContext(from: userdata) else { return }
+            let callbackSurfaceId = callbackContext.surfaceId
+            let callbackTabId = callbackContext.tabId
+            // Snapshot the C string now -- `content` is only valid for the duration of
+            // this callback invocation, and resolving the live surface requires a
+            // main-thread hop (see GhosttySurfaceCallbackContext's doc comment).
+            let contentString = String(cString: content)
 
-            ghostty_surface_complete_clipboard_request(surface, content, state, true)
+            DispatchQueue.main.async {
+                guard let surface: ghostty_surface_t = MainActor.assumeIsolated({
+                    () -> ghostty_surface_t? in
+                    GhosttyApp.resolveLiveSurface(tabId: callbackTabId, surfaceId: callbackSurfaceId, reason: "clipboard.confirm")
+                }) else { return }
+                contentString.withCString { ptr in
+                    ghostty_surface_complete_clipboard_request(surface, ptr, state, true)
+                }
+            }
         }
         runtimeConfig.write_clipboard_cb = { _, location, content, len, _ in
             // Write clipboard
@@ -1433,6 +1491,41 @@ class GhosttyApp {
         return Unmanaged<GhosttySurfaceCallbackContext>.fromOpaque(userdata).takeUnretainedValue()
     }
 
+    // MARK: - Main-thread-only live object resolution
+    //
+    // `GhosttySurfaceCallbackContext` is data-only (see its doc comment) precisely because
+    // resolving live Swift UI/runtime objects must never happen on ghostty's IO thread.
+    // These helpers are the ONLY place callbacks resolve a live `TerminalPanel` /
+    // `TerminalSurface` / `GhosttyNSView` from a callback's `(tabId, surfaceId)` pair --
+    // callers MUST invoke them from inside a main-thread hop (`performOnMain`,
+    // `DispatchQueue.main.async` + `MainActor.assumeIsolated`, or a context already known
+    // to be on main).
+    @MainActor
+    private static func resolveTerminalPanel(tabId: UUID?, surfaceId: UUID?) -> TerminalPanel? {
+        guard let tabId, let surfaceId,
+              let app = AppDelegate.shared,
+              let manager = app.tabManagerFor(tabId: tabId) ?? app.tabManager,
+              let workspace = manager.tabs.first(where: { $0.id == tabId }) else {
+            return nil
+        }
+        return workspace.panels[surfaceId] as? TerminalPanel
+    }
+
+    @MainActor
+    private static func resolveTerminalSurface(tabId: UUID?, surfaceId: UUID?) -> TerminalSurface? {
+        resolveTerminalPanel(tabId: tabId, surfaceId: surfaceId)?.surface
+    }
+
+    @MainActor
+    private static func resolveSurfaceView(tabId: UUID?, surfaceId: UUID?) -> GhosttyNSView? {
+        resolveTerminalPanel(tabId: tabId, surfaceId: surfaceId)?.hostedView.surfaceView
+    }
+
+    @MainActor
+    private static func resolveLiveSurface(tabId: UUID?, surfaceId: UUID?, reason: String) -> ghostty_surface_t? {
+        resolveTerminalSurface(tabId: tabId, surfaceId: surfaceId)?.liveSurfaceForGhosttyAccess(reason: reason)
+    }
+
     private func handleAction(target: ghostty_target_s, action: ghostty_action_s) -> Bool {
         if target.tag != GHOSTTY_TARGET_SURFACE {
             if action.tag == GHOSTTY_ACTION_RELOAD_CONFIG ||
@@ -1573,22 +1666,29 @@ class GhosttyApp {
             return true
         }
 
-        guard let surfaceView = callbackContext?.surfaceView else { return false }
+        // The old code gated this whole switch on resolving `callbackContext?.surfaceView`
+        // -- a synchronous, off-main weak-reference read. That resolution is exactly the
+        // race that corrupted ARC's weak-ref side tables during rapid window teardown (see
+        // GhosttySurfaceCallbackContext's doc comment). The context is now data-only, so we
+        // gate on the presence of a live callback context instead; every case below
+        // resolves any live view/surface it needs only from inside a main-thread hop, via
+        // `callbackTabId`/`callbackSurfaceId`.
+        guard callbackContext != nil else { return false }
         if action.tag == GHOSTTY_ACTION_RELOAD_CONFIG ||
             action.tag == GHOSTTY_ACTION_CONFIG_CHANGE ||
             action.tag == GHOSTTY_ACTION_COLOR_CHANGE {
             logAction(
                 action,
                 target: target,
-                tabId: callbackTabId ?? surfaceView.tabId,
-                surfaceId: callbackSurfaceId ?? surfaceView.terminalSurface?.id
+                tabId: callbackTabId,
+                surfaceId: callbackSurfaceId
             )
         }
 
         switch action.tag {
         case GHOSTTY_ACTION_NEW_SPLIT:
-            guard let tabId = surfaceView.tabId,
-                  let surfaceId = surfaceView.terminalSurface?.id,
+            guard let tabId = callbackTabId,
+                  let surfaceId = callbackSurfaceId,
                   let direction = splitDirection(from: action.action.new_split) else {
                 return false
             }
@@ -1605,8 +1705,8 @@ class GhosttyApp {
             }
             return true
         case GHOSTTY_ACTION_GOTO_SPLIT:
-            guard let tabId = surfaceView.tabId,
-                  let surfaceId = surfaceView.terminalSurface?.id,
+            guard let tabId = callbackTabId,
+                  let surfaceId = callbackSurfaceId,
                   let direction = focusDirection(from: action.action.goto_split) else {
                 return false
             }
@@ -1615,8 +1715,8 @@ class GhosttyApp {
                 return tabManager.moveSplitFocus(tabId: tabId, surfaceId: surfaceId, direction: direction)
             }
         case GHOSTTY_ACTION_RESIZE_SPLIT:
-            guard let tabId = surfaceView.tabId,
-                  let surfaceId = surfaceView.terminalSurface?.id,
+            guard let tabId = callbackTabId,
+                  let surfaceId = callbackSurfaceId,
                   let direction = resizeDirection(from: action.action.resize_split.direction) else {
                 return false
             }
@@ -1631,7 +1731,7 @@ class GhosttyApp {
                 )
             }
         case GHOSTTY_ACTION_EQUALIZE_SPLITS:
-            guard let tabId = surfaceView.tabId else {
+            guard let tabId = callbackTabId else {
                 return false
             }
             return performOnMain {
@@ -1639,8 +1739,8 @@ class GhosttyApp {
                 return tabManager.equalizeSplits(tabId: tabId)
             }
         case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM:
-            guard let tabId = surfaceView.tabId,
-                  let surfaceId = surfaceView.terminalSurface?.id else {
+            guard let tabId = callbackTabId,
+                  let surfaceId = callbackSurfaceId else {
                 return false
             }
             return performOnMain {
@@ -1649,14 +1749,28 @@ class GhosttyApp {
             }
         case GHOSTTY_ACTION_SCROLLBAR:
             let scrollbar = GhosttyScrollbar(c: action.action.scrollbar)
-            surfaceView.enqueueScrollbarUpdate(scrollbar)
+            let scrollbarTabId = callbackTabId
+            let scrollbarSurfaceId = callbackSurfaceId
+            // `enqueueScrollbarUpdate` itself is thread-safe (internal lock + coalesced
+            // main-thread flush), but resolving the view it's called on must happen on
+            // main -- see the resolver helpers' doc comment.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    Self.resolveSurfaceView(tabId: scrollbarTabId, surfaceId: scrollbarSurfaceId)
+                }?.enqueueScrollbarUpdate(scrollbar)
+            }
             return true
         case GHOSTTY_ACTION_CELL_SIZE:
             let cellSize = CGSize(
                 width: CGFloat(action.action.cell_size.width),
                 height: CGFloat(action.action.cell_size.height)
             )
+            let cellSizeTabId = callbackTabId
+            let cellSizeSurfaceId = callbackSurfaceId
             DispatchQueue.main.async {
+                guard let surfaceView = MainActor.assumeIsolated({
+                    Self.resolveSurfaceView(tabId: cellSizeTabId, surfaceId: cellSizeSurfaceId)
+                }) else { return }
                 surfaceView.cellSize = cellSize
                 NotificationCenter.default.post(
                     name: .ghosttyDidUpdateCellSize,
@@ -1666,9 +1780,13 @@ class GhosttyApp {
             }
             return true
         case GHOSTTY_ACTION_START_SEARCH:
-            guard let terminalSurface = surfaceView.terminalSurface else { return true }
             let needle = action.action.start_search.needle.flatMap { String(cString: $0) }
+            let searchTabId = callbackTabId
+            let searchSurfaceId = callbackSurfaceId
             DispatchQueue.main.async {
+                guard let terminalSurface = MainActor.assumeIsolated({
+                    Self.resolveTerminalSurface(tabId: searchTabId, surfaceId: searchSurfaceId)
+                }) else { return }
                 if let searchState = terminalSurface.searchState {
                     if let needle, !needle.isEmpty {
                         searchState.needle = needle
@@ -1680,48 +1798,64 @@ class GhosttyApp {
             }
             return true
         case GHOSTTY_ACTION_END_SEARCH:
-            guard let terminalSurface = surfaceView.terminalSurface else { return true }
+            let endSearchTabId = callbackTabId
+            let endSearchSurfaceId = callbackSurfaceId
             DispatchQueue.main.async {
-                terminalSurface.searchState = nil
+                MainActor.assumeIsolated {
+                    Self.resolveTerminalSurface(tabId: endSearchTabId, surfaceId: endSearchSurfaceId)
+                }?.searchState = nil
             }
             return true
         case GHOSTTY_ACTION_SEARCH_TOTAL:
-            guard let terminalSurface = surfaceView.terminalSurface else { return true }
             let rawTotal = action.action.search_total.total
             let total: UInt? = rawTotal >= 0 ? UInt(rawTotal) : nil
+            let searchTotalTabId = callbackTabId
+            let searchTotalSurfaceId = callbackSurfaceId
             DispatchQueue.main.async {
-                terminalSurface.searchState?.total = total
+                MainActor.assumeIsolated {
+                    Self.resolveTerminalSurface(tabId: searchTotalTabId, surfaceId: searchTotalSurfaceId)
+                }?.searchState?.total = total
             }
             return true
         case GHOSTTY_ACTION_SEARCH_SELECTED:
-            guard let terminalSurface = surfaceView.terminalSurface else { return true }
             let rawSelected = action.action.search_selected.selected
             let selected: UInt? = rawSelected >= 0 ? UInt(rawSelected) : nil
+            let searchSelectedTabId = callbackTabId
+            let searchSelectedSurfaceId = callbackSurfaceId
             DispatchQueue.main.async {
-                terminalSurface.searchState?.selected = selected
+                MainActor.assumeIsolated {
+                    Self.resolveTerminalSurface(tabId: searchSelectedTabId, surfaceId: searchSelectedSurfaceId)
+                }?.searchState?.selected = selected
             }
             return true
         case GHOSTTY_ACTION_SET_TITLE:
             let title = action.action.set_title.title
                 .flatMap { String(cString: $0) } ?? ""
-            if let tabId = surfaceView.tabId,
-               let surfaceId = surfaceView.terminalSurface?.id {
+            if let tabId = callbackTabId,
+               let surfaceId = callbackSurfaceId {
                 // Coalesced (ported from upstream cmux c30733e5e6): shells/agent CLIs
                 // that rewrite the title on every render would otherwise flood the
                 // main actor with one NotificationCenter post per keystroke. The
                 // dispatcher guarantees the last title set within the window is
-                // always delivered.
-                titleUpdateDispatcher.setTitle(
-                    surfaceView: surfaceView,
-                    tabId: tabId,
-                    surfaceId: surfaceId,
-                    title: title
-                )
+                // always delivered. Resolving `surfaceView` requires a main-thread hop
+                // now, so this always dispatches to main first; `setTitle` itself is a
+                // no-op re-hop once already there.
+                DispatchQueue.main.async {
+                    let surfaceView = MainActor.assumeIsolated {
+                        Self.resolveSurfaceView(tabId: tabId, surfaceId: surfaceId)
+                    }
+                    self.titleUpdateDispatcher.setTitle(
+                        surfaceView: surfaceView,
+                        tabId: tabId,
+                        surfaceId: surfaceId,
+                        title: title
+                    )
+                }
             }
             return true
         case GHOSTTY_ACTION_PWD:
-            guard let tabId = surfaceView.tabId,
-                  let surfaceId = surfaceView.terminalSurface?.id else { return true }
+            guard let tabId = callbackTabId,
+                  let surfaceId = callbackSurfaceId else { return true }
             let pwd = action.action.pwd.pwd.flatMap { String(cString: $0) } ?? ""
             DispatchQueue.main.async {
                 AppDelegate.shared?.tabManagerFor(tabId: tabId)?.updateSurfaceDirectory(
@@ -1737,8 +1871,8 @@ class GhosttyApp {
             // `_PAUSE`, and `_INDETERMINATE` (and `_SET` with an unreported percent, -1) have
             // no representation in `SidebarProgressState` yet, so they retain the last known
             // value instead of guessing -- the run reads as "still going", not "finished".
-            guard let tabId = surfaceView.tabId,
-                  let surfaceId = surfaceView.terminalSurface?.id else { return true }
+            guard let tabId = callbackTabId,
+                  let surfaceId = callbackSurfaceId else { return true }
             let report = action.action.progress_report
             let state = report.state
             let rawProgress = report.progress
@@ -1763,8 +1897,8 @@ class GhosttyApp {
         case GHOSTTY_ACTION_COMMAND_FINISHED:
             // OSC 133 semantic prompt tracking. Plumbing-only: stores exit code + duration on
             // `Workspace.lastCommand`; no UI reads this yet.
-            guard let tabId = surfaceView.tabId,
-                  let surfaceId = surfaceView.terminalSurface?.id else { return true }
+            guard let tabId = callbackTabId,
+                  let surfaceId = callbackSurfaceId else { return true }
             let commandFinished = action.action.command_finished
             let exitCode = commandFinished.exit_code
             let durationNanoseconds = commandFinished.duration
@@ -1825,8 +1959,8 @@ class GhosttyApp {
             }
             return true
         case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
-            guard let tabId = surfaceView.tabId else { return true }
-            let surfaceId = surfaceView.terminalSurface?.id
+            guard let tabId = callbackTabId else { return true }
+            let surfaceId = callbackSurfaceId
             let actionTitle = action.action.desktop_notification.title
                 .flatMap { String(cString: $0) } ?? ""
             let actionBody = action.action.desktop_notification.body
@@ -1862,14 +1996,17 @@ class GhosttyApp {
                 )
                 if backgroundLogEnabled {
                     logBackground(
-                        "surface override set tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") override=\(newColor.hexString()) default=\(defaultBackgroundColor.hexString()) source=action.color_change.surface"
+                        "surface override set tab=\(callbackTabId?.uuidString ?? "nil") surface=\(callbackSurfaceId?.uuidString ?? "nil") override=\(newColor.hexString()) default=\(defaultBackgroundColor.hexString()) source=action.color_change.surface"
                     )
                 }
                 DispatchQueue.main.async { [self] in
+                    guard let surfaceView = MainActor.assumeIsolated({
+                        Self.resolveSurfaceView(tabId: callbackTabId, surfaceId: callbackSurfaceId)
+                    }) else { return }
                     surfaceView.backgroundColor = newColor
                     surfaceView.applySurfaceBackground()
                     if backgroundLogEnabled {
-                        logBackground("OSC background change tab=\(surfaceView.tabId?.uuidString ?? "unknown") color=\(surfaceView.backgroundColor?.description ?? "nil")")
+                        logBackground("OSC background change tab=\(callbackTabId?.uuidString ?? "unknown") color=\(surfaceView.backgroundColor?.description ?? "nil")")
                     }
                     surfaceView.applyWindowBackgroundIfActive()
                 }
@@ -1877,11 +2014,14 @@ class GhosttyApp {
             return true
         case GHOSTTY_ACTION_CONFIG_CHANGE:
             DispatchQueue.main.async { [self] in
+                guard let surfaceView = MainActor.assumeIsolated({
+                    Self.resolveSurfaceView(tabId: callbackTabId, surfaceId: callbackSurfaceId)
+                }) else { return }
                 if let staleOverride = surfaceView.backgroundColor {
                     surfaceView.backgroundColor = nil
                     if backgroundLogEnabled {
                         logBackground(
-                            "surface override cleared tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") cleared=\(staleOverride.hexString()) source=action.config_change.surface"
+                            "surface override cleared tab=\(callbackTabId?.uuidString ?? "nil") surface=\(callbackSurfaceId?.uuidString ?? "nil") cleared=\(staleOverride.hexString()) source=action.config_change.surface"
                         )
                     }
                     surfaceView.applySurfaceBackground()
@@ -1890,36 +2030,38 @@ class GhosttyApp {
             }
             updateDefaultBackground(
                 from: action.action.config_change.config,
-                source: "action.config_change.surface tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil")",
+                source: "action.config_change.surface tab=\(callbackTabId?.uuidString ?? "nil") surface=\(callbackSurfaceId?.uuidString ?? "nil")",
                 scope: .surface
             )
             if backgroundLogEnabled {
                 logBackground(
-                    "surface config change deferred terminal bg apply tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") override=\(surfaceView.backgroundColor?.hexString() ?? "nil") default=\(defaultBackgroundColor.hexString())"
+                    "surface config change deferred terminal bg apply tab=\(callbackTabId?.uuidString ?? "nil") surface=\(callbackSurfaceId?.uuidString ?? "nil")"
                 )
             }
             return true
         case GHOSTTY_ACTION_RELOAD_CONFIG:
             let soft = action.action.reload_config.soft
             logThemeAction(
-                "reload request target=surface tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") soft=\(soft)"
+                "reload request target=surface tab=\(callbackTabId?.uuidString ?? "nil") surface=\(callbackSurfaceId?.uuidString ?? "nil") soft=\(soft)"
             )
             return performOnMain {
                 // Keep all runtime theme/default-background state in the same path.
                 GhosttyApp.shared.reloadConfiguration(
                     soft: soft,
-                    source: "action.reload_config.surface tab=\(surfaceView.tabId?.uuidString ?? "nil") surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil")"
+                    source: "action.reload_config.surface tab=\(callbackTabId?.uuidString ?? "nil") surface=\(callbackSurfaceId?.uuidString ?? "nil")"
                 )
                 return true
             }
         case GHOSTTY_ACTION_KEY_SEQUENCE:
             return performOnMain {
-                surfaceView.updateKeySequence(action.action.key_sequence)
+                Self.resolveSurfaceView(tabId: callbackTabId, surfaceId: callbackSurfaceId)?
+                    .updateKeySequence(action.action.key_sequence)
                 return true
             }
         case GHOSTTY_ACTION_KEY_TABLE:
             return performOnMain {
-                surfaceView.updateKeyTable(action.action.key_table)
+                Self.resolveSurfaceView(tabId: callbackTabId, surfaceId: callbackSurfaceId)?
+                    .updateKeyTable(action.action.key_table)
                 return true
             }
         case GHOSTTY_ACTION_OPEN_URL:
@@ -1981,8 +2123,8 @@ class GhosttyApp {
                         NSWorkspace.shared.open(url)
                     }
                 }
-                let sourceWorkspaceId = callbackTabId ?? surfaceView.tabId
-                let sourcePanelId = callbackSurfaceId ?? surfaceView.terminalSurface?.id
+                let sourceWorkspaceId = callbackTabId
+                let sourcePanelId = callbackSurfaceId
                 guard let sourceWorkspaceId,
                       let sourcePanelId else {
                     #if DEBUG

@@ -1690,8 +1690,26 @@ final class GhosttySurfaceScrollView: NSView {
     /// clobbering the other: window-visibility changes must not override the
     /// intra-app pane state, and pane-visibility changes must not override the
     /// window state.
+#if DEBUG
+    /// Test-only seam: forces the effective occlusion computed below to `false`,
+    /// regardless of actual window/pane visibility. Lets regression tests exercise
+    /// ghostty's background (occluded) callback path -- title/pwd/OSC chatter arriving
+    /// off the main-thread tick path -- without a real window occlusion transition.
+    /// Mirrors the `PROGRAMA_UI_TEST_SPLIT_CLOSE_RIGHT_VISUAL` env pattern (see
+    /// `TerminalSurface.sizeLog`). Cached once: read via `ProcessInfo` on every call
+    /// would be wasteful for a value that never changes mid-process.
+    private static let forcedOccludedForTesting: Bool = {
+        ProcessInfo.processInfo.environment["PROGRAMA_FORCE_OCCLUDED"] == "1"
+    }()
+#endif
+
     private func applyEffectiveOcclusion() {
-        let effective = surfaceView.isVisibleInUI && isWindowVisible
+        var effective = surfaceView.isVisibleInUI && isWindowVisible
+#if DEBUG
+        if Self.forcedOccludedForTesting {
+            effective = false
+        }
+#endif
         guard lastRequestedPortalOcclusionVisible != effective else { return }
         lastRequestedPortalOcclusionVisible = effective
         surfaceView.terminalSurface?.setOcclusion(effective)
