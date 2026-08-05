@@ -13,20 +13,10 @@ When we change the fork, update this document and the parent submodule SHA.
 ## Current fork changes
 
 Fork rebased onto upstream `main` at `3509ccf78` (`v1.3.1-457-g3509ccf78`) on March 30, 2026.
-Current Programa pinned fork head: `b64213c5a` (surface revival path).
-
-The section 8 occluded-render skip (`c25020f99`, branch
-`perf/occluded-update-frame-skip`, retain-ancestry merge `363d56e5d` on fork
-`main`) was pinned on August 4, 2026 and REVERTED the same day: on CI's
-virtual display every surface is permanently occluded, and skipping
-updateFrame there removed incidental render-thread serialization that had
-masked a pre-existing Swift-side window-teardown race (refcount side-table
-corruption — "Object was retained too many times" / weak-reference-table
-crashes in AppDelegateShortcutRoutingTests' rapid window create/close tests).
-Re-land only after that race is fixed at the source in the app's
-surface/window teardown; do not band-aid by re-adding renderer throttling.
-The prebuilt release and checksum pin for `c25020f99` remain valid for the
-re-land.
+Current Programa pinned fork head: `c25020f99` (occluded-render skip, August 4, 2026),
+reachable on the fork via branch `perf/occluded-update-frame-skip` and via the
+retain-ancestry merge `363d56e5d` on fork `main`
+(`Retain occluded-render pin ancestry on main`, the `5c781d710` convention).
 
 ### 1) macOS display link restart on display changes
 
