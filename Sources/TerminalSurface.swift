@@ -837,17 +837,58 @@ final class TerminalSurface: Identifiable, ObservableObject {
 #endif
     }
 
-    /// Explicitly free the Ghostty runtime surface. Idempotent — safe to call
-    /// before deinit; deinit will skip the free if already torn down.
-    @MainActor
-    func teardownSurface() {
-        recordTeardownRequest(reason: "surface.teardown")
-        markPortalLifecycleClosed(reason: "teardown")
+    /// Single teardown path (audit finding N12) for the runtime surface plus its
+    /// callback/tap handoff state, shared by the two *real* close paths —
+    /// `teardownSurface()` and `deinit` — which is where the forensic evidence
+    /// (#250-era teardown-race audit) points: both can independently decide to
+    /// tear the same surface down, and before this unification each had its own
+    /// copy of the snapshot-and-free logic. Snapshots and nils every piece of
+    /// state a second call could act on (surface, surfaceCallbackContext,
+    /// outputTapContext, reviveDescriptor), so calling this from either site can
+    /// never double-free or double-release: a second call sees `surface == nil`
+    /// and no-ops at the `guard`.
+    ///
+    /// Deliberately NOT folded in here (real semantic differences that resist
+    /// unification):
+    /// - `liveSurfaceForGhosttyAccess(reason:)` — the pointer there may already
+    ///   be reowned/recycled by another surface, so it must NOT call
+    ///   `ghostty_surface_free` or touch the C surface at all; it only forgets
+    ///   Swift-side bookkeeping.
+    /// - `releaseSurfaceForTesting()` — deliberately does NOT call
+    ///   `markPortalLifecycleClosed`, so `portalLifecycleState` stays `.live`
+    ///   and a subsequent `requestBackgroundSurfaceStartIfNeeded()` /
+    ///   `createSurface()` can still recreate the runtime surface. This is
+    ///   load-bearing for the "detach race" regression tests in
+    ///   `TerminalAndGhosttyTests.swift`, which release the surface and then
+    ///   assert it gets recreated on next keystroke.
+    /// - `replaceSurfaceWithFreedPointerForTesting()` — deliberately leaves
+    ///   `self.surface` non-nil after freeing, to simulate a stale Swift
+    ///   wrapper whose native surface was already freed out-of-band. Folding
+    ///   it into the nil-as-idempotency-guard shape here would erase the exact
+    ///   dangling-pointer scenario that fixture exists to test.
+    ///
+    /// Keeps the deferred `Task { @MainActor in }` free timing (#432) exactly
+    /// as both prior call sites had it — this PR does not make the free
+    /// synchronous.
+    ///
+    /// Deliberately not `@MainActor`: `deinit` is always nonisolated in Swift's
+    /// concurrency model and cannot call a main-actor-isolated method
+    /// synchronously, so this stays a plain nonisolated method callable from
+    /// both `deinit` and the `@MainActor`-isolated `teardownSurface()`.
+    private func performSurfaceTeardown(reason: String) {
+        if let leftoverReviveDescriptor = reviveDescriptor {
+            close(leftoverReviveDescriptor.masterFD)
+            reviveDescriptor = nil
+        }
+        markPortalLifecycleClosed(reason: reason)
 
         let callbackContext = surfaceCallbackContext
         surfaceCallbackContext = nil
         let tapContext = outputTapContext
         outputTapContext = nil
+        // Snapshot before any possible async hop so a deferred Task below
+        // never needs to capture `self` for logging/unregistration.
+        let surfaceIdForTap = id.uuidString
 
         let surfaceToFree = surface
         if let surfaceToFree {
@@ -856,6 +897,12 @@ final class TerminalSurface: Identifiable, ObservableObject {
         surface = nil
 
         guard let surfaceToFree else {
+#if DEBUG
+            dlog(
+                "surface.lifecycle.\(reason).skip surface=\(surfaceIdForTap.prefix(5)) " +
+                "workspace=\(tabId.uuidString.prefix(5))"
+            )
+#endif
             callbackContext?.release()
             tapContext?.release()
             return
@@ -870,17 +917,38 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
 #endif
 
+#if DEBUG
+        dlog(
+            "surface.lifecycle.\(reason).begin surface=\(surfaceIdForTap.prefix(5)) " +
+            "workspace=\(tabId.uuidString.prefix(5))"
+        )
+#endif
+
         Task { @MainActor in
-            // Keep free behavior aligned with deinit: perform the runtime teardown on
-            // the next main-actor turn so SIGHUP delivery is deterministic but non-reentrant.
-            // Clear the output tap right before free, per the C API contract.
-            // This is the surface's genuine normal-close path, so delete its
-            // WAL directory now that it's torn down.
-            SessionWALStore.shared.unregister(surface: surfaceToFree, surfaceId: id.uuidString, deleteDirectory: true)
+            // Keep free behavior aligned across teardown sites: perform the runtime
+            // teardown on the next main-actor turn so SIGHUP delivery is
+            // deterministic but non-reentrant. Clear the output tap right before
+            // free, per the C API contract. Both call sites are the surface's
+            // genuine normal-close path, so delete its WAL directory now that
+            // it's torn down.
+            SessionWALStore.shared.unregister(surface: surfaceToFree, surfaceId: surfaceIdForTap, deleteDirectory: true)
             ghostty_surface_free(surfaceToFree)
             callbackContext?.release()
             tapContext?.release()
+#if DEBUG
+            dlog(
+                "surface.lifecycle.\(reason).end surface=\(surfaceIdForTap.prefix(5)) freed=1"
+            )
+#endif
         }
+    }
+
+    /// Explicitly free the Ghostty runtime surface. Idempotent — safe to call
+    /// before deinit; deinit will skip the free if already torn down.
+    @MainActor
+    func teardownSurface() {
+        recordTeardownRequest(reason: "surface.teardown")
+        performSurfaceTeardown(reason: "teardown")
     }
 
 #if DEBUG
@@ -2346,87 +2414,12 @@ final class TerminalSurface: Identifiable, ObservableObject {
 #endif
 
     deinit {
-        // Issue #182 slice 2 safety net: if this surface's revive
-        // descriptor was never consumed by `createSurface` (e.g. the
-        // owning `newTerminalSurface` call's own tab/panel bookkeeping
-        // failed before the hosted view ever attached to a window and
-        // triggered surface creation), its fd would otherwise leak
-        // silently -- close it here. A no-op whenever `createSurface` did
-        // run: it always clears `reviveDescriptor` to nil the moment it
-        // reads it, whether creation itself then succeeded or failed.
-        if let leftoverReviveDescriptor = reviveDescriptor {
-            close(leftoverReviveDescriptor.masterFD)
-        }
-        markPortalLifecycleClosed(reason: "deinit")
-
-        let callbackContext = surfaceCallbackContext
-        surfaceCallbackContext = nil
-        let tapContext = outputTapContext
-        outputTapContext = nil
-        // Deinit's Task closure below must not capture self, so snapshot the id
-        // string now for the WAL tap teardown call.
-        let surfaceIdForTap = id.uuidString
-
-        // Nil out the surface pointer so any in-flight closures (e.g. geometry
-        // reconcile dispatched via DispatchQueue.main.async) that read self.surface
-        // before this object is fully deallocated will see nil and bail out,
-        // rather than passing a freed pointer to ghostty_surface_refresh (#432).
-        let surfaceToFree = surface
-        if let surfaceToFree {
-            TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
-        }
-        surface = nil
-
-        guard let surfaceToFree else {
-#if DEBUG
-            dlog(
-                "surface.lifecycle.deinit.skip surface=\(id.uuidString.prefix(5)) " +
-                "workspace=\(tabId.uuidString.prefix(5)) reason=noRuntimeSurface"
-            )
-#endif
-            callbackContext?.release()
-            tapContext?.release()
-            return
-        }
-
-#if DEBUG
-        if runtimeSurfaceFreedOutOfBandForTesting {
-            runtimeSurfaceFreedOutOfBandForTesting = false
-            callbackContext?.release()
-            tapContext?.release()
-            return
-        }
-#endif
-
-#if DEBUG
-        let surfaceToken = String(id.uuidString.prefix(5))
-        let workspaceToken = String(tabId.uuidString.prefix(5))
-        dlog(
-            "surface.lifecycle.deinit.begin surface=\(surfaceToken) " +
-            "workspace=\(workspaceToken) hasAttachedView=\(attachedView != nil ? 1 : 0) " +
-            "hostedInWindow=\(hostedView.window != nil ? 1 : 0)"
-        )
-#endif
-
         // Keep teardown asynchronous to avoid re-entrant close/deinit loops, but retain
         // callback userdata until surface free completes so callbacks never dereference
-        // a deallocated view pointer.
-        Task { @MainActor in
-            // Clear the output tap right before free, per the C API contract.
-            // This is the surface's genuine normal-close path (when
-            // teardownSurface() didn't already run it), so delete its WAL
-            // directory now that it's torn down.
-            SessionWALStore.shared.unregister(surface: surfaceToFree, surfaceId: surfaceIdForTap, deleteDirectory: true)
-            ghostty_surface_free(surfaceToFree)
-            callbackContext?.release()
-            tapContext?.release()
-#if DEBUG
-            dlog(
-                "surface.lifecycle.deinit.end surface=\(surfaceToken) " +
-                "workspace=\(workspaceToken) freed=1"
-            )
-#endif
-        }
+        // a deallocated view pointer. performSurfaceTeardown's revive-descriptor
+        // leak-guard covers issue #182 slice 2 (fd leak if `createSurface` never
+        // consumed `reviveDescriptor`) and is a no-op whenever `createSurface` did run.
+        performSurfaceTeardown(reason: "deinit")
     }
 }
 
