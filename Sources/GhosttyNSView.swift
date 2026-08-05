@@ -164,6 +164,16 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     var trackingArea: NSTrackingArea?
     private var windowObserver: NSObjectProtocol?
     private var screenParametersObserver: NSObjectProtocol?
+    // Teardown-race guard (ported from #258's GhosttySurfaceScrollView fix; this was
+    // the residual crasher on the reland gate — the `notification.object as? NSWindow`
+    // downcast in windowDidChangeScreen implicitly retaining a freed notification
+    // object). NotificationCenter's removeObserver does NOT cancel a block already
+    // handed off to the main queue — during rapid window create/close, a block
+    // enqueued against the *previous* window/registration batch can still run after
+    // viewDidMoveToWindow has already torn down and re-registered observers for a
+    // new window. Every block captures the generation live at its own registration
+    // and no-ops if the instance has since moved on to a newer generation.
+    private var windowObserverGeneration: UInt64 = 0
     var lastScrollEventTime: CFTimeInterval = 0
     private var visibleInUI: Bool = true
     private var pendingSurfaceSize: CGSize?
@@ -386,6 +396,8 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             NotificationCenter.default.removeObserver(screenParametersObserver)
             self.screenParametersObserver = nil
         }
+        windowObserverGeneration &+= 1
+        let observerGeneration = windowObserverGeneration
         // Balance the cursor stack if the view is removed while hover is active
         if wordPathHoverActive {
             wordPathHoverActive = false
@@ -418,7 +430,8 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             object: window,
             queue: .main
         ) { [weak self] notification in
-            self?.windowDidChangeScreen(notification)
+            guard let self, self.windowObserverGeneration == observerGeneration else { return }
+            self.windowDidChangeScreen(notification)
         }
 
         // NSWindow.didChangeScreenNotification only fires when AppKit decides this
@@ -431,7 +444,8 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            self?.applicationDidChangeScreenParameters(notification)
+            guard let self, self.windowObserverGeneration == observerGeneration else { return }
+            self.applicationDidChangeScreenParameters(notification)
         }
 
         if let surface = terminalSurface?.surface,
@@ -853,6 +867,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         if let screenParametersObserver {
             NotificationCenter.default.removeObserver(screenParametersObserver)
         }
+        windowObserverGeneration &+= 1
         if let trackingArea {
             removeTrackingArea(trackingArea)
         }
