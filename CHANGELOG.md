@@ -6,6 +6,20 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 
 ## [Unreleased]
 
+### Fixed
+- Opening a second window no longer blanks the terminals in your existing window until you resize it; clicking back into the window now redraws it immediately.
+- Restored terminals no longer come back garbled right after an app update: no more transcript fragments painted at the wrong column or letters swapped for digits mid-word, and no need to resize the window to fix it.
+- Split-pane workspaces no longer show scattered, overlapping garbled text (the repeated corrupted spinner/"thinking" output some of you saw) when restoring a session, especially with uneven splits.
+- Running agent sessions no longer get dropped to a bare shell when the app updates and relaunches; a session that's mid-handoff during that restart is now reliably reattached instead of lost, and restoring several sessions after an update no longer repeats a several-second wait for every one of them if a single handoff is stuck.
+
+### Changed
+- The CLI now reconnects automatically instead of exiting when the app restarts (for example after an auto-update) or after an hour of inactivity; use `--no-reconnect` on `watch-events` if you want the old exit-on-disconnect behavior for scripts.
+- Every auto-shipped build now carries its own version number (like 0.4.213) instead of every build showing 0.4.0, so you can tell which build you're on.
+- Idle CPU use is lower: moving the mouse and checking git status for workspaces you're not looking at no longer do unnecessary background work.
+
+### Added
+- A local diagnostics log at `~/Library/Logs/Programa/diagnostics.log` now records connection problems (like CLI socket errors) so issues can be diagnosed after the fact. It's a plain file on your machine; nothing in it is ever sent anywhere.
+
 ## [0.4.0] - 2026-08-03
 
 ### Fixed
