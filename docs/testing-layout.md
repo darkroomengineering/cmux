@@ -27,8 +27,8 @@ CLI binary as a subprocess via `PROGRAMA_CLI_BIN`.
 
 **`tests_v2/`** — the thing under test is app behaviour you can observe over the
 socket. Everything here talks to a live instance, whether through `cmux.py` or
-by speaking JSON-RPC directly. The two lag/perf harnesses live here for that
-reason, even though they bypass `cmux.py`.
+by speaking JSON-RPC directly. The lag/perf/CPU harnesses live here for that
+reason. See `docs/cpu-harness.md` for the CPU measurement harness specifically.
 
 **`programaTests/`** — pure logic that can be exercised without launching
 anything: policy types, decision functions, snapshot encoding, layout maths.
