@@ -13,8 +13,19 @@ extension TabManager {
     }
 
     func sessionSnapshot(includeScrollback: Bool) -> SessionTabManagerSnapshot {
+        // Only a *live* remote workspace is excluded -- a workspace the user disconnected from
+        // its remote host but kept using locally must not silently vanish from every snapshot
+        // for the rest of its life (see incident: three live local terminals lost on relaunch
+        // because `isRemoteWorkspace` alone stays true after disconnect). Whatever is skipped
+        // here is logged so the gap is never silent again.
+        for tab in tabs where tab.isLiveRemoteWorkspace {
+            dilog(
+                "session.snapshot",
+                "skipped workspace=\(tab.id.uuidString.prefix(8)) reason=remote panels=\(tab.panels.count)"
+            )
+        }
         let restorableTabs = tabs
-            .filter { !$0.isRemoteWorkspace }
+            .filter { !$0.isLiveRemoteWorkspace }
             .prefix(SessionPersistencePolicy.maxWorkspacesPerWindow)
         let workspaceSnapshots = restorableTabs
             .map { $0.sessionSnapshot(includeScrollback: includeScrollback) }
