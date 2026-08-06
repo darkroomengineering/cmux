@@ -426,6 +426,66 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         XCTAssertEqual(workspace.remoteConnectionState, .disconnected)
     }
 
+    /// Regression for the "disconnect a remote workspace, keep using it locally, lose every
+    /// terminal in it at the next restart" incident: `remoteConfiguration` intentionally
+    /// survives a user-initiated disconnect (see `disconnectRemoteConnection`'s doc comment) so
+    /// `reconnectRemoteConnection()` keeps working, but that meant `isRemoteWorkspace` alone --
+    /// config presence, not live connection state -- excluded the whole workspace, and every
+    /// local pane in it, from `sessionSnapshot(includeScrollback:)` forever after disconnect.
+    @MainActor
+    func testDisconnectedRemoteWorkspacePersistsLocalPanelsInSessionSnapshot() throws {
+        let manager = TabManager()
+        let remoteWorkspace = manager.addWorkspace(select: true)
+        let paneId = try XCTUnwrap(remoteWorkspace.bonsplitController.allPaneIds.first)
+        let config = WorkspaceRemoteConfiguration(
+            destination: "cmux-macmini",
+            port: nil,
+            identityFile: nil,
+            sshOptions: [],
+            localProxyPort: nil,
+            relayPort: 64034,
+            relayID: String(repeating: "a", count: 16),
+            relayToken: String(repeating: "b", count: 64),
+            localSocketPath: "/tmp/programa-debug-test.sock",
+            terminalStartupCommand: "ssh cmux-macmini"
+        )
+
+        // Configuring seeds the workspace's sole existing terminal panel as a tracked remote
+        // surface; two more splits created while still configured pick up the same tracking --
+        // mirroring the incident's three live remote-tracked terminals.
+        remoteWorkspace.configureRemoteConnection(config, autoConnect: false)
+        let firstPanelId = try XCTUnwrap(remoteWorkspace.focusedTerminalPanel?.id)
+        let secondPanelId = try XCTUnwrap(remoteWorkspace.newTerminalSurface(inPane: paneId, focus: false)?.id)
+        let thirdPanelId = try XCTUnwrap(remoteWorkspace.newTerminalSurface(inPane: paneId, focus: false)?.id)
+        for panelId in [firstPanelId, secondPanelId, thirdPanelId] {
+            XCTAssertTrue(remoteWorkspace.isRemoteTerminalSurface(panelId))
+        }
+
+        remoteWorkspace.applyRemoteConnectionStateUpdate(.connected, detail: nil, target: "cmux-macmini")
+        XCTAssertEqual(remoteWorkspace.remoteConnectionState, .connected)
+
+        // The user disconnects from the sidebar -- mirrors `TabItemView`'s disconnect action,
+        // which passes `clearConfiguration: false` so Reconnect keeps working.
+        remoteWorkspace.disconnectRemoteConnection(clearConfiguration: false)
+        XCTAssertTrue(remoteWorkspace.isRemoteWorkspace)
+        XCTAssertEqual(remoteWorkspace.remoteConnectionState, .disconnected)
+        for panelId in [firstPanelId, secondPanelId, thirdPanelId] {
+            XCTAssertFalse(remoteWorkspace.isRemoteTerminalSurface(panelId))
+        }
+
+        let snapshot = manager.sessionSnapshot(includeScrollback: false)
+        let restoredPanelIds = Set(
+            snapshot.workspaces
+                .first(where: { $0.panels.contains { $0.id == firstPanelId } })?
+                .panels
+                .map(\.id) ?? []
+        )
+
+        XCTAssertTrue(restoredPanelIds.contains(firstPanelId))
+        XCTAssertTrue(restoredPanelIds.contains(secondPanelId))
+        XCTAssertTrue(restoredPanelIds.contains(thirdPanelId))
+    }
+
     @MainActor
     func testRemoteTerminalSessionEndRequestsControlMasterCleanupWhenWorkspaceDemotes() throws {
         let workspace = Workspace()
