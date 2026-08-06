@@ -1,5 +1,8 @@
 import XCTest
 
+// Search-engine timing/throughput is measured out-of-band, not in this unit suite —
+// see tests_v2/test_cpu_occlusion_throttle.py and docs/cpu-harness.md.
+
 #if canImport(Programa_DEV)
 @testable import Programa_DEV
 #elseif canImport(Programa)
@@ -216,17 +219,6 @@ final class CommandPaletteSearchEngineTests: XCTestCase {
             return fuzzyScore
         }
         return max(fuzzyScore, titleScore + 2000)
-    }
-
-    private func benchmarkElapsedMs(operation: () -> Void) -> Double {
-        let start = DispatchTime.now().uptimeNanoseconds
-        operation()
-        let elapsed = DispatchTime.now().uptimeNanoseconds - start
-        return Double(elapsed) / 1_000_000
-    }
-
-    private func repeatedQueries(_ baseQueries: [String], repetitions: Int) -> [String] {
-        Array(repeating: baseQueries, count: repetitions).flatMap { $0 }
     }
 
     func testOptimizedSearchMatchesReferencePipeline() {
@@ -826,83 +818,5 @@ final class CommandPaletteSearchEngineTests: XCTestCase {
 
         XCTAssertNotEqual(base, changedSurfaceMetadata)
         XCTAssertNotEqual(base, changedSurfaceKind)
-    }
-
-    func testCommandSearchBenchmarkBeatsLegacyPipeline() {
-        let entries = makeCommandEntries(count: 900)
-        let corpus = entries.map { entry in
-            CommandPaletteSearchCorpusEntry(
-                payload: entry.id,
-                rank: entry.rank,
-                title: entry.title,
-                searchableTexts: entry.searchableTexts
-            )
-        }
-        let queries = repeatedQueries(
-            ["rename", "rename tab", "open dir", "toggle side", "apply update", "notif", "split right", "cmux"],
-            repetitions: 12
-        )
-
-        for query in queries.prefix(8) {
-            _ = referenceResults(entries: entries, query: query)
-            _ = CommandPaletteSearchEngine.search(entries: corpus, query: query) { _, _ in 0 }
-        }
-
-        let referenceMs = benchmarkElapsedMs {
-            for query in queries {
-                _ = referenceResults(entries: entries, query: query)
-            }
-        }
-        let optimizedMs = benchmarkElapsedMs {
-            for query in queries {
-                _ = CommandPaletteSearchEngine.search(entries: corpus, query: query) { _, _ in 0 }
-            }
-        }
-
-        print(String(format: "BENCH cmd+shift+p reference=%.2fms optimized=%.2fms", referenceMs, optimizedMs))
-        XCTAssertLessThan(
-            optimizedMs,
-            referenceMs * 1.25,
-            "Optimized command search regressed significantly: reference=\(referenceMs) optimized=\(optimizedMs)"
-        )
-    }
-
-    func testSwitcherSearchBenchmarkBeatsLegacyPipeline() {
-        let entries = makeSwitcherEntries(count: 400)
-        let corpus = entries.map { entry in
-            CommandPaletteSearchCorpusEntry(
-                payload: entry.id,
-                rank: entry.rank,
-                title: entry.title,
-                searchableTexts: entry.searchableTexts
-            )
-        }
-        let queries = repeatedQueries(
-            ["workspace 12", "phoenix", "feature-18", "rename-tab", "3007", "9202", "switch", "worktrees"],
-            repetitions: 12
-        )
-
-        for query in queries.prefix(8) {
-            _ = referenceResults(entries: entries, query: query)
-            _ = CommandPaletteSearchEngine.search(entries: corpus, query: query) { _, _ in 0 }
-        }
-
-        let referenceMs = benchmarkElapsedMs {
-            for query in queries {
-                _ = referenceResults(entries: entries, query: query)
-            }
-        }
-        let optimizedMs = benchmarkElapsedMs {
-            for query in queries {
-                _ = CommandPaletteSearchEngine.search(entries: corpus, query: query) { _, _ in 0 }
-            }
-        }
-
-        print(String(format: "BENCH cmd+p reference=%.2fms optimized=%.2fms", referenceMs, optimizedMs))
-        XCTAssertLessThan(
-            optimizedMs,
-            referenceMs * 1.25,
-            "Optimized switcher search regressed significantly: reference=\(referenceMs) optimized=\(optimizedMs)"
-        )
     }
 }
