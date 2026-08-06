@@ -16,6 +16,21 @@ extension Workspace {
         remoteConfiguration != nil
     }
 
+    /// Whether this workspace is a *live* remote session right now -- connected, connecting, or
+    /// erroring while still configured -- as opposed to merely having been configured for remote
+    /// at some point. `remoteConfiguration` intentionally survives a user-initiated disconnect
+    /// (see `disconnectRemoteConnection(clearConfiguration:)`, whose default and the sidebar's
+    /// disconnect action both pass `false`) so `reconnectRemoteConnection()` still has something
+    /// to reconnect to. That means `isRemoteWorkspace` alone is NOT a safe proxy for "this
+    /// workspace's panels currently live on a remote host" -- a disconnected-but-configured
+    /// workspace is, for every practical purpose (running shells, port telemetry, session
+    /// persistence), a local workspace again. Use this property anywhere that distinction
+    /// matters; use `isRemoteWorkspace` only for "has a remote destination configured" facts
+    /// (e.g. whether the sidebar should offer Reconnect).
+    var isLiveRemoteWorkspace: Bool {
+        isRemoteWorkspace && remoteConnectionState != .disconnected
+    }
+
     @MainActor
     func isRemoteTerminalSurface(_ panelId: UUID) -> Bool {
         activeRemoteTerminalSurfaceIds.contains(panelId)

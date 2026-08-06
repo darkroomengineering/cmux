@@ -70,14 +70,17 @@ extension TerminalController {
                 validSurfaceIds: validSurfaceIds
             )
             guard let surfaceId, validSurfaceIds.contains(surfaceId) else {
-                if tab.isRemoteWorkspace, validSurfaceIds.isEmpty {
+                // `isLiveRemoteWorkspace`, not `isRemoteWorkspace`: a disconnected-but-configured
+                // workspace has no active remote session to buffer this report for, and its
+                // panels are ordinary local shells again -- route it like any local workspace.
+                if tab.isLiveRemoteWorkspace, validSurfaceIds.isEmpty {
                     tab.rememberPendingRemoteSurfaceTTY(ttyName, requestedSurfaceId: requestedSurfaceId)
                 }
                 return
             }
 
             tab.surfaceTTYNames[surfaceId] = ttyName
-            if tab.isRemoteWorkspace {
+            if tab.isLiveRemoteWorkspace {
                 tab.syncRemotePortScanTTYs()
                 _ = tab.applyPendingRemoteSurfacePortKickIfNeeded(to: surfaceId)
             } else {
@@ -127,7 +130,10 @@ extension TerminalController {
                 validSurfaceIds: validSurfaceIds
             )
             guard let surfaceId, validSurfaceIds.contains(surfaceId) else {
-                if tab.isRemoteWorkspace, validSurfaceIds.isEmpty {
+                // See v2SurfaceReportTTY above: `isLiveRemoteWorkspace`, not `isRemoteWorkspace`
+                // -- a disconnected-but-configured workspace has no active remote session to
+                // buffer this kick for.
+                if tab.isLiveRemoteWorkspace, validSurfaceIds.isEmpty {
                     tab.rememberPendingRemoteSurfacePortKick(
                         reason: reason,
                         requestedSurfaceId: requestedSurfaceId
@@ -136,7 +142,7 @@ extension TerminalController {
                 return
             }
 
-            if tab.isRemoteWorkspace {
+            if tab.isLiveRemoteWorkspace {
                 tab.kickRemotePortScan(panelId: surfaceId, reason: reason)
             } else {
                 PortScanner.shared.kick(workspaceId: workspaceId, panelId: surfaceId)

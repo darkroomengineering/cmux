@@ -47,6 +47,12 @@ final class TabManagerSessionSnapshotTests: XCTestCase {
         XCTAssertNotNil(manager.selectedTabId)
     }
 
+    /// Only a *live* remote workspace is excluded from restore -- `remoteConfiguration` alone
+    /// isn't enough, since it deliberately survives a user-initiated disconnect so Reconnect
+    /// keeps working (see `Workspace.isLiveRemoteWorkspace`'s doc comment). This test therefore
+    /// simulates an actually-connected remote session; the disconnected case (which must persist
+    /// its local panels) is covered by
+    /// `WorkspaceRemoteConnectionTests.testDisconnectedRemoteWorkspacePersistsLocalPanelsInSessionSnapshot`.
     func testSessionSnapshotExcludesRemoteWorkspacesFromRestore() throws {
         let manager = TabManager()
         let remoteWorkspace = manager.addWorkspace(select: true)
@@ -63,6 +69,7 @@ final class TabManagerSessionSnapshotTests: XCTestCase {
             terminalStartupCommand: "ssh cmux-macmini"
         )
         remoteWorkspace.configureRemoteConnection(configuration, autoConnect: false)
+        remoteWorkspace.applyRemoteConnectionStateUpdate(.connected, detail: nil, target: "cmux-macmini")
         let paneId = try XCTUnwrap(remoteWorkspace.bonsplitController.allPaneIds.first)
         _ = remoteWorkspace.newBrowserSurface(inPane: paneId, url: URL(string: "http://localhost:3000"), focus: false)
 
