@@ -577,14 +577,16 @@ final class SessionPersistenceTests: XCTestCase {
             )
         }
 
-        guard let enableIndex = prepared.range(of: "\u{001B}[?1003h")?.upperBound,
-              let disableIndex = prepared.range(of: "\u{001B}[?1003l")?.lowerBound else {
-            XCTFail("Expected both the replayed enable and the disable")
-            return
-        }
-        XCTAssertLessThan(
-            enableIndex, disableIndex,
-            "The disable must come after the replayed transcript, or it is undone by it"
+        // The sanitizer strips DEC private mode sequences like `ESC[?1003h`
+        // at source -- they're CSI, and only meaningful at the grid width
+        // they were captured at -- so the replayed enable no longer survives
+        // into the output at all. The disable loop above is what actually
+        // guarantees the mode can't stay armed, and it fires regardless of
+        // whether the enable (or anything else on the line) survived
+        // sanitization -- see `forceModeReset` in `preparedText(for:)`.
+        XCTAssertFalse(
+            prepared.contains("\u{001B}[?1003h"),
+            "DEC private mode enables are stripped by the sanitizer at source, not replayed"
         )
     }
 
@@ -647,6 +649,164 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertLessThan(charsetReset, save, "Charset must be clean before DECSC captures it")
         XCTAssertLessThan(save, marginReset, "DECSC must precede the cursor-homing margin reset")
         XCTAssertLessThan(marginReset, restore, "DECRC must follow the margin reset")
+    }
+
+    /// Raw WAL fallback text carries `\r` overwrite runs from progress
+    /// spinners. `\r` moves the write column back to 0 without clearing --
+    /// a real overwrite, not a line clear -- so a shorter redraw leaves the
+    /// tail of the longest previous write in place. Tracing the three
+    /// redraws by hand: "working " (8 cols) -> CR -> "working. " (9 cols,
+    /// fully overwrites + extends by 1) -> CR -> "working.. " (10 cols,
+    /// fully overwrites + extends by 1) -> CR -> "done" (4 cols) only
+    /// overwrites columns 0-3 of the 10-column "working.. ", leaving columns
+    /// 4-9 ("ing.. ") behind it -- hence "doneing.. ", not "done".
+    func testFreshSpawnScrollbackSeedCollapsesCarriageReturnOverwriteRuns() {
+        let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "working \rworking. \rworking.. \rdone\n"
+        )
+        XCTAssertEqual(prepared, "doneing.. \n")
+        XCTAssertFalse(prepared?.contains("\r") ?? true, "No carriage return should survive overwrite resolution")
+    }
+
+    /// A CR overwrite with no following erase-line leaves the tail of the
+    /// longer prior write in place, exactly like a real terminal: "Done"
+    /// (4 cols) only overwrites the first 4 columns of "Downloading 100%"
+    /// (17 cols), so "loading 100%" survives behind it.
+    func testFreshSpawnScrollbackSeedPreservesResidueWhenNoEraseFollowsOverwrite() {
+        let prepared = SessionFreshSpawnScrollbackSeed.preparedText(for: "Downloading 100%\rDone")
+        XCTAssertTrue(prepared?.contains("Doneloading 100%") ?? false)
+    }
+
+    /// The realistic spinner shape: CR overwrite immediately followed by
+    /// erase-to-end-of-line (`ESC[K`). That erase clears the residual tail
+    /// the overwrite alone would have left behind, so no trace of the longer
+    /// original line survives. (Asserting `contains`/`!contains` here rather
+    /// than exact equality: the source contains an escape, so
+    /// `forceModeReset` correctly wraps the output with the mode-reset
+    /// preamble/postamble regardless of whether the sanitized text itself
+    /// still has any escape left in it -- that wrapping is exercised and
+    /// asserted by the mouse-tracking and layout-state tests, not this one.)
+    func testFreshSpawnScrollbackSeedTruncatesResidueWhenEraseToEndFollowsOverwrite() {
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "Downloading 100%\rDone\u{001B}[K"
+        ) else {
+            XCTFail("Expected prepared seed text")
+            return
+        }
+
+        XCTAssertTrue(prepared.contains("Done"))
+        XCTAssertFalse(prepared.contains("loading 100%"), "ESC[K must erase the overwrite residue, leaving no trace of it")
+    }
+
+    /// `ESC[2K` clears the whole line outright, discarding anything written
+    /// before it on that line -- unlike a bare CR overwrite, which only
+    /// clobbers as many columns as the new text covers.
+    func testFreshSpawnScrollbackSeedEraseEntireLineClearsPriorContent() {
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "garbage\u{001B}[2Kclean"
+        ) else {
+            XCTFail("Expected prepared seed text")
+            return
+        }
+
+        XCTAssertTrue(prepared.contains("clean"))
+        XCTAssertFalse(prepared.contains("garbage"))
+    }
+
+    /// A backspace can only ever delete a previously-written plain
+    /// character, never a byte belonging to an escape sequence -- escapes
+    /// are stripped from the working text before the cell walk sees any
+    /// `\b`, so `ESC[31m` cannot be corrupted into the unrelated ECH command
+    /// `ESC[31X` the way a naive "delete the raw byte before \b" pass would.
+    func testFreshSpawnScrollbackSeedBackspaceNeverCorruptsAnEscapeSequence() {
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "\u{001B}[31m\u{8}X"
+        ) else {
+            XCTFail("Expected prepared seed text")
+            return
+        }
+
+        XCTAssertTrue(prepared.contains("\u{001B}[31m"))
+        XCTAssertFalse(prepared.contains("\u{001B}[31X"))
+    }
+
+    /// CSI finals the old handwritten allowlist missed (here `L`, insert
+    /// line) are still removed, because the generic CSI strip matches any
+    /// final byte in `@`-`~` rather than an enumerated list.
+    func testFreshSpawnScrollbackSeedRemovesGridMutatingCSIFinalsNotOnAnyAllowlist() {
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "before\u{001B}[2Lafter"
+        ) else {
+            XCTFail("Expected prepared seed text")
+            return
+        }
+
+        XCTAssertTrue(prepared.contains("beforeafter"))
+    }
+
+    /// An OSC 8 hyperlink is removed cleanly -- both the opening sequence
+    /// (with its URL payload) and the closing sequence -- without
+    /// swallowing the plain text that follows it on the line.
+    func testFreshSpawnScrollbackSeedRemovesOSCHyperlinkWithoutSwallowingFollowingText() {
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "\u{001B}]8;;https://example.com\u{7}link\u{001B}]8;;\u{7} tail"
+        ) else {
+            XCTFail("Expected prepared seed text")
+            return
+        }
+
+        XCTAssertTrue(prepared.contains("link"))
+        XCTAssertTrue(prepared.contains("tail"))
+        XCTAssertFalse(prepared.contains("\u{7}"))
+    }
+
+    /// Absolute cursor-positioning escapes are only valid at the grid width
+    /// they were captured at; replaying them into a differently sized grid
+    /// scatters text to the wrong columns, so they must be stripped.
+    func testFreshSpawnScrollbackSeedStripsAbsoluteCursorPositioning() {
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "\u{001B}[12;40Hhello"
+        ) else {
+            XCTFail("Expected prepared seed text")
+            return
+        }
+
+        XCTAssertFalse(prepared.contains("\u{001B}[12;40H"))
+        XCTAssertTrue(prepared.contains("hello"))
+    }
+
+    func testFreshSpawnScrollbackSeedKeepsSGRColorSequencesIntact() {
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "\u{001B}[31mred\u{001B}[0m"
+        ) else {
+            XCTFail("Expected prepared seed text")
+            return
+        }
+
+        XCTAssertTrue(prepared.contains("\u{001B}[31m"))
+    }
+
+    /// An SGR sequence set immediately before a `\r` overwrite must be
+    /// carried onto the kept segment, or color state set just before a
+    /// spinner update would be silently dropped.
+    func testFreshSpawnScrollbackSeedCarriesSGRAcrossCarriageReturnOverwrite() {
+        guard let prepared = SessionFreshSpawnScrollbackSeed.preparedText(
+            for: "\u{001B}[32mspin\rdone"
+        ) else {
+            XCTFail("Expected prepared seed text")
+            return
+        }
+
+        XCTAssertTrue(prepared.contains("\u{001B}[32m"))
+        XCTAssertTrue(prepared.contains("done"))
+    }
+
+    /// Already-rendered plain text (the clean-quit snapshot path) has no
+    /// escapes or carriage returns, so the positioning sanitizer must be a
+    /// no-op beyond the existing trailing-newline guarantee.
+    func testFreshSpawnScrollbackSeedPassesThroughPlainTextUnchanged() {
+        let prepared = SessionFreshSpawnScrollbackSeed.preparedText(for: "already rendered\nplain text\n")
+        XCTAssertEqual(prepared, "already rendered\nplain text\n")
     }
 
     func testTruncatedScrollbackAvoidsLeadingPartialANSICSISequence() {
