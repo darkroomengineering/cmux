@@ -696,16 +696,319 @@ enum SessionFreshSpawnScrollbackSeed {
         guard let scrollback else { return nil }
         guard scrollback.contains(where: { !$0.isWhitespace }) else { return nil }
         guard let truncated = SessionPersistencePolicy.truncatedScrollback(scrollback) else { return nil }
-        return ansiSafeReplayText(truncated)
+        let sanitized = positioningSanitizedText(truncated)
+        // Captured on the PRE-sanitization text, not the sanitized result:
+        // `positioningSanitizedText` strips every DEC private mode sequence
+        // (`ESC[?1003h` and friends are CSI) as width-dependent, which can
+        // leave a line with zero escape bytes even though the raw WAL text
+        // armed a mode that still needs undoing. See `ansiSafeReplayText`'s
+        // doc comment for why the mode reset must fire independently of
+        // what survives sanitization.
+        return ansiSafeReplayText(sanitized, forceModeReset: truncated.contains(ansiEscape))
     }
+
+    /// Neutralizes width-dependent cursor-positioning escapes before replay.
+    ///
+    /// `SessionWALStore.readFallbackScrollbackText` (used whenever a session's
+    /// child did not survive to be reattached -- e.g. after a reboot, which is
+    /// the case this exists for) returns the *raw* PTY byte stream: the exact
+    /// bytes the child wrote, unmodified. That stream carries absolute cursor
+    /// moves (`ESC[r;cH`), relative moves, erase-line/-screen sequences, and
+    /// `\r` overwrite runs (spinners, progress bars) -- all of which are only
+    /// meaningful when replayed into a grid of the *exact* width/height they
+    /// were captured at. The freshly spawned surface this text is seeded into
+    /// is very likely a different width: the window frame has not yet settled
+    /// when the seed is applied (see `TerminalSurface
+    /// .isSessionRestoreSettling`'s doc comment for that race). Replaying
+    /// position-dependent bytes into the wrong width scatters words to the
+    /// wrong columns and superimposes distinct rows on top of each other --
+    /// and no later resize can repair it, because the position data itself
+    /// was wrong relative to the new grid the moment it landed.
+    ///
+    /// This walks each line as a virtual single-row cell buffer -- `\r`
+    /// resets the write column to 0 (a real overwrite, not a clear: shorter
+    /// replacement text leaves the tail of a longer previous write in place,
+    /// exactly like a real terminal), `\b` moves it back one column, and
+    /// erase-line escapes clear cells outright -- rather than trying to
+    /// preserve any position-dependent escape verbatim. SGR (`ESC[...m`)
+    /// color/attribute state is the one exception: it is width-independent,
+    /// so it is tracked as per-cell state DURING the walk (`ReplayCell.sgr`)
+    /// rather than stripped -- a later redraw's color correctly overwrites
+    /// the color of the frame it overwrites, and a line's color sequences
+    /// stay adjacent to the text they actually color instead of all being
+    /// hoisted to the front (which would cancel out any balanced
+    /// enable/reset pair before a single character was ever colored).
+    /// Everything else -- OSC (hyperlink/title) sequences and all other CSI,
+    /// including DEC private mode set/reset like `ESC[?1049h` -- is dropped
+    /// outright: OSC carries no width dependence but also no value in a
+    /// historical transcript, and a partial-match regex risks swallowing the
+    /// rest of the line if its terminator was cut off by
+    /// `SessionPersistencePolicy.truncatedScrollback`. DEC private modes are
+    /// CSI too and are removed the same way, which means the replayed enable
+    /// (`ESC[?1003h`) no longer survives to arm anything -- but that does
+    /// NOT make `TerminalReplayModeReset.disableSequence` (appended by
+    /// `ansiSafeReplayText` below) redundant: the disable list also
+    /// neutralizes state that never went through this sanitizer's CSI/OSC
+    /// removal in the first place (charset designation like `ESC(0` is a
+    /// two-character escape, not CSI, and survives untouched -- exactly what
+    /// `layoutStateReset`'s `ESC(B`/`ESC)B` exists to undo), so the reset
+    /// must fire independent of whatever the sanitizer left behind. See
+    /// `forceModeReset` in `preparedText(for:)`. The clean-quit snapshot path
+    /// (`TerminalController.readTerminalTextForSnapshot`) only ever produces
+    /// already-rendered rows carrying SGR, so this is a no-op there -- it is
+    /// applied unconditionally rather than gated behind a "which path did
+    /// this come from" flag.
+    private static func positioningSanitizedText(_ text: String) -> String {
+        // `split(omittingEmptySubsequences: false)` + `joined` round-trips a
+        // trailing newline (and any blank lines) exactly, so no separate
+        // trailing-newline bookkeeping is needed here.
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { sanitizedLine(String($0)) }
+            .joined(separator: "\n")
+    }
+
+    private static func sanitizedLine(_ line: String) -> String {
+        // Cheap bypass: the overwhelming majority of lines in a scrollback
+        // transcript are plain text with none of the three signals below.
+        guard line.contains(where: { $0 == "\u{001B}" || $0 == "\r" || $0 == "\u{8}" }) else {
+            return line
+        }
+
+        // A trailing `\r` immediately before the line boundary is the CR
+        // half of a `\r\n` line ending written by the pty's ONLCR
+        // translation, not an overwrite -- there is nothing after it to
+        // overwrite with, so treating it as a real cursor move (which would
+        // just reset the column to 0 right before the line ends) is
+        // harmless either way, but stripping it here keeps the intent
+        // explicit and matches the CRLF handling this function has always
+        // had.
+        var line = line
+        while line.hasSuffix("\r") {
+            line.removeLast()
+        }
+
+        let working = sanitizedWorkingText(line)
+        return replayedLine(from: replayTokens(in: working))
+    }
+
+    /// Produces a working string safe to tokenize for the cell walk:
+    /// erase-line escapes become one of two sentinel control characters
+    /// (`U{0}` = erase-to-end-of-line, `U{1}` = erase-entire-line), OSC and
+    /// every other CSI are removed outright, and SGR (`ESC[...m`) is left
+    /// entirely alone -- `replayTokens(in:)` recognizes it inline instead.
+    /// `csiRegex`'s final-byte class deliberately excludes `m` so it never
+    /// competes with SGR for the same bytes. The erase-line translation MUST
+    /// run before the generic CSI strip, since `ESC[K`/`ESC[2K`/etc. are
+    /// themselves valid CSI sequences and would otherwise be deleted before
+    /// they could be turned into sentinels.
+    private static func sanitizedWorkingText(_ line: String) -> String {
+        var text = line
+        text = replacingMatches(of: eraseToEndOfLineRegex, in: text, with: "\u{0}")
+        text = replacingMatches(of: eraseEntireLineRegex, in: text, with: "\u{1}")
+        text = replacingMatches(of: oscRegex, in: text, with: "")
+        text = replacingMatches(of: csiRegex, in: text, with: "")
+        text = replacingMatches(of: saveRestoreCursorRegex, in: text, with: "")
+        return text
+    }
+
+    private static func replacingMatches(of regex: NSRegularExpression, in text: String, with replacement: String) -> String {
+        let nsText = text as NSString
+        return regex.stringByReplacingMatches(
+            in: text,
+            range: NSRange(location: 0, length: nsText.length),
+            withTemplate: replacement
+        )
+    }
+
+    /// One unit of replay input: either a single plain/control character, or
+    /// one whole SGR escape sequence recognized as a unit (never split
+    /// character-by-character, so a `\b` immediately after an SGR sequence
+    /// -- see `replayedLine` -- can only ever delete a previously-written
+    /// plain character, never a byte belonging to the escape itself).
+    private enum ReplayToken {
+        case char(Character)
+        case sgr(String)
+    }
+
+    /// Splits `text` into `ReplayToken`s by locating every SGR match and
+    /// treating everything between/around them as plain characters. SGR was
+    /// deliberately left in place by `sanitizedWorkingText`, so this is the
+    /// one point that recognizes it.
+    private static func replayTokens(in text: String) -> [ReplayToken] {
+        let nsText = text as NSString
+        let matches = sgrRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return text.map(ReplayToken.char) }
+
+        var tokens: [ReplayToken] = []
+        var searchIndex = text.startIndex
+        for match in matches {
+            guard let range = Range(match.range, in: text) else { continue }
+            if searchIndex < range.lowerBound {
+                tokens.append(contentsOf: text[searchIndex..<range.lowerBound].map(ReplayToken.char))
+            }
+            tokens.append(.sgr(String(text[range])))
+            searchIndex = range.upperBound
+        }
+        if searchIndex < text.endIndex {
+            tokens.append(contentsOf: text[searchIndex...].map(ReplayToken.char))
+        }
+        return tokens
+    }
+
+    /// A single replayed grid cell: the character last written there, and
+    /// the SGR state active at the moment it was written. Overwriting a cell
+    /// replaces both fields together, so a later redraw's color correctly
+    /// wins over the frame it overwrites.
+    private struct ReplayCell {
+        var sgr: String
+        var char: Character
+    }
+
+    /// Replays a line's tokens (see `replayTokens`) against a virtual
+    /// single-row cell buffer, then re-emits it as text with SGR reinserted
+    /// only where it actually changes cell-to-cell -- never re-stated on
+    /// every cell, and never dropped when it changes back to "no color"
+    /// (that transition emits a real `ESC[0m`, not silence, since a later
+    /// terminal has no notion of an "empty" SGR state to fall back to). `\r`
+    /// and `\b` move the write column without touching cell content -- a
+    /// real terminal overwrite, not a clear -- so a shorter redraw correctly
+    /// leaves the tail of a longer previous one in place.
+    private static func replayedLine(from tokens: [ReplayToken]) -> String {
+        var cells: [ReplayCell] = []
+        var cursor = 0
+        var currentSGR = ""
+
+        for token in tokens {
+            switch token {
+            case .sgr(let sequence):
+                if sequence == "\u{001B}[0m" || sequence == "\u{001B}[m" {
+                    currentSGR = ""
+                } else {
+                    currentSGR += sequence
+                }
+            case .char(let char):
+                switch char {
+                case "\r":
+                    cursor = 0
+                case "\u{8}":
+                    cursor = max(0, cursor - 1)
+                case "\u{0}":
+                    if cursor < cells.count {
+                        cells.removeSubrange(cursor..<cells.count)
+                    }
+                case "\u{1}":
+                    cells.removeAll()
+                    cursor = 0
+                default:
+                    let cell = ReplayCell(sgr: currentSGR, char: char)
+                    if cursor < cells.count {
+                        cells[cursor] = cell
+                    } else {
+                        if cursor > cells.count {
+                            cells.append(contentsOf: repeatElement(ReplayCell(sgr: "", char: " "), count: cursor - cells.count))
+                        }
+                        cells.append(cell)
+                    }
+                    cursor += 1
+                }
+            }
+        }
+
+        var output = ""
+        var lastEmittedSGR = ""
+        for cell in cells {
+            if cell.sgr != lastEmittedSGR {
+                output += cell.sgr.isEmpty ? ansiReset : cell.sgr
+                lastEmittedSGR = cell.sgr
+            }
+            output.append(cell.char)
+        }
+        if currentSGR != lastEmittedSGR {
+            output += currentSGR.isEmpty ? ansiReset : currentSGR
+        }
+        return output
+    }
+
+    /// `ESC[K` / `ESC[0K`: erase from the cursor to the end of the line.
+    private static let eraseToEndOfLineRegex: NSRegularExpression = {
+        let esc = "\u{001B}"
+        // swiftlint:disable:next force_try
+        return try! NSRegularExpression(pattern: esc + #"\[0?K"#)
+    }()
+
+    /// `ESC[1K` / `ESC[2K`: erase the whole line, cursor to column 0. (EL1
+    /// technically erases only up to the cursor, not the whole line, but a
+    /// scrollback replay has no reason to preserve that distinction -- both
+    /// forms exist here only so a dead TUI's status-line redraw doesn't leave
+    /// stale characters behind.)
+    private static let eraseEntireLineRegex: NSRegularExpression = {
+        let esc = "\u{001B}"
+        // swiftlint:disable:next force_try
+        return try! NSRegularExpression(pattern: esc + #"\[[12]K"#)
+    }()
+
+    /// Matches SGR (`ESC[...m`, including the bare `ESC[m` shorthand for
+    /// reset). Used by `replayTokens(in:)` to recognize SGR as a unit within
+    /// otherwise-plain text -- `sanitizedWorkingText` deliberately does not
+    /// strip these, and `csiRegex` deliberately excludes them.
+    private static let sgrRegex: NSRegularExpression = {
+        let esc = "\u{001B}"
+        // swiftlint:disable:next force_try
+        return try! NSRegularExpression(pattern: esc + #"\[[0-9;]*m"#)
+    }()
+
+    /// OSC (`ESC]...`) terminated by BEL or ST (`ESC\`). Requiring the
+    /// terminator (rather than matching greedily to end-of-line) means a
+    /// truncated/unterminated OSC left behind by
+    /// `SessionPersistencePolicy.truncatedScrollback`'s cut simply fails to
+    /// match and is left in place for the generic CSI/escape cleanup to
+    /// ignore, instead of swallowing the rest of the line.
+    private static let oscRegex: NSRegularExpression = {
+        let esc = "\u{001B}"
+        // swiftlint:disable:next force_try
+        return try! NSRegularExpression(pattern: esc + #"\][^\x07\x1B]*(?:\x07|\x1B\\)"#)
+    }()
+
+    /// Generic CSI: `ESC[`, parameter bytes (`0x30`-`0x3F`: digits, `;`,
+    /// `:`, `<=>?`), intermediate bytes (`0x20`-`0x2F`), one final byte
+    /// (`0x40`-`0x7E`, i.e. `@`-`~`) -- EXCLUDING `m` (`0x6D`), which is SGR
+    /// and is deliberately left for `replayTokens(in:)` to recognize inline
+    /// rather than being stripped here. Matches every other CSI form --
+    /// cursor moves, erase, scroll region, and DEC private mode set/reset
+    /// alike -- which is why this must run after the erase-line translation
+    /// above has already pulled those out.
+    private static let csiRegex: NSRegularExpression = {
+        let esc = "\u{001B}"
+        // swiftlint:disable:next force_try
+        return try! NSRegularExpression(pattern: esc + #"\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x6C\x6E-\x7E]"#)
+    }()
+
+    /// DECSC/DECRC (`ESC7`/`ESC8`), the two-character escapes not shaped
+    /// like CSI or OSC and so not covered by either regex above.
+    private static let saveRestoreCursorRegex: NSRegularExpression = {
+        let esc = "\u{001B}"
+        // swiftlint:disable:next force_try
+        return try! NSRegularExpression(pattern: esc + #"[78]"#)
+    }()
 
     /// Preserve ANSI color state safely across replay boundaries, disarm any
     /// terminal mode the replayed transcript leaves set (see
     /// `TerminalReplayModeReset`), and guarantee a trailing newline so the
     /// fresh shell's own first prompt lands on its own line below the
     /// replayed text rather than concatenated onto its last line.
-    private static func ansiSafeReplayText(_ text: String) -> String {
-        guard text.contains(ansiEscape) else { return ensuringTrailingNewline(text) }
+    ///
+    /// `forceModeReset` exists because `text.contains(ansiEscape)` is no
+    /// longer sufficient on its own to decide whether a mode reset is
+    /// needed: `positioningSanitizedText` can legitimately reduce a line to
+    /// zero escape bytes (every CSI it contained, including DEC private mode
+    /// sequences like `ESC[?1003h`, was width-dependent and got stripped),
+    /// while the ORIGINAL pre-sanitization text still proves the transcript
+    /// could have armed a mode that needs disarming. The reset is cheap and
+    /// idempotent, so callers should pass `true` whenever the untouched
+    /// source text contained any escape at all, regardless of what survived
+    /// sanitization -- see `preparedText(for:)`.
+    private static func ansiSafeReplayText(_ text: String, forceModeReset: Bool) -> String {
+        guard text.contains(ansiEscape) || forceModeReset else { return ensuringTrailingNewline(text) }
         var output = text
         if !output.hasPrefix(ansiReset) {
             output = ansiReset + output
