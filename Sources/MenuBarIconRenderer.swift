@@ -513,7 +513,7 @@ enum MenuBarBuildHintFormatter {
 
 enum MenuBarExtraSettings {
     static let showInMenuBarKey = "showMenuBarExtra"
-    static let defaultShowInMenuBar = true
+    static let defaultShowInMenuBar = false
 
     static func showsMenuBarExtra(defaults: UserDefaults = .standard) -> Bool {
         if defaults.object(forKey: showInMenuBarKey) == nil {

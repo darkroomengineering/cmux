@@ -71,7 +71,7 @@
       "properties": {
         "showInMenuBar": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Show the menu bar extra."
         },
         "sound": {
