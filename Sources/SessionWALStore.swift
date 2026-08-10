@@ -1033,9 +1033,17 @@ final class SessionWALStore {
     /// fallback has been consumed (or found empty). Safe to call
     /// unconditionally: `sessionId` here is always an OLD (pre-restore)
     /// surface id, distinct from any live surface's freshly generated id.
-    func discardOrphanedSession(sessionId: String) {
+    func discardOrphanedSession(
+        sessionId: String,
+        appSupportDirectory: URL? = nil,
+        completion: (() -> Void)? = nil
+    ) {
         writeQueue.async {
-            guard let paths = SessionWALPaths.make(sessionId: sessionId) else { return }
+            defer { completion?() }
+            guard let paths = SessionWALPaths.make(
+                sessionId: sessionId,
+                appSupportDirectory: appSupportDirectory
+            ) else { return }
             try? FileManager.default.removeItem(at: paths.sessionDirectory)
         }
     }
