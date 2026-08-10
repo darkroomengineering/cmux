@@ -1724,12 +1724,6 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
         let tokenBytes = [UInt8](repeating: 0xAB, count: EscrowWireFormat.tokenSize)
         let tokenHex = tokenBytes.map { String(format: "%02x", $0) }.joined()
 
-        var pair: [Int32] = [-1, -1]
-        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
-        let passFD = pair[0]
-        let peerFD = pair[1]
-        defer { close(peerFD) }
-
         // Hand-rolled response frames pin the wire layout: 1-byte type,
         // 36-byte session id, 32 bytes of padding whose FIRST byte is the
         // deny reason (0x03 = not_draining; zero-padded by pre-reason
@@ -1745,6 +1739,7 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
 
         let serverReady = DispatchSemaphore(value: 0)
         let expectedSessionIdBytes = Array(sessionId.utf8)
+        let matchedRequests = ManagedAtomic()
         Thread.detachNewThread {
             defer { serverExited.signal() }
             serverReady.signal()
@@ -1772,18 +1767,23 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
                     close(conn)
                     continue
                 }
+                matchedRequests.increment()
                 if round == 0 {
                     let deny = responseFrame(granted: false, denyReasonByte: 0x03)
                     _ = deny.withUnsafeBytes { raw -> Int in
                         write(conn, raw.baseAddress, raw.count)
                     }
                 } else {
-                    _ = UnixDomainFDPassing.send(
-                        fd: passFD,
-                        payload: responseFrame(granted: true, denyReasonByte: 0),
-                        over: conn
-                    )
-                    close(passFD)
+                    var grantPair: [Int32] = [-1, -1]
+                    if socketpair(AF_UNIX, SOCK_STREAM, 0, &grantPair) == 0 {
+                        _ = UnixDomainFDPassing.send(
+                            fd: grantPair[0],
+                            payload: responseFrame(granted: true, denyReasonByte: 0),
+                            over: conn
+                        )
+                        close(grantPair[0])
+                        close(grantPair[1])
+                    }
                 }
                 close(conn)
                 round += 1
@@ -1803,17 +1803,85 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
         )
         defer { close(unwrappedFD) }
 
-        // Behavioral proof the granted fd is the escrowed one: bytes written
-        // into the socketpair's peer arrive through the retrieved fd.
-        let ping = Data("ping".utf8)
-        let written = ping.withUnsafeBytes { raw -> Int in
-            write(peerFD, raw.baseAddress, raw.count)
+        // The retry semantics are the regression under test: the client
+        // must have presented its request twice (once denied not_draining,
+        // once granted) and ended up holding a real, open fd. Content-level
+        // proof that a granted fd carries the escrowed bytes lives in
+        // testRetrieveGrantDeliversTheEscrowedFDBytes -- deliberately a
+        // separate, retry-free test, so a same-process fd-delivery hiccup
+        // there can never masquerade as a retry-logic regression here.
+        XCTAssertEqual(matchedRequests.value, 2, "the holder must have seen the request twice: the not_draining denial and the post-drain grant")
+        XCTAssertGreaterThanOrEqual(fcntl(unwrappedFD, F_GETFD), 0, "the granted fd must be a live, open descriptor")
+    }
+
+    // Deterministic single-shot companion to the retry test above: the
+    // holder grants immediately, and the granted fd must deliver exactly
+    // the bytes that were buffered into it before it was sent (both
+    // original socketpair ends are closed pre-send, so the kernel buffer
+    // is the only possible source -- no liveness dependency on any other
+    // fd in this process).
+    func testRetrieveGrantDeliversTheEscrowedFDBytes() throws {
+        let socketPath = makeShortSocketPath()
+        let listenFD = try XCTUnwrap(UnixDomainFDPassing.bindListening(socketPath: socketPath))
+        defer {
+            close(listenFD)
+            unlink(socketPath)
         }
-        XCTAssertEqual(written, 4)
-        var received = [UInt8](repeating: 0, count: 4)
-        let readCount = read(unwrappedFD, &received, received.count)
-        XCTAssertEqual(readCount, 4)
-        XCTAssertEqual(String(bytes: received, encoding: .utf8), "ping")
+        let serverExited = DispatchSemaphore(value: 0)
+        defer {
+            if let wake = UnixDomainFDPassing.connect(to: socketPath) { close(wake) }
+            _ = serverExited.wait(timeout: .now() + 2.0)
+        }
+
+        let sessionId = UUID().uuidString
+        let tokenHex = String(repeating: "ab", count: EscrowWireFormat.tokenSize)
+
+        Thread.detachNewThread {
+            defer { serverExited.signal() }
+            let conn = accept(listenFD, nil, nil)
+            guard conn >= 0 else { return }
+            var request = Data()
+            while request.count < EscrowWireFormat.frameSize {
+                var buffer = [UInt8](repeating: 0, count: EscrowWireFormat.frameSize - request.count)
+                let n = read(conn, &buffer, buffer.count)
+                guard n > 0 else { break }
+                request.append(contentsOf: buffer.prefix(n))
+            }
+            var frame = Data(count: EscrowWireFormat.frameSize)
+            frame[0] = 0x04 // retrieveResponseType
+            frame.replaceSubrange(1..<(1 + EscrowWireFormat.sessionIdSize), with: Array(sessionId.utf8))
+            frame[1 + EscrowWireFormat.sessionIdSize + EscrowWireFormat.tokenSize] = 1 // granted
+            var grantPair: [Int32] = [-1, -1]
+            if socketpair(AF_UNIX, SOCK_STREAM, 0, &grantPair) == 0 {
+                let ping = Data("ping".utf8)
+                _ = ping.withUnsafeBytes { raw -> Int in
+                    write(grantPair[1], raw.baseAddress, raw.count)
+                }
+                close(grantPair[1])
+                _ = UnixDomainFDPassing.send(fd: grantPair[0], payload: frame, over: conn)
+                close(grantPair[0])
+            }
+            close(conn)
+        }
+
+        let retrievedFD = SessionEscrowClient.retrieve(
+            sessionId: sessionId,
+            tokenHex: tokenHex,
+            socketPath: socketPath,
+            recvTimeout: 2.0
+        )
+        let unwrappedFD = try XCTUnwrap(retrievedFD, "an immediate grant must succeed on the first attempt")
+        defer { close(unwrappedFD) }
+
+        var received = [UInt8](repeating: 0, count: 8)
+        var collected = Data()
+        while collected.count < 4 {
+            let n = read(unwrappedFD, &received, received.count)
+            guard n > 0 else { break }
+            collected.append(contentsOf: received.prefix(n))
+        }
+        XCTAssertEqual(String(data: collected, encoding: .utf8), "ping", "the granted fd must be the one the holder escrowed -- its kernel buffer carries the bytes written before the send")
+        XCTAssertEqual(read(unwrappedFD, &received, received.count), 0, "after the buffered ping, EOF: both original pair ends were closed before the send")
     }
 
     // The deny reason travels in the first byte of the response frame's
