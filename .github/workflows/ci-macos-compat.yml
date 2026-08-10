@@ -9,6 +9,7 @@ on:
     paths:
       - "Sources/**"
       - "CLI/**"
+      - "CLI-MCP/**"
       - "daemon/**"
       - "programaTests/**"
       - "vendor/**"
