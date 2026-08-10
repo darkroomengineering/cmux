@@ -1961,7 +1961,10 @@ class GhosttyApp {
                     workspace.progressSourcePanelId = nil
                 case GHOSTTY_PROGRESS_STATE_SET where rawProgress >= 0:
                     let clamped = max(0, min(100, Int(rawProgress)))
-                    workspace.progress = SidebarProgressState(value: Double(clamped) / 100.0, label: nil)
+                    let value = Double(clamped) / 100.0
+                    if TerminalController.shouldReplaceProgress(current: workspace.progress, value: value, label: nil) {
+                        workspace.progress = SidebarProgressState(value: value, label: nil)
+                    }
                     workspace.progressSourcePanelId = surfaceId
                 default:
                     // _SET with progress == -1, _ERROR, _PAUSE, _INDETERMINATE: no-op, keep

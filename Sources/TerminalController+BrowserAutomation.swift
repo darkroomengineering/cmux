@@ -2797,7 +2797,6 @@ extension TerminalController {
                 guard fd >= 0 else {
                     return .err(code: "internal_error", message: "Failed to watch download path", data: ["path": path])
                 }
-                defer { close(fd) }
 
                 let ready = v2AwaitCallback(timeout: timeout) { finish in
                     var source: DispatchSourceFileSystemObject?
@@ -2821,6 +2820,11 @@ extension TerminalController {
                         }
                     }
                     source?.setCancelHandler {
+                        // Close here, not in an outer `defer`: two asyncAfter timeouts (this
+                        // one and v2AwaitCallback's) can race to tear this down, and closing
+                        // in a defer scoped to the whole function could run while the source
+                        // is still uncancelled.
+                        Darwin.close(fd)
                         source = nil
                     }
                     source?.resume()

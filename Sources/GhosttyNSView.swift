@@ -64,8 +64,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         )
     }
 
-    static func focusLog(_ message: String) {
+    static func focusLog(_ message: @autoclosure () -> String) {
         guard focusDebugEnabled else { return }
+        let message = message()
         FocusLogStore.shared.append(message)
         NSLog("[FOCUSDBG] %@", message)
     }

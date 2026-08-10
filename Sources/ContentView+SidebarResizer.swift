@@ -110,7 +110,7 @@ extension ContentView {
         guard sidebarState.isVisible,
               let window = observedWindow,
               let contentView = window.contentView else {
-            isResizerBandActive = false
+            if isResizerBandActive { isResizerBandActive = false }
             scheduleSidebarResizerCursorRelease(force: true)
             return
         }
@@ -121,7 +121,7 @@ extension ContentView {
         let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
         let pointInContent = contentView.convert(pointInWindow, from: nil)
         let isInDividerBand = dividerBandContains(pointInContent: pointInContent, contentBounds: contentView.bounds)
-        isResizerBandActive = isInDividerBand
+        if isResizerBandActive != isInDividerBand { isResizerBandActive = isInDividerBand }
 
         if isInDividerBand || isResizerDragging {
             activateSidebarResizerCursor()
@@ -201,7 +201,7 @@ extension ContentView {
             NSEvent.removeMonitor(monitor)
             sidebarResizerPointerMonitor = nil
         }
-        isResizerBandActive = false
+        if isResizerBandActive { isResizerBandActive = false }
         isSidebarResizerCursorActive = false
         stopSidebarResizerCursorStabilizer()
         scheduleSidebarResizerCursorRelease(force: true)
@@ -243,7 +243,7 @@ extension ContentView {
                     isResizerDragging = false
                 }
                 sidebarDragStartWidth = nil
-                isResizerBandActive = false
+                if isResizerBandActive { isResizerBandActive = false }
                 scheduleSidebarResizerCursorRelease(force: true)
             }
             .gesture(

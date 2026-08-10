@@ -961,7 +961,9 @@ class TerminalController {
             guard let workspace = tabManager.tabs.first(where: { $0.id == workspaceId }) else { return }
             let validSurfaceIds = Set(workspace.panels.keys)
             guard validSurfaceIds.contains(panelId) else { return }
-            workspace.surfaceListeningPorts[panelId] = ports.isEmpty ? nil : ports
+            let newValue = ports.isEmpty ? nil : ports
+            guard workspace.surfaceListeningPorts[panelId] != newValue else { return }
+            workspace.surfaceListeningPorts[panelId] = newValue
             workspace.recomputeListeningPorts()
         }
         PortScanner.shared.onAgentPortsUpdated = { [weak self] workspaceId, ports in
