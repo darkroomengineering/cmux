@@ -10,6 +10,7 @@ on:
       - ".github/workflows/build-ghosttykit.yml"
       - "Sources/**"
       - "CLI/**"
+      - "CLI-MCP/**"
       - "daemon/**"
       - "programaTests/**"
       - "tests/**"
@@ -30,6 +31,7 @@ on:
     paths:
       - "Sources/**"
       - "CLI/**"
+      - "CLI-MCP/**"
       - "daemon/**"
       - "programaTests/**"
       - "tests/**"

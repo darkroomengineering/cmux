@@ -71,7 +71,9 @@ final class NotificationDockBadgeTests: XCTestCase {
         )
     }
 
-    func testMenuBarExtraPreferenceDefaultsToVisible() {
+    /// The menu bar extra is opt-in: absent an explicit preference it stays hidden,
+    /// and an existing choice in either direction is honored rather than overridden.
+    func testMenuBarExtraPreferenceDefaultsToHiddenAndHonorsExplicitChoice() {
         let suiteName = "MenuBarExtraVisibilityTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             XCTFail("Failed to create isolated UserDefaults suite")
@@ -81,13 +83,13 @@ final class NotificationDockBadgeTests: XCTestCase {
             defaults.removePersistentDomain(forName: suiteName)
         }
 
-        XCTAssertTrue(MenuBarExtraSettings.showsMenuBarExtra(defaults: defaults))
-
-        defaults.set(false, forKey: MenuBarExtraSettings.showInMenuBarKey)
         XCTAssertFalse(MenuBarExtraSettings.showsMenuBarExtra(defaults: defaults))
 
         defaults.set(true, forKey: MenuBarExtraSettings.showInMenuBarKey)
         XCTAssertTrue(MenuBarExtraSettings.showsMenuBarExtra(defaults: defaults))
+
+        defaults.set(false, forKey: MenuBarExtraSettings.showInMenuBarKey)
+        XCTAssertFalse(MenuBarExtraSettings.showsMenuBarExtra(defaults: defaults))
     }
 
     func testNotificationSoundUsesSystemSoundForDefaultAndNamedSounds() {
