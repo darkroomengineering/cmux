@@ -11,6 +11,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - Restored terminals no longer come back garbled right after an app update: no more transcript fragments painted at the wrong column or letters swapped for digits mid-word, and no need to resize the window to fix it.
 - Split-pane workspaces no longer show scattered, overlapping garbled text (the repeated corrupted spinner/"thinking" output some of you saw) when restoring a session, especially with uneven splits.
 - Running agent sessions no longer get dropped to a bare shell when the app updates and relaunches; a session that's mid-handoff during that restart is now reliably reattached instead of lost, and restoring several sessions after an update no longer repeats a several-second wait for every one of them if a single handoff is stuck.
+- A restart after an update no longer kills every terminal when the new app comes up faster than the background session-holder notices the old one is gone. The app now waits out that window instead of giving up, escrow sockets no longer leak into shell processes (which silently delayed that detection), and a session that falls back anyway keeps its reattach records on disk while its process is still alive instead of deleting them.
 
 ### Changed
 - The CLI now reconnects automatically instead of exiting when the app restarts (for example after an auto-update) or after an hour of inactivity; use `--no-reconnect` on `watch-events` if you want the old exit-on-disconnect behavior for scripts.
