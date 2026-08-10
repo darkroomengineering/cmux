@@ -1707,6 +1707,18 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
             close(listenFD)
             unlink(socketPath)
         }
+        // Join the server thread BEFORE the defer above closes listenFD
+        // (defers run LIFO): a server thread that outlives its test can
+        // block in accept on a closed-and-REUSED fd number and steal or
+        // close a later test's sockets. The wake connect unblocks a server
+        // still sitting in accept on the failure path.
+        let serverExited = DispatchSemaphore(value: 0)
+        let stopServing = ManagedAtomic()
+        defer {
+            stopServing.increment()
+            if let wake = UnixDomainFDPassing.connect(to: socketPath) { close(wake) }
+            _ = serverExited.wait(timeout: .now() + 2.0)
+        }
 
         let sessionId = UUID().uuidString
         let tokenBytes = [UInt8](repeating: 0xAB, count: EscrowWireFormat.tokenSize)
@@ -1732,17 +1744,33 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
         }
 
         let serverReady = DispatchSemaphore(value: 0)
+        let expectedSessionIdBytes = Array(sessionId.utf8)
         Thread.detachNewThread {
+            defer { serverExited.signal() }
             serverReady.signal()
-            for round in 0..<2 {
+            var round = 0
+            while round < 2 {
                 let conn = accept(listenFD, nil, nil)
                 guard conn >= 0 else { return }
+                guard stopServing.value == 0 else {
+                    close(conn)
+                    return
+                }
                 var request = Data()
                 while request.count < EscrowWireFormat.frameSize {
                     var buffer = [UInt8](repeating: 0, count: EscrowWireFormat.frameSize - request.count)
                     let n = read(conn, &buffer, buffer.count)
                     guard n > 0 else { break }
                     request.append(contentsOf: buffer.prefix(n))
+                }
+                // Only frames carrying THIS test's session id consume a
+                // round -- anything else (a stray wake poke, a connection
+                // from an unrelated fd mixup) is dropped without advancing
+                // the deny/grant sequence.
+                guard request.count == EscrowWireFormat.frameSize,
+                      Array(request[1..<(1 + EscrowWireFormat.sessionIdSize)]) == expectedSessionIdBytes else {
+                    close(conn)
+                    continue
                 }
                 if round == 0 {
                     let deny = responseFrame(granted: false, denyReasonByte: 0x03)
@@ -1758,6 +1786,7 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
                     close(passFD)
                 }
                 close(conn)
+                round += 1
             }
         }
         serverReady.wait()
@@ -1776,14 +1805,140 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
 
         // Behavioral proof the granted fd is the escrowed one: bytes written
         // into the socketpair's peer arrive through the retrieved fd.
-        var ping = Data("ping".utf8)
-        _ = ping.withUnsafeBytes { raw -> Int in
+        let ping = Data("ping".utf8)
+        let written = ping.withUnsafeBytes { raw -> Int in
             write(peerFD, raw.baseAddress, raw.count)
         }
+        XCTAssertEqual(written, 4)
         var received = [UInt8](repeating: 0, count: 4)
         let readCount = read(unwrappedFD, &received, received.count)
         XCTAssertEqual(readCount, 4)
         XCTAssertEqual(String(bytes: received, encoding: .utf8), "ping")
+    }
+
+    // The deny reason travels in the first byte of the response frame's
+    // otherwise-unused token padding, so pre-reason holders (zero padding)
+    // must decode as .unspecified and reason-carrying frames must survive a
+    // round trip. The holder outlives the app across updates, so
+    // mixed-version frames are the normal update path, not an edge case.
+    func testRetrieveResponseFrameDenyReasonRoundTripAndLegacyCompatibility() throws {
+        let sessionId = UUID().uuidString
+
+        for reason: EscrowWireFormat.RetrieveDenyReason in [.unknownSession, .tokenMismatch, .notDraining, .drainStopTimeout] {
+            let frame = try XCTUnwrap(EscrowWireFormat.encodeRetrieveResponseFrame(
+                sessionId: sessionId,
+                granted: false,
+                denyReason: reason
+            ))
+            let decoded = try XCTUnwrap(EscrowWireFormat.decode(frame))
+            XCTAssertEqual(decoded.retrieveGranted, false)
+            XCTAssertEqual(decoded.retrieveDenyReason, reason)
+        }
+
+        // A granted frame never carries a deny reason byte.
+        let granted = try XCTUnwrap(EscrowWireFormat.encodeRetrieveResponseFrame(
+            sessionId: sessionId,
+            granted: true,
+            denyReason: .notDraining
+        ))
+        XCTAssertEqual(granted[EscrowWireFormat.retrieveDenyReasonOffset], 0)
+
+        // A legacy (pre-reason) holder's deny frame: zero token padding.
+        var legacy = Data(count: EscrowWireFormat.frameSize)
+        legacy[0] = 0x04
+        legacy.replaceSubrange(1..<(1 + EscrowWireFormat.sessionIdSize), with: Array(sessionId.utf8))
+        let decodedLegacy = try XCTUnwrap(EscrowWireFormat.decode(legacy))
+        XCTAssertEqual(decodedLegacy.retrieveGranted, false)
+        XCTAssertEqual(decodedLegacy.retrieveDenyReason, .unspecified)
+    }
+
+    // The retry is bounded: a holder that keeps answering not_draining
+    // past the deadline (e.g. the old app really is still alive) ends in
+    // the fallback, after more than one attempt.
+    func testRetrieveGivesUpOnPersistentNotDrainingDenialAtDeadline() throws {
+        let socketPath = makeShortSocketPath()
+        let listenFD = try XCTUnwrap(UnixDomainFDPassing.bindListening(socketPath: socketPath))
+        defer {
+            close(listenFD)
+            unlink(socketPath)
+        }
+
+        let sessionId = UUID().uuidString
+        let tokenHex = String(repeating: "ab", count: EscrowWireFormat.tokenSize)
+        let requestCount = ManagedAtomic()
+        let stopRequested = ManagedAtomic()
+        let serverExited = DispatchSemaphore(value: 0)
+        // Deterministic teardown: close(listenFD) does NOT reliably wake a
+        // thread blocked in accept(2) on macOS, and a zombie server blocked
+        // on a closed (and later REUSED) fd number steals or closes the
+        // next test's sockets. The defer below sets the stop flag, pokes
+        // the server awake with one throwaway connect, and JOINS the
+        // thread so none of its code runs concurrently with a later test.
+        defer {
+            stopRequested.increment()
+            if let wake = UnixDomainFDPassing.connect(to: socketPath) { close(wake) }
+            _ = serverExited.wait(timeout: .now() + 2.0)
+        }
+
+        Thread.detachNewThread {
+            defer { serverExited.signal() }
+            while true {
+                let conn = accept(listenFD, nil, nil)
+                guard conn >= 0 else { return }
+                guard stopRequested.value == 0 else {
+                    close(conn)
+                    return
+                }
+                var request = Data()
+                while request.count < EscrowWireFormat.frameSize {
+                    var buffer = [UInt8](repeating: 0, count: EscrowWireFormat.frameSize - request.count)
+                    let n = read(conn, &buffer, buffer.count)
+                    guard n > 0 else { break }
+                    request.append(contentsOf: buffer.prefix(n))
+                }
+                requestCount.increment()
+                if let deny = EscrowWireFormat.encodeRetrieveResponseFrame(
+                    sessionId: sessionId,
+                    granted: false,
+                    denyReason: .notDraining
+                ) {
+                    _ = UnixDomainFDPassing.send(fd: nil, payload: deny, over: conn)
+                }
+                close(conn)
+            }
+        }
+
+        // Generous timing on purpose: a loaded CI runner can stretch one
+        // attempt toward its recv timeout, and this test asserts the retry
+        // COUNT, so the deadline must fit several worst-case attempts.
+        let startedAt = Date()
+        let retrievedFD = SessionEscrowClient.retrieve(
+            sessionId: sessionId,
+            tokenHex: tokenHex,
+            socketPath: socketPath,
+            recvTimeout: 1.0,
+            retryDeadline: .now() + 3.0
+        )
+        let elapsed = Date().timeIntervalSince(startedAt)
+
+        XCTAssertNil(retrievedFD, "a denial that persists past the retry deadline must fall back")
+        XCTAssertGreaterThanOrEqual(requestCount.value, 2, "the not_draining denial must be retried at least once before falling back")
+        XCTAssertLessThan(elapsed, 15.0, "the retry loop must respect its deadline")
+    }
+
+    private final class ManagedAtomic {
+        private let lock = NSLock()
+        private var count = 0
+        func increment() {
+            lock.lock()
+            count += 1
+            lock.unlock()
+        }
+        var value: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return count
+        }
     }
 
     // Fix 3: the fallback restore path must not delete a session directory
@@ -1826,7 +1981,13 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
         )
     }
 
-    func testDiscardOrphanedSessionStillDeletesWithoutLiveEscrowClaim() throws {
+    // The preservation is deliberately claim-based, not freshness-based:
+    // the holder expires sessions from `drainingStartedAt` on its own
+    // reaper cadence, and a client-side heartbeat-age check would race that
+    // clock near the TTL boundary and delete a live child's token. So the
+    // ONLY things still deleted here are directories with no escrow claim
+    // at all -- and consumed claims, via the revive path's `force`.
+    func testDiscardOrphanedSessionStillDeletesUnescrowedDirectories() throws {
         let appSupport = FileManager.default.temporaryDirectory
             .appendingPathComponent("programa-escrow-discard-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: appSupport) }
@@ -1839,11 +2000,11 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
             childPID: 123,
             ptyPath: nil,
             workingDirectory: nil,
-            lastHeartbeatAt: Date(timeIntervalSinceNow: -2 * SessionEscrowPolicy.unclaimedSessionTTL),
+            lastHeartbeatAt: Date(),
             walGeneration: 0,
-            escrowed: true,
-            escrowSocketPath: "/tmp/example-holder.sock",
-            escrowToken: String(repeating: "ab", count: EscrowWireFormat.tokenSize)
+            escrowed: nil,
+            escrowSocketPath: nil,
+            escrowToken: nil
         )
         _ = try SessionWALCore.persistMeta(meta, to: paths)
 
@@ -1858,7 +2019,44 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
 
         XCTAssertFalse(
             FileManager.default.fileExists(atPath: paths.sessionDirectory.path),
-            "a stale escrow claim (holder TTL long expired) must still be cleaned up by the fallback restore"
+            "a directory with no escrow claim has nothing to preserve and must be cleaned up by the fallback restore"
+        )
+    }
+
+    func testDiscardOrphanedSessionForceDeletesConsumedEscrowClaim() throws {
+        let appSupport = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-escrow-discard-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: appSupport) }
+
+        let sessionId = UUID().uuidString
+        let paths = try XCTUnwrap(SessionWALPaths.make(sessionId: sessionId, appSupportDirectory: appSupport))
+        try FileManager.default.createDirectory(at: paths.sessionDirectory, withIntermediateDirectories: true)
+        let meta = SessionWALMeta(
+            sessionId: sessionId,
+            childPID: 123,
+            ptyPath: nil,
+            workingDirectory: nil,
+            lastHeartbeatAt: Date(),
+            walGeneration: 0,
+            escrowed: true,
+            escrowSocketPath: "/tmp/example-holder.sock",
+            escrowToken: String(repeating: "ab", count: EscrowWireFormat.tokenSize)
+        )
+        _ = try SessionWALCore.persistMeta(meta, to: paths)
+
+        let discarded = expectation(description: "discard completed")
+        SessionWALStore.shared.discardOrphanedSession(
+            sessionId: sessionId,
+            appSupportDirectory: appSupport,
+            force: true
+        ) {
+            discarded.fulfill()
+        }
+        wait(for: [discarded], timeout: 5.0)
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: paths.sessionDirectory.path),
+            "the revive-success path consumed the claim (holder registry entry is gone) and must be able to clean up despite live-looking escrow fields"
         )
     }
 }

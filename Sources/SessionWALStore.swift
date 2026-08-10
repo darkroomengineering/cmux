@@ -1030,12 +1030,30 @@ final class SessionWALStore {
     }
 
     /// Deletes one specific old session's directory once its restore
-    /// fallback has been consumed (or found empty). Safe to call
-    /// unconditionally: `sessionId` here is always an OLD (pre-restore)
-    /// surface id, distinct from any live surface's freshly generated id.
+    /// fallback has been consumed (or found empty). `sessionId` here is
+    /// always an OLD (pre-restore) surface id, distinct from any live
+    /// surface's freshly generated id.
+    ///
+    /// NOT safe to call unconditionally anymore (2026-08-10 mass-drain
+    /// fix): a directory whose `meta.json` records an escrow claim may
+    /// describe a child that is STILL ALIVE in the holder, and that
+    /// `meta.json` holds the only copy of the retrieval token -- deleting
+    /// it forecloses any reattach forever. Escrowed directories are
+    /// therefore preserved here UNCONDITIONALLY (no client-side freshness
+    /// check: the holder expires sessions from `drainingStartedAt` on its
+    /// own 30s reaper cadence, and mirroring that TTL here from the
+    /// different `lastHeartbeatAt` clock is exactly the two-clocks race
+    /// that would delete a live child's token near the boundary) and left
+    /// to the orphan sweep (`sweepOrphanedSessionDirectories`), whose
+    /// `orphanDirectoryMaxAge` (24h) comfortably outlives the holder's
+    /// `unclaimedSessionTTL` (1h). `force` bypasses preservation for
+    /// callers that KNOW the claim is consumed -- the revive-success path,
+    /// where the holder has already removed the session from its registry,
+    /// leaving `meta.json`'s escrow fields stale-but-live-looking.
     func discardOrphanedSession(
         sessionId: String,
         appSupportDirectory: URL? = nil,
+        force: Bool = false,
         completion: (() -> Void)? = nil
     ) {
         writeQueue.async {
@@ -1044,6 +1062,13 @@ final class SessionWALStore {
                 sessionId: sessionId,
                 appSupportDirectory: appSupportDirectory
             ) else { return }
+            if !force,
+               let data = try? Data(contentsOf: paths.metaURL),
+               let meta = try? Self.metaDecoder.decode(SessionWALMeta.self, from: data),
+               meta.escrowed == true {
+                dilog("escrow.reattach", "preserve session=\(sessionId.prefix(8)) reason=escrow_claim")
+                return
+            }
             try? FileManager.default.removeItem(at: paths.sessionDirectory)
         }
     }

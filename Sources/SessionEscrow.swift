@@ -214,6 +214,22 @@ enum SessionEscrowPolicy {
     /// fix is explicit claim/renew reconciliation between app and holder,
     /// not a timer -- tracked separately; this TTL is a stopgap until then.
     static let unclaimedSessionTTL: TimeInterval = 3600
+    /// 2026-08-10 mass-drain fix (retrieve-before-drain race): how long a
+    /// relaunched app keeps retrying a retrieve the holder denied only
+    /// because it has not yet detected the previous instance's death
+    /// (`not_draining`). Must comfortably exceed `heartbeatStaleAfter` --
+    /// the holder's slowest death-detection path -- so the drain is
+    /// guaranteed to have started (making the retry grantable) before the
+    /// retry window closes. The deadline is anchored once per process
+    /// (`SessionEscrowClient.sharedDenyRetryDeadline`), not per session, so
+    /// a serial restore of N panels stalls launch by at most one window
+    /// total, never N of them.
+    static let retrieveDenyRetryWindow: TimeInterval = 8.0
+    /// Sleep between retries inside the window above. Small enough that the
+    /// common case (EOF-driven death detection, now guaranteed by
+    /// close-on-exec on the escrow sockets) grants on the first or second
+    /// retry; large enough not to hammer the holder.
+    static let retrieveDenyRetryInterval: TimeInterval = 0.25
     /// How often the holder sweeps for expired sessions.
     static let reaperInterval: TimeInterval = 30
     /// How long the holder waits, with an empty registry and no live
@@ -245,17 +261,37 @@ enum EscrowWireFormat {
     /// ancillary data iff granted.
     static let retrieveResponseType: UInt8 = 0x04
 
+    /// Why the holder denied a retrieve. Carried in the FIRST byte of the
+    /// response frame's otherwise-unused 32-byte token padding
+    /// (`retrieveDenyReasonOffset`), so pre-reason holders -- which
+    /// zero-pad that region -- decode as `.unspecified` and the frame size
+    /// never changes. This matters across an app UPDATE specifically: the
+    /// holder outlives the app, so a new client routinely talks to a holder
+    /// built from the previous version. `notDraining` is the only reason a
+    /// rightful successor should retry (the holder resolves it on its own
+    /// within `heartbeatStaleAfter`); every other reason is permanent.
+    enum RetrieveDenyReason: UInt8 {
+        case unspecified = 0
+        case unknownSession = 1
+        case tokenMismatch = 2
+        case notDraining = 3
+        case drainStopTimeout = 4
+    }
+    static let retrieveDenyReasonOffset = 1 + sessionIdSize
+
     struct Decoded {
         let type: UInt8
         let sessionId: String?
         let token: [UInt8]?
         let childPID: Int32?
         /// Only meaningful when `type == retrieveResponseType`: whether the
-        /// holder granted the retrieval. Unknown session, token mismatch,
-        /// child already exited, and "not yet detected as dead" all decode
-        /// to `false` here -- the wire deliberately never distinguishes
-        /// why, only whether an fd follows.
+        /// holder granted the retrieval.
         let retrieveGranted: Bool?
+        /// Only meaningful when `type == retrieveResponseType` and
+        /// `retrieveGranted == false`. `.unspecified` for frames from
+        /// pre-reason holders (zero padding) and for reason bytes this
+        /// build does not know.
+        let retrieveDenyReason: RetrieveDenyReason?
     }
 
     static func heartbeatFrame() -> Data {
@@ -284,12 +320,18 @@ enum EscrowWireFormat {
         return data
     }
 
-    static func encodeRetrieveResponseFrame(sessionId: String, granted: Bool) -> Data? {
+    static func encodeRetrieveResponseFrame(
+        sessionId: String,
+        granted: Bool,
+        denyReason: RetrieveDenyReason = .unspecified
+    ) -> Data? {
         guard sessionId.utf8.count == sessionIdSize else { return nil }
         var data = Data(capacity: frameSize)
         data.append(retrieveResponseType)
         data.append(contentsOf: Array(sessionId.utf8))
-        data.append(Data(count: tokenSize)) // unused padding for this type
+        var padding = Data(count: tokenSize) // unused by pre-reason decoders
+        padding[0] = granted ? 0 : denyReason.rawValue
+        data.append(padding)
         data.append(contentsOf: [granted ? 1 : 0, 0, 0, 0])
         return data
     }
@@ -309,15 +351,16 @@ enum EscrowWireFormat {
             guard let sessionId = String(bytes: sessionIdBytes, encoding: .utf8) else { return nil }
             let rawPID = pidBytes.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
             let childPID: Int32? = type == escrowType ? Int32(littleEndian: rawPID) : nil
-            return Decoded(type: type, sessionId: sessionId, token: tokenBytes, childPID: childPID, retrieveGranted: nil)
+            return Decoded(type: type, sessionId: sessionId, token: tokenBytes, childPID: childPID, retrieveGranted: nil, retrieveDenyReason: nil)
         case retrieveResponseType:
             let offset = 1 + sessionIdSize + tokenSize
             let sessionIdBytes = Array(bytes[1..<(1 + sessionIdSize)])
             guard let sessionId = String(bytes: sessionIdBytes, encoding: .utf8) else { return nil }
             let grantedByte = bytes[offset]
-            return Decoded(type: type, sessionId: sessionId, token: nil, childPID: nil, retrieveGranted: grantedByte == 1)
+            let denyReason = RetrieveDenyReason(rawValue: bytes[retrieveDenyReasonOffset]) ?? .unspecified
+            return Decoded(type: type, sessionId: sessionId, token: nil, childPID: nil, retrieveGranted: grantedByte == 1, retrieveDenyReason: denyReason)
         default:
-            return Decoded(type: type, sessionId: nil, token: nil, childPID: nil, retrieveGranted: nil)
+            return Decoded(type: type, sessionId: nil, token: nil, childPID: nil, retrieveGranted: nil, retrieveDenyReason: nil)
         }
     }
 }
@@ -356,6 +399,10 @@ enum UnixDomainFDPassing {
     static func connect(to socketPath: String) -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
+        guard setCloseOnExec(on: fd) else {
+            close(fd)
+            return nil
+        }
         suppressSigPipe(on: fd)
         guard var addr = makeSockaddr(path: socketPath) else {
             close(fd)
@@ -386,6 +433,26 @@ enum UnixDomainFDPassing {
     /// an ordinary degrade-and-retry case) is what protects against SIGPIPE
     /// instead. Mirrors the established pattern in
     /// `TerminalController.probeSocketCommand`.
+    /// Marks `fd` close-on-exec so children spawned by this process never
+    /// inherit an escrow control socket. This is load-bearing for death
+    /// detection, not hygiene: ghostty's shell children outlive the app by
+    /// design, so an inherited connection fd keeps the holder's read loop
+    /// from ever seeing EOF after the app exits, silently degrading death
+    /// detection from "immediate" to the `heartbeatStaleAfter` backstop.
+    /// That blind window is exactly what the 2026-08-10 mass-drain's
+    /// relaunch raced into (retrieve denied `not_draining`, all sessions
+    /// drained 4s later). Darwin has no SOCK_CLOEXEC, so the flag is set
+    /// immediately after `socket()` -- the theoretical fork-between-the-two
+    /// window is accepted and unavoidable on this platform. Returns false
+    /// on `fcntl` failure (EBADF-class, should never happen on a fresh
+    /// socket) so callers can refuse to use the fd rather than silently
+    /// reintroduce the leaked-fd race this flag exists to close.
+    static func setCloseOnExec(on fd: Int32) -> Bool {
+        let flags = fcntl(fd, F_GETFD)
+        guard flags >= 0 else { return false }
+        return fcntl(fd, F_SETFD, flags | FD_CLOEXEC) >= 0
+    }
+
     static func suppressSigPipe(on fd: Int32) {
         var noSigPipe: Int32 = 1
         _ = withUnsafePointer(to: &noSigPipe) { ptr in
@@ -400,6 +467,10 @@ enum UnixDomainFDPassing {
         unlink(socketPath)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
+        guard setCloseOnExec(on: fd) else {
+            close(fd)
+            return nil
+        }
         suppressSigPipe(on: fd)
         guard var addr = makeSockaddr(path: socketPath) else {
             close(fd)
@@ -798,12 +869,88 @@ extension SessionEscrowClient {
     /// workspace has) while not permanently blacklisting a holder that
     /// recovers (e.g. survives a transient hang and answers normally on the
     /// next real request after this launch).
+    /// Outcome of one holder round trip -- internal to the retry loop in
+    /// `retrieve`. `.failed` covers every transport-level dead end (no
+    /// holder, timeout, malformed frame): never retried here, the existing
+    /// circuit breaker already bounds those. `.denied` carries the holder's
+    /// wire reason so the loop can distinguish the one retryable denial
+    /// (`.notDraining`) from the permanent ones.
+    private enum SingleShotOutcome {
+        case granted(Int32)
+        case denied(EscrowWireFormat.RetrieveDenyReason)
+        case failed
+    }
+
+    /// Process-wide anchor for deny retries: `static let` is evaluated
+    /// lazily on the first denial that wants a retry, so the serial
+    /// launch-restore sweep shares ONE `retrieveDenyRetryWindow` across all
+    /// its sessions. The race this exists for -- the holder has not yet
+    /// noticed the old app died -- resolves for every session at once when
+    /// the drain begins, so a per-session window would stall launch N times
+    /// over for nothing.
+    /// Monotonic (`DispatchTime`), matching the circuit breaker above and
+    /// for the same reason: a backward wall-clock jump (NTP sync at boot is
+    /// exactly launch-restore time) must never extend this synchronous
+    /// main-thread retry loop past the real elapsed window.
+    private static let sharedDenyRetryDeadline: DispatchTime = .now() + SessionEscrowPolicy.retrieveDenyRetryWindow
+
+    /// 2026-08-10 mass-drain fix on top of the single-shot retrieval below:
+    /// a denial whose wire reason is `.notDraining` is the
+    /// retrieve-before-drain race (this launch beat the holder's death
+    /// detection), and the holder resolves it BY ITSELF within
+    /// `heartbeatStaleAfter` -- so it is retried on a bounded deadline
+    /// instead of being treated as a permanent fallback. `.unspecified`
+    /// may be that same race reported by a pre-reason holder (the holder
+    /// OUTLIVES the app, so an updated client talking to a previous
+    /// version's holder is the normal update path, not an edge case); it is
+    /// retried only when the caller vouches via `allowUnspecifiedDenyRetry`
+    /// (Workspace restore passes meta.json heartbeat freshness -- an app
+    /// that was alive seconds ago is the race signature; one long dead is
+    /// not worth stalling on). `retryDeadline` exists for tests; production
+    /// callers share `sharedDenyRetryDeadline`.
     static func retrieve(
         sessionId: String,
         tokenHex: String,
         socketPath: String,
-        recvTimeout: TimeInterval = SessionEscrowPolicy.retrieveRecvTimeout
+        recvTimeout: TimeInterval = SessionEscrowPolicy.retrieveRecvTimeout,
+        allowUnspecifiedDenyRetry: Bool = false,
+        retryDeadline: DispatchTime? = nil
     ) -> Int32? {
+        var attempt = 0
+        while true {
+            attempt += 1
+            switch retrieveOnce(
+                sessionId: sessionId,
+                tokenHex: tokenHex,
+                socketPath: socketPath,
+                recvTimeout: recvTimeout
+            ) {
+            case .granted(let fd):
+                return fd
+            case .failed:
+                return nil
+            case .denied(let reason):
+                let retryable = reason == .notDraining
+                    || (reason == .unspecified && allowUnspecifiedDenyRetry)
+                // Retryability first: a permanent denial (unknown session,
+                // token mismatch) must not be the access that anchors the
+                // lazy shared window, or it silently eats the budget a
+                // later legitimate not_draining denial needs.
+                guard retryable else { return nil }
+                let deadline = retryDeadline ?? sharedDenyRetryDeadline
+                guard DispatchTime.now() < deadline else { return nil }
+                dilog("escrow.retrieve", "retry session=\(sessionId.prefix(8)) attempt=\(attempt) reason=\(reason)")
+                Thread.sleep(forTimeInterval: SessionEscrowPolicy.retrieveDenyRetryInterval)
+            }
+        }
+    }
+
+    private static func retrieveOnce(
+        sessionId: String,
+        tokenHex: String,
+        socketPath: String,
+        recvTimeout: TimeInterval
+    ) -> SingleShotOutcome {
         let attemptStartedAt = Date()
         let timeoutMs = Int(recvTimeout * 1000)
         dilog("escrow.retrieve", "attempt session=\(sessionId.prefix(8)) socket=\(socketPath) timeoutMs=\(timeoutMs)")
@@ -820,17 +967,17 @@ extension SessionEscrowClient {
             let sinceMs = Int(sinceNs / 1_000_000)
             if sinceNs < UInt64(circuitBreakerWindow * 1_000_000_000) {
                 dilog("escrow.retrieve", "skipped session=\(sessionId.prefix(8)) reason=circuit_open path_failed_ago_ms=\(sinceMs)")
-                return nil
+                return .failed
             }
         }
 
         guard let token = decodeHexToken(tokenHex) else {
             logOutcome("error_bad_token_hex")
-            return nil
+            return .failed
         }
         guard let connectionFD = UnixDomainFDPassing.connect(to: socketPath) else {
             logOutcome("error_no_connection")
-            return nil
+            return .failed
         }
         defer { close(connectionFD) }
 
@@ -848,7 +995,7 @@ extension SessionEscrowClient {
         guard let requestFrame = EscrowWireFormat.encodeRetrieveRequestFrame(sessionId: sessionId, token: token),
               UnixDomainFDPassing.send(fd: nil, payload: requestFrame, over: connectionFD) else {
             logOutcome("error_send errno=\(errno)")
-            return nil
+            return .failed
         }
 
         var collected = Data()
@@ -859,14 +1006,14 @@ extension SessionEscrowClient {
                 guard !chunk.isEmpty else {
                     if let chunkFD { close(chunkFD) }
                     logOutcome("eof")
-                    return nil
+                    return .failed
                 }
                 collected.append(chunk)
                 if receivedFD == nil { receivedFD = chunkFD }
             case .eof:
                 if let receivedFD { close(receivedFD) }
                 logOutcome("eof")
-                return nil
+                return .failed
             case .timeout:
                 if let receivedFD { close(receivedFD) }
                 circuitBreakerLock.lock()
@@ -874,25 +1021,33 @@ extension SessionEscrowClient {
                 circuitBreakerLock.unlock()
                 dilog("escrow.retrieve", "circuit_opened session=\(sessionId.prefix(8)) path=\(socketPath)")
                 logOutcome("timeout")
-                return nil
+                return .failed
             case .error:
                 if let receivedFD { close(receivedFD) }
                 logOutcome("error_recv errno=\(errno)")
-                return nil
+                return .failed
             }
         }
 
         guard let decoded = EscrowWireFormat.decode(collected),
               decoded.type == EscrowWireFormat.retrieveResponseType,
-              decoded.sessionId == sessionId,
-              decoded.retrieveGranted == true,
-              let receivedFD else {
+              decoded.sessionId == sessionId else {
             if let receivedFD { close(receivedFD) }
-            logOutcome("denied")
-            return nil
+            logOutcome("error_bad_response_frame")
+            return .failed
         }
-        logOutcome("granted fd=\(receivedFD)")
-        return receivedFD
+        if decoded.retrieveGranted == true {
+            guard let receivedFD else {
+                logOutcome("error_granted_without_fd")
+                return .failed
+            }
+            logOutcome("granted fd=\(receivedFD)")
+            return .granted(receivedFD)
+        }
+        if let receivedFD { close(receivedFD) }
+        let reason = decoded.retrieveDenyReason ?? .unspecified
+        logOutcome("denied reason=\(reason)")
+        return .denied(reason)
     }
 
     private static func decodeHexToken(_ hex: String) -> [UInt8]? {
@@ -1268,25 +1423,32 @@ enum SessionEscrowHolder {
     /// sending the fd back over `connectionFD`.
     private static func handleRetrieveRequest(connectionFD: Int32, sessionId: String, token: [UInt8]) {
         dilog("escrow.retrieve", "request session=\(sessionId.prefix(8))")
-        func deny(reason: String) {
-            dilog("escrow.retrieve", "deny session=\(sessionId.prefix(8)) reason=\(reason)")
-            sendRetrieveResponse(granted: false, sessionId: sessionId, fd: nil, over: connectionFD)
+        func deny(reason: EscrowWireFormat.RetrieveDenyReason, label: String) {
+            dilog("escrow.retrieve", "deny session=\(sessionId.prefix(8)) reason=\(label)")
+            sendRetrieveResponse(granted: false, sessionId: sessionId, fd: nil, denyReason: reason, over: connectionFD)
         }
 
         registryLock.lock()
         guard let session = registry[sessionId] else {
             registryLock.unlock()
-            deny(reason: "unknown")
+            deny(reason: .unknownSession, label: "unknown")
             return
         }
         guard constantTimeTokensEqual(session.token, token) else {
             registryLock.unlock()
-            deny(reason: "token_mismatch")
+            deny(reason: .tokenMismatch, label: "token_mismatch")
             return
         }
         guard session.isDraining else {
+            // The escrowing app may genuinely still be alive -- only IT can
+            // prove otherwise, via EOF or heartbeat staleness on its own
+            // connection. The reason on the wire tells the (valid-token)
+            // caller this denial is the retrieve-before-drain race and worth
+            // retrying briefly, instead of a permanent fallback -- the
+            // 2026-08-10 mass-drain was exactly that fallback, 4 seconds
+            // before the drain would have made this same request grantable.
             registryLock.unlock()
-            deny(reason: "not_draining")
+            deny(reason: .notDraining, label: "not_draining")
             return
         }
         // Remove immediately: no second caller can ever observe this
@@ -1309,7 +1471,7 @@ enum SessionEscrowHolder {
             // This session is simply no longer retrievable once removed
             // above -- an acceptable best-effort degradation, never a
             // correctness risk.)
-            deny(reason: "drain_stop_timeout")
+            deny(reason: .drainStopTimeout, label: "drain_stop_timeout")
             return
         }
 
@@ -1358,8 +1520,18 @@ enum SessionEscrowHolder {
     /// in-flight ancillary fd and the session must not be treated as
     /// handed off.
     @discardableResult
-    private static func sendRetrieveResponse(granted: Bool, sessionId: String, fd: Int32?, over connectionFD: Int32) -> Bool {
-        guard let frame = EscrowWireFormat.encodeRetrieveResponseFrame(sessionId: sessionId, granted: granted) else { return false }
+    private static func sendRetrieveResponse(
+        granted: Bool,
+        sessionId: String,
+        fd: Int32?,
+        denyReason: EscrowWireFormat.RetrieveDenyReason = .unspecified,
+        over connectionFD: Int32
+    ) -> Bool {
+        guard let frame = EscrowWireFormat.encodeRetrieveResponseFrame(
+            sessionId: sessionId,
+            granted: granted,
+            denyReason: denyReason
+        ) else { return false }
         return UnixDomainFDPassing.send(fd: granted ? fd : nil, payload: frame, over: connectionFD)
     }
 
