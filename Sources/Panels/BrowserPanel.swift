@@ -319,6 +319,102 @@ final class BrowserPanel: Panel, ObservableObject {
         webView.configuration.userContentController.add(handler, name: Self.imeCompositionHandlerName)
     }
 
+    // Until com.apple.developer.web-browser.public-key-credential is granted, WKWebView
+    // cannot complete WebAuthn ceremonies even though it exposes the JS API. This script
+    // reports the platform authenticator as unavailable (so well-behaved sites fall back to
+    // another login method) and flags any real, user-initiated ceremony a site attempts
+    // anyway so the native layer can offer to hand off to the default browser.
+    //
+    // Coverage limits of this interim shim (all resolved once the entitlement lands and this
+    // is removed -- see issue #276): popup windows (BrowserPopupWindowController) get the
+    // availability override via the shared configuration, so OAuth popups still fall back
+    // gracefully, but they never bind this handler, so a ceremony in a popup silently no-ops
+    // the postMessage (its userContentController has no matching handler) rather than showing
+    // the handoff alert. Subframe ceremonies likewise get no override (the script is
+    // main-frame-only) and no alert (guarded above). Neither is a downgrade -- there is no
+    // silent weaker-auth path -- just an unpolished dead end for those two cases.
+    private static let passkeyHandoffScriptSource = """
+    (function () {
+      if (!window.PublicKeyCredential) { return; }
+      try {
+        Object.defineProperty(PublicKeyCredential, "isUserVerifyingPlatformAuthenticatorAvailable", {
+          value: function () { return Promise.resolve(false); }, configurable: true
+        });
+        if (PublicKeyCredential.isConditionalMediationAvailable) {
+          Object.defineProperty(PublicKeyCredential, "isConditionalMediationAvailable", {
+            value: function () { return Promise.resolve(false); }, configurable: true
+          });
+        }
+      } catch (e) {}
+      function post(phase) {
+        try { window.webkit.messageHandlers.programaWebAuthnAttempt.postMessage({ phase: phase, host: location.host }); } catch (e) {}
+      }
+      if (navigator.credentials && navigator.credentials.get) {
+        var origGet = navigator.credentials.get.bind(navigator.credentials);
+        navigator.credentials.get = function (options) {
+          if (options && options.publicKey && options.mediation !== "conditional") { post("get"); }
+          return origGet(options);
+        };
+      }
+      if (navigator.credentials && navigator.credentials.create) {
+        var origCreate = navigator.credentials.create.bind(navigator.credentials);
+        navigator.credentials.create = function (options) {
+          if (options && options.publicKey) { post("create"); }
+          return origCreate(options);
+        };
+      }
+    })();
+    """
+
+    private static let passkeyHandoffMessageHandlerName = "programaWebAuthnAttempt"
+
+    private func setupPasskeyHandoffTracking(for webView: ProgramaWebView) {
+        let handler = PasskeyHandoffMessageHandler { [weak self, weak webView] phase, host in
+            guard let self, let webView, self.isCurrentWebView(webView) else { return }
+            guard !self.hasPromptedPasskeyHandoffForCurrentNavigation else { return }
+            self.hasPromptedPasskeyHandoffForCurrentNavigation = true
+#if DEBUG
+            dlog("browser.passkeyHandoff.attempt panel=\(self.id.uuidString.prefix(5)) phase=\(phase) host=\(host)")
+#endif
+            self.presentPasskeyHandoffAlert()
+        }
+        passkeyHandoffMessageHandler = handler
+        webView.configuration.userContentController.add(handler, name: Self.passkeyHandoffMessageHandlerName)
+    }
+
+    private func presentPasskeyHandoffAlert() {
+        guard let url = webView.url else { return }
+        presentPasskeyHandoffAlert(openingURL: url)
+    }
+
+    private func presentPasskeyHandoffAlert(openingURL url: URL) {
+        // Only ever hand an http/https page to the default browser. webView.url can be
+        // data:/file: (see browserEmbeddedNavigationSchemes) and the handoff script is
+        // injected on those pages too; NSWorkspace.open must not send a local file path
+        // or an attacker-authored data: blob to an external app. Matches the http/https
+        // guard in refreshFavicon and the navigation-response handler.
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return }
+        // Reuses the same alert-factory/window-provider hooks as presentInsecureHTTPAlert
+        // (below) so both dialogs share one test seam instead of adding a second.
+        let alert = insecureHTTPAlertFactory()
+        BrowserPasskeyHandoffAlertBuilder.configure(alert)
+        let handleResponse: @MainActor @Sendable (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .alertFirstButtonReturn else { return }
+            NSWorkspace.shared.open(url)
+        }
+        if let alertWindow = insecureHTTPAlertWindowProvider() {
+            alert.beginSheetModal(for: alertWindow, completionHandler: handleResponse)
+            return
+        }
+        handleResponse(alert.runModal())
+    }
+
+#if DEBUG
+    func presentPasskeyHandoffAlertForTesting(url: URL) {
+        presentPasskeyHandoffAlert(openingURL: url)
+    }
+#endif
+
     static let addressBarFocusRestoreScript = """
     (() => {
       try {
@@ -545,6 +641,10 @@ final class BrowserPanel: Panel, ObservableObject {
     @Published var isDesignModeActive: Bool = false
     var designModeMessageHandler: DesignModeMessageHandler?
     var pendingDesignModeReturnTargetPanelId: UUID?
+    var passkeyHandoffMessageHandler: PasskeyHandoffMessageHandler?
+    // At most one handoff prompt per navigation — reset when a new provisional
+    // navigation starts (see configureNavigationDelegateCallbacks).
+    private var hasPromptedPasskeyHandoffForCurrentNavigation = false
     var preferredDeveloperToolsPresentation: DeveloperToolsPresentation = .unknown
     var forceDeveloperToolsRefreshOnNextAttach: Bool = false
     var developerToolsRestoreRetryWorkItem: DispatchWorkItem?
@@ -837,6 +937,15 @@ final class BrowserPanel: Panel, ObservableObject {
                 forMainFrameOnly: true
             )
         )
+        // Report the platform authenticator as unavailable and flag real passkey ceremonies
+        // for handoff until the WebAuthn entitlement is granted. Main frame only.
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: Self.passkeyHandoffScriptSource,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
     }
 
     func bindWebView(_ webView: ProgramaWebView) {
@@ -857,6 +966,7 @@ final class BrowserPanel: Panel, ObservableObject {
         setupReactGrabMessageHandler(for: webView)
         setupDesignModeMessageHandler(for: webView)
         setupIMECompositionTracking(for: webView)
+        setupPasskeyHandoffTracking(for: webView)
     }
 
     private func configureNavigationDelegateCallbacks() {
@@ -864,6 +974,10 @@ final class BrowserPanel: Panel, ObservableObject {
         let boundWebViewInstanceID = webViewInstanceID
         let boundHistoryStore = historyStore
 
+        navigationDelegate.didStartProvisionalNavigation = { [weak self] webView in
+            guard let self, self.isCurrentWebView(webView, instanceID: boundWebViewInstanceID) else { return }
+            self.hasPromptedPasskeyHandoffForCurrentNavigation = false
+        }
         navigationDelegate.didFinish = { [weak self] webView in
             Task { @MainActor [weak self] in
                 guard let self, self.isCurrentWebView(webView, instanceID: boundWebViewInstanceID) else { return }
@@ -2262,6 +2376,38 @@ final class BrowserPanel: Panel, ObservableObject {
         let webView = webView
         Task { @MainActor in
             BrowserWindowPortalRegistry.detach(webView: webView)
+        }
+    }
+}
+
+/// Receives `programaWebAuthnAttempt` postMessages from `BrowserPanel.passkeyHandoffScriptSource`
+/// when a page attempts a real (non-conditional-mediation) passkey ceremony.
+final class PasskeyHandoffMessageHandler: NSObject, WKScriptMessageHandler {
+    private let onAttempt: @MainActor (String, String) -> Void
+
+    init(onAttempt: @escaping @MainActor (String, String) -> Void) {
+        self.onAttempt = onAttempt
+    }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        // The script runs in the page content world (it must, to override the page's own
+        // PublicKeyCredential), so a hostile page can postMessage a forged payload directly.
+        // `host` is therefore untrusted and must stay decorative (a DEBUG log line only) --
+        // never let it drive a decision or a handoff target. The URL opened on confirmation
+        // is always the real webView.url, never this host.
+        // A registered handler name is reachable from EVERY frame, not just the main frame
+        // the script was injected into (forMainFrameOnly gates injection, not delivery). Drop
+        // messages from subframes so a same-origin iframe -- or a forged postMessage from one
+        // -- can't raise the top-level handoff alert.
+        guard message.frameInfo.isMainFrame else { return }
+        guard let body = message.body as? [String: Any],
+              let phase = body["phase"] as? String else { return }
+        let host = body["host"] as? String ?? ""
+        Task { @MainActor in
+            onAttempt(phase, host)
         }
     }
 }

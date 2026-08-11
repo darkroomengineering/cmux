@@ -1429,6 +1429,108 @@ final class BrowserInsecureHTTPAlertPresentationTests: XCTestCase {
 }
 
 
+@MainActor
+final class BrowserPasskeyHandoffAlertPresentationTests: XCTestCase {
+    private final class BrowserPasskeyHandoffAlertSpy: NSAlert {
+        private(set) var beginSheetModalCallCount = 0
+        private(set) var runModalCallCount = 0
+        var nextResponse: NSApplication.ModalResponse = .alertSecondButtonReturn
+
+        override func beginSheetModal(
+            for sheetWindow: NSWindow,
+            completionHandler handler: ((NSApplication.ModalResponse) -> Void)?
+        ) {
+            beginSheetModalCallCount += 1
+            handler?(nextResponse)
+        }
+
+        override func runModal() -> NSApplication.ModalResponse {
+            runModalCallCount += 1
+            return nextResponse
+        }
+    }
+
+    func testPasskeyHandoffPromptUsesSheetWhenWindowIsAvailable() {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.resetInsecureHTTPAlertHooksForTesting() }
+
+        let alertSpy = BrowserPasskeyHandoffAlertSpy()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.configureInsecureHTTPAlertHooksForTesting(
+            alertFactory: { alertSpy },
+            windowProvider: { window }
+        )
+        panel.presentPasskeyHandoffAlertForTesting(url: URL(string: "https://example.com")!)
+
+        XCTAssertEqual(alertSpy.beginSheetModalCallCount, 1)
+        XCTAssertEqual(alertSpy.runModalCallCount, 0)
+    }
+
+    func testPasskeyHandoffPromptFallsBackToRunModalWithoutWindow() {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.resetInsecureHTTPAlertHooksForTesting() }
+
+        let alertSpy = BrowserPasskeyHandoffAlertSpy()
+        panel.configureInsecureHTTPAlertHooksForTesting(
+            alertFactory: { alertSpy },
+            windowProvider: { nil }
+        )
+        panel.presentPasskeyHandoffAlertForTesting(url: URL(string: "https://example.com")!)
+
+        XCTAssertEqual(alertSpy.beginSheetModalCallCount, 0)
+        XCTAssertEqual(alertSpy.runModalCallCount, 1)
+    }
+
+    func testPasskeyHandoffPromptSuppressedForNonHTTPSchemes() {
+        // The handoff script is injected on data:/file: pages too; opening those in an
+        // external app (a local file path, or an attacker-authored data: blob) must never
+        // happen. The alert is suppressed entirely for any non-http(s) URL, so neither
+        // presentation path fires.
+        for raw in ["file:///etc/passwd", "data:text/html,<h1>x</h1>", "javascript:alert(1)"] {
+            let panel = BrowserPanel(workspaceId: UUID())
+            defer { panel.resetInsecureHTTPAlertHooksForTesting() }
+
+            let alertSpy = BrowserPasskeyHandoffAlertSpy()
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+                styleMask: [.titled],
+                backing: .buffered,
+                defer: false
+            )
+            panel.configureInsecureHTTPAlertHooksForTesting(
+                alertFactory: { alertSpy },
+                windowProvider: { window }
+            )
+            panel.presentPasskeyHandoffAlertForTesting(url: URL(string: raw)!)
+
+            XCTAssertEqual(alertSpy.beginSheetModalCallCount, 0, "scheme \(raw) must not present a handoff alert")
+            XCTAssertEqual(alertSpy.runModalCallCount, 0, "scheme \(raw) must not present a handoff alert")
+        }
+    }
+
+    func testPasskeyHandoffScriptIsRegisteredAlongsideExistingBootstrapScripts() {
+        let panel = BrowserPanel(workspaceId: UUID())
+        // WKUserContentController does not expose registered message-handler names, but the
+        // corresponding document-start user script it was paired with is real runtime state.
+        // configureWebViewConfiguration registers exactly 4 atDocumentStart/main-frame-only
+        // scripts: telemetry, address-bar-focus tracking, IME composition tracking, and
+        // passkey handoff — a count regression here means one of them silently stopped
+        // registering.
+        let scripts = panel.webView.configuration.userContentController.userScripts
+        let documentStartMainFrameScripts = scripts.filter {
+            $0.injectionTime == .atDocumentStart && $0.isForMainFrameOnly
+        }
+        XCTAssertEqual(documentStartMainFrameScripts.count, 4)
+    }
+}
+
+
 final class BrowserNavigationNewTabDecisionTests: XCTestCase {
     func testLinkActivatedCmdClickOpensInNewTab() {
         XCTAssertTrue(
