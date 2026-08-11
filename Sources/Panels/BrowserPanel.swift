@@ -326,13 +326,10 @@ final class BrowserPanel: Panel, ObservableObject {
     // anyway so the native layer can offer to hand off to the default browser.
     //
     // Coverage limits of this interim shim (all resolved once the entitlement lands and this
-    // is removed -- see issue #276): popup windows (BrowserPopupWindowController) get the
-    // availability override via the shared configuration, so OAuth popups still fall back
-    // gracefully, but they never bind this handler, so a ceremony in a popup silently no-ops
-    // the postMessage (its userContentController has no matching handler) rather than showing
-    // the handoff alert. Subframe ceremonies likewise get no override (the script is
-    // main-frame-only) and no alert (guarded above). Neither is a downgrade -- there is no
-    // silent weaker-auth path -- just an unpolished dead end for those two cases.
+    // is removed -- see issue #276): subframe ceremonies get no override (the script is
+    // main-frame-only) and no alert (guarded above). Not a downgrade -- there is no silent
+    // weaker-auth path -- just an unpolished dead end for that case. Popup windows bind the
+    // same handler in BrowserPopupWindowController and show the alert on their own panel.
     private static let passkeyHandoffScriptSource = """
     (function () {
       if (!window.PublicKeyCredential) { return; }
@@ -349,24 +346,37 @@ final class BrowserPanel: Panel, ObservableObject {
       function post(phase) {
         try { window.webkit.messageHandlers.programaWebAuthnAttempt.postMessage({ phase: phase, host: location.host }); } catch (e) {}
       }
+      function refuse(phase) {
+        post(phase);
+        // Reject instead of passing through: without the entitlement the native call
+        // never resolves or rejects, so the page would spin forever behind the handoff
+        // alert. An immediate NotAllowedError runs the site's own error path at once
+        // (e.g. Google offers "Try another way"), matching what a user-cancelled
+        // ceremony produces in a real browser.
+        return Promise.reject(new DOMException(
+          "Passkeys are not available in this browser.", "NotAllowedError"
+        ));
+      }
       if (navigator.credentials && navigator.credentials.get) {
         var origGet = navigator.credentials.get.bind(navigator.credentials);
         navigator.credentials.get = function (options) {
-          if (options && options.publicKey && options.mediation !== "conditional") { post("get"); }
+          if (options && options.publicKey && options.mediation !== "conditional") { return refuse("get"); }
           return origGet(options);
         };
       }
       if (navigator.credentials && navigator.credentials.create) {
         var origCreate = navigator.credentials.create.bind(navigator.credentials);
         navigator.credentials.create = function (options) {
-          if (options && options.publicKey) { post("create"); }
+          if (options && options.publicKey) { return refuse("create"); }
           return origCreate(options);
         };
       }
     })();
     """
 
-    private static let passkeyHandoffMessageHandlerName = "programaWebAuthnAttempt"
+    // Internal, not private: BrowserPopupWindowController binds the same handler name so
+    // passkey attempts inside OAuth popups get the handoff alert too.
+    static let passkeyHandoffMessageHandlerName = "programaWebAuthnAttempt"
 
     private func setupPasskeyHandoffTracking(for webView: ProgramaWebView) {
         let handler = PasskeyHandoffMessageHandler { [weak self, weak webView] phase, host in
