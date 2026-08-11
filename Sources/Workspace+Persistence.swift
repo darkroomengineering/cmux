@@ -635,10 +635,20 @@ extension Workspace {
             dilog("escrow.reattach", "session=\(oldSessionId.prefix(8)) outcome=fallback reason=not_escrowed")
             return nil
         }
+        // 2026-08-10 mass-drain fix: a pre-reason holder (the holder
+        // outlives the app, so an updated client talking to the previous
+        // version's holder is the NORMAL update path) can only deny with an
+        // unspecified reason. A heartbeat written within the death-detection
+        // window plus the retry window means the old app was alive seconds
+        // ago -- the retrieve-before-drain race signature -- so an
+        // unspecified denial is worth retrying; one long dead is not.
+        let heartbeatFreshEnoughToRetryUnspecifiedDeny = Date().timeIntervalSince(meta.lastHeartbeatAt)
+            < SessionEscrowPolicy.heartbeatStaleAfter + SessionEscrowPolicy.retrieveDenyRetryWindow
         guard let masterFD = SessionEscrowClient.retrieve(
             sessionId: oldSessionId,
             tokenHex: tokenHex,
-            socketPath: socketPath
+            socketPath: socketPath,
+            allowUnspecifiedDenyRetry: heartbeatFreshEnoughToRetryUnspecifiedDeny
         ) else {
             dilog("escrow.reattach", "session=\(oldSessionId.prefix(8)) outcome=fallback reason=retrieve_failed")
             return nil
@@ -670,11 +680,15 @@ extension Workspace {
         }
 
         applySessionPanelMetadata(snapshot, toPanelId: terminalPanel.id)
-        // Mirror the non-revive path: this old session's directory has now
-        // been given its one chance to be read (childPID/token/scrollback);
-        // the new panel above has its own fresh WAL directory going
-        // forward under a new id, so the old one is dead weight.
-        SessionWALStore.shared.discardOrphanedSession(sessionId: oldSessionId)
+        // This old session's directory has now been given its one chance to
+        // be read (childPID/token/scrollback); the new panel above has its
+        // own fresh WAL directory going forward under a new id, so the old
+        // one is dead weight. `force` because the escrow claim was just
+        // CONSUMED by the successful retrieve above -- the holder removed
+        // the session from its registry, so meta.json's escrow fields are
+        // stale despite a fresh-looking heartbeat, and the preservation
+        // check must not keep this directory alive.
+        SessionWALStore.shared.discardOrphanedSession(sessionId: oldSessionId, force: true)
         dilog("escrow.reattach", "session=\(oldSessionId.prefix(8)) outcome=revived newPanel=\(terminalPanel.id.uuidString.prefix(8))")
         return terminalPanel.id
     }

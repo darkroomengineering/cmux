@@ -3635,70 +3635,36 @@
         }
       }
     },
-    "browser.passkey.error": {
+    "browser.passkeyHandoff.message": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Passkeys are not available in Programa’s built-in browser."
+            "value": "This page is asking for a passkey, which the built-in browser can't provide. You can finish signing in with your default browser."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Programa の内蔵ブラウザーではパスキーを利用できません。"
+            "value": "このページはパスキーを要求していますが、内蔵ブラウザでは利用できません。既定のブラウザでサインインを完了できます。"
           }
         }
       }
     },
-    "browser.passkey.notice.dismiss": {
+    "browser.passkeyHandoff.title": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Dismiss"
+            "value": "Passkeys aren't available in the built-in browser yet"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "閉じる"
-          }
-        }
-      }
-    },
-    "browser.passkey.notice.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This site asked for a passkey. Programa’s browser can’t use passkeys."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "このサイトはパスキーを要求しました。Programa のブラウザーではパスキーを使用できません。"
-          }
-        }
-      }
-    },
-    "browser.passkey.notice.openExternally": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open in default browser"
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "デフォルトのブラウザーで開く"
+            "value": "パスキーは内蔵ブラウザではまだ利用できません"
           }
         }
       }

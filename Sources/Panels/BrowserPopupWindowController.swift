@@ -78,6 +78,10 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
     private let popupUIDelegate: PopupUIDelegate
     private let popupNavigationDelegate: PopupNavigationDelegate
     private let downloadDelegate: BrowserDownloadDelegate
+    private var passkeyHandoffMessageHandler: PasskeyHandoffMessageHandler?
+    // At most one handoff prompt per navigation — reset when new content commits
+    // (see PopupNavigationDelegate.didCommit).
+    fileprivate var hasPromptedPasskeyHandoffForCurrentNavigation = false
 
     private static var associatedObjectKey: UInt8 = 0
     private var hasShownPanel = false
@@ -204,16 +208,31 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
         webView.uiDelegate = uiDel
         webView.navigationDelegate = navDel
 
-        // Passkey fallback, same as the main panel — OAuth popups (e.g. "Sign in with
-        // Google") are where sites most often request a passkey. Remove-before-add:
-        // a WebKit-supplied popup configuration can share the opener's user content
-        // controller, and adding a duplicate handler name throws.
-        let passkeyHandler = BrowserPasskeyMessageHandler { url in
-            NSWorkspace.shared.open(url)
+        // Passkey handoff, same as the main panel. The handoff script already reaches
+        // popups through configureWebViewConfiguration above, but the handler name was
+        // never bound here, so a passkey attempt in an OAuth popup (e.g. "Sign in with
+        // Google") posted into the void and the user saw only the site's spinner.
+        // Popups get their own userContentController (WebKit-supplied configuration),
+        // so a plain add cannot collide with the opener's handler.
+        let passkeyHandler = PasskeyHandoffMessageHandler { [weak self] phase, host in
+            guard let self else { return }
+            guard !self.hasPromptedPasskeyHandoffForCurrentNavigation else { return }
+            self.hasPromptedPasskeyHandoffForCurrentNavigation = true
+            #if DEBUG
+            dlog("popup.passkeyHandoff.attempt depth=\(self.nestingDepth) phase=\(phase) host=\(host)")
+            #endif
+            self.presentPasskeyHandoffAlert()
         }
-        let userContentController = webView.configuration.userContentController
-        userContentController.removeScriptMessageHandler(forName: BrowserPasskeyFallback.messageHandlerName)
-        userContentController.add(passkeyHandler, name: BrowserPasskeyFallback.messageHandlerName)
+        passkeyHandoffMessageHandler = passkeyHandler
+        // Remove-before-add: the WebKit-supplied popup configuration is derived from the
+        // opener's, and a handler name that came along with it makes a plain add() throw
+        // NSInvalidArgumentException (crashes the app — reproduced via window.open).
+        let popupUserContentController = webView.configuration.userContentController
+        popupUserContentController.removeScriptMessageHandler(forName: BrowserPanel.passkeyHandoffMessageHandlerName)
+        popupUserContentController.add(
+            passkeyHandler,
+            name: BrowserPanel.passkeyHandoffMessageHandlerName
+        )
 
         // Context menu "Open Link in New Tab" → open in opener's workspace,
         // not as a nested popup. Falls back to system browser if opener is gone.
@@ -352,6 +371,22 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
         } else {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    // MARK: - Passkey handoff (parity with BrowserPanel.presentPasskeyHandoffAlert)
+
+    fileprivate func presentPasskeyHandoffAlert() {
+        guard let url = webView.url else { return }
+        // Only ever hand an http/https page to the default browser — same guard as the
+        // main panel: never send a file path or an attacker-authored data: blob to an
+        // external app.
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return }
+        let alert = BrowserPasskeyHandoffAlertBuilder.makeAlert()
+        let handleResponse: @MainActor @Sendable (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .alertFirstButtonReturn else { return }
+            NSWorkspace.shared.open(url)
+        }
+        alert.beginSheetModal(for: panel, completionHandler: handleResponse)
     }
 
     // MARK: - Insecure HTTP prompt (parity with main browser)
@@ -509,12 +544,7 @@ private class PopupNavigationDelegate: NSObject, WKNavigationDelegate {
         // so the OAuth URL is what the user sees first.
         guard let url = webView.url, url.absoluteString != "about:blank" else { return }
         controller?.showPanelIfNeeded()
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // Same passkey guard as the main panel; see BrowserPasskeyFallback for why this
-        // must run post-load via evaluateJavaScript instead of as a WKUserScript.
-        webView.evaluateJavaScript(BrowserPasskeyFallback.bootstrapScript, completionHandler: nil)
+        controller?.hasPromptedPasskeyHandoffForCurrentNavigation = false
     }
 
     func webView(

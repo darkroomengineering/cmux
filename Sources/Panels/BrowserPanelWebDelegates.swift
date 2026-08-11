@@ -65,6 +65,7 @@ func browserNavigationShouldFallbackNilTargetToNewTab(
 }
 
 class BrowserNavigationDelegate: NSObject, WKNavigationDelegate {
+    var didStartProvisionalNavigation: ((WKWebView) -> Void)?
     var didFinish: ((WKWebView) -> Void)?
     var didFailNavigation: ((WKWebView, String) -> Void)?
     var didTerminateWebContentProcess: ((WKWebView) -> Void)?
@@ -79,6 +80,7 @@ class BrowserNavigationDelegate: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         lastAttemptedURL = webView.url
+        didStartProvisionalNavigation?(webView)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

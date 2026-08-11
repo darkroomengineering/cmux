@@ -460,8 +460,9 @@ jobs:
           APP_PATH="build-universal/Build/Products/Release/Programa.app"
           CLI_PATH="$APP_PATH/Contents/Resources/bin/programa"
           HELPER_PATH="$APP_PATH/Contents/Resources/bin/ghostty"
+          MCP_PATH="$APP_PATH/Contents/Resources/bin/programa-mcp"
           ./scripts/sign-release-app.sh "$APP_PATH" "$APPLE_SIGNING_IDENTITY" programa.entitlements
-          ./scripts/verify-release-entitlements.sh "$APP_PATH" "$CLI_PATH" "$HELPER_PATH"
+          ./scripts/verify-release-entitlements.sh "$APP_PATH" "$CLI_PATH" "$HELPER_PATH" "$MCP_PATH"
           ./scripts/verify-provision-profile.sh "$APP_PATH"
 
       - name: Verify embedded Sparkle artifact
