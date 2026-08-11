@@ -276,6 +276,11 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// ignore, so a stale or reused target is a silent no-op.
     private var pendingReviveWinchPGID: pid_t?
     private var pendingReviveWinchChildPID: Int64?
+
+    /// Pid registered with `TerminalController.registerRevivedRoot` for this
+    /// surface, if it was revived from escrow. Held so teardown can withdraw
+    /// the authorization again — see #286.
+    private var authorizedRevivedRootPID: pid_t?
     /// The desired focus state for the Ghostty C surface. May be set before the
     /// C surface exists (e.g. during layout restoration); `createSurface`
     /// reapplies this value once the runtime surface exists, then keeps using it
@@ -882,6 +887,12 @@ final class TerminalSurface: Identifiable, ObservableObject {
             close(leftoverReviveDescriptor.masterFD)
             reviveDescriptor = nil
         }
+        // #286: withdraw this session's ancestry authorization before the pid
+        // can be recycled by an unrelated process.
+        if let authorizedRoot = authorizedRevivedRootPID {
+            TerminalController.unregisterRevivedRoot(authorizedRoot)
+            authorizedRevivedRootPID = nil
+        }
         markPortalLifecycleClosed(reason: reason)
 
         let callbackContext = surfaceCallbackContext
@@ -1399,6 +1410,18 @@ final class TerminalSurface: Identifiable, ObservableObject {
             let foregroundGroup = tcgetpgrp(consumedReviveDescriptor.masterFD)
             pendingReviveWinchPGID = foregroundGroup > 0 ? foregroundGroup : nil
             pendingReviveWinchChildPID = consumedReviveDescriptor.childPID
+
+            // #286: this child was forked by the previous app process and is
+            // now reparented to launchd, so nothing running inside it can ever
+            // walk its ancestry back to us. Authorize it explicitly, or every
+            // `programa` command typed in this pane is refused for the life of
+            // the session. Cleared in `teardownSurface()` and on the creation
+            // failure path below.
+            if consumedReviveDescriptor.childPID > 0 {
+                let root = pid_t(consumedReviveDescriptor.childPID)
+                authorizedRevivedRootPID = root
+                TerminalController.registerRevivedRoot(root)
+            }
         }
 
         createWithCommandAndWorkingDirectory()
@@ -1421,6 +1444,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
             pendingReviveSeed = nil
             pendingReviveWinchPGID = nil
             pendingReviveWinchChildPID = nil
+            if let root = authorizedRevivedRootPID {
+                TerminalController.unregisterRevivedRoot(root)
+                authorizedRevivedRootPID = nil
+            }
             GhosttySurfaceUserdataRegistry.release(surfaceCallbackContext)
             surfaceCallbackContext = nil
             print("Failed to create ghostty surface")
@@ -1755,33 +1782,83 @@ final class TerminalSurface: Identifiable, ObservableObject {
         guard !isGatedForSessionRestoreSettle else { return }
         guard let pending = pendingReviveSeed else { return }
         pendingReviveSeed = nil
+        guard surface != nil else { return }
+
+        // #285: the replay must not run inside the caller's AppKit layout pass,
+        // and must not be handed to ghostty in one piece.
+        //
+        // `ghostty_surface_process_output` holds ghostty's
+        // `renderer_state.mutex` for the entire buffer it is given
+        // (ghostty/src/termio/Termio.zig:678), and the VT stream handler
+        // pushes to the renderer mailbox with a *blocking* `.forever` policy
+        // (ghostty/src/termio/stream_handler.zig:172). A transcript large
+        // enough to fill that mailbox therefore parks the main thread while it
+        // still holds the very mutex the renderer needs in order to drain it —
+        // the app wedges with no way out, which is what shipped in 0.4.225.
+        //
+        // Hopping to the next main-queue turn gets this off the layout pass;
+        // feeding bounded chunks means each `process_output` call returns (and
+        // so releases the mutex) long enough for the renderer to drain between
+        // them. Chunk boundaries are safe anywhere: the VT parser is a stream
+        // parser and already handles escape sequences and UTF-8 code points
+        // split across reads, because real PTY reads split them too.
+        DispatchQueue.main.async { [weak self] in
+            self?.replayRevivedScrollback(pending: pending, trigger: trigger)
+        }
+    }
+
+    /// Largest slice handed to a single `ghostty_surface_process_output` call
+    /// during a revive replay. Small enough that one call cannot fill the
+    /// renderer mailbox while holding `renderer_state.mutex` — see the comment
+    /// in `seedRevivedScrollbackIfPending`.
+    private static let reviveReplayChunkBytes = 8 * 1024
+
+    private func replayRevivedScrollback(
+        pending: (text: String, resetModes: Bool, workingDirectory: String?),
+        trigger: String
+    ) {
+        // The surface can be torn down between the trigger and this hop (pane
+        // closed mid-restore); dropping the replay is the correct outcome.
         guard let surface else { return }
 
-        if !pending.text.isEmpty {
-            let data = Data(pending.text.utf8)
-            data.withUnsafeBytes { rawBuffer in
+        // The chunk loop runs to completion here rather than yielding the run
+        // loop between chunks. Releasing the mutex is what breaks the deadlock;
+        // yielding as well would additionally let live output from the revived
+        // shell land *between* chunks and interleave itself into the middle of
+        // the historical transcript. A tight loop keeps that window down to the
+        // gap between two calls.
+        let bytes = Array(pending.text.utf8)
+        var offset = 0
+        while offset < bytes.count {
+            let end = min(offset + Self.reviveReplayChunkBytes, bytes.count)
+            bytes.withUnsafeBufferPointer { buffer in
+                guard let baseAddress = buffer.baseAddress else { return }
+                UnsafeRawPointer(baseAddress + offset)
+                    .withMemoryRebound(to: CChar.self, capacity: end - offset) { chunk in
+                        ghostty_surface_process_output(surface, chunk, UInt(end - offset))
+                    }
+            }
+            offset = end
+        }
+
+        // The seeded transcript is historical: any DECSET inside it was
+        // balanced by a DECRST that the relaunch-killed program never
+        // sent, so replaying it re-arms the mode in this fresh terminal
+        // for good. Disarm mouse tracking before live output resumes --
+        // otherwise the revived shell's bare prompt fills with mouse
+        // motion reports.
+        if !bytes.isEmpty, pending.resetModes {
+            let modeReset = Data(TerminalReplayModeReset.disableSequence.utf8)
+            modeReset.withUnsafeBytes { rawBuffer in
                 guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
                 ghostty_surface_process_output(surface, baseAddress, UInt(rawBuffer.count))
-            }
-            // The seeded transcript is historical: any DECSET inside it was
-            // balanced by a DECRST that the relaunch-killed program never
-            // sent, so replaying it re-arms the mode in this fresh terminal
-            // for good. Disarm mouse tracking before live output resumes --
-            // otherwise the revived shell's bare prompt fills with mouse
-            // motion reports.
-            if pending.resetModes {
-                let modeReset = Data(TerminalReplayModeReset.disableSequence.utf8)
-                modeReset.withUnsafeBytes { rawBuffer in
-                    guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
-                    ghostty_surface_process_output(surface, baseAddress, UInt(rawBuffer.count))
-                }
             }
         }
 
         #if DEBUG
         let currentSize = ghostty_surface_size(surface)
         dlog(
-            "session.escrow.revive.seed surface=\(id.uuidString.prefix(8)) bytes=\(pending.text.utf8.count) " +
+            "session.escrow.revive.seed surface=\(id.uuidString.prefix(8)) bytes=\(bytes.count) " +
             "px=\(currentSize.width_px)x\(currentSize.height_px) grid=\(currentSize.columns)x\(currentSize.rows) trigger=\(trigger)"
         )
         #endif

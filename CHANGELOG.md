@@ -7,6 +7,8 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 ## [Unreleased]
 
 ### Fixed
+- The app no longer freezes on the first launch after an update while it is restoring your terminals. Restoring a session with a long transcript could wedge the whole app: no window, no input, and force-quitting was the only way out, which lost every session you had open. Long transcripts also come back more smoothly now, instead of stalling the window until they finish.
+- `programa` commands typed inside a restored terminal work again after an app update. They were being refused with "Access denied", which silently cut off any agent running in that pane until you opened a fresh one.
 - Opening a second window no longer blanks the terminals in your existing window until you resize it; clicking back into the window now redraws it immediately.
 - Restored terminals no longer come back garbled right after an app update: no more transcript fragments painted at the wrong column or letters swapped for digits mid-word, and no need to resize the window to fix it.
 - Split-pane workspaces no longer show scattered, overlapping garbled text (the repeated corrupted spinner/"thinking" output some of you saw) when restoring a session, especially with uneven splits.
