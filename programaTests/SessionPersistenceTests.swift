@@ -2145,4 +2145,59 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
             "the revive-success path consumed the claim (holder registry entry is gone) and must be able to clean up despite live-looking escrow fields"
         )
     }
+
+    // MARK: - Escrow release on genuine close
+
+    func testReleaseFrameRoundTripsThroughDecode() throws {
+        let sessionId = UUID().uuidString
+        let token = (0..<EscrowWireFormat.tokenSize).map { UInt8($0 % 251) }
+
+        let frame = try XCTUnwrap(
+            EscrowWireFormat.encodeReleaseFrame(sessionId: sessionId, token: token)
+        )
+        XCTAssertEqual(
+            frame.count,
+            EscrowWireFormat.frameSize,
+            "release must use the same fixed frame size as every other type, or the read side desynchronizes"
+        )
+
+        let decoded = try XCTUnwrap(EscrowWireFormat.decode(frame))
+        XCTAssertEqual(decoded.type, EscrowWireFormat.releaseType)
+        XCTAssertEqual(decoded.sessionId, sessionId)
+        XCTAssertEqual(decoded.token, token, "the holder authenticates a release by token; it must survive the round trip")
+        XCTAssertNil(decoded.childPID, "release carries no child pid")
+    }
+
+    func testReleaseFrameRejectsMalformedInput() {
+        let token = [UInt8](repeating: 0x11, count: EscrowWireFormat.tokenSize)
+        XCTAssertNil(
+            EscrowWireFormat.encodeReleaseFrame(sessionId: "too-short", token: token),
+            "a session id that is not a UUID string would shift every later field"
+        )
+        XCTAssertNil(
+            EscrowWireFormat.encodeReleaseFrame(sessionId: UUID().uuidString, token: [0x01, 0x02]),
+            "a short token would leave the frame undersized"
+        )
+    }
+
+    /// A session open when the app quits MUST stay escrowed — reattaching it
+    /// on the next launch is what escrow is for, and releasing on quit would
+    /// kill every running agent on every app update.
+    func testEscrowIsReleasedOnlyForAUserCloseWhileTheAppIsRunning() {
+        XCTAssertTrue(
+            TerminalSurface.shouldReleaseEscrowOnTeardown(reason: "teardown", isApplicationTerminating: false),
+            "a finalized user close is the one case that must release"
+        )
+        XCTAssertFalse(
+            TerminalSurface.shouldReleaseEscrowOnTeardown(reason: "teardown", isApplicationTerminating: true),
+            "quitting must leave sessions escrowed for the next launch to reattach"
+        )
+        XCTAssertFalse(
+            TerminalSurface.shouldReleaseEscrowOnTeardown(reason: "deinit", isApplicationTerminating: false),
+            "deallocation is not necessarily a user-visible close"
+        )
+        XCTAssertFalse(
+            TerminalSurface.shouldReleaseEscrowOnTeardown(reason: "deinit", isApplicationTerminating: true)
+        )
+    }
 }

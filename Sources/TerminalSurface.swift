@@ -224,6 +224,11 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// synchronously (main actor) the moment the attempt starts, before the
     /// async send even begins.
     private var hasAttemptedSessionEscrow = false
+
+    /// Token the holder issued for this surface's escrowed session, kept so a
+    /// genuine close can authenticate its release frame. Nil until escrow
+    /// succeeds, and for surfaces that were never escrowed.
+    private var escrowTokenHex: String?
     /// Issue #182 slice 2: set from `init`, consumed (cleared) the moment
     /// `createSurface` copies it into `surfaceConfig` -- see
     /// `TerminalSurfaceReviveDescriptor`'s doc comment.
@@ -893,6 +898,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
             TerminalController.unregisterRevivedRoot(authorizedRoot)
             authorizedRevivedRootPID = nil
         }
+        releaseEscrowedSessionIfClosedForGood(reason: reason)
         markPortalLifecycleClosed(reason: reason)
 
         let callbackContext = surfaceCallbackContext
@@ -1734,6 +1740,44 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// ghostty-owned fd itself: `ghostty_surface_pty_master_fd` does not
     /// dup or transfer ownership, so `dup()` here is required before the
     /// fd can safely outlive this surface.
+    /// Tells the escrow holder to drop this session, but only when the
+    /// surface is going away because the user closed it for good.
+    ///
+    /// The holder keeps a dup of the pty master, so freeing the app-side
+    /// surface is not enough to hang up the terminal: without this the shell
+    /// and whatever agent is running in it stay alive, invisible to the app,
+    /// until the holder exits. A session closed while the app keeps running
+    /// is not even covered by `unclaimedSessionTTL`, which only starts once a
+    /// session is draining.
+    ///
+    /// Two conditions, both required:
+    ///
+    /// - `reason == "teardown"`, i.e. `teardownSurface()`. That is the path
+    ///   `ClosedTerminalUndoStore`'s `finalize` runs, so the close-undo grace
+    ///   period has already elapsed and nothing can restore this surface.
+    ///   `deinit` is deliberately excluded: a surface can be deallocated for
+    ///   reasons that are not a user-visible close.
+    /// - the app is not terminating. Sessions open at quit MUST stay
+    ///   escrowed -- reattaching them on the next launch is the entire point
+    ///   of escrow, and releasing here would silently kill every running
+    ///   agent on every app update.
+    nonisolated static func shouldReleaseEscrowOnTeardown(
+        reason: String,
+        isApplicationTerminating: Bool
+    ) -> Bool {
+        reason == "teardown" && !isApplicationTerminating
+    }
+
+    private func releaseEscrowedSessionIfClosedForGood(reason: String) {
+        guard Self.shouldReleaseEscrowOnTeardown(
+            reason: reason,
+            isApplicationTerminating: SessionMachineryGate.isApplicationTerminating
+        ) else { return }
+        guard let tokenHex = escrowTokenHex else { return }
+        escrowTokenHex = nil
+        SessionEscrowClient.shared.release(surfaceId: id.uuidString, tokenHex: tokenHex)
+    }
+
     private func attemptSessionEscrow(surface: ghostty_surface_t, surfaceId: String, childPID: Int32) {
         guard !SessionMachineryGate.isUnitTesting else { return }
         hasAttemptedSessionEscrow = true
@@ -1745,13 +1789,16 @@ final class TerminalSurface: Identifiable, ObservableObject {
             surfaceId: surfaceId,
             dupedMasterFD: dupedFD,
             childPID: childPID
-        ) { result in
+        ) { [weak self] result in
             guard let result else { return }
             SessionWALStore.shared.markEscrowed(
                 surfaceId: surfaceId,
                 socketPath: result.socketPath,
                 token: result.tokenHex
             )
+            // Kept in memory so a genuine close can authenticate the release
+            // frame without going back to the WAL for the token.
+            DispatchQueue.main.async { self?.escrowTokenHex = result.tokenHex }
         }
     }
 
