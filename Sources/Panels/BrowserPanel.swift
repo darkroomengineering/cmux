@@ -909,6 +909,13 @@ final class BrowserPanel: Panel, ObservableObject {
         // This reduces repeated consent/bot-challenge flows on sites like Google.
         configuration.websiteDataStore = websiteDataStore
 
+        // Web extension support (proof of concept — see BrowserExtensionManager). Popups
+        // inherit this through the same shared-configuration path as everything else here.
+        if #available(macOS 15.4, *) {
+            configuration.webExtensionController = BrowserExtensionManager.shared.controller
+            BrowserExtensionManager.shared.loadInstalledExtensionsIfNeeded()
+        }
+
         // Enable developer extras (DevTools)
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
         configuration.preferences.isElementFullscreenEnabled = true
