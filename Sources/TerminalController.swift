@@ -622,12 +622,48 @@ class TerminalController {
         return cred.cr_uid == getuid()
     }
 
+    /// Root pids this app adopted from escrow.
+    ///
+    /// A revived session's child was forked by a *previous* app process; when
+    /// that process exits the child is reparented to launchd, so its ancestry
+    /// can never reach `myPid` and `isDescendant` below would reject every
+    /// command sent from inside that pane for the life of the session (#286).
+    /// Treating the adopted child as an additional ancestry root keeps
+    /// `cmuxOnly` meaning "processes Programa owns" — it does not widen the
+    /// mode to every process running as this user, which is the boundary
+    /// `cmuxOnly` exists to be stricter than.
+    ///
+    /// Entries are added when a surface is revived and removed when it is torn
+    /// down, so a recycled pid cannot stay authorized past its session.
+    private static let revivedRootsLock = NSLock()
+    private nonisolated(unsafe) static var revivedRoots: Set<pid_t> = []
+
+    nonisolated static func registerRevivedRoot(_ pid: pid_t) {
+        guard pid > 1 else { return }
+        revivedRootsLock.lock()
+        defer { revivedRootsLock.unlock() }
+        revivedRoots.insert(pid)
+    }
+
+    nonisolated static func unregisterRevivedRoot(_ pid: pid_t) {
+        guard pid > 1 else { return }
+        revivedRootsLock.lock()
+        defer { revivedRootsLock.unlock() }
+        revivedRoots.remove(pid)
+    }
+
+    nonisolated static func isRevivedRoot(_ pid: pid_t) -> Bool {
+        revivedRootsLock.lock()
+        defer { revivedRootsLock.unlock() }
+        return revivedRoots.contains(pid)
+    }
+
     /// Check if `pid` is a descendant of this process by walking the process tree.
     func isDescendant(_ pid: pid_t) -> Bool {
         var current = pid
         // Walk up to 128 levels to avoid infinite loops from kernel bugs
         for _ in 0..<128 {
-            if current == myPid {
+            if current == myPid || Self.isRevivedRoot(current) {
                 return true
             }
             if current <= 1 {

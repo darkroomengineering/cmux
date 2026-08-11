@@ -854,4 +854,88 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(thirdElapsed, shortTimeout, "after resetting the breaker, retrieve must attempt a genuinely fresh connect")
         XCTAssertEqual(accepted.waitForCount(atLeast: 2), 2, "the reset breaker must allow a new connection attempt, which the holder accepts")
     }
+
+    // MARK: - Revived-session ancestry authorization (#286)
+
+    /// Spawns a live process that is deliberately **not** a descendant of this
+    /// one: a short-lived `sh` backgrounds a `sleep` and exits, so the `sleep`
+    /// is orphaned and reparented to launchd. That is exactly the shape an
+    /// escrow-revived shell has — forked by the previous app process, adopted
+    /// by launchd when that process died — which is why its ancestry can never
+    /// walk back to us. Returns the orphan's pid, killed again on teardown.
+    private func spawnOrphanedProcess() throws -> pid_t {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "sleep 30 >/dev/null 2>&1 & echo $!"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        let text = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pid = try XCTUnwrap(pid_t(text), "could not read the orphan's pid from sh")
+        XCTAssertGreaterThan(pid, 1)
+        addTeardownBlock { kill(pid, SIGKILL) }
+
+        // The intermediate `sh` has exited, so the orphan is now launchd's.
+        // Give the reparent a moment to land before anyone walks the tree.
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline, TerminalController.shared.isDescendant(pid) {
+            usleep(20_000)
+        }
+        return pid
+    }
+
+    func testRevivedRootAuthorizesAPidThatIsNotADescendant() throws {
+        let orphan = try spawnOrphanedProcess()
+        TerminalController.unregisterRevivedRoot(orphan)
+
+        XCTAssertFalse(
+            TerminalController.shared.isDescendant(orphan),
+            "a reparented process must be rejected while unregistered — this is the #286 failure"
+        )
+
+        TerminalController.registerRevivedRoot(orphan)
+        defer { TerminalController.unregisterRevivedRoot(orphan) }
+
+        XCTAssertTrue(
+            TerminalController.shared.isDescendant(orphan),
+            "a pid adopted from escrow must be accepted as an ancestry root"
+        )
+    }
+
+    func testUnregisteringARevivedRootWithdrawsAuthorization() throws {
+        let orphan = try spawnOrphanedProcess()
+        TerminalController.registerRevivedRoot(orphan)
+        XCTAssertTrue(TerminalController.shared.isDescendant(orphan))
+
+        TerminalController.unregisterRevivedRoot(orphan)
+
+        XCTAssertFalse(
+            TerminalController.shared.isDescendant(orphan),
+            "authorization must not outlive the session that owned the pid, or a recycled pid stays trusted"
+        )
+    }
+
+    func testRevivedRootRegistrationRejectsLaunchdAndInvalidPids() {
+        // Registering pid 1 would authorize the ancestry root of every process
+        // on the machine, which is the whole boundary `cmuxOnly` protects.
+        TerminalController.registerRevivedRoot(1)
+        TerminalController.registerRevivedRoot(0)
+        TerminalController.registerRevivedRoot(-1)
+
+        XCTAssertFalse(TerminalController.isRevivedRoot(1))
+        XCTAssertFalse(TerminalController.isRevivedRoot(0))
+        XCTAssertFalse(TerminalController.isRevivedRoot(-1))
+    }
+
+    func testOwnDescendantsStillPassWithoutAnyRegistration() {
+        // The ordinary path must be untouched by the revived-root addition.
+        XCTAssertTrue(
+            TerminalController.shared.isDescendant(getpid()),
+            "this process must still count as inside its own tree"
+        )
+    }
 }
