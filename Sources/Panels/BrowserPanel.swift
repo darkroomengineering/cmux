@@ -984,6 +984,9 @@ final class BrowserPanel: Panel, ObservableObject {
         setupDesignModeMessageHandler(for: webView)
         setupIMECompositionTracking(for: webView)
         setupPasskeyHandoffTracking(for: webView)
+        if #available(macOS 15.4, *) {
+            BrowserExtensionManager.shared.registerTab(for: self)
+        }
     }
 
     private func configureNavigationDelegateCallbacks() {
@@ -1768,6 +1771,10 @@ final class BrowserPanel: Panel, ObservableObject {
         // Ensure we don't keep a hidden WKWebView (or its content view) as first responder while
         // bonsplit/SwiftUI reshuffles views during close.
         unfocus()
+
+        if #available(macOS 15.4, *) {
+            BrowserExtensionManager.shared.unregisterTab(for: self)
+        }
 
         // Snapshot first: popup close unregisters itself from popupControllers.
         let popupsToClose = popupControllers

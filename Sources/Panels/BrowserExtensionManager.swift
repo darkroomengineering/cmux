@@ -35,10 +35,77 @@ final class BrowserExtensionManager {
     private(set) var loadErrors: [(candidate: String, error: any Error)] = []
     private var didStartLoading = false
 
+    // MARK: Tab/window registry (see BrowserExtensionAdapters.swift for the mapping)
+
+    let windowAdapter = BrowserExtensionWindowAdapter()
+    private(set) var tabAdapters: [BrowserExtensionTabAdapter] = []
+    private(set) var activeTabAdapter: BrowserExtensionTabAdapter?
+    private var announcedWindow = false
+
+    private let controllerDelegate = BrowserExtensionControllerDelegate()
+
     private init() {
         controller = WKWebExtensionController(
             configuration: WKWebExtensionController.Configuration(identifier: Self.controllerIdentifier)
         )
+        // Without a delegate, each context's openWindows/openTabs start EMPTY — the
+        // delegate's openWindowsFor answer is the initial population, and the
+        // didOpenTab/didActivateTab notifications only update from that baseline.
+        // tabs.query returns [] forever otherwise.
+        controller.delegate = controllerDelegate
+    }
+
+    func registerTab(for panel: BrowserPanel) {
+        guard tabAdapter(for: panel) == nil else { return }
+        if !announcedWindow {
+            announcedWindow = true
+            controller.didOpenWindow(windowAdapter)
+            controller.didFocusWindow(windowAdapter)
+        }
+        let adapter = BrowserExtensionTabAdapter(panel: panel)
+        tabAdapters.append(adapter)
+        controller.didOpenTab(adapter)
+        #if DEBUG
+        dlog("browser.extensions.tab.open panel=\(panel.id.uuidString.prefix(5)) total=\(tabAdapters.count)")
+        #endif
+    }
+
+    func unregisterTab(for panel: BrowserPanel) {
+        guard let index = tabAdapters.firstIndex(where: { $0.panel === panel }) else { return }
+        let adapter = tabAdapters.remove(at: index)
+        if activeTabAdapter === adapter { activeTabAdapter = nil }
+        controller.didCloseTab(adapter, windowIsClosing: false)
+        #if DEBUG
+        dlog("browser.extensions.tab.close panel=\(panel.id.uuidString.prefix(5)) total=\(tabAdapters.count)")
+        #endif
+    }
+
+    func noteTabActivated(_ panel: BrowserPanel) {
+        pruneDeadTabs()
+        // Also handles never-registered panels defensively; activation implies existence.
+        registerTab(for: panel)
+        guard let adapter = tabAdapter(for: panel) else { return }
+        guard activeTabAdapter !== adapter else { return }
+        let previous = activeTabAdapter
+        activeTabAdapter = adapter
+        controller.didActivateTab(adapter, previousActiveTab: previous)
+        controller.didSelectTabs([adapter])
+        #if DEBUG
+        dlog("browser.extensions.tab.activate panel=\(panel.id.uuidString.prefix(5))")
+        #endif
+    }
+
+    private func tabAdapter(for panel: BrowserPanel) -> BrowserExtensionTabAdapter? {
+        tabAdapters.first(where: { $0.panel === panel })
+    }
+
+    /// Drops adapters whose panel has been deallocated without an explicit unregister.
+    func pruneDeadTabs() {
+        for adapter in tabAdapters where adapter.panel == nil {
+            tabAdapters.removeAll { $0 === adapter }
+            if activeTabAdapter === adapter { activeTabAdapter = nil }
+            controller.didCloseTab(adapter, windowIsClosing: false)
+        }
     }
 
     /// Idempotent kickoff; called from `BrowserPanel.configureWebViewConfiguration`, so the
