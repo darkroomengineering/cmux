@@ -260,6 +260,24 @@ enum EscrowWireFormat {
     /// otherwise by this type). Carries the live master fd as `SCM_RIGHTS`
     /// ancillary data iff granted.
     static let retrieveResponseType: UInt8 = 0x04
+    /// App -> holder: this session was closed by the user for real, so drop
+    /// it instead of holding its pty master open. Session id + token, no
+    /// ancillary fd, no response.
+    ///
+    /// Without this the holder has no way to learn that a session ended: it
+    /// holds a dup of the pty master, so freeing the app-side surface never
+    /// hangs up the terminal and the shell (with whatever agent is running
+    /// in it) survives. A session closed while the app keeps running is not
+    /// even covered by `unclaimedSessionTTL`, which only applies once a
+    /// session is draining -- so it would be held until the holder exits.
+    ///
+    /// Only sent past the close-undo grace period (see
+    /// `ClosedTerminalUndoStore`), never on app quit: quitting must keep
+    /// escrowing so the next launch can reattach.
+    ///
+    /// Holders that predate this frame fall into `serve`'s `default` branch,
+    /// which logs and skips, degrading to the previous behavior.
+    static let releaseType: UInt8 = 0x05
 
     /// Why the holder denied a retrieve. Carried in the FIRST byte of the
     /// response frame's otherwise-unused 32-byte token padding
@@ -320,6 +338,16 @@ enum EscrowWireFormat {
         return data
     }
 
+    static func encodeReleaseFrame(sessionId: String, token: [UInt8]) -> Data? {
+        guard sessionId.utf8.count == sessionIdSize, token.count == tokenSize else { return nil }
+        var data = Data(capacity: frameSize)
+        data.append(releaseType)
+        data.append(contentsOf: Array(sessionId.utf8))
+        data.append(contentsOf: token)
+        data.append(Data(count: childPIDSize)) // unused padding for this type
+        return data
+    }
+
     static func encodeRetrieveResponseFrame(
         sessionId: String,
         granted: Bool,
@@ -341,7 +369,7 @@ enum EscrowWireFormat {
         let bytes = [UInt8](data)
         let type = bytes[0]
         switch type {
-        case escrowType, retrieveRequestType:
+        case escrowType, retrieveRequestType, releaseType:
             var offset = 1
             let sessionIdBytes = Array(bytes[offset..<(offset + sessionIdSize)])
             offset += sessionIdSize
@@ -638,6 +666,49 @@ final class SessionEscrowClient {
             #endif
             completion(Result(tokenHex: tokenHex, socketPath: self.socketPath))
         }
+    }
+
+    /// Tells the holder a session is genuinely closed so it stops holding the
+    /// pty master open. Fire-and-forget: the holder sends no response, and a
+    /// failure here is not worth surfacing -- the worst case is the previous
+    /// behavior, where the session lingers until the holder drops it.
+    ///
+    /// Callers must only use this once the close is final (past the undo
+    /// grace period) and never during app termination.
+    func release(surfaceId: String, tokenHex: String) {
+        guard !SessionMachineryGate.isUnitTesting else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            // Nothing to release if we never escrowed it, and dropping the id
+            // here keeps a later re-escrow of the same surface id working.
+            guard self.escrowedSurfaceIds.contains(surfaceId) else { return }
+            guard let token = Self.tokenBytes(fromHex: tokenHex),
+                  let frame = EscrowWireFormat.encodeReleaseFrame(sessionId: surfaceId, token: token) else {
+                return
+            }
+            // Deliberately does NOT open a connection: if we have none, the
+            // holder either never got this session or is already gone.
+            guard let fd = self.connectionFD else { return }
+            if UnixDomainFDPassing.send(fd: nil, payload: frame, over: fd) {
+                self.escrowedSurfaceIds.remove(surfaceId)
+            } else {
+                self.teardownConnection()
+            }
+        }
+    }
+
+    private static func tokenBytes(fromHex hex: String) -> [UInt8]? {
+        let characters = Array(hex)
+        guard characters.count == EscrowWireFormat.tokenSize * 2 else { return nil }
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(EscrowWireFormat.tokenSize)
+        var index = 0
+        while index < characters.count {
+            guard let byte = UInt8(String(characters[index...(index + 1)]), radix: 16) else { return nil }
+            bytes.append(byte)
+            index += 2
+        }
+        return bytes
     }
 
     /// `queue`-confined. Returns the existing connection if live, otherwise
@@ -1344,6 +1415,16 @@ enum SessionEscrowHolder {
                     if let fd { close(fd) }
                     guard let sessionId = decoded.sessionId, let token = decoded.token else { continue }
                     handleRetrieveRequest(connectionFD: connectionFD, sessionId: sessionId, token: token)
+                case EscrowWireFormat.releaseType:
+                    // Like a retrieve request, this never carries an fd.
+                    if let fd { close(fd) }
+                    guard let sessionId = decoded.sessionId, let token = decoded.token else { continue }
+                    if releaseSession(sessionId: sessionId, token: token) {
+                        // Drop it from this connection's set too, so the
+                        // connection's death does not later try to drain a
+                        // session that is already gone.
+                        registeredSessionIds.remove(sessionId)
+                    }
                 default:
                     if let fd {
                         // Stray/unexpected ancillary fd on a frame type
@@ -1385,6 +1466,42 @@ enum SessionEscrowHolder {
         }
         registry[sessionId] = HeldSession(sessionId: sessionId, fd: fd, token: token, childPID: childPID)
         registryLock.unlock()
+    }
+
+    /// Drops a session the app has told us is genuinely closed, closing the
+    /// pty master we hold so the shell finally sees SIGHUP.
+    ///
+    /// Refuses a session that is already draining: draining means the owning
+    /// app died and a successor may still retrieve this session, which is
+    /// exactly the case escrow exists for. A release only ever arrives from
+    /// a live app over its own connection, so that combination should not
+    /// occur -- declining is the conservative branch either way, since the
+    /// TTL still bounds a draining session.
+    ///
+    /// Returns whether the session was actually dropped.
+    @discardableResult
+    private static func releaseSession(sessionId: String, token: [UInt8]) -> Bool {
+        registryLock.lock()
+        guard let session = registry[sessionId] else {
+            registryLock.unlock()
+            dilog("escrow.release", "session=\(sessionId.prefix(8)) outcome=unknown_session")
+            return false
+        }
+        guard constantTimeTokensEqual(session.token, token) else {
+            registryLock.unlock()
+            dilog("escrow.release", "session=\(sessionId.prefix(8)) outcome=token_mismatch")
+            return false
+        }
+        guard !session.isDraining else {
+            registryLock.unlock()
+            dilog("escrow.release", "session=\(sessionId.prefix(8)) outcome=declined_draining")
+            return false
+        }
+        registry.removeValue(forKey: sessionId)
+        registryLock.unlock()
+        session.markClosedIfNeeded()
+        dilog("escrow.release", "session=\(sessionId.prefix(8)) outcome=released")
+        return true
     }
 
     /// Starts one drain thread per id that's registered and not already

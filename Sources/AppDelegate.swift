@@ -1469,6 +1469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isTerminatingApp = true
+        SessionMachineryGate.isApplicationTerminating = true
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false, cleanShutdown: true)
 
         // Tagged DEV builds are ephemeral, skip quit confirmation entirely.
@@ -1511,6 +1512,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             } else {
                 // Reset so that the next quit attempt can show the dialog again.
                 self.isTerminatingApp = false
+                // Must be reset in lockstep, or a cancelled quit would leave
+                // the session machinery treating every later close as
+                // termination and never releasing escrowed sessions.
+                SessionMachineryGate.isApplicationTerminating = false
             }
             NSApp.reply(toApplicationShouldTerminate: shouldQuit)
         }
@@ -1519,6 +1524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminatingApp = true
+        SessionMachineryGate.isApplicationTerminating = true
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false, cleanShutdown: true)
         // Finalize any terminal closes still sitting in their undo grace period so a staged close
         // doesn't quietly leak instead of tearing down cleanly on quit.
