@@ -608,7 +608,7 @@ extension Workspace: @preconcurrency BonsplitDelegate {
         untrackRemoteTerminalSurface(panelId)
         pendingRemoteTerminalChildExitSurfaceIds.remove(panelId)
         surfaceIdToPanelId.removeValue(forKey: tabId)
-        removeSurfaceMetadata(panelId: panelId)
+        removeSurfaceMetadata(panelId: panelId, isDetaching: isDetaching)
         syncRemotePortScanTTYs()
         recomputeListeningPorts()
         clearRemoteConfigurationIfWorkspaceBecameLocal()
@@ -741,7 +741,7 @@ extension Workspace: @preconcurrency BonsplitDelegate {
     /// list and drifted (pane close leaked inheritance font points and never
     /// cleared notifications). Aggregate recomputes (syncRemotePortScanTTYs,
     /// recomputeListeningPorts) stay at the call sites.
-    private func removeSurfaceMetadata(panelId: UUID) {
+    private func removeSurfaceMetadata(panelId: UUID, isDetaching: Bool = false) {
         panelDirectories.removeValue(forKey: panelId)
         panelGitBranches.removeValue(forKey: panelId)
         panelPullRequests.removeValue(forKey: panelId)
@@ -761,6 +761,20 @@ extension Workspace: @preconcurrency BonsplitDelegate {
         }
         PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)
         AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: id, surfaceId: panelId)
+        // Detach preserves the panel UUID and the live panel object for
+        // reattach in another window (DetachedSurfaceTransfer) -- browser
+        // automation state must survive the trip, so it is only pruned on
+        // permanent close.
+        if !isDetaching {
+            TerminalController.shared.v2BrowserInitScriptsBySurface.removeValue(forKey: panelId)
+            TerminalController.shared.v2BrowserInitStylesBySurface.removeValue(forKey: panelId)
+            TerminalController.shared.v2BrowserDialogQueueBySurface.removeValue(forKey: panelId)
+            TerminalController.shared.v2BrowserDownloadEventsBySurface.removeValue(forKey: panelId)
+            TerminalController.shared.v2BrowserUnsupportedNetworkRequestsBySurface.removeValue(forKey: panelId)
+            TerminalController.shared.v2BrowserFrameSelectorBySurface.removeValue(forKey: panelId)
+            TerminalController.shared.v2BrowserElementRefs = TerminalController.shared.v2BrowserElementRefs
+                .filter { $0.value.surfaceId != panelId }
+        }
         if progressSourcePanelId == panelId {
             progress = nil
             progressSourcePanelId = nil

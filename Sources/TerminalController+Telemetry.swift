@@ -457,6 +457,9 @@ extension TerminalController {
         }
 
         v2ScheduleSurfaceTelemetryMutation(workspaceId: workspaceId, surfaceId: surfaceId) { _, tab, sid in
+            guard Self.shouldReplacePorts(current: tab.surfaceListeningPorts[sid], next: rawPorts) else {
+                return
+            }
             tab.surfaceListeningPorts[sid] = rawPorts
             tab.recomputeListeningPorts()
         }
@@ -773,6 +776,9 @@ extension TerminalController {
         let label = v2String(params, "label")
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { _, tab in
+            guard Self.shouldReplaceProgress(current: tab.progress, value: clamped, label: label) else {
+                return
+            }
             tab.progress = SidebarProgressState(value: clamped, label: label)
         }
 
