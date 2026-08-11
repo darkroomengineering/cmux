@@ -136,3 +136,27 @@ enum BrowserInsecureHTTPAlertBuilder {
         return alert
     }
 }
+
+/// Alert offering to hand a page off to the default browser when it attempts a real passkey
+/// ceremony that the built-in browser cannot complete (no WebAuthn entitlement yet).
+enum BrowserPasskeyHandoffAlertBuilder {
+    static func configure(_ alert: NSAlert) {
+        alert.alertStyle = .informational
+        alert.messageText = String(
+            localized: "browser.passkeyHandoff.title",
+            defaultValue: "Passkeys aren\u{2019}t available in the built-in browser yet"
+        )
+        alert.informativeText = String(
+            localized: "browser.passkeyHandoff.message",
+            defaultValue: "This page is asking for a passkey, which the built-in browser can\u{2019}t provide. You can finish signing in with your default browser."
+        )
+        alert.addButton(withTitle: String(localized: "browser.openInDefaultBrowser", defaultValue: "Open in Default Browser"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+    }
+
+    static func makeAlert() -> NSAlert {
+        let alert = NSAlert()
+        configure(alert)
+        return alert
+    }
+}
