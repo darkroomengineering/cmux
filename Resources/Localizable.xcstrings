@@ -3635,6 +3635,74 @@
         }
       }
     },
+    "browser.passkey.error": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Passkeys are not available in Programa’s built-in browser."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programa の内蔵ブラウザーではパスキーを利用できません。"
+          }
+        }
+      }
+    },
+    "browser.passkey.notice.dismiss": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dismiss"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "閉じる"
+          }
+        }
+      }
+    },
+    "browser.passkey.notice.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This site asked for a passkey. Programa’s browser can’t use passkeys."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このサイトはパスキーを要求しました。Programa のブラウザーではパスキーを使用できません。"
+          }
+        }
+      }
+    },
+    "browser.passkey.notice.openExternally": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open in default browser"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デフォルトのブラウザーで開く"
+          }
+        }
+      }
+    },
     "browser.popup.loadingTitle": {
       "extractionState": "manual",
       "localizations": {

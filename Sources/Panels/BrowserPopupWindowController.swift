@@ -204,6 +204,17 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
         webView.uiDelegate = uiDel
         webView.navigationDelegate = navDel
 
+        // Passkey fallback, same as the main panel — OAuth popups (e.g. "Sign in with
+        // Google") are where sites most often request a passkey. Remove-before-add:
+        // a WebKit-supplied popup configuration can share the opener's user content
+        // controller, and adding a duplicate handler name throws.
+        let passkeyHandler = BrowserPasskeyMessageHandler { url in
+            NSWorkspace.shared.open(url)
+        }
+        let userContentController = webView.configuration.userContentController
+        userContentController.removeScriptMessageHandler(forName: BrowserPasskeyFallback.messageHandlerName)
+        userContentController.add(passkeyHandler, name: BrowserPasskeyFallback.messageHandlerName)
+
         // Context menu "Open Link in New Tab" → open in opener's workspace,
         // not as a nested popup. Falls back to system browser if opener is gone.
         webView.onContextMenuOpenLinkInNewTab = { [weak self] url in
@@ -498,6 +509,12 @@ private class PopupNavigationDelegate: NSObject, WKNavigationDelegate {
         // so the OAuth URL is what the user sees first.
         guard let url = webView.url, url.absoluteString != "about:blank" else { return }
         controller?.showPanelIfNeeded()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        // Same passkey guard as the main panel; see BrowserPasskeyFallback for why this
+        // must run post-load via evaluateJavaScript instead of as a WKUserScript.
+        webView.evaluateJavaScript(BrowserPasskeyFallback.bootstrapScript, completionHandler: nil)
     }
 
     func webView(

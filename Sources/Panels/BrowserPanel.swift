@@ -319,6 +319,18 @@ final class BrowserPanel: Panel, ObservableObject {
         webView.configuration.userContentController.add(handler, name: Self.imeCompositionHandlerName)
     }
 
+    /// Wires the "open in default browser" button on the passkey notice. Passkeys work in
+    /// Safari, so handing the page off is the only route that completes the sign-in.
+    private func setupPasskeyFallback(for webView: ProgramaWebView) {
+        let handler = BrowserPasskeyMessageHandler { url in
+            NSWorkspace.shared.open(url)
+        }
+        webView.configuration.userContentController.add(
+            handler,
+            name: BrowserPasskeyFallback.messageHandlerName
+        )
+    }
+
     static let addressBarFocusRestoreScript = """
     (() => {
       try {
@@ -857,6 +869,7 @@ final class BrowserPanel: Panel, ObservableObject {
         setupReactGrabMessageHandler(for: webView)
         setupDesignModeMessageHandler(for: webView)
         setupIMECompositionTracking(for: webView)
+        setupPasskeyFallback(for: webView)
     }
 
     private func configureNavigationDelegateCallbacks() {
@@ -867,6 +880,10 @@ final class BrowserPanel: Panel, ObservableObject {
         navigationDelegate.didFinish = { [weak self] webView in
             Task { @MainActor [weak self] in
                 guard let self, self.isCurrentWebView(webView, instanceID: boundWebViewInstanceID) else { return }
+                // Reinstall the passkey guard on the committed document. The WKUserScript copy
+                // patches a CredentialsContainer that does not survive to the loaded page, so
+                // this evaluate-after-load pass is the one that actually sticks.
+                webView.evaluateJavaScript(BrowserPasskeyFallback.bootstrapScript, completionHandler: nil)
                 self.realignRestoredSessionHistoryToLiveCurrentIfPossible()
                 boundHistoryStore.recordVisit(url: webView.url, title: webView.title)
                 self.refreshFavicon(from: webView)
