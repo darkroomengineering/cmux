@@ -71,7 +71,7 @@ if [[ "${TEST_BLOCK_ZIG:-0}" == "1" ]]; then
   done
 fi
 mkdir -p macos/GhosttyKit.xcframework/macos-arm64
-printf 'archive\n' > macos/GhosttyKit.xcframework/macos-arm64/libghostty.a
+printf 'archive\n' > macos/GhosttyKit.xcframework/macos-arm64/libghostty-internal-fat.a
 EOF
 
   cat > "$bin/xcrun" <<'EOF'
@@ -135,7 +135,7 @@ test_ready_cache_bypasses_live_build_lock() {
   lock_dir="$fixture/cache/$key.lock"
   output="$fixture/cache-hit.out"
   mkdir -p "$cache_dir/macos-arm64" "$lock_dir"
-  printf 'archive\n' > "$cache_dir/macos-arm64/libghostty.a"
+  printf 'archive\n' > "$cache_dir/macos-arm64/libghostty-internal-fat.a"
   touch "$fixture/cache/$key/.ready"
   printf 'pid=%s\ntoken=live-owner\n' "$$" > "$lock_dir/owner"
 
