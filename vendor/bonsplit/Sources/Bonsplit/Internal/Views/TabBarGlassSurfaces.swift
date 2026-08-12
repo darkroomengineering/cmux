@@ -18,8 +18,11 @@ enum TabBarGlassStyling {
         return false
     }
 
-    static func tintColor(isSelected: Bool) -> NSColor? {
-        isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.12) : nil
+    static func tintColor(isSelected: Bool, isHovered: Bool) -> NSColor? {
+        if isSelected {
+            return NSColor.controlAccentColor.withAlphaComponent(0.12)
+        }
+        return isHovered ? NSColor.labelColor.withAlphaComponent(0.05) : nil
     }
 }
 

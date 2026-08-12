@@ -73,7 +73,7 @@ struct TabItemView: View {
         if usesNativeLiquidGlass {
             TabPillGlassHost(
                 content: tabContent,
-                tintColor: TabBarGlassStyling.tintColor(isSelected: isSelected),
+                tintColor: TabBarGlassStyling.tintColor(isSelected: isSelected, isHovered: isHovered),
                 cornerRadius: TabBarGlassStyling.pillCornerRadius
             )
         } else {
@@ -444,7 +444,7 @@ struct TabItemView: View {
     private var tabBackground: some View {
         ZStack(alignment: .top) {
             // Background fill (hover)
-            if TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
+            if !usesNativeLiquidGlass && TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
                 Rectangle()
                     .fill(TabBarColors.hoveredTabBackground(for: appearance))
             } else {

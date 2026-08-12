@@ -666,7 +666,12 @@ struct TabBarView: View {
     @ViewBuilder
     private var tabBarBackground: some View {
         if usesNativeLiquidGlass {
-            Color.clear
+            // The portal-hosted terminal begins below the tab strip, so a clear
+            // bar exposes different window backing pixels and reads as a square
+            // box around otherwise rounded pills. Match the pane background and
+            // keep only the pills refractive.
+            Rectangle()
+                .fill(TabBarColors.paneBackground(for: appearance))
         } else {
             let barFill = isFocused
                 ? TabBarColors.barBackground(for: appearance)
