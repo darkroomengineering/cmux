@@ -35,6 +35,7 @@ enum ProgramaGlassSurface: String, CaseIterable, Sendable {
 }
 
 enum ProgramaGlassSettings {
+    static let windowEnabledKey = "bgGlassEnabled"
     static let tabBarEnabledKey = "tabBarLiquidGlassEnabled"
     static let browserToolbarEnabledKey = "browserToolbarLiquidGlassEnabled"
     static let overlaysEnabledKey = "overlayLiquidGlassEnabled"
@@ -82,6 +83,20 @@ enum ProgramaGlassSettings {
         nativeGlassAvailable ? .liquidGlass : .nativeSidebar
     }
 
+    /// Registers platform defaults without overwriting an explicit user choice. Only surfaces
+    /// that have passed their independent gate are enabled here; later phases extend this map.
+    static func registerPlatformDefaults(
+        defaults: UserDefaults = .standard,
+        nativeGlassAvailable: Bool
+    ) {
+        defaults.register(defaults: [
+            windowEnabledKey: nativeGlassAvailable,
+            tabBarEnabledKey: false,
+            browserToolbarEnabledKey: false,
+            overlaysEnabledKey: false,
+        ])
+    }
+
     #if DEBUG
     /// Mutates only debug-build preferences. This is used by the footprint script against a
     /// tagged app and intentionally performs no app activation or focus-changing work.
@@ -95,9 +110,9 @@ enum ProgramaGlassSettings {
             if enabled {
                 defaults.set(SidebarBlendModeOption.behindWindow.rawValue, forKey: "sidebarBlendMode")
             }
-            defaults.set(enabled, forKey: "bgGlassEnabled")
+            defaults.set(enabled, forKey: windowEnabledKey)
         case .sidebar:
-            defaults.set(false, forKey: "bgGlassEnabled")
+            defaults.set(false, forKey: windowEnabledKey)
             defaults.set(SidebarBlendModeOption.withinWindow.rawValue, forKey: "sidebarBlendMode")
             defaults.set(
                 enabled ? SidebarMaterialOption.liquidGlass.rawValue : SidebarMaterialOption.sidebar.rawValue,

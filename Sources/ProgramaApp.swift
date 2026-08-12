@@ -96,8 +96,12 @@ struct programaApp: App {
 
         let startupAppearance = AppearanceSettings.resolvedMode()
         Self.applyAppearance(startupAppearance)
-        _tabManager = StateObject(wrappedValue: TabManager())
         let defaults = UserDefaults.standard
+        ProgramaGlassSettings.registerPlatformDefaults(
+            defaults: defaults,
+            nativeGlassAvailable: WindowGlassEffect.isAvailable
+        )
+        _tabManager = StateObject(wrappedValue: TabManager())
         // Rebrand: forward every legacy cmux-prefixed default to its programa key
         // before anything reads the new keys, so existing users keep their prefs.
         Self.migrateCmuxDefaultsToProgramaIfNeeded(defaults: defaults)

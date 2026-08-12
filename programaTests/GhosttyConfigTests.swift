@@ -763,6 +763,44 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         )
     }
 
+    func testPlatformGlassDefaultsEnableWindowOnlyWhenNativeGlassIsAvailable() {
+        let nativeSuite = "programa-tests-glass-native-\(UUID().uuidString)"
+        let fallbackSuite = "programa-tests-glass-fallback-\(UUID().uuidString)"
+        let nativeDefaults = UserDefaults(suiteName: nativeSuite)!
+        let fallbackDefaults = UserDefaults(suiteName: fallbackSuite)!
+        defer {
+            nativeDefaults.removePersistentDomain(forName: nativeSuite)
+            fallbackDefaults.removePersistentDomain(forName: fallbackSuite)
+        }
+
+        ProgramaGlassSettings.registerPlatformDefaults(
+            defaults: nativeDefaults,
+            nativeGlassAvailable: true
+        )
+        ProgramaGlassSettings.registerPlatformDefaults(
+            defaults: fallbackDefaults,
+            nativeGlassAvailable: false
+        )
+
+        XCTAssertTrue(nativeDefaults.bool(forKey: ProgramaGlassSettings.windowEnabledKey))
+        XCTAssertFalse(fallbackDefaults.bool(forKey: ProgramaGlassSettings.windowEnabledKey))
+        XCTAssertFalse(nativeDefaults.bool(forKey: ProgramaGlassSettings.tabBarEnabledKey))
+    }
+
+    func testExplicitWindowGlassChoiceOverridesRegisteredPlatformDefault() {
+        let suite = "programa-tests-glass-explicit-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: ProgramaGlassSettings.windowEnabledKey)
+
+        ProgramaGlassSettings.registerPlatformDefaults(
+            defaults: defaults,
+            nativeGlassAvailable: true
+        )
+
+        XCTAssertFalse(defaults.bool(forKey: ProgramaGlassSettings.windowEnabledKey))
+    }
+
     func testBehindWindowGlassPathKeepsTransparentWindowEnabled() {
         withTemporaryWindowBackgroundDefaults {
             let defaults = UserDefaults.standard
