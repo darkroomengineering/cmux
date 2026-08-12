@@ -458,6 +458,9 @@ struct programaApp: App {
                     Button(String(localized: "debug.menu.splitButtonLayout", defaultValue: "Split Button Layout Debug…")) {
                         SplitButtonLayoutDebugWindowController.shared.show()
                     }
+                    Button(String(localized: "debug.menu.tabBarGlass", defaultValue: "Tab Bar Glass Debug…")) {
+                        TabBarGlassDebugWindowController.shared.show()
+                    }
                     Button(String(localized: "debug.menu.openAllWindows", defaultValue: "Open All Debug Windows")) {
                         openAllDebugWindows()
                     }
@@ -1131,6 +1134,7 @@ struct programaApp: App {
         SidebarDebugWindowController.shared.show()
         BackgroundDebugWindowController.shared.show()
         MenuBarExtraDebugWindowController.shared.show()
+        TabBarGlassDebugWindowController.shared.show()
     }
 #endif
 }
@@ -1146,6 +1150,7 @@ private let programaAuxiliaryWindowIdentifiers: Set<String> = [
     "programa.sidebarDebug",
     "programa.menubarDebug",
     "programa.backgroundDebug",
+    "programa.tabBarGlassDebug",
 ]
 
 /// Returns whether the given window should handle the standard close shortcut

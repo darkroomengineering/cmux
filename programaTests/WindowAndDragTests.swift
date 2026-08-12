@@ -47,22 +47,13 @@ final class WindowGlassEffectTests: XCTestCase {
         #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             _ = NSApplication.shared
-            let defaults = UserDefaults.standard
-            let key = ProgramaGlassSettings.tabBarEnabledKey
-            let previousValue = defaults.object(forKey: key)
-            defaults.set(true, forKey: key)
-            defer {
-                if let previousValue {
-                    defaults.set(previousValue, forKey: key)
-                } else {
-                    defaults.removeObject(forKey: key)
-                }
-            }
-
-            let appearance = Workspace.bonsplitAppearance(
+            var appearance = Workspace.bonsplitAppearance(
                 from: NSColor(calibratedWhite: 0.12, alpha: 1),
                 backgroundOpacity: 1
             )
+            // Keep the hierarchy test independent from process-wide UserDefaults so
+            // parallel platform-default tests cannot observe a transient override.
+            appearance.tabBarLiquidGlassEnabled = true
             let controller = BonsplitController(
                 configuration: BonsplitConfiguration(appearance: appearance)
             )

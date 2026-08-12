@@ -323,6 +323,9 @@ struct VerticalTabsSidebar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("Sidebar")
+        // The inset surface intentionally extends through native titlebar space.
+        // AppKit keeps ownership of the traffic-light buttons while they visually
+        // sit on this same sidebar panel, matching standard macOS window chrome.
         .ignoresSafeArea())
         .overlay(alignment: .trailing) {
             SidebarTrailingBorder()

@@ -1274,11 +1274,6 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
     }
 }
 
-private enum SidebarLiquidGlassLayout {
-    static let inset: CGFloat = 8
-    static let cornerRadius: CGFloat = 22
-}
-
 /// Selects the native content-hosting topology only for sidebar-local Liquid Glass. Every
 /// fallback keeps the established SwiftUI content + background relationship, preserving the
 /// exact macOS 14–25 hierarchy and the behind-window whole-window glass mode.
@@ -1301,10 +1296,9 @@ struct SidebarSurface<Content: View>: View {
             SidebarNativeGlassContentHost(
                 content: content.environment(\.colorScheme, colorScheme),
                 tintColor: resolvedTintColor,
-                cornerRadius: max(CGFloat(sidebarCornerRadius), SidebarLiquidGlassLayout.cornerRadius)
+                cornerRadius: max(0, CGFloat(sidebarCornerRadius))
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(SidebarLiquidGlassLayout.inset)
         } else {
             content
                 .background(SidebarBackdrop().ignoresSafeArea())
@@ -1710,7 +1704,10 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var cornerRadius: Double {
         switch self {
-        case .liquidGlass: return 22.0
+        // A flush sidebar defers its outer corners to the NSWindow mask. Giving the
+        // glass view a second radius draws a duplicate perimeter and an awkward
+        // interior top-right notch against the tab strip.
+        case .liquidGlass: return 0.0
         case .nativeSidebar: return 0.0
         case .glassBehind: return 0.0
         case .softBlur: return 0.0

@@ -64,7 +64,24 @@ struct TabItemView: View {
     @AppStorage(TabControlShortcutHintDebugSettings.yKey) private var controlShortcutHintYOffset = TabControlShortcutHintDebugSettings.defaultY
     @AppStorage(TabControlShortcutHintDebugSettings.alwaysShowKey) private var alwaysShowShortcutHints = TabControlShortcutHintDebugSettings.defaultAlwaysShow
 
+    private var usesNativeLiquidGlass: Bool {
+        appearance.tabBarLiquidGlassEnabled && TabBarGlassStyling.isAvailable
+    }
+
+    @ViewBuilder
     var body: some View {
+        if usesNativeLiquidGlass {
+            TabPillGlassHost(
+                content: tabContent,
+                tintColor: TabBarGlassStyling.tintColor(isSelected: isSelected),
+                cornerRadius: TabBarGlassStyling.pillCornerRadius
+            )
+        } else {
+            tabContent
+        }
+    }
+
+    private var tabContent: some View {
         HStack(spacing: 0) {
             // Icon + title block uses the standard spacing, but keep the close affordance tight.
             HStack(spacing: TabBarMetrics.contentSpacing) {
@@ -171,7 +188,7 @@ struct TabItemView: View {
             minHeight: TabBarMetrics.tabHeight,
             maxHeight: TabBarMetrics.tabHeight
         )
-        .padding(.bottom, isSelected ? 1 : 0)
+        .padding(.bottom, isSelected && !usesNativeLiquidGlass ? 1 : 0)
         .background(tabBackground.saturation(saturation))
         .animation(.easeInOut(duration: 0.14), value: showsShortcutHint)
         .contentShape(Rectangle())
@@ -435,18 +452,21 @@ struct TabItemView: View {
             }
 
             // Top accent indicator for selected tab
-            if isSelected {
+            if isSelected && !usesNativeLiquidGlass {
                 Rectangle()
                     .fill(Color.accentColor)
                     .frame(height: TabBarMetrics.activeIndicatorHeight)
             }
 
-            // Right border separator
-            HStack {
-                Spacer()
-                Rectangle()
-                    .fill(TabBarColors.separator(for: appearance))
-                    .frame(width: 1)
+            // The individual glass pill already supplies its own edge. Keep the
+            // legacy separator only for the flat tab-strip treatment.
+            if !usesNativeLiquidGlass {
+                HStack {
+                    Spacer()
+                    Rectangle()
+                        .fill(TabBarColors.separator(for: appearance))
+                        .frame(width: 1)
+                }
             }
         }
     }

@@ -236,6 +236,8 @@ struct WorkspaceContentView: View {
     @State private var config = WorkspaceContentView.resolveGhosttyAppearanceConfig(reason: "stateInit")
     @AppStorage(WorkspacePresentationModeSettings.modeKey)
     private var workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
+    @AppStorage(ProgramaGlassSettings.tabBarEnabledKey)
+    private var tabBarLiquidGlassEnabled = false
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject var notificationStore: TerminalNotificationStore
 
@@ -343,7 +345,11 @@ struct WorkspaceContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             syncBonsplitNotificationBadges()
+            syncBonsplitGlassAppearance()
             refreshGhosttyAppearanceConfig(reason: "onAppear")
+        }
+        .onChange(of: tabBarLiquidGlassEnabled) { _, _ in
+            syncBonsplitGlassAppearance()
         }
         .onChange(of: notificationStore.notifications) { _, _ in
             syncBonsplitNotificationBadges()
@@ -413,6 +419,17 @@ struct WorkspaceContentView: View {
                 }
             }
         }
+    }
+
+    private func syncBonsplitGlassAppearance() {
+        let enabled = WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+            for: .tabBar,
+            persistedValue: tabBarLiquidGlassEnabled
+        )
+        guard workspace.bonsplitController.configuration.appearance.tabBarLiquidGlassEnabled != enabled else {
+            return
+        }
+        workspace.bonsplitController.configuration.appearance.tabBarLiquidGlassEnabled = enabled
     }
 
     private var splitZoomRenderIdentity: String {

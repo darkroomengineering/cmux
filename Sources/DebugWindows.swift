@@ -1237,6 +1237,87 @@ private struct MenuBarExtraDebugView: View {
     }
 }
 
+// MARK: - Tab Bar Glass Debug Window
+
+final class TabBarGlassDebugWindowController: NSWindowController, NSWindowDelegate {
+    static let shared = TabBarGlassDebugWindowController()
+
+    private init() {
+        let window = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 170),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = String(
+            localized: "debug.tabBarGlass.title",
+            defaultValue: "Tab Bar Glass"
+        )
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier("programa.tabBarGlassDebug")
+        window.center()
+        window.contentView = NSHostingView(rootView: TabBarGlassDebugView())
+        AppDelegate.shared?.applyWindowDecorations(to: window)
+        super.init(window: window)
+        window.delegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+    }
+}
+
+private struct TabBarGlassDebugView: View {
+    @AppStorage(ProgramaGlassSettings.tabBarEnabledKey)
+    private var tabBarLiquidGlassEnabled = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(
+                String(
+                    localized: "debug.tabBarGlass.title",
+                    defaultValue: "Tab Bar Glass"
+                )
+            )
+            .font(.headline)
+
+            Toggle(
+                String(
+                    localized: "debug.tabBarGlass.enable",
+                    defaultValue: "Enable Native Glass Tab Pills"
+                ),
+                isOn: $tabBarLiquidGlassEnabled
+            )
+            .disabled(!WindowGlassEffect.isAvailable)
+
+            Text(
+                WindowGlassEffect.isAvailable
+                    ? String(
+                        localized: "debug.glass.changesApplyLive",
+                        defaultValue: "Changes apply live."
+                    )
+                    : String(
+                        localized: "debug.glass.requiresMacOS26",
+                        defaultValue: "Native Liquid Glass requires macOS 26."
+                    )
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
 // MARK: - Split Button Layout Debug Window
 
 final class SplitButtonLayoutDebugWindowController: NSWindowController, NSWindowDelegate {

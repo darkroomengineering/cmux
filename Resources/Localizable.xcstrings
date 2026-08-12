@@ -6507,6 +6507,91 @@
         }
       }
     },
+    "debug.menu.tabBarGlass": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab Bar Glass Debug…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "タブバーガラスデバッグ…"
+          }
+        }
+      }
+    },
+    "debug.tabBarGlass.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab Bar Glass"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "タブバーガラス"
+          }
+        }
+      }
+    },
+    "debug.tabBarGlass.enable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Native Glass Tab Pills"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ネイティブガラスのタブピルを有効にする"
+          }
+        }
+      }
+    },
+    "debug.glass.changesApplyLive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changes apply live."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "変更はすぐに反映されます。"
+          }
+        }
+      }
+    },
+    "debug.glass.requiresMacOS26": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native Liquid Glass requires macOS 26."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ネイティブLiquid GlassにはmacOS 26が必要です。"
+          }
+        }
+      }
+    },
     "debug.menu.title": {
       "extractionState": "manual",
       "localizations": {
