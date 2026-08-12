@@ -85,16 +85,20 @@ enum ProgramaGlassSettings {
 
     /// Registers platform defaults without overwriting an explicit user choice. Only surfaces
     /// that have passed their independent gate are enabled here; later phases extend this map.
-    static func registerPlatformDefaults(
-        defaults: UserDefaults = .standard,
-        nativeGlassAvailable: Bool
-    ) {
-        defaults.register(defaults: [
+    static func platformDefaults(nativeGlassAvailable: Bool) -> [String: Any] {
+        [
             windowEnabledKey: nativeGlassAvailable,
             tabBarEnabledKey: false,
             browserToolbarEnabledKey: false,
             overlaysEnabledKey: false,
-        ])
+        ]
+    }
+
+    static func registerPlatformDefaults(
+        defaults: UserDefaults = .standard,
+        nativeGlassAvailable: Bool
+    ) {
+        defaults.register(defaults: platformDefaults(nativeGlassAvailable: nativeGlassAvailable))
     }
 
     #if DEBUG

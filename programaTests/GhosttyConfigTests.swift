@@ -764,27 +764,14 @@ final class WindowTransparencyDecisionTests: XCTestCase {
     }
 
     func testPlatformGlassDefaultsEnableWindowOnlyWhenNativeGlassIsAvailable() {
-        let nativeSuite = "programa-tests-glass-native-\(UUID().uuidString)"
-        let fallbackSuite = "programa-tests-glass-fallback-\(UUID().uuidString)"
-        let nativeDefaults = UserDefaults(suiteName: nativeSuite)!
-        let fallbackDefaults = UserDefaults(suiteName: fallbackSuite)!
-        defer {
-            nativeDefaults.removePersistentDomain(forName: nativeSuite)
-            fallbackDefaults.removePersistentDomain(forName: fallbackSuite)
-        }
+        let nativeDefaults = ProgramaGlassSettings.platformDefaults(nativeGlassAvailable: true)
+        let fallbackDefaults = ProgramaGlassSettings.platformDefaults(nativeGlassAvailable: false)
 
-        ProgramaGlassSettings.registerPlatformDefaults(
-            defaults: nativeDefaults,
-            nativeGlassAvailable: true
-        )
-        ProgramaGlassSettings.registerPlatformDefaults(
-            defaults: fallbackDefaults,
-            nativeGlassAvailable: false
-        )
-
-        XCTAssertTrue(nativeDefaults.bool(forKey: ProgramaGlassSettings.windowEnabledKey))
-        XCTAssertFalse(fallbackDefaults.bool(forKey: ProgramaGlassSettings.windowEnabledKey))
-        XCTAssertFalse(nativeDefaults.bool(forKey: ProgramaGlassSettings.tabBarEnabledKey))
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.windowEnabledKey] as? Bool, true)
+        XCTAssertEqual(fallbackDefaults[ProgramaGlassSettings.windowEnabledKey] as? Bool, false)
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.tabBarEnabledKey] as? Bool, false)
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.browserToolbarEnabledKey] as? Bool, false)
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.overlaysEnabledKey] as? Bool, false)
     }
 
     func testExplicitWindowGlassChoiceOverridesRegisteredPlatformDefault() {
