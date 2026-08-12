@@ -216,6 +216,7 @@ enum V2CommandCatalog {
 
     /// Methods only available in DEBUG builds, appended after `baseMethods`.
     static let debugMethods: [String] = [
+        "debug.glass.set",
         "debug.shortcut.set",
         "debug.shortcut.simulate",
         "debug.type",

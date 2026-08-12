@@ -2035,6 +2035,8 @@ class TerminalController {
 
 #if DEBUG
         // Debug / test-only
+        case "debug.glass.set":
+            return v2Result(id: id, self.v2DebugGlassSet(params: params))
         case "debug.shortcut.set":
             return v2Result(id: id, self.v2DebugShortcutSet(params: params))
         case "debug.shortcut.simulate":

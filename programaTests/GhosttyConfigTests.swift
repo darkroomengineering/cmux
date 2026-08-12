@@ -706,6 +706,50 @@ final class WindowTransparencyDecisionTests: XCTestCase {
                 glassEffectAvailable: true
             )
         )
+        XCTAssertTrue(
+            cmuxShouldApplyWindowGlass(
+                sidebarBlendMode: "withinWindow",
+                bgGlassEnabled: false,
+                glassEffectAvailable: true,
+                performanceOverride: true
+            )
+        )
+        XCTAssertFalse(
+            cmuxShouldApplyWindowGlass(
+                sidebarBlendMode: "behindWindow",
+                bgGlassEnabled: true,
+                glassEffectAvailable: true,
+                performanceOverride: false
+            )
+        )
+    }
+
+    func testGlassPerformanceOverrideParserAcceptsExplicitBooleanValuesOnly() {
+        for surface in ProgramaGlassSurface.allCases {
+            XCTAssertEqual(
+                ProgramaGlassSettings.parseOverride(
+                    for: surface,
+                    environment: [surface.environmentKey: "1"]
+                ),
+                true
+            )
+            XCTAssertEqual(
+                ProgramaGlassSettings.parseOverride(
+                    for: surface,
+                    environment: [surface.environmentKey: "off"]
+                ),
+                false
+            )
+            XCTAssertNil(
+                ProgramaGlassSettings.parseOverride(
+                    for: surface,
+                    environment: [surface.environmentKey: "maybe"]
+                )
+            )
+            XCTAssertNil(
+                ProgramaGlassSettings.parseOverride(for: surface, environment: [:])
+            )
+        }
     }
 
     func testBehindWindowGlassPathKeepsTransparentWindowEnabled() {

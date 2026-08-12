@@ -73,6 +73,21 @@ extension TerminalController {
 #if DEBUG
     // MARK: - V2 Debug / Test-only Methods
 
+    func v2DebugGlassSet(params: [String: Any]) -> V2CallResult {
+        guard let rawSurface = v2String(params, "surface"),
+              let surface = ProgramaGlassSurface(commandValue: rawSurface),
+              let enabled = params["enabled"] as? Bool else {
+            return .err(
+                code: "invalid_params",
+                message: "Expected surface and boolean enabled",
+                data: ["surfaces": ProgramaGlassSurface.allCases.map(\.rawValue)]
+            )
+        }
+
+        ProgramaGlassSettings.setDebugEnabled(enabled, for: surface)
+        return .ok(["surface": surface.rawValue, "enabled": enabled])
+    }
+
     func v2DebugShortcutSet(params: [String: Any]) -> V2CallResult {
         guard let name = v2String(params, "name"),
               let combo = v2String(params, "combo") else {

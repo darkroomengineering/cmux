@@ -62,6 +62,16 @@ on:
           to measure the text-input half of the keystroke path.
         type: string
         default: up
+      glass_surface:
+        description: Liquid Glass surface measured as three OFF and three ON lag-harness runs.
+        type: choice
+        options:
+          - window
+          - sidebar
+          - tabBar
+          - browserToolbar
+          - overlays
+        default: window
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -559,7 +569,7 @@ jobs:
     # and performance regressions stay isolated. Broader interactive UI suites
     # still run via test-e2e.yml on GitHub-hosted runners.
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       PROGRAMA_SKIP_ZIG_BUILD: "1"
     steps:
@@ -723,6 +733,18 @@ jobs:
           PROGRAMA_LAG_KEY_EVENTS=180 \
           PROGRAMA_LAG_KEY_COMBO="${{ inputs.lag_combo || 'up' }}" \
           python3 tests_v2/test_workspace_churn_up_arrow_lag.py
+
+      - name: Compare Liquid Glass OFF and ON (report only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          APP="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Debug/Programa DEV.app" -print -quit)"
+          if [ -z "${APP:-}" ] || [ ! -d "$APP" ]; then
+            echo "Programa DEV.app not found in DerivedData" >&2
+            exit 1
+          fi
+          PROGRAMA_LAG_KEY_COMBO="${{ inputs.lag_combo || 'up' }}" \
+            ./scripts/run-glass-perf-gate.sh "$APP" "${{ inputs.glass_surface || 'window' }}"
 
       # On-demand only. This measures the refresh call itself with an in-process
       # timer rather than an end-to-end socket round trip, because that round trip

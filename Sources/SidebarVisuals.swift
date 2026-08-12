@@ -1360,12 +1360,18 @@ struct SidebarBackdrop: View {
             return sidebarTintHex
         }()
         let tintColor = (NSColor(hex: resolvedHex) ?? NSColor(hex: sidebarTintHex) ?? .black).withAlphaComponent(sidebarTintOpacity)
-        let useLiquidGlass = materialOption?.usesLiquidGlass ?? false
-        let useWindowLevelGlass = useLiquidGlass && blendingMode == .behindWindow
+        let sidebarGlassOverride = ProgramaGlassSettings.startupOverride(for: .sidebar)
+        let useLiquidGlass = sidebarGlassOverride ?? materialOption?.usesLiquidGlass ?? false
+        let resolvedMaterial: NSVisualEffectView.Material? = sidebarGlassOverride == true
+            ? .underWindowBackground
+            : materialOption?.material
+        // A forced sidebar sample must stay local to the sidebar so the window and sidebar
+        // performance gates remain independent even if the saved blend mode is behindWindow.
+        let useWindowLevelGlass = sidebarGlassOverride == nil && useLiquidGlass && blendingMode == .behindWindow
 
         return AnyView(
             ZStack {
-                if let material = materialOption?.material {
+                if let material = resolvedMaterial {
                     // When using liquidGlass + behindWindow, window handles glass + tint
                     // Sidebar is fully transparent
                     if !useWindowLevelGlass {

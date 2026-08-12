@@ -36,6 +36,7 @@
 			NRSP0068A1B2C3D4E5F60719 /* WindowTerminalHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0067A1B2C3D4E5F60719 /* WindowTerminalHostView.swift */; };
 			NRSP0066A1B2C3D4E5F60719 /* WindowOverlayControllers.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0065A1B2C3D4E5F60719 /* WindowOverlayControllers.swift */; };
 			NRSP0064A1B2C3D4E5F60719 /* WindowChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0063A1B2C3D4E5F60719 /* WindowChrome.swift */; };
+			GLASS00000000000000000002 /* ProgramaGlassSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLASS00000000000000000001 /* ProgramaGlassSettings.swift */; };
 			NRSP0062A1B2C3D4E5F60719 /* WindowBrowserSlotView.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0061A1B2C3D4E5F60719 /* WindowBrowserSlotView.swift */; };
 			NRSP0060A1B2C3D4E5F60719 /* VerticalTabsSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0059A1B2C3D4E5F60719 /* VerticalTabsSidebar.swift */; };
 			NRSP0058A1B2C3D4E5F60719 /* V2CommandCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0057A1B2C3D4E5F60719 /* V2CommandCatalog.swift */; };
@@ -454,6 +455,7 @@
 			NRSP0067A1B2C3D4E5F60719 /* WindowTerminalHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowTerminalHostView.swift; sourceTree = "<group>"; };
 			NRSP0065A1B2C3D4E5F60719 /* WindowOverlayControllers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowOverlayControllers.swift; sourceTree = "<group>"; };
 			NRSP0063A1B2C3D4E5F60719 /* WindowChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowChrome.swift; sourceTree = "<group>"; };
+			GLASS00000000000000000001 /* ProgramaGlassSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramaGlassSettings.swift; sourceTree = "<group>"; };
 			NRSP0061A1B2C3D4E5F60719 /* WindowBrowserSlotView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBrowserSlotView.swift; sourceTree = "<group>"; };
 			NRSP0059A1B2C3D4E5F60719 /* VerticalTabsSidebar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerticalTabsSidebar.swift; sourceTree = "<group>"; };
 			NRSP0057A1B2C3D4E5F60719 /* V2CommandCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = V2CommandCatalog.swift; sourceTree = "<group>"; };
@@ -919,6 +921,7 @@
 					NRSP0067A1B2C3D4E5F60719 /* WindowTerminalHostView.swift */,
 					NRSP0065A1B2C3D4E5F60719 /* WindowOverlayControllers.swift */,
 					NRSP0063A1B2C3D4E5F60719 /* WindowChrome.swift */,
+					GLASS00000000000000000001 /* ProgramaGlassSettings.swift */,
 					NRSP0061A1B2C3D4E5F60719 /* WindowBrowserSlotView.swift */,
 					NRSP0059A1B2C3D4E5F60719 /* VerticalTabsSidebar.swift */,
 					NRSP0057A1B2C3D4E5F60719 /* V2CommandCatalog.swift */,
@@ -1475,6 +1478,7 @@
 					NRSP0068A1B2C3D4E5F60719 /* WindowTerminalHostView.swift in Sources */,
 					NRSP0066A1B2C3D4E5F60719 /* WindowOverlayControllers.swift in Sources */,
 					NRSP0064A1B2C3D4E5F60719 /* WindowChrome.swift in Sources */,
+					GLASS00000000000000000002 /* ProgramaGlassSettings.swift in Sources */,
 					NRSP0062A1B2C3D4E5F60719 /* WindowBrowserSlotView.swift in Sources */,
 					NRSP0060A1B2C3D4E5F60719 /* VerticalTabsSidebar.swift in Sources */,
 					NRSP0058A1B2C3D4E5F60719 /* V2CommandCatalog.swift in Sources */,
