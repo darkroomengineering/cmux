@@ -9,18 +9,6 @@ import Security
 #endif
 
 extension ProgramaCLI {
-    private static let programaThemeOverrideBundleIdentifier = "com.darkroom.programa"
-    private static let programaThemesBlockStart = "# programa themes start"
-    private static let programaThemesBlockEnd = "# programa themes end"
-    private static let programaThemesReloadNotificationName = "com.darkroom.programa.themes.reload-config"
-
-    private struct ThemeSelection {
-        let rawValue: String?
-        let light: String?
-        let dark: String?
-        let sourcePath: String?
-    }
-
     private struct ThemeReloadStatus {
         let requested: Bool
         let targetBundleIdentifier: String
@@ -42,10 +30,12 @@ extension ProgramaCLI {
             throw CLIError(message: "Bundled Ghostty theme picker helper not found")
         }
 
-        let selection = currentThemeSelection()
+        let themeStore = TerminalThemeStore.live()
+        let selection = themeStore.currentSelection()
         var environment = ProcessInfo.processInfo.environment
-        environment["PROGRAMA_THEME_PICKER_CONFIG"] = try programaThemeOverrideConfigURL().path
-        environment["PROGRAMA_THEME_PICKER_BUNDLE_ID"] = currentProgramaAppBundleIdentifier() ?? Self.programaThemeOverrideBundleIdentifier
+        environment["PROGRAMA_THEME_PICKER_CONFIG"] = themeStore.managedConfigURL.path
+        environment["PROGRAMA_THEME_PICKER_BUNDLE_ID"] = currentProgramaAppBundleIdentifier()
+            ?? TerminalThemeStore.overrideBundleIdentifier
         environment["PROGRAMA_THEME_PICKER_TARGET"] = defaultThemePickerTargetMode(current: selection).rawValue
         environment["PROGRAMA_THEME_PICKER_COLOR_SCHEME"] = defaultAppearancePrefersDarkThemes() ? "dark" : "light"
         if let light = selection.light {
@@ -65,7 +55,7 @@ extension ProgramaCLI {
         )
     }
 
-    private func defaultThemePickerTargetMode(current: ThemeSelection) -> ThemePickerTargetMode {
+    private func defaultThemePickerTargetMode(current: TerminalThemeSelection) -> ThemePickerTargetMode {
         if let light = current.light,
            let dark = current.dark,
            light.caseInsensitiveCompare(dark) == .orderedSame {
@@ -221,8 +211,9 @@ extension ProgramaCLI {
 
     private func printThemesList(jsonOutput: Bool) throws {
         let themes = availableThemeNames()
-        let current = currentThemeSelection()
-        let configPath = try programaThemeOverrideConfigURL().path
+        let themeStore = TerminalThemeStore.live()
+        let current = themeStore.currentSelection()
+        let configPath = themeStore.managedConfigURL.path
 
         if jsonOutput {
             let currentPayload: [String: Any] = [
@@ -302,11 +293,11 @@ extension ProgramaCLI {
             darkTheme = try darkOpt.map { try validatedThemeName($0, availableThemes: availableThemes) } ?? current.dark
         }
 
-        guard let rawThemeValue = encodedThemeValue(light: lightTheme, dark: darkTheme) else {
+        guard let rawThemeValue = TerminalThemeStore.encodedThemeValue(light: lightTheme, dark: darkTheme) else {
             throw CLIError(message: "themes set requires at least one theme")
         }
 
-        let configURL = try writeManagedThemeOverride(rawThemeValue: rawThemeValue)
+        let configURL = try TerminalThemeStore.live().set(rawThemeValue: rawThemeValue).configURL
         let reloadStatus = reloadThemesIfPossible()
 
         if jsonOutput {
@@ -329,7 +320,7 @@ extension ProgramaCLI {
     }
 
     private func runThemesClear(jsonOutput: Bool) throws {
-        let configURL = try clearManagedThemeOverride()
+        let configURL = try TerminalThemeStore.live().clear().configURL
         let reloadStatus = reloadThemesIfPossible()
 
         if jsonOutput {
@@ -347,82 +338,8 @@ extension ProgramaCLI {
         print("OK cleared config=\(configURL.path) reload=requested")
     }
 
-    private func currentThemeSelection() -> ThemeSelection {
-        var rawValue: String?
-        var sourcePath: String?
-
-        for url in themeConfigSearchURLs() {
-            guard let contents = try? String(contentsOf: url, encoding: .utf8),
-                  let nextValue = lastThemeDirective(in: contents) else {
-                continue
-            }
-            rawValue = nextValue
-            sourcePath = url.path
-        }
-
-        return parseThemeSelection(rawValue: rawValue, sourcePath: sourcePath)
-    }
-
-    private func parseThemeSelection(rawValue: String?, sourcePath: String?) -> ThemeSelection {
-        guard let rawValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines), !rawValue.isEmpty else {
-            return ThemeSelection(rawValue: nil, light: nil, dark: nil, sourcePath: sourcePath)
-        }
-
-        var fallbackTheme: String?
-        var lightTheme: String?
-        var darkTheme: String?
-
-        for token in rawValue.split(separator: ",").map(String.init) {
-            let entry = token.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !entry.isEmpty else { continue }
-
-            let parts = entry.split(separator: ":", maxSplits: 1).map(String.init)
-            if parts.count != 2 {
-                if fallbackTheme == nil {
-                    fallbackTheme = entry
-                }
-                continue
-            }
-
-            let key = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !value.isEmpty else { continue }
-
-            switch key {
-            case "light":
-                if lightTheme == nil {
-                    lightTheme = value
-                }
-            case "dark":
-                if darkTheme == nil {
-                    darkTheme = value
-                }
-            default:
-                if fallbackTheme == nil {
-                    fallbackTheme = value
-                }
-            }
-        }
-
-        let resolvedLight = lightTheme ?? fallbackTheme ?? darkTheme
-        let resolvedDark = darkTheme ?? fallbackTheme ?? lightTheme
-        return ThemeSelection(rawValue: rawValue, light: resolvedLight, dark: resolvedDark, sourcePath: sourcePath)
-    }
-
-    private func encodedThemeValue(light: String?, dark: String?) -> String? {
-        let normalizedLight = light?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedDark = dark?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        switch (normalizedLight?.isEmpty == false ? normalizedLight : nil, normalizedDark?.isEmpty == false ? normalizedDark : nil) {
-        case let (lightTheme?, darkTheme?):
-            return "light:\(lightTheme),dark:\(darkTheme)"
-        case let (lightTheme?, nil):
-            return "light:\(lightTheme)"
-        case let (nil, darkTheme?):
-            return "dark:\(darkTheme)"
-        case (nil, nil):
-            return nil
-        }
+    private func currentThemeSelection() -> TerminalThemeSelection {
+        TerminalThemeStore.live().currentSelection()
     }
 
     private func availableThemeNames() -> [String] {
@@ -549,138 +466,10 @@ extension ProgramaCLI {
         throw CLIError(message: "Unknown theme '\(trimmed)'. Run 'programa themes' to list available themes.")
     }
 
-    private func themeConfigSearchURLs() -> [URL] {
-        let rawPaths = [
-            "~/.config/ghostty/config",
-            "~/.config/ghostty/config.ghostty",
-            "~/Library/Application Support/com.mitchellh.ghostty/config",
-            "~/Library/Application Support/com.mitchellh.ghostty/config.ghostty",
-            "~/Library/Application Support/\(Self.programaThemeOverrideBundleIdentifier)/config",
-            "~/Library/Application Support/\(Self.programaThemeOverrideBundleIdentifier)/config.ghostty",
-        ]
-
-        return rawPaths.map {
-            URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath, isDirectory: false)
-        }
-    }
-
-    private func lastThemeDirective(in contents: String) -> String? {
-        var lastValue: String?
-
-        for line in contents.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || trimmed.hasPrefix("#") {
-                continue
-            }
-
-            let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
-            guard parts.count == 2 else { continue }
-            guard parts[0].trimmingCharacters(in: .whitespacesAndNewlines) == "theme" else { continue }
-
-            let value = parts[1]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-            if !value.isEmpty {
-                lastValue = value
-            }
-        }
-
-        return lastValue
-    }
-
-    private func programaThemeOverrideConfigURL() throws -> URL {
-        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            throw CLIError(message: "Unable to resolve Application Support directory")
-        }
-        return appSupport
-            .appendingPathComponent(Self.programaThemeOverrideBundleIdentifier, isDirectory: true)
-            .appendingPathComponent("config.ghostty", isDirectory: false)
-    }
-
-    private func writeManagedThemeOverride(rawThemeValue: String) throws -> URL {
-        let fileManager = FileManager.default
-        let configURL = try programaThemeOverrideConfigURL()
-        let directoryURL = configURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true, attributes: nil)
-
-        let existingContents = try readOptionalThemeOverrideContents(at: configURL) ?? ""
-        let strippedContents = removingManagedThemeOverride(from: existingContents)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let block = """
-        \(Self.programaThemesBlockStart)
-        theme = \(rawThemeValue)
-        \(Self.programaThemesBlockEnd)
-        """
-
-        let nextContents = strippedContents.isEmpty ? "\(block)\n" : "\(strippedContents)\n\n\(block)\n"
-        try nextContents.write(to: configURL, atomically: true, encoding: .utf8)
-        return configURL
-    }
-
-    private func clearManagedThemeOverride() throws -> URL {
-        let fileManager = FileManager.default
-        let configURL = try programaThemeOverrideConfigURL()
-        guard let existingContents = try readOptionalThemeOverrideContents(at: configURL) else {
-            return configURL
-        }
-
-        let strippedContents = removingManagedThemeOverride(from: existingContents)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if strippedContents.isEmpty {
-            do {
-                try fileManager.removeItem(at: configURL)
-            } catch {
-                guard !isThemeOverrideFileNotFoundError(error) else {
-                    return configURL
-                }
-                throw error
-            }
-        } else {
-            try strippedContents.appending("\n").write(to: configURL, atomically: true, encoding: .utf8)
-        }
-
-        return configURL
-    }
-
-    private func readOptionalThemeOverrideContents(at url: URL) throws -> String? {
-        do {
-            return try String(contentsOf: url, encoding: .utf8)
-        } catch {
-            guard isThemeOverrideFileNotFoundError(error) else {
-                throw error
-            }
-            return nil
-        }
-    }
-
-    private func isThemeOverrideFileNotFoundError(_ error: Error) -> Bool {
-        let nsError = error as NSError
-        if nsError.domain == NSCocoaErrorDomain {
-            return nsError.code == NSFileNoSuchFileError || nsError.code == NSFileReadNoSuchFileError
-        }
-        if nsError.domain == NSPOSIXErrorDomain {
-            return nsError.code == ENOENT
-        }
-        return false
-    }
-
-    private func removingManagedThemeOverride(from contents: String) -> String {
-        let pattern = #"(?ms)\n?# programa themes start\n.*?\n# programa themes end\n?"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return contents
-        }
-        let fullRange = NSRange(contents.startIndex..<contents.endIndex, in: contents)
-        return regex.stringByReplacingMatches(in: contents, options: [], range: fullRange, withTemplate: "")
-    }
-
     private func reloadThemesIfPossible() -> ThemeReloadStatus {
-        let bundleIdentifier = currentProgramaAppBundleIdentifier() ?? Self.programaThemeOverrideBundleIdentifier
-        DistributedNotificationCenter.default().post(
-            name: Notification.Name(Self.programaThemesReloadNotificationName),
-            object: nil,
-            userInfo: ["bundleIdentifier": bundleIdentifier]
-        )
+        let bundleIdentifier = currentProgramaAppBundleIdentifier()
+            ?? TerminalThemeStore.overrideBundleIdentifier
+        TerminalThemeStore.requestReload(targetBundleIdentifier: bundleIdentifier)
         return ThemeReloadStatus(requested: true, targetBundleIdentifier: bundleIdentifier)
     }
 

@@ -27,6 +27,7 @@ final class ProgramaSettingsFileStore {
     private static let backupsDefaultsKey = "programa.settingsFile.backups.v1"
     fileprivate static let trustedDirectoriesBackupIdentifier = "customCommands.trustedDirectories"
     fileprivate static let socketPasswordBackupIdentifier = "automation.socketPassword"
+    fileprivate static let terminalThemeBackupIdentifier = "app.terminalTheme"
 
     static var defaultPrimaryPath: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -57,6 +58,8 @@ final class ProgramaSettingsFileStore {
     private let fallbackPath: String?
     private let fileManager: FileManager
     private let notificationCenter: NotificationCenter
+    private let terminalThemeStore: TerminalThemeStore
+    private let terminalThemeReloadHandler: () -> Void
     private let stateLock = NSLock()
 
     private var primaryWatcher: ShortcutSettingsFileWatcher?
@@ -76,12 +79,21 @@ final class ProgramaSettingsFileStore {
         fallbackPath: String? = ProgramaSettingsFileStore.defaultFallbackPath,
         fileManager: FileManager = .default,
         notificationCenter: NotificationCenter = .default,
+        terminalThemeStore: TerminalThemeStore = .live(),
+        terminalThemeReloadHandler: @escaping () -> Void = {
+            TerminalThemeStore.requestReload(
+                targetBundleIdentifier: Bundle.main.bundleIdentifier
+                    ?? TerminalThemeStore.overrideBundleIdentifier
+            )
+        },
         startWatching: Bool = true
     ) {
         self.primaryPath = primaryPath
         self.fallbackPath = fallbackPath
         self.fileManager = fileManager
         self.notificationCenter = notificationCenter
+        self.terminalThemeStore = terminalThemeStore
+        self.terminalThemeReloadHandler = terminalThemeReloadHandler
 
         bootstrapPrimaryTemplateIfNeeded()
         reload()
@@ -155,6 +167,10 @@ final class ProgramaSettingsFileStore {
 
     func isManagedByFile(_ action: KeyboardShortcutSettings.Action) -> Bool {
         synchronized { shortcutsByAction[action] != nil }
+    }
+
+    func isTerminalThemeManagedByFile() -> Bool {
+        synchronized { activeManagedCustomSettings.terminalTheme != nil }
     }
 
     func settingsFileURLForEditing() -> URL {
@@ -351,6 +367,49 @@ final class ProgramaSettingsFileStore {
         if let value = jsonBool(section["commandPaletteSearchesAllSurfaces"]) {
             snapshot.managedUserDefaults[CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey] = .bool(value)
         }
+        if let rawTerminalTheme = section["terminalTheme"] {
+            if rawTerminalTheme is NSNull {
+                snapshot.managedCustomSettings.terminalTheme = ManagedTerminalTheme(light: nil, dark: nil)
+            } else if let terminalTheme = rawTerminalTheme as? [String: Any] {
+                let light = parseTerminalThemeName(
+                    terminalTheme["light"],
+                    path: "app.terminalTheme.light",
+                    sourcePath: sourcePath
+                )
+                let dark = parseTerminalThemeName(
+                    terminalTheme["dark"],
+                    path: "app.terminalTheme.dark",
+                    sourcePath: sourcePath
+                )
+                if light.isValid && dark.isValid {
+                    snapshot.managedCustomSettings.terminalTheme = ManagedTerminalTheme(
+                        light: light.value,
+                        dark: dark.value
+                    )
+                }
+            } else {
+                logInvalid("app.terminalTheme", sourcePath: sourcePath)
+            }
+        }
+    }
+
+    private func parseTerminalThemeName(
+        _ rawValue: Any?,
+        path: String,
+        sourcePath: String
+    ) -> (isValid: Bool, value: String?) {
+        guard let rawValue else { return (true, nil) }
+        if rawValue is NSNull { return (true, nil) }
+        guard let string = rawValue as? String else {
+            logInvalid(path, sourcePath: sourcePath)
+            return (false, nil)
+        }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            logInvalid(path, sourcePath: sourcePath)
+            return (false, nil)
+        }
+        return (true, trimmed)
     }
 
     private func parseNotificationsSection(
@@ -898,6 +957,10 @@ final class ProgramaSettingsFileStore {
                backups[Self.socketPasswordBackupIdentifier] == nil {
                 backups[Self.socketPasswordBackupIdentifier] = currentSocketPasswordBackupValue()
             }
+            if snapshot.managedCustomSettings.terminalTheme != nil,
+               backups[Self.terminalThemeBackupIdentifier] == nil {
+                backups[Self.terminalThemeBackupIdentifier] = currentTerminalThemeBackupValue()
+            }
         }
 
         for identifier in currentManagedIdentifiers.subtracting(nextManagedIdentifiers) {
@@ -936,6 +999,10 @@ final class ProgramaSettingsFileStore {
                 }
             }
         }
+
+        if let terminalTheme = settings.terminalTheme {
+            applyTerminalTheme(light: terminalTheme.light, dark: terminalTheme.dark)
+        }
     }
 
     private func restoreBackup(_ backup: BackupValue, for identifier: String) {
@@ -954,6 +1021,26 @@ final class ProgramaSettingsFileStore {
                 try? SocketControlPasswordStore.clearPassword()
             default:
                 break
+            }
+        case Self.terminalThemeBackupIdentifier:
+            do {
+                let mutation: TerminalThemeMutation
+                switch backup {
+                case .string(let rawValue):
+                    mutation = try terminalThemeStore.set(rawThemeValue: rawValue)
+                case .absent:
+                    mutation = try terminalThemeStore.clear()
+                default:
+                    return
+                }
+                if mutation.didChange {
+                    terminalThemeReloadHandler()
+                }
+            } catch {
+                NSLog(
+                    "[ProgramaSettingsFileStore] failed to restore terminal theme: %@",
+                    String(describing: error)
+                )
             }
         default:
             restoreUserDefaultsBackup(backup, for: identifier)
@@ -997,6 +1084,27 @@ final class ProgramaSettingsFileStore {
             return .absent
         }
         return .string(current)
+    }
+
+    private func currentTerminalThemeBackupValue() -> BackupValue {
+        guard let rawValue = terminalThemeStore.managedRawThemeValue() else {
+            return .absent
+        }
+        return .string(rawValue)
+    }
+
+    private func applyTerminalTheme(light: String?, dark: String?) {
+        do {
+            let mutation = try terminalThemeStore.set(light: light, dark: dark)
+            if mutation.didChange {
+                terminalThemeReloadHandler()
+            }
+        } catch {
+            NSLog(
+                "[ProgramaSettingsFileStore] failed to apply terminal theme: %@",
+                String(describing: error)
+            )
+        }
     }
 
     private func applyManagedUserDefaultsValue(_ value: ManagedSettingsValue, for defaultsKey: String) {
@@ -1199,6 +1307,10 @@ final class ProgramaSettingsFileStore {
             [
                 "app": [
                     "appearance": AppearanceSettings.defaultMode.rawValue,
+                    "terminalTheme": [
+                        "light": NSNull(),
+                        "dark": NSNull(),
+                    ],
                     "newWorkspacePlacement": WorkspacePlacementSettings.defaultPlacement.rawValue,
                     "minimalMode": WorkspacePresentationModeSettings.defaultMode == .minimal,
                     "preferredEditor": "",
@@ -1326,12 +1438,18 @@ private enum ManagedStringOverride: Equatable {
     case clear
 }
 
+private struct ManagedTerminalTheme: Equatable {
+    let light: String?
+    let dark: String?
+}
+
 private struct ManagedCustomSettings: Equatable {
     var trustedDirectories: [String]?
     var socketPassword: ManagedStringOverride?
+    var terminalTheme: ManagedTerminalTheme?
 
     var isEmpty: Bool {
-        trustedDirectories == nil && socketPassword == nil
+        trustedDirectories == nil && socketPassword == nil && terminalTheme == nil
     }
 
     var managedIdentifiers: Set<String> {
@@ -1341,6 +1459,9 @@ private struct ManagedCustomSettings: Equatable {
         }
         if socketPassword != nil {
             identifiers.insert(ProgramaSettingsFileStore.socketPasswordBackupIdentifier)
+        }
+        if terminalTheme != nil {
+            identifiers.insert(ProgramaSettingsFileStore.terminalThemeBackupIdentifier)
         }
         return identifiers
     }

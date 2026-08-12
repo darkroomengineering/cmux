@@ -30,6 +30,35 @@
           "default": "system",
           "description": "App appearance mode."
         },
+        "terminalTheme": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "light": {
+                  "oneOf": [
+                    { "type": "string", "minLength": 1 },
+                    { "type": "null" }
+                  ],
+                  "default": null,
+                  "description": "Ghostty theme used with Programa's light appearance."
+                },
+                "dark": {
+                  "oneOf": [
+                    { "type": "string", "minLength": 1 },
+                    { "type": "null" }
+                  ],
+                  "default": null,
+                  "description": "Ghostty theme used with Programa's dark appearance."
+                }
+              }
+            },
+            { "type": "null" }
+          ],
+          "default": null,
+          "description": "Terminal themes from Settings > Appearance. Use null, or null for both variants, to remove Programa's managed theme override and inherit Ghostty configuration."
+        },
         "newWorkspacePlacement": {
           "type": "string",
           "enum": ["top", "afterCurrent", "end"],

@@ -28,6 +28,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - Idle CPU use is lower: moving the mouse and checking git status for workspaces you're not looking at no longer do unnecessary background work.
 
 ### Added
+- Terminal themes are now selectable in Settings with separate light and dark choices. The UI, `programa themes`, and `app.terminalTheme` in `settings.json` share one managed override and apply changes to open terminals without relaunching.
 - A local diagnostics log at `~/Library/Logs/Programa/diagnostics.log` now records connection problems (like CLI socket errors) so issues can be diagnosed after the fact. It's a plain file on your machine; nothing in it is ever sent anywhere.
 
 ## [0.4.0] - 2026-08-03

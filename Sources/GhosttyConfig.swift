@@ -556,6 +556,58 @@ struct GhosttyConfig {
         return paths
     }
 
+    /// Enumerates the theme directories derived from the same path resolver used to load a
+    /// selected theme. This keeps Settings discovery aligned with actual Ghostty resolution.
+    static func availableThemeNames(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        bundleResourceURL: URL? = Bundle.main.resourceURL,
+        fileManager: FileManager = .default
+    ) -> [String] {
+        let probeName = ".programa-theme-catalog-probe"
+        let directories = themeSearchPaths(
+            forThemeName: probeName,
+            environment: environment,
+            bundleResourceURL: bundleResourceURL
+        ).map {
+            URL(fileURLWithPath: $0, isDirectory: false).deletingLastPathComponent()
+        }
+
+        var seenDirectories: Set<String> = []
+        var seenThemeNames: Set<String> = []
+        var themeNames: [String] = []
+
+        for directory in directories {
+            let standardizedDirectory = directory.standardizedFileURL
+            guard seenDirectories.insert(standardizedDirectory.path).inserted,
+                  let entries = try? fileManager.contentsOfDirectory(
+                    at: standardizedDirectory,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                  ) else {
+                continue
+            }
+
+            for entry in entries {
+                let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+                guard values?.isDirectory != true,
+                      values?.isRegularFile == true || values?.isRegularFile == nil else {
+                    continue
+                }
+
+                let name = entry.lastPathComponent
+                let foldedName = name.folding(
+                    options: [.caseInsensitive, .diacriticInsensitive],
+                    locale: .current
+                )
+                if seenThemeNames.insert(foldedName).inserted {
+                    themeNames.append(name)
+                }
+            }
+        }
+
+        return themeNames.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
     private static func readConfigFile(at path: String) -> String? {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: path) else { return nil }
