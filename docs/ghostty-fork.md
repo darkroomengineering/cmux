@@ -12,8 +12,14 @@ When we change the fork, update this document and the parent submodule SHA.
 
 ## Current fork changes
 
-Fork rebased onto upstream `main` at `3509ccf78` (`v1.3.1-457-g3509ccf78`) on March 30, 2026.
-Current Programa pinned fork head: `08bac45e9` (occluded-render throttle, see section 8).
+Current Programa pinned fork head: `96316fc50`, on fork `main`. It contains
+the PTY tee, PTY/process accessors, surface revival, occluded-render throttle,
+renderer realization API, bounded screen export, precision scrolling, and the
+temporary-directory handle fix. The parent previously pinned `6772a8884`
+directly on the temporary-directory feature branch. Although the historical
+Programa commits remained reachable through retain-ancestry merges, their
+accessor and revival changes were absent from the resulting fork-main tree.
+`96316fc50` reconciles those required APIs onto the actual fork `main` tree.
 
 The section 8 occluded-render skip (`c25020f99`, branch
 `perf/occluded-update-frame-skip`, retain-ancestry merge `363d56e5d` on fork
@@ -146,7 +152,37 @@ tend to conflict together during rebases.
   - `drainMailbox`'s `.visible` false→true transition still calls `renderer.markDirty()` to force one full rebuild at un-occlude, unchanged from the original skip implementation. Terminal-side dirty tracking is level-triggered (bits accumulate until consumed; dimensions/viewport compared directly), so this remains correctness-optional but cheap insurance against renderer-side cache staleness.
   - Merge gate for this fork branch is 3 consecutive green CI runs before it lands on fork `main` — the failure mode that motivated the throttle (CI hangs on an occluded virtual display) is probabilistic, not deterministic.
 
-The fork branch HEAD is now the section 8 occluded-render throttle commit.
+### 9) Offscreen renderer realization API
+
+- Commits:
+  - `858e257f0` (add `ghostty_surface_set_renderer_realized`)
+  - `d39ba5d84` (return the renderer-mailbox enqueue result)
+  - `5697db813` (make the enqueue non-blocking)
+- Files:
+  - `include/ghostty.h`
+  - `src/apprt/embedded.zig`
+  - `src/renderer/Thread.zig`
+  - `src/renderer/message.zig`
+- Summary:
+  - Lets the embedder release an occluded surface's Metal swap chain and IOSurfaces while leaving its PTY, terminal state, and scrollback alive.
+  - Recreates the renderer before the surface is shown again.
+  - Uses a non-blocking mailbox push and reports whether it was enqueued, so Programa never stalls the main actor or advances its mirror state after a dropped message.
+
+### 10) Programa session introspection and revival APIs
+
+- Commit: `96316fc50` (reconcile Programa session APIs on fork main)
+- Files:
+  - `include/ghostty.h`
+  - `src/Surface.zig`
+  - `src/apprt/embedded.zig`
+  - `src/termio/Exec.zig`
+- Summary:
+  - Restores read-only child PID, PTY path, and PTY master-fd accessors used by Programa's durable session machinery.
+  - Restores surface revival through an existing PTY master fd and running child PID without taking ownership of or signaling that process.
+  - Programa now uses the fork's newer `ghostty_surface_set_pty_tee_cb` callback for its session WAL. That callback runs before VT parsing and supersedes the older Programa-only output-tap API, so the obsolete output-tap export was intentionally not restored.
+  - Reconciles the reachable historical feature lineage with the concrete fork-main file tree, which is what consumers and release artifacts actually build.
+
+The fork branch head is now `96316fc50` on fork `main`.
 
 ## Upstreamed fork changes
 
@@ -186,9 +222,13 @@ These files change frequently upstream; be careful when rebasing the fork:
   - Upstream's new wasm/libghostty work touched the same build graph. Keep the Programa-only `cli-helper`
     step wired in without regressing the upstream `lib-vt` or wasm build paths.
 
-- `include/ghostty.h`, `src/Surface.zig`, `src/apprt/embedded.zig`
+- `include/ghostty.h`, `src/Surface.zig`, `src/apprt/embedded.zig`, `src/termio/Exec.zig`
   - Upstream removed Programa-used selection exports. Preserve the re-exported
     `ghostty_surface_select_cursor_cell` and `ghostty_surface_clear_selection` functions.
+  - Preserve the child/PTY accessors and revival configuration described in section 10.
+    If upstream changes subprocess ownership or watcher semantics, revived processes must
+    remain non-owned: Programa may observe their exit but Ghostty must never signal them.
+  - Prefer the current PTY tee callback over reintroducing the retired output-tap API.
 
 - `src/renderer/generic.zig`
   - The `macos-background-from-layer` check sits next to the glass-style check in `updateFrame`.

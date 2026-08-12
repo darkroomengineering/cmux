@@ -1016,6 +1016,11 @@ final class GhosttySurfaceScrollView: NSView {
 
     func attachSurface(_ terminalSurface: TerminalSurface) {
         surfaceView.attachSurface(terminalSurface)
+        // A visibility update can arrive before the runtime surface is attached.
+        // Re-apply the current effective state so the renderer mirror and Ghostty
+        // occlusion state always start in sync with this host view.
+        lastRequestedPortalOcclusionVisible = nil
+        applyEffectiveOcclusion()
     }
 
     func setFocusHandler(_ handler: (() -> Void)?) {
@@ -1731,7 +1736,12 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
         guard lastRequestedPortalOcclusionVisible != effective else { return }
         lastRequestedPortalOcclusionVisible = effective
-        surfaceView.terminalSurface?.setOcclusion(effective)
+        let terminalSurface = surfaceView.terminalSurface
+        terminalSurface?.setRendererPortalVisible(effective)
+        if effective {
+            terminalSurface?.realizeRenderer()
+        }
+        terminalSurface?.setOcclusion(effective)
 #if DEBUG
         dlog(
             "terminal.occlusion surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +

@@ -12,6 +12,7 @@
 		NRPA00005 /* SettingsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRPA00006 /* SettingsModels.swift */; };
 		NRPA00007 /* SettingsComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRPA00008 /* SettingsComponents.swift */; };
 		NRPA00009 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRPA00010 /* SettingsView.swift */; };
+		REND0002A1B2C3D4E5F60719 /* RendererRealization.swift in Sources */ = {isa = PBXBuildFile; fileRef = REND0001A1B2C3D4E5F60719 /* RendererRealization.swift */; };
 			A5FF0007 /* SettingDefinition.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5FF0017 /* SettingDefinition.swift */; };
 			A5001002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001012 /* ContentView.swift */; };
 			NRSP0084A1B2C3D4E5F60719 /* WorkspaceSidebarModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0083A1B2C3D4E5F60719 /* WorkspaceSidebarModels.swift */; };
@@ -432,6 +433,7 @@
 		NRPA00006 /* SettingsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsModels.swift; sourceTree = "<group>"; };
 		NRPA00008 /* SettingsComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsComponents.swift; sourceTree = "<group>"; };
 		NRPA00010 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		REND0001A1B2C3D4E5F60719 /* RendererRealization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RendererRealization.swift; sourceTree = "<group>"; };
 			A5FF0017 /* SettingDefinition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingDefinition.swift; sourceTree = "<group>"; };
 			A5001012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 			NRSP0083A1B2C3D4E5F60719 /* WorkspaceSidebarModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSidebarModels.swift; sourceTree = "<group>"; };
@@ -901,6 +903,7 @@
 					NRPA00006 /* SettingsModels.swift */,
 					NRPA00008 /* SettingsComponents.swift */,
 					NRPA00010 /* SettingsView.swift */,
+					REND0001A1B2C3D4E5F60719 /* RendererRealization.swift */,
 					A5FF0017 /* SettingDefinition.swift */,
 					A5001012 /* ContentView.swift */,
 					B10A1CE5 /* RenderableSystemSymbol.swift */,
@@ -1459,6 +1462,7 @@
 					NRPA00005 /* SettingsModels.swift in Sources */,
 					NRPA00007 /* SettingsComponents.swift in Sources */,
 					NRPA00009 /* SettingsView.swift in Sources */,
+					REND0002A1B2C3D4E5F60719 /* RendererRealization.swift in Sources */,
 					A5FF0007 /* SettingDefinition.swift in Sources */,
 					A5001002 /* ContentView.swift in Sources */,
 					B10A1CE6 /* RenderableSystemSymbol.swift in Sources */,

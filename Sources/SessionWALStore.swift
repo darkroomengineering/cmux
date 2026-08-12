@@ -5,19 +5,19 @@ import Bonsplit
 /// Per-surface durable PTY output WAL + fact file (issue #181, slice 1).
 ///
 /// This file used to be the feat/session-wal-spike byte-counting spike
-/// (`SessionOutputTapSpike`) that proved tapping PTY output via
-/// `ghostty_surface_set_output_tap` has no measurable typing-latency cost.
+/// (`SessionOutputTapSpike`) that proved tapping PTY output via Ghostty's
+/// PTY tee has no measurable typing-latency cost.
 /// It now replaces that counter with a real writer. The filename is kept
 /// as-is (not renamed to SessionWAL.swift) because this change was made by
 /// an agent without filesystem move/delete tools; the type names below are
 /// renamed. A follow-up `git mv` + pbxproj path/name tweak is cosmetic only.
 ///
-/// ## Threading path, tap callback to WAL
-/// 1. `ghostty_surface_set_output_tap`'s C callback fires on ghostty's
-///    io-reader thread, under the surface's renderer_state mutex. Per
-///    `ghostty/include/ghostty.h`, it must be cheap: copy bytes out, no
-///    allocation, no calls back into `ghostty_surface_*`, no waiting.
-/// 2. The callback (`sessionWALOutputTapCallback`) does exactly one thing:
+/// ## Threading path, tee callback to WAL
+/// 1. `ghostty_surface_set_pty_tee_cb`'s C callback fires on ghostty's
+///    io-reader thread before the VT parser sees the bytes. It must be cheap:
+///    copy bytes out, no allocation, no calls back into
+///    `ghostty_surface_*`, no waiting.
+/// 2. The callback (`sessionWALPTYTeeCallback`) does exactly one thing:
 ///    `SessionWALRingBuffer.append` — a bounded memcpy into a fixed-capacity
 ///    buffer preallocated at registration time (never in the callback).
 /// 3. A single shared background queue (`SessionWALStore.writeQueue`, a
@@ -61,7 +61,7 @@ import Bonsplit
 /// retry if the child has not spawned yet, then pushed into this store as
 /// plain values via `updateSurfaceIdentity` -- `SessionWALStore` itself
 /// never retains a raw `ghostty_surface_t` past the synchronous call that
-/// registers the tap, so there is nothing to dereference after a surface
+/// registers the tee, so there is nothing to dereference after a surface
 /// tears down. Either field can legitimately stay nil for the lifetime of
 /// a session whose child never spawns. Issue #182 is expected to extend
 /// this schema with richer heartbeat fields; keep additions optional.
@@ -148,7 +148,7 @@ import Bonsplit
 ///   further back than the current snapshot references, not anything from
 ///   the run that is currently restoring.
 enum SessionWALPolicy {
-    /// Fixed capacity of the in-memory ring buffer the tap callback writes
+    /// Fixed capacity of the in-memory ring buffer the tee callback writes
     /// into. Large enough to absorb a burst between 100ms drains for normal
     /// interactive/agent output; a sustained flood faster than this drops
     /// its oldest interior bytes (documented tradeoff, never blocks).
@@ -182,7 +182,7 @@ enum SessionWALPolicy {
 }
 
 /// Fixed-size double-buffered circular byte buffer. `append` is called only
-/// from ghostty's io-reader thread (the tap callback); `drain` is called only
+/// from ghostty's io-reader thread (the tee callback); `drain` is called only
 /// from `SessionWALStore.writeQueue`.
 final class SessionWALRingBuffer {
     private let capacity: Int
@@ -770,7 +770,7 @@ enum SessionWALCore {
     }
 }
 
-/// writeQueue-confined per-session state: the tap `Context` (shared with the
+/// writeQueue-confined per-session state: the tee `Context` (shared with the
 /// live ghostty tap), resolved paths, and the size/durability/heartbeat
 /// bookkeeping needed to append and rotate. A class (not a struct) so the
 /// periodic drain tick can mutate fields in place without dictionary
@@ -858,7 +858,7 @@ final class SessionWALStore {
     }()
 
     /// Mirrors `metaEncoder`'s date strategy. Used only by the orphan sweep's
-    /// conservative age check, never on the tap-callback/write hot path.
+    /// conservative age check, never on the tee-callback/write hot path.
     private static let metaDecoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -867,10 +867,10 @@ final class SessionWALStore {
 
     private init() {}
 
-    /// Registers the output tap for a newly created surface and starts its
+    /// Registers the PTY tee for a newly created surface and starts its
     /// WAL writer off-main. The caller (`TerminalSurface`) must hold onto
     /// the returned `Unmanaged<Context>` and release it exactly once, right
-    /// after clearing the tap at teardown via `unregister`.
+    /// after clearing the tee at teardown via `unregister`.
     func register(
         surface: ghostty_surface_t,
         surfaceId: String,
@@ -882,7 +882,7 @@ final class SessionWALStore {
             return unmanaged
         }
 
-        ghostty_surface_set_output_tap(surface, sessionWALOutputTapCallback, unmanaged.toOpaque())
+        ghostty_surface_set_pty_tee_cb(surface, sessionWALPTYTeeCallback, unmanaged.toOpaque())
 
         writeQueue.async { [weak self] in
             self?.startWriter(surfaceId: surfaceId, context: context, workingDirectory: workingDirectory)
@@ -890,13 +890,13 @@ final class SessionWALStore {
         return unmanaged
     }
 
-    /// Clears the tap (passing a NULL callback, per the C API contract),
+    /// Clears the tee (passing a NULL callback, per the C API contract),
     /// flushes any remaining buffered bytes, and forgets the writer.
     /// `deleteDirectory` should be `true` only at a surface's genuine final
     /// teardown (normal close) — see the file-level "Cleanup" doc comment.
     func unregister(surface: ghostty_surface_t?, surfaceId: String, deleteDirectory: Bool = false) {
         if let surface {
-            ghostty_surface_set_output_tap(surface, nil, nil)
+            ghostty_surface_set_pty_tee_cb(surface, nil, nil)
         }
         writeQueue.async { [weak self] in
             self?.stopWriter(surfaceId: surfaceId, deleteDirectory: deleteDirectory)
@@ -1000,7 +1000,7 @@ final class SessionWALStore {
 
     /// Restore-path fallback read. Synchronous and launch-time only (mirrors
     /// `SessionPersistenceStore.load`'s synchronous snapshot read) — never
-    /// called from the tap callback or any latency-sensitive path. Reads the
+    /// called from the tee callback or any latency-sensitive path. Reads the
     /// rotated tail (if any) then the current file, capped to
     /// `SessionWALPolicy.walCapBytes`, and decodes leniently since PTY bytes
     /// may include partial UTF-8 sequences at the truncation boundary.
@@ -1386,19 +1386,19 @@ final class SessionWALStore {
     }
 }
 
-/// C callback registered via `ghostty_surface_set_output_tap`. Runs on
-/// ghostty's io-reader thread under the renderer_state mutex — per the
-/// header contract this must stay allocation/lock-free from ghostty's point
-/// of view. This body does exactly one thing: hand the bytes to the
-/// preallocated ring buffer. Nothing else — no dlog, no DispatchQueue, no
-/// file I/O, no Swift runtime calls that can allocate or reach back into
-/// ghostty.
-private func sessionWALOutputTapCallback(
-    _ buf: UnsafePointer<UInt8>?,
-    _ len: UInt,
-    _ userdata: UnsafeMutableRawPointer?
+/// C callback registered via `ghostty_surface_set_pty_tee_cb`. Runs on
+/// ghostty's io-reader thread before the VT parser; this must stay
+/// allocation/lock-free from ghostty's point of view. This body does exactly
+/// one thing: hand the bytes to the preallocated ring buffer. Nothing else —
+/// no dlog, no DispatchQueue, no file I/O, no Swift runtime calls that can
+/// allocate or reach back into ghostty.
+private func sessionWALPTYTeeCallback(
+    _ userdata: UnsafeMutableRawPointer?,
+    _ bytes: UnsafePointer<CChar>?,
+    _ len: UInt
 ) {
-    guard let buf, let userdata, len > 0 else { return }
+    guard let bytes, let userdata, len > 0 else { return }
     let context = Unmanaged<SessionWALStore.Context>.fromOpaque(userdata).takeUnretainedValue()
+    let buf = UnsafeRawPointer(bytes).assumingMemoryBound(to: UInt8.self)
     context.ringBuffer.append(buf, Int(len))
 }
