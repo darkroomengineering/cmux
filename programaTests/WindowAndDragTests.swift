@@ -42,6 +42,69 @@ final class WindowGlassEffectTests: XCTestCase {
         XCTAssertTrue(window.contentView === originalContentView)
         XCTAssertFalse(originalContentView.subviews.contains(where: { $0 is NSVisualEffectView }))
     }
+
+    func testEnabledBonsplitTabBarHostsPeerPillsInNativeGlassContainer() throws {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            _ = NSApplication.shared
+            let defaults = UserDefaults.standard
+            let key = ProgramaGlassSettings.tabBarEnabledKey
+            let previousValue = defaults.object(forKey: key)
+            defaults.set(true, forKey: key)
+            defer {
+                if let previousValue {
+                    defaults.set(previousValue, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+
+            let appearance = Workspace.bonsplitAppearance(
+                from: NSColor(calibratedWhite: 0.12, alpha: 1),
+                backgroundOpacity: 1
+            )
+            let controller = BonsplitController(
+                configuration: BonsplitConfiguration(appearance: appearance)
+            )
+            controller.createTab(title: "One")
+            controller.createTab(title: "Two")
+
+            let hostingView = NSHostingView(
+                rootView: BonsplitView(controller: controller) { tab, _ in
+                    Text(tab.title)
+                }
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            defer { window.orderOut(nil) }
+            window.contentView = hostingView
+            hostingView.frame = window.contentLayoutRect
+            hostingView.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            hostingView.layoutSubtreeIfNeeded()
+
+            func descendants(of root: NSView) -> [NSView] {
+                root.subviews.flatMap { [$0] + descendants(of: $0) }
+            }
+
+            let allViews = descendants(of: hostingView)
+            guard let container = allViews.first(where: { $0 is NSGlassEffectContainerView }) else {
+                XCTFail("Expected one native glass container for the tab strip")
+                return
+            }
+            let pillGlassViews = descendants(of: container).compactMap { $0 as? NSGlassEffectView }
+            XCTAssertGreaterThanOrEqual(pillGlassViews.count, 2)
+            XCTAssertTrue(pillGlassViews.allSatisfy { $0.contentView != nil })
+            return
+        }
+        #endif
+
+        throw XCTSkip("Native Liquid Glass requires the macOS 26 SDK and runtime")
+    }
 }
 
 @MainActor
