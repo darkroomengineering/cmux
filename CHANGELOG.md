@@ -7,6 +7,8 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 ## [Unreleased]
 
 ### Fixed
+- Restoring a damaged session no longer crashes when two saved panels share an ID, cancelling a system shutdown no longer leaves the next snapshot marked as a clean quit, and the configurable review shortcut works again.
+- Browser automation now returns stable workspace and surface references, while obsolete native dialog state and macOS 11 compatibility branches have been removed. CI also fails clearly when a matching prebuilt GhosttyKit checksum is unavailable instead of silently compiling a different dependency from source.
 - Closing a terminal tab or a workspace now actually ends the session. Anything running in it, an agent included, was being kept alive in the background after the tab disappeared: invisible, still using memory, and unable to talk back to the app. Quitting still preserves your sessions so they come back on the next launch.
 - The app no longer freezes on the first launch after an update while it is restoring your terminals. Restoring a session with a long transcript could wedge the whole app: no window, no input, and force-quitting was the only way out, which lost every session you had open. Long transcripts also come back more smoothly now, instead of stalling the window until they finish.
 - `programa` commands typed inside a restored terminal work again after an app update. They were being refused with "Access denied", which silently cut off any agent running in that pane until you opened a fresh one.
@@ -17,6 +19,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - A restart after an update no longer kills every terminal when the new app comes up faster than the background session-holder notices the old one is gone. The app now waits out that window instead of giving up, escrow sockets no longer leak into shell processes (which silently delayed that detection), and a session that falls back anyway keeps its reattach records on disk while its process is still alive instead of deleting them.
 
 ### Changed
+- Terminal output subscriptions now take one bounded snapshot per surface and publish only the changed suffix, reducing main-thread work and memory churn for automation clients watching busy terminals.
 - Less background churn under agent load: repeated identical progress and port reports no longer redraw workspaces, moving the mouse across a window no longer re-renders its chrome, and scrolling no longer builds debug strings that get thrown away.
 - Closing a browser tab now clears its leftover automation state (scripts, dialog queues, download logs), and a browser download wait that times out no longer risks corrupting a file handle.
 - The CLI now reconnects automatically instead of exiting when the app restarts (for example after an auto-update) or after an hour of inactivity; use `--no-reconnect` on `watch-events` if you want the old exit-on-disconnect behavior for scripts.

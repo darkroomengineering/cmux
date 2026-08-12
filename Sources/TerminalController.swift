@@ -171,13 +171,6 @@ class TerminalController {
         let selector: String
     }
 
-    struct V2BrowserPendingDialog {
-        let type: String
-        let message: String
-        let defaultText: String?
-        let responder: (_ accept: Bool, _ text: String?) -> Void
-    }
-
     final class V2BrowserUndefinedSentinel {}
 
     static let v2BrowserEvalEnvelopeTypeKey = "__programa_t"
@@ -190,7 +183,6 @@ class TerminalController {
     var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
     var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
     var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
-    var v2BrowserDialogQueueBySurface: [UUID: [V2BrowserPendingDialog]] = [:]
     var v2BrowserDownloadEventsBySurface: [UUID: [[String: Any]]] = [:]
     var v2BrowserUnsupportedNetworkRequestsBySurface: [UUID: [[String: Any]]] = [:]
     var v2BrowserUndefinedSentinel = V2BrowserUndefinedSentinel()
@@ -2484,8 +2476,10 @@ class TerminalController {
         return tabManager.tabs.first(where: { $0.id == wsId })
     }
 
-    func readTerminalTextBase64(terminalPanel: TerminalPanel, includeScrollback: Bool = false, lineLimit: Int? = nil) -> String {
-        guard let surface = terminalPanel.surface.surface else { return "ERROR: Terminal surface not found" }
+    /// Reads terminal text as a native String. Socket hot paths use this directly so they do
+    /// not encode to base64 only to decode it again in the same process.
+    func readTerminalText(terminalPanel: TerminalPanel, includeScrollback: Bool = false, lineLimit: Int? = nil) -> String? {
+        guard let surface = terminalPanel.surface.surface else { return nil }
 
         func readSelectionText(pointTag: ghostty_point_tag_e) -> String? {
             let topLeft = ghostty_point_s(
@@ -2559,11 +2553,11 @@ class TerminalController {
             }) {
                 output = best
             } else {
-                return "ERROR: Failed to read terminal text"
+                return nil
             }
         } else {
             guard let viewport = readSelectionText(pointTag: GHOSTTY_POINT_VIEWPORT) else {
-                return "ERROR: Failed to read terminal text"
+                return nil
             }
             output = viewport
         }
@@ -2572,6 +2566,18 @@ class TerminalController {
             output = tailTerminalLines(output, maxLines: lineLimit)
         }
 
+        return output
+    }
+
+    func readTerminalTextBase64(terminalPanel: TerminalPanel, includeScrollback: Bool = false, lineLimit: Int? = nil) -> String {
+        guard terminalPanel.surface.surface != nil else { return "ERROR: Terminal surface not found" }
+        guard let output = readTerminalText(
+            terminalPanel: terminalPanel,
+            includeScrollback: includeScrollback,
+            lineLimit: lineLimit
+        ) else {
+            return "ERROR: Failed to read terminal text"
+        }
         let base64 = output.data(using: .utf8)?.base64EncodedString() ?? ""
         return "OK \(base64)"
     }

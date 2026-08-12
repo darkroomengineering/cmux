@@ -1468,10 +1468,6 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId), "Confirmed close should unregister the window's context")
     }
 
-    // NOTE: This test is skipped in CI via -skip-testing in ci.yml because closing
-    // the last Ghostty surface tears down the PTY/shell, which blocks indefinitely
-    // on headless runners. The xcodebuild test host doesn't inherit CI env vars,
-    // so XCTSkip can't detect CI from inside the test.
     func testCmdWClosesWindowWhenClosingLastSurfaceInLastWorkspace() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
@@ -1509,12 +1505,15 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
 
-        waitUntil(description: "Cmd+W on the last surface to close the window") { self.window(withId: windowId) == nil }
+        waitUntil(description: "Cmd+W on the last surface to close and unregister the window") {
+            !targetWindow.isVisible && appDelegate.tabManagerFor(windowId: windowId) == nil
+        }
 
-        XCTAssertNil(
-            self.window(withId: windowId),
-            "Cmd+W on the last surface in the last workspace should close the window"
-        )
+        // `NSApp.windows` can retain a closed NSWindow in a headless test host. Visibility
+        // plus MainWindowContext removal are the observable close contract, matching the
+        // direct Cmd+Ctrl+W coverage above.
+        XCTAssertFalse(targetWindow.isVisible)
+        XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId))
     }
 
     func testCmdWClosesAuxiliaryWindowInsteadOfMainTerminalPanel() throws {

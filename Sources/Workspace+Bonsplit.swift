@@ -768,7 +768,6 @@ extension Workspace: @preconcurrency BonsplitDelegate {
         if !isDetaching {
             TerminalController.shared.v2BrowserInitScriptsBySurface.removeValue(forKey: panelId)
             TerminalController.shared.v2BrowserInitStylesBySurface.removeValue(forKey: panelId)
-            TerminalController.shared.v2BrowserDialogQueueBySurface.removeValue(forKey: panelId)
             TerminalController.shared.v2BrowserDownloadEventsBySurface.removeValue(forKey: panelId)
             TerminalController.shared.v2BrowserUnsupportedNetworkRequestsBySurface.removeValue(forKey: panelId)
             TerminalController.shared.v2BrowserFrameSelectorBySurface.removeValue(forKey: panelId)

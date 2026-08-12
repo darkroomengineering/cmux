@@ -213,9 +213,9 @@ final class SocketEventBroadcaster: @unchecked Sendable {
 
     private let lock = NSLock()
     private var subscriptions: [UUID: EventSubscription] = [:]
-    /// Last-seen full text length per watched surface, used to compute the "new tail" diff for
-    /// `output` events. Cleared when the last subscriber watching a surface unregisters.
-    private var lastOutputLength: [UUID: Int] = [:]
+    /// Last bounded viewport snapshot per watched surface, used to compute the newly appended
+    /// tail even when the viewport scrolls and its overall length stays constant.
+    private var lastOutputText: [UUID: String] = [:]
 
     func register(_ subscription: EventSubscription) {
         lock.lock()
@@ -227,7 +227,7 @@ final class SocketEventBroadcaster: @unchecked Sendable {
         lock.lock()
         subscriptions.removeValue(forKey: subscription.id)
         let stillWatched = Set(subscriptions.values.flatMap { $0.outputSurfaceIds })
-        lastOutputLength = lastOutputLength.filter { stillWatched.contains($0.key) }
+        lastOutputText = lastOutputText.filter { stillWatched.contains($0.key) }
         lock.unlock()
     }
 
@@ -282,22 +282,44 @@ final class SocketEventBroadcaster: @unchecked Sendable {
         guard !subs.isEmpty else { return }
 
         lock.lock()
-        let previousLength = lastOutputLength[surfaceId] ?? fullText.count
-        lastOutputLength[surfaceId] = fullText.count
+        let previousText = lastOutputText.updateValue(fullText, forKey: surfaceId)
         lock.unlock()
 
-        guard fullText.count > previousLength else { return }
-        // Text can also shrink/scroll between ticks (e.g. clear screen); in that case there is
-        // no well-defined "tail" to report, so this tick is skipped rather than guessing.
-        let tailStart = fullText.index(fullText.startIndex, offsetBy: previousLength)
-        let tail = String(fullText[tailStart...].suffix(4000))
-        guard !tail.isEmpty else { return }
+        guard let previousText, previousText != fullText else { return }
+        let tail: String
+        if fullText.hasPrefix(previousText) {
+            tail = String(fullText.dropFirst(previousText.count))
+        } else {
+            // A bounded viewport commonly shifts by whole lines. Find the largest suffix of
+            // the previous viewport that is still the prefix of the new one and emit only the
+            // rows after it. This keeps output flowing after the viewport reaches full height.
+            let previousLines = previousText.split(separator: "\n", omittingEmptySubsequences: false)
+            let currentLines = fullText.split(separator: "\n", omittingEmptySubsequences: false)
+            var overlap = min(previousLines.count, currentLines.count)
+            while overlap > 0,
+                  !previousLines.suffix(overlap).elementsEqual(currentLines.prefix(overlap)) {
+                overlap -= 1
+            }
+            if overlap > 0 {
+                tail = currentLines.dropFirst(overlap).joined(separator: "\n")
+            } else {
+                // The cursor can extend the current last line without adding a row. Preserve
+                // that appended suffix when both snapshots still share a character prefix.
+                let commonPrefixCount = zip(previousText, fullText).prefix { pair in
+                    pair.0 == pair.1
+                }.count
+                guard commonPrefixCount > 0, fullText.count > commonPrefixCount else { return }
+                tail = String(fullText.dropFirst(commonPrefixCount))
+            }
+        }
+        let boundedTail = String(tail.suffix(4000))
+        guard !boundedTail.isEmpty else { return }
 
         let frame: [String: Any] = [
             "event": "output",
             "workspace_id": workspaceId.uuidString,
             "surface_id": surfaceId.uuidString,
-            "text": tail,
+            "text": boundedTail,
             "ts": Date().timeIntervalSince1970
         ]
         for sub in subs { sub.enqueue(frame) }
@@ -407,16 +429,25 @@ extension TerminalController {
         let surfaceIds = SocketEventBroadcaster.shared.watchedOutputSurfaceIds()
         guard !surfaceIds.isEmpty else { return }
 
-        for surfaceId in surfaceIds {
-            v2MainSync {
+        let snapshots: [(workspaceId: UUID, surfaceId: UUID, text: String)] = v2MainSync {
+            surfaceIds.compactMap { surfaceId in
                 guard let located = AppDelegate.shared?.locateSurface(surfaceId: surfaceId),
                       let ws = located.tabManager.tabs.first(where: { $0.id == located.workspaceId }),
                       let terminalPanel = ws.panels[surfaceId] as? TerminalPanel,
-                      let text = self.v2SurfaceWaitReadText(terminalPanel: terminalPanel, lineLimit: 4000) else {
-                    return
+                      // Output polling needs only a bounded current viewport. Pattern waits
+                      // retain the full scrollback path separately.
+                      let text = self.readTerminalText(terminalPanel: terminalPanel) else {
+                    return nil
                 }
-                SocketEventBroadcaster.shared.publishOutputIfChanged(workspaceId: ws.id, surfaceId: surfaceId, fullText: text)
+                return (workspaceId: ws.id, surfaceId: surfaceId, text: text)
             }
+        }
+        for snapshot in snapshots {
+            SocketEventBroadcaster.shared.publishOutputIfChanged(
+                workspaceId: snapshot.workspaceId,
+                surfaceId: snapshot.surfaceId,
+                fullText: snapshot.text
+            )
         }
     }
 }

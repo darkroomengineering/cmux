@@ -485,16 +485,11 @@ extension TerminalController {
     /// polling (#167), which reads the same point-in-time text for a different purpose (diffing
     /// against last-seen length rather than regex matching).
     func v2SurfaceWaitReadText(terminalPanel: TerminalPanel, lineLimit: Int?) -> String? {
-        let response = readTerminalTextBase64(
+        readTerminalText(
             terminalPanel: terminalPanel,
             includeScrollback: true,
             lineLimit: lineLimit ?? 2000
         )
-        guard response.hasPrefix("OK ") else { return nil }
-        let base64 = String(response.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
-        if base64.isEmpty { return "" }
-        guard let data = Data(base64Encoded: base64) else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 
     private func v2SurfaceWaitFirstMatch(regex: NSRegularExpression, in text: String) -> String? {

@@ -132,7 +132,7 @@ extension TerminalController {
     ) -> V2JavaScriptResult {
         let timeoutSeconds = max(0.01, timeout)
         let evaluator: (@escaping (Any?, String?) -> Void) -> Void = { finish in
-            if preferAsync, #available(macOS 11.0, *) {
+            if preferAsync {
                 webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: contentWorld) { result in
                     switch result {
                     case .success(let value):
@@ -404,25 +404,15 @@ extension TerminalController {
         return await __programaEvalInFrame();
         """
 
-        var rawResult: V2JavaScriptResult
-        if #available(macOS 11.0, *) {
-            rawResult = v2RunJavaScript(
-                webView,
-                script: asyncFunctionBody,
-                timeout: timeout,
-                preferAsync: true,
-                contentWorld: .page
-            )
-        } else {
-            let evaluateFallback = """
-            (async () => {
-              \(asyncFunctionBody)
-            })()
-            """
-            rawResult = v2RunJavaScript(webView, script: evaluateFallback, timeout: timeout, contentWorld: .page)
-        }
+        var rawResult = v2RunJavaScript(
+            webView,
+            script: asyncFunctionBody,
+            timeout: timeout,
+            preferAsync: true,
+            contentWorld: .page
+        )
 
-        if !useEval, case .failure(let pageMessage) = rawResult, #available(macOS 11.0, *) {
+        if !useEval, case .failure(let pageMessage) = rawResult {
             let isolatedResult = v2RunJavaScript(
                 webView,
                 script: asyncFunctionBody,
@@ -467,75 +457,6 @@ extension TerminalController {
             logs.removeFirst(logs.count - 256)
         }
         v2BrowserUnsupportedNetworkRequestsBySurface[surfaceId] = logs
-    }
-
-    func v2BrowserPendingDialogs(surfaceId: UUID) -> [[String: Any]] {
-        let queue = v2BrowserDialogQueueBySurface[surfaceId] ?? []
-        return queue.enumerated().map { index, d in
-            [
-                "index": index,
-                "type": d.type,
-                "message": d.message,
-                "default_text": v2OrNull(d.defaultText)
-            ]
-        }
-    }
-
-    func enqueueBrowserDialog(
-        surfaceId: UUID,
-        type: String,
-        message: String,
-        defaultText: String?,
-        responder: @escaping (_ accept: Bool, _ text: String?) -> Void
-    ) {
-        var queue = v2BrowserDialogQueueBySurface[surfaceId] ?? []
-        queue.append(V2BrowserPendingDialog(type: type, message: message, defaultText: defaultText, responder: responder))
-        if queue.count > 16 {
-            // Keep bounded memory while preserving FIFO semantics for newest entries.
-            queue.removeFirst(queue.count - 16)
-        }
-        v2BrowserDialogQueueBySurface[surfaceId] = queue
-    }
-
-    func v2BrowserPopDialog(surfaceId: UUID) -> V2BrowserPendingDialog? {
-        var queue = v2BrowserDialogQueueBySurface[surfaceId] ?? []
-        guard !queue.isEmpty else { return nil }
-        let first = queue.removeFirst()
-        v2BrowserDialogQueueBySurface[surfaceId] = queue
-        return first
-    }
-
-    func v2BrowserEnsureInitScriptsApplied(surfaceId: UUID, browserPanel: BrowserPanel) {
-        let scripts = v2BrowserInitScriptsBySurface[surfaceId] ?? []
-        let styles = v2BrowserInitStylesBySurface[surfaceId] ?? []
-        guard !scripts.isEmpty || !styles.isEmpty else { return }
-
-        let injector = """
-        (() => {
-          window.__programaInitScriptsApplied = window.__programaInitScriptsApplied || { scripts: [], styles: [] };
-          return true;
-        })()
-        """
-        _ = v2RunBrowserJavaScript(browserPanel.webView, surfaceId: surfaceId, script: injector)
-
-        for script in scripts {
-            _ = v2RunBrowserJavaScript(browserPanel.webView, surfaceId: surfaceId, script: script)
-        }
-        for css in styles {
-            let cssLiteral = v2JSONLiteral(css)
-            let styleScript = """
-            (() => {
-              const id = 'cmux-init-style-' + btoa(unescape(encodeURIComponent(\(cssLiteral)))).replace(/=+$/g, '');
-              if (document.getElementById(id)) return true;
-              const el = document.createElement('style');
-              el.id = id;
-              el.textContent = String(\(cssLiteral));
-              (document.head || document.documentElement || document.body).appendChild(el);
-              return true;
-            })()
-            """
-            _ = v2RunBrowserJavaScript(browserPanel.webView, surfaceId: surfaceId, script: styleScript)
-        }
     }
 
     private func v2PNGData(from image: NSImage) -> Data? {
@@ -2075,7 +1996,9 @@ extension TerminalController {
                   let browserPanel = ws.browserPanel(for: surfaceId) else { return }
             result = .ok([
                 "workspace_id": ws.id.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "surface_id": surfaceId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
                 "url": browserPanel.currentURL?.absoluteString ?? ""
             ])
         }
@@ -2748,8 +2671,7 @@ extension TerminalController {
                 guard let dict = value as? [String: Any],
                       let ok = dict["ok"] as? Bool,
                       ok else {
-                    let pending = v2BrowserPendingDialogs(surfaceId: surfaceId)
-                    return .err(code: "not_found", message: "No pending dialog", data: ["pending": pending])
+                    return .err(code: "not_found", message: "No pending dialog", data: ["pending": []])
                 }
 
                 return .ok([
