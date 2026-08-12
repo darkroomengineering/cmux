@@ -11,6 +11,8 @@ struct OmnibarSuggestionsView: View {
     let onCommit: (OmnibarSuggestion) -> Void
     let onHighlight: (Int) -> Void
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(ProgramaGlassSettings.overlaysEnabledKey)
+    private var overlayLiquidGlassEnabled = false
 
     // Keep radii below half of the smallest rendered heights so this keeps a
     // squircle silhouette instead of auto-clamping into a capsule.
@@ -66,6 +68,13 @@ struct OmnibarSuggestionsView: View {
 
     private var shouldScroll: Bool {
         contentHeight > maxPopupHeight
+    }
+
+    private var usesNativeOverlayGlass: Bool {
+        WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+            for: .overlays,
+            persistedValue: overlayLiquidGlassEnabled
+        )
     }
 
     private var listTextColor: Color {
@@ -230,7 +239,7 @@ struct OmnibarSuggestionsView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    var body: some View {
+    private var popupContent: some View {
         Group {
             if shouldScroll {
                 ScrollView {
@@ -251,32 +260,57 @@ struct OmnibarSuggestionsView: View {
                     .allowsHitTesting(false)
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: popupCornerRadius, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
+    }
+
+    private var popupTintOverlay: some View {
+        RoundedRectangle(cornerRadius: popupCornerRadius, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: popupOverlayGradientColors,
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+    }
+
+    private var popupBorder: some View {
+        RoundedRectangle(cornerRadius: popupCornerRadius, style: .continuous)
+            .stroke(
+                LinearGradient(
+                    colors: popupBorderGradientColors,
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                lineWidth: 1
+            )
+    }
+
+    @ViewBuilder
+    private var popupSurface: some View {
+        if usesNativeOverlayGlass {
+            ProgramaNativeGlassContentHost(
+                content: popupContent.background(popupTintOverlay),
+                tintColor: nil,
+                cornerRadius: popupCornerRadius
+            )
+            // An AppKit representable has no native intrinsic height of its own. Preserve the
+            // popup's existing content-derived height instead of accepting the overlay's full
+            // remaining browser-panel proposal.
+            .frame(height: popupHeight, alignment: .top)
+        } else {
+            popupContent
+                .background(
                     RoundedRectangle(cornerRadius: popupCornerRadius, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: popupOverlayGradientColors,
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
+                        .fill(.ultraThinMaterial)
+                        .overlay(popupTintOverlay)
                 )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: popupCornerRadius, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: popupBorderGradientColors,
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: popupCornerRadius, style: .continuous))
+                .overlay(popupBorder)
+                .clipShape(RoundedRectangle(cornerRadius: popupCornerRadius, style: .continuous))
+        }
+    }
+
+    var body: some View {
+        popupSurface
         .shadow(color: popupShadowColor, radius: 20, y: 10)
         .contentShape(RoundedRectangle(cornerRadius: popupCornerRadius, style: .continuous))
         .accessibilityElement(children: .contain)

@@ -96,8 +96,12 @@ struct programaApp: App {
 
         let startupAppearance = AppearanceSettings.resolvedMode()
         Self.applyAppearance(startupAppearance)
-        _tabManager = StateObject(wrappedValue: TabManager())
         let defaults = UserDefaults.standard
+        ProgramaGlassSettings.registerPlatformDefaults(
+            defaults: defaults,
+            nativeGlassAvailable: WindowGlassEffect.isAvailable
+        )
+        _tabManager = StateObject(wrappedValue: TabManager())
         // Rebrand: forward every legacy cmux-prefixed default to its programa key
         // before anything reads the new keys, so existing users keep their prefs.
         Self.migrateCmuxDefaultsToProgramaIfNeeded(defaults: defaults)
@@ -224,7 +228,7 @@ struct programaApp: App {
 
     private func migrateSidebarAppearanceDefaultsIfNeeded(defaults: UserDefaults) {
         let migrationKey = "sidebarAppearanceDefaultsVersion"
-        let targetVersion = 1
+        let targetVersion = 2
         guard defaults.integer(forKey: migrationKey) < targetVersion else { return }
 
         func normalizeHex(_ value: String) -> String {
@@ -256,7 +260,9 @@ struct programaApp: App {
             approximatelyEqual(cornerRadius, 0.0)
 
         if usesLegacyDefaults {
-            let preset = SidebarPresetOption.nativeSidebar
+            let preset = ProgramaGlassSettings.defaultSidebarPreset(
+                nativeGlassAvailable: WindowGlassEffect.isAvailable
+            )
             defaults.set(preset.rawValue, forKey: "sidebarPreset")
             defaults.set(preset.material.rawValue, forKey: "sidebarMaterial")
             defaults.set(preset.blendMode.rawValue, forKey: "sidebarBlendMode")
@@ -265,6 +271,11 @@ struct programaApp: App {
             defaults.set(preset.tintOpacity, forKey: "sidebarTintOpacity")
             defaults.set(preset.blurOpacity, forKey: "sidebarBlurOpacity")
             defaults.set(preset.cornerRadius, forKey: "sidebarCornerRadius")
+        } else if material == SidebarMaterialOption.liquidGlass.rawValue,
+                  approximatelyEqual(cornerRadius, 0.0) {
+            // Version 1 shipped the local glass sidebar flush on all four corners. Version 2
+            // rounds only its terminal-facing edge; the NSWindow still masks the outer edge.
+            defaults.set(SidebarPresetOption.liquidGlass.cornerRadius, forKey: "sidebarCornerRadius")
         }
 
         defaults.set(targetVersion, forKey: migrationKey)
@@ -437,11 +448,22 @@ struct programaApp: App {
                     ) {
                         BrowserProfilePopoverDebugWindowController.shared.show()
                     }
+                    Button(
+                        String(
+                            localized: "debug.menu.browserToolbarGlass",
+                            defaultValue: "Browser Toolbar Glass Debug…"
+                        )
+                    ) {
+                        BrowserToolbarGlassDebugWindowController.shared.show()
+                    }
                     Button(String(localized: "debug.menu.windowControls", defaultValue: "Debug Window Controls…")) {
                         DebugWindowControlsWindowController.shared.show()
                     }
                     Button(String(localized: "debug.menu.menuBarExtra", defaultValue: "Menu Bar Extra Debug…")) {
                         MenuBarExtraDebugWindowController.shared.show()
+                    }
+                    Button(String(localized: "debug.menu.overlayGlass", defaultValue: "Overlay Glass Debug…")) {
+                        OverlayGlassDebugWindowController.shared.show()
                     }
                     Button(String(localized: "debug.menu.settingsAboutTitlebar", defaultValue: "Settings/About Titlebar Debug…")) {
                         SettingsAboutTitlebarDebugWindowController.shared.show()
@@ -451,6 +473,9 @@ struct programaApp: App {
                     }
                     Button(String(localized: "debug.menu.splitButtonLayout", defaultValue: "Split Button Layout Debug…")) {
                         SplitButtonLayoutDebugWindowController.shared.show()
+                    }
+                    Button(String(localized: "debug.menu.tabBarGlass", defaultValue: "Tab Bar Glass Debug…")) {
+                        TabBarGlassDebugWindowController.shared.show()
                     }
                     Button(String(localized: "debug.menu.openAllWindows", defaultValue: "Open All Debug Windows")) {
                         openAllDebugWindows()
@@ -1121,10 +1146,13 @@ struct programaApp: App {
 #if DEBUG
     private func openAllDebugWindows() {
         BrowserProfilePopoverDebugWindowController.shared.show()
+        BrowserToolbarGlassDebugWindowController.shared.show()
         SettingsAboutTitlebarDebugWindowController.shared.show()
         SidebarDebugWindowController.shared.show()
         BackgroundDebugWindowController.shared.show()
         MenuBarExtraDebugWindowController.shared.show()
+        OverlayGlassDebugWindowController.shared.show()
+        TabBarGlassDebugWindowController.shared.show()
     }
 #endif
 }
@@ -1140,6 +1168,7 @@ private let programaAuxiliaryWindowIdentifiers: Set<String> = [
     "programa.sidebarDebug",
     "programa.menubarDebug",
     "programa.backgroundDebug",
+    "programa.tabBarGlassDebug",
 ]
 
 /// Returns whether the given window should handle the standard close shortcut

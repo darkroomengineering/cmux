@@ -6211,6 +6211,40 @@
         }
       }
     },
+    "debug.browserToolbarGlass.enable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Native Glass Browser Toolbar"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ネイティブガラスのブラウザツールバーを有効にする"
+          }
+        }
+      }
+    },
+    "debug.browserToolbarGlass.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Browser Toolbar Glass"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブラウザツールバーガラス"
+          }
+        }
+      }
+    },
     "debug.browserProfilePopover.group.padding": {
       "extractionState": "manual",
       "localizations": {
@@ -6349,6 +6383,23 @@
         }
       }
     },
+    "debug.menu.browserToolbarGlass": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Browser Toolbar Glass Debug…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブラウザツールバーガラスデバッグ…"
+          }
+        }
+      }
+    },
     "debug.menu.browserToolbarButtonSpacing": {
       "extractionState": "manual",
       "localizations": {
@@ -6373,6 +6424,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "メニューバー追加項目デバッグ…"
+          }
+        }
+      }
+    },
+    "debug.menu.overlayGlass": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Overlay Glass Debug…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "オーバーレイガラスデバッグ…"
           }
         }
       }
@@ -6503,6 +6571,125 @@
           "stringUnit": {
             "state": "translated",
             "value": "分割ボタンレイアウトデバッグ…"
+          }
+        }
+      }
+    },
+    "debug.overlayGlass.enable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Native Glass Overlays"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ネイティブガラスのオーバーレイを有効にする"
+          }
+        }
+      }
+    },
+    "debug.overlayGlass.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Overlay Glass"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "オーバーレイガラス"
+          }
+        }
+      }
+    },
+    "debug.menu.tabBarGlass": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab Bar Glass Debug…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "タブバーガラスデバッグ…"
+          }
+        }
+      }
+    },
+    "debug.tabBarGlass.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tab Bar Glass"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "タブバーガラス"
+          }
+        }
+      }
+    },
+    "debug.tabBarGlass.enable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Native Glass Tab Pills"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ネイティブガラスのタブピルを有効にする"
+          }
+        }
+      }
+    },
+    "debug.glass.changesApplyLive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Changes apply live."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "変更はすぐに反映されます。"
+          }
+        }
+      }
+    },
+    "debug.glass.requiresMacOS26": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native Liquid Glass requires macOS 26."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ネイティブLiquid GlassにはmacOS 26が必要です。"
           }
         }
       }
@@ -9633,6 +9820,12 @@
             "state": "translated",
             "value": "Liquid Glass (macOS 26+)"
           }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リキッドガラス（macOS 26以降）"
+          }
         }
       }
     },
@@ -10310,6 +10503,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "HUD Glass"
+          }
+        }
+      }
+    },
+    "settings.preset.liquidGlass": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liquid Glass"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リキッドガラス"
           }
         }
       }

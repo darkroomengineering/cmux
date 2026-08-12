@@ -15,6 +15,44 @@ struct ShortcutHintPillBackground: View {
     }
 }
 
+/// Keeps shortcut text inside the native glass content view while preserving the pre-macOS 26
+/// material exactly as the fallback and escape-hatch appearance.
+struct ShortcutHintPill<Content: View>: View {
+    var emphasis: Double = 1.0
+    let content: Content
+    @AppStorage(ProgramaGlassSettings.overlaysEnabledKey)
+    private var overlayLiquidGlassEnabled = false
+
+    init(
+        emphasis: Double = 1.0,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.emphasis = emphasis
+        self.content = content()
+    }
+
+    private var usesNativeOverlayGlass: Bool {
+        WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+            for: .overlays,
+            persistedValue: overlayLiquidGlassEnabled
+        )
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if usesNativeOverlayGlass {
+            ProgramaNativeGlassContentHost(
+                content: content,
+                tintColor: nil,
+                cornerRadius: 100
+            )
+        } else {
+            content
+                .background(ShortcutHintPillBackground(emphasis: emphasis))
+        }
+    }
+}
+
 enum ShortcutHintModifierPolicy {
     static let intentionalHoldDelay: TimeInterval = 0.30
 

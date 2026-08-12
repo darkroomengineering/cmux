@@ -175,6 +175,12 @@ extension BonsplitConfiguration {
         /// Extra leading inset for the tab bar (e.g. for traffic light buttons when sidebar is collapsed)
         public var tabBarLeadingInset: CGFloat
 
+        /// Whether each visible tab pill uses native AppKit Liquid Glass where available.
+        public var tabBarLiquidGlassEnabled: Bool
+
+        /// Whether compact tab overlays such as shortcut hints use native AppKit Liquid Glass.
+        public var overlayLiquidGlassEnabled: Bool
+
         /// Tooltip text for the tab bar's right-side action buttons
         public var splitButtonTooltips: SplitButtonTooltips
 
@@ -220,6 +226,8 @@ extension BonsplitConfiguration {
             showSplitButtons: Bool = true,
             splitButtonsOnHover: Bool = false,
             tabBarLeadingInset: CGFloat = 0,
+            tabBarLiquidGlassEnabled: Bool = false,
+            overlayLiquidGlassEnabled: Bool = false,
             splitButtonTooltips: SplitButtonTooltips = .default,
             animationDuration: Double = 0.15,
             enableAnimations: Bool = true,
@@ -234,6 +242,8 @@ extension BonsplitConfiguration {
             self.showSplitButtons = showSplitButtons
             self.splitButtonsOnHover = splitButtonsOnHover
             self.tabBarLeadingInset = tabBarLeadingInset
+            self.tabBarLiquidGlassEnabled = tabBarLiquidGlassEnabled
+            self.overlayLiquidGlassEnabled = overlayLiquidGlassEnabled
             self.splitButtonTooltips = splitButtonTooltips
             self.animationDuration = animationDuration
             self.enableAnimations = enableAnimations

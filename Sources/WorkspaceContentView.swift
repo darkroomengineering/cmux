@@ -236,6 +236,10 @@ struct WorkspaceContentView: View {
     @State private var config = WorkspaceContentView.resolveGhosttyAppearanceConfig(reason: "stateInit")
     @AppStorage(WorkspacePresentationModeSettings.modeKey)
     private var workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
+    @AppStorage(ProgramaGlassSettings.tabBarEnabledKey)
+    private var tabBarLiquidGlassEnabled = false
+    @AppStorage(ProgramaGlassSettings.overlaysEnabledKey)
+    private var overlayLiquidGlassEnabled = false
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject var notificationStore: TerminalNotificationStore
 
@@ -343,7 +347,14 @@ struct WorkspaceContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             syncBonsplitNotificationBadges()
+            syncBonsplitGlassAppearance()
             refreshGhosttyAppearanceConfig(reason: "onAppear")
+        }
+        .onChange(of: tabBarLiquidGlassEnabled) { _, _ in
+            syncBonsplitGlassAppearance()
+        }
+        .onChange(of: overlayLiquidGlassEnabled) { _, _ in
+            syncBonsplitGlassAppearance()
         }
         .onChange(of: notificationStore.notifications) { _, _ in
             syncBonsplitNotificationBadges()
@@ -412,6 +423,23 @@ struct WorkspaceContentView: View {
                     )
                 }
             }
+        }
+    }
+
+    private func syncBonsplitGlassAppearance() {
+        let tabBarEnabled = WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+            for: .tabBar,
+            persistedValue: tabBarLiquidGlassEnabled
+        )
+        let overlaysEnabled = WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+            for: .overlays,
+            persistedValue: overlayLiquidGlassEnabled
+        )
+        if workspace.bonsplitController.configuration.appearance.tabBarLiquidGlassEnabled != tabBarEnabled {
+            workspace.bonsplitController.configuration.appearance.tabBarLiquidGlassEnabled = tabBarEnabled
+        }
+        if workspace.bonsplitController.configuration.appearance.overlayLiquidGlassEnabled != overlaysEnabled {
+            workspace.bonsplitController.configuration.appearance.overlayLiquidGlassEnabled = overlaysEnabled
         }
     }
 

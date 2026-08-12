@@ -706,6 +706,87 @@ final class WindowTransparencyDecisionTests: XCTestCase {
                 glassEffectAvailable: true
             )
         )
+        XCTAssertTrue(
+            cmuxShouldApplyWindowGlass(
+                sidebarBlendMode: "withinWindow",
+                bgGlassEnabled: false,
+                glassEffectAvailable: true,
+                performanceOverride: true
+            )
+        )
+        XCTAssertFalse(
+            cmuxShouldApplyWindowGlass(
+                sidebarBlendMode: "behindWindow",
+                bgGlassEnabled: true,
+                glassEffectAvailable: true,
+                performanceOverride: false
+            )
+        )
+    }
+
+    func testGlassPerformanceOverrideParserAcceptsExplicitBooleanValuesOnly() {
+        for surface in ProgramaGlassSurface.allCases {
+            XCTAssertEqual(
+                ProgramaGlassSettings.parseOverride(
+                    for: surface,
+                    environment: [surface.environmentKey: "1"]
+                ),
+                true
+            )
+            XCTAssertEqual(
+                ProgramaGlassSettings.parseOverride(
+                    for: surface,
+                    environment: [surface.environmentKey: "off"]
+                ),
+                false
+            )
+            XCTAssertNil(
+                ProgramaGlassSettings.parseOverride(
+                    for: surface,
+                    environment: [surface.environmentKey: "maybe"]
+                )
+            )
+            XCTAssertNil(
+                ProgramaGlassSettings.parseOverride(for: surface, environment: [:])
+            )
+        }
+    }
+
+    func testCleanInstallSidebarPresetUsesLiquidGlassOnlyWhenNativeGlassIsAvailable() {
+        XCTAssertEqual(
+            ProgramaGlassSettings.defaultSidebarPreset(nativeGlassAvailable: true),
+            .liquidGlass
+        )
+        XCTAssertEqual(
+            ProgramaGlassSettings.defaultSidebarPreset(nativeGlassAvailable: false),
+            .nativeSidebar
+        )
+    }
+
+    func testPlatformGlassDefaultsEnableGatedSurfacesOnlyWhenNativeGlassIsAvailable() {
+        let nativeDefaults = ProgramaGlassSettings.platformDefaults(nativeGlassAvailable: true)
+        let fallbackDefaults = ProgramaGlassSettings.platformDefaults(nativeGlassAvailable: false)
+
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.windowEnabledKey] as? Bool, true)
+        XCTAssertEqual(fallbackDefaults[ProgramaGlassSettings.windowEnabledKey] as? Bool, false)
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.tabBarEnabledKey] as? Bool, false)
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.browserToolbarEnabledKey] as? Bool, false)
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.overlaysEnabledKey] as? Bool, true)
+        XCTAssertEqual(fallbackDefaults[ProgramaGlassSettings.overlaysEnabledKey] as? Bool, false)
+    }
+
+    func testExplicitWindowGlassChoiceOverridesRegisteredPlatformDefault() {
+        let suite = "programa-tests-glass-explicit-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: ProgramaGlassSettings.windowEnabledKey)
+
+        ProgramaGlassSettings.registerPlatformDefaults(
+            defaults: defaults,
+            nativeGlassAvailable: true
+        )
+
+        XCTAssertFalse(defaults.bool(forKey: ProgramaGlassSettings.windowEnabledKey))
     }
 
     func testBehindWindowGlassPathKeepsTransparentWindowEnabled() {

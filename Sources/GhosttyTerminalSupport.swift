@@ -23,11 +23,15 @@ func ghostty_surface_select_cursor_cell_compat(_ surface: ghostty_surface_t) -> 
 func cmuxShouldApplyWindowGlass(
     sidebarBlendMode: String,
     bgGlassEnabled: Bool,
-    glassEffectAvailable _: Bool
+    glassEffectAvailable _: Bool,
+    performanceOverride: Bool? = nil
 ) -> Bool {
+    if let performanceOverride {
+        return performanceOverride
+    }
     // Native NSGlassEffectView vs NSVisualEffectView fallback is chosen inside
     // WindowGlassEffect.apply. User settings alone decide whether glass is on.
-    sidebarBlendMode == "behindWindow" && bgGlassEnabled
+    return sidebarBlendMode == "behindWindow" && bgGlassEnabled
 }
 
 func cmuxShouldUseTransparentBackgroundWindow() -> Bool {
@@ -37,7 +41,8 @@ func cmuxShouldUseTransparentBackgroundWindow() -> Bool {
     return cmuxShouldApplyWindowGlass(
         sidebarBlendMode: sidebarBlendMode,
         bgGlassEnabled: bgGlassEnabled,
-        glassEffectAvailable: WindowGlassEffect.isAvailable
+        glassEffectAvailable: WindowGlassEffect.isAvailable,
+        performanceOverride: ProgramaGlassSettings.startupOverride(for: .window)
     )
 }
 

@@ -93,6 +93,14 @@ extension Workspace {
             backgroundOpacity: backgroundOpacity
         )
         return BonsplitConfiguration.Appearance(
+            tabBarLiquidGlassEnabled: WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+                for: .tabBar,
+                persistedValue: UserDefaults.standard.bool(forKey: ProgramaGlassSettings.tabBarEnabledKey)
+            ),
+            overlayLiquidGlassEnabled: WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+                for: .overlays,
+                persistedValue: UserDefaults.standard.bool(forKey: ProgramaGlassSettings.overlaysEnabledKey)
+            ),
             splitButtonTooltips: Self.currentSplitButtonTooltips(),
             enableAnimations: false,
             chromeColors: .init(

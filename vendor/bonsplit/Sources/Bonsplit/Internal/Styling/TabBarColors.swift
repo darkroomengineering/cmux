@@ -66,10 +66,6 @@ enum TabBarColors {
         Color(nsColor: effectiveBackgroundColor(for: appearance, fallback: .windowBackgroundColor))
     }
 
-    static var barMaterial: Material {
-        .bar
-    }
-
     // MARK: - Tab States
 
     static var activeTabBackground: Color {

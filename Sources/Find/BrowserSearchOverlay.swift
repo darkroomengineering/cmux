@@ -4,6 +4,7 @@ import SwiftUI
 
 struct BrowserSearchOverlay: View {
     let panelId: UUID
+    let browserColorScheme: ColorScheme
     @ObservedObject var searchState: BrowserSearchState
     let focusRequestGeneration: UInt64
     let canApplyFocusRequest: (UInt64) -> Bool
@@ -15,87 +16,116 @@ struct BrowserSearchOverlay: View {
     @State private var dragOffset: CGSize = .zero
     @State private var barSize: CGSize = .zero
     @State private var isSearchFieldFocused: Bool = true
+    @AppStorage(ProgramaGlassSettings.overlaysEnabledKey)
+    private var overlayLiquidGlassEnabled = false
 
     private let padding: CGFloat = 8
 
+    private var usesNativeOverlayGlass: Bool {
+        WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+            for: .overlays,
+            persistedValue: overlayLiquidGlassEnabled
+        )
+    }
+
+    private var searchControls: some View {
+        HStack(spacing: 4) {
+            BrowserSearchTextFieldRepresentable(
+                text: $searchState.needle,
+                isFocused: $isSearchFieldFocused,
+                panelId: panelId,
+                focusRequestGeneration: focusRequestGeneration,
+                canApplyFocusRequest: canApplyFocusRequest,
+                onFieldDidFocus: onFieldDidFocus,
+                onEscape: onClose,
+                onReturn: { isShift in
+                    if isShift {
+                        onPrevious()
+                    } else {
+                        onNext()
+                    }
+                }
+            )
+                .frame(width: 180)
+                .padding(.leading, 8)
+                .padding(.trailing, 50)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(0.1))
+                .cornerRadius(6)
+                .overlay(alignment: .trailing) {
+                if let selected = searchState.selected {
+                    let totalText = searchState.total.map { String($0) } ?? "?"
+                    Text("\(selected + 1)/\(totalText)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                        .padding(.trailing, 8)
+                } else if let total = searchState.total {
+                    Text(total == 0 ? "0/0" : "-/\(total)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                        .padding(.trailing, 8)
+                }
+            }
+            Button(action: {
+                #if DEBUG
+                dlog("browser.findbar.next panel=\(panelId.uuidString.prefix(5))")
+                #endif
+                onNext()
+            }) {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(SearchButtonStyle())
+            .safeHelp(String(localized: "search.nextMatch.help", defaultValue: "Next match (Return)"))
+
+            Button(action: {
+                #if DEBUG
+                dlog("browser.findbar.prev panel=\(panelId.uuidString.prefix(5))")
+                #endif
+                onPrevious()
+            }) {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(SearchButtonStyle())
+            .safeHelp(String(localized: "search.previousMatch.help", defaultValue: "Previous match (Shift+Return)"))
+
+            Button(action: {
+                #if DEBUG
+                dlog("browser.findbar.close panel=\(panelId.uuidString.prefix(5))")
+                #endif
+                onClose()
+            }) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(SearchButtonStyle())
+            .safeHelp(String(localized: "search.close.help", defaultValue: "Close (Esc)"))
+        }
+        .padding(8)
+    }
+
+    @ViewBuilder
+    private var searchBarSurface: some View {
+        if usesNativeOverlayGlass {
+            ProgramaNativeGlassContentHost(
+                content: searchControls,
+                tintColor: nil,
+                cornerRadius: 8
+            )
+            .fixedSize(horizontal: true, vertical: true)
+            .shadow(radius: 4)
+        } else {
+            searchControls
+                .background(.background)
+                .clipShape(clipShape)
+                .shadow(radius: 4)
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
-            HStack(spacing: 4) {
-                BrowserSearchTextFieldRepresentable(
-                    text: $searchState.needle,
-                    isFocused: $isSearchFieldFocused,
-                    panelId: panelId,
-                    focusRequestGeneration: focusRequestGeneration,
-                    canApplyFocusRequest: canApplyFocusRequest,
-                    onFieldDidFocus: onFieldDidFocus,
-                    onEscape: onClose,
-                    onReturn: { isShift in
-                        if isShift {
-                            onPrevious()
-                        } else {
-                            onNext()
-                        }
-                    }
-                )
-                    .frame(width: 180)
-                    .padding(.leading, 8)
-                    .padding(.trailing, 50)
-                    .padding(.vertical, 6)
-                    .background(Color.primary.opacity(0.1))
-                    .cornerRadius(6)
-                    .overlay(alignment: .trailing) {
-                    if let selected = searchState.selected {
-                        let totalText = searchState.total.map { String($0) } ?? "?"
-                        Text("\(selected + 1)/\(totalText)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .monospacedDigit()
-                            .padding(.trailing, 8)
-                    } else if let total = searchState.total {
-                        Text(total == 0 ? "0/0" : "-/\(total)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .monospacedDigit()
-                            .padding(.trailing, 8)
-                    }
-                }
-                Button(action: {
-                    #if DEBUG
-                    dlog("browser.findbar.next panel=\(panelId.uuidString.prefix(5))")
-                    #endif
-                    onNext()
-                }) {
-                    Image(systemName: "chevron.up")
-                }
-                .buttonStyle(SearchButtonStyle())
-                .safeHelp("Next match (Return)")
-
-                Button(action: {
-                    #if DEBUG
-                    dlog("browser.findbar.prev panel=\(panelId.uuidString.prefix(5))")
-                    #endif
-                    onPrevious()
-                }) {
-                    Image(systemName: "chevron.down")
-                }
-                .buttonStyle(SearchButtonStyle())
-                .safeHelp("Previous match (Shift+Return)")
-
-                Button(action: {
-                    #if DEBUG
-                    dlog("browser.findbar.close panel=\(panelId.uuidString.prefix(5))")
-                    #endif
-                    onClose()
-                }) {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(SearchButtonStyle())
-                .safeHelp("Close (Esc)")
-            }
-            .padding(8)
-            .background(.background)
-            .clipShape(clipShape)
-            .shadow(radius: 4)
+            searchBarSurface
+            .environment(\.colorScheme, browserColorScheme)
             .onAppear {
 #if DEBUG
                 dlog("browser.findbar.appear panel=\(panelId.uuidString.prefix(5))")

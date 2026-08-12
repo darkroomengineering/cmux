@@ -28,96 +28,124 @@ struct SurfaceSearchOverlay: View {
     @State private var dragOffset: CGSize = .zero
     @State private var barSize: CGSize = .zero
     @State private var isSearchFieldFocused: Bool = true
+    @AppStorage(ProgramaGlassSettings.overlaysEnabledKey)
+    private var overlayLiquidGlassEnabled = false
 
     private let padding: CGFloat = 8
 
+    private var usesNativeOverlayGlass: Bool {
+        WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+            for: .overlays,
+            persistedValue: overlayLiquidGlassEnabled
+        )
+    }
+
+    private var searchControls: some View {
+        HStack(spacing: 4) {
+            SearchTextFieldRepresentable(
+                text: $searchState.needle,
+                isFocused: $isSearchFieldFocused,
+                surfaceId: surfaceId,
+                canApplyFocusRequest: canApplyFocusRequest,
+                onFieldDidFocus: onFieldDidFocus,
+                onEscape: {
+                    #if DEBUG
+                    dlog("find.nativeField.escape surface=\(surfaceId.uuidString.prefix(5)) needleEmpty=\(searchState.needle.isEmpty)")
+                    #endif
+                    if searchState.needle.isEmpty {
+                        onClose()
+                    } else {
+                        onMoveFocusToTerminal()
+                    }
+                },
+                onReturn: { isShift in
+                    let action = isShift
+                        ? "navigate_search:previous"
+                        : "navigate_search:next"
+                    onNavigateSearch(action)
+                }
+            )
+            .accessibilityIdentifier("TerminalFindSearchTextField")
+            .frame(width: 180)
+            .padding(.leading, 8)
+            .padding(.trailing, 50)
+            .padding(.vertical, 6)
+            .background(Color.primary.opacity(0.1))
+            .cornerRadius(6)
+            .overlay(alignment: .trailing) {
+                if let selected = searchState.selected {
+                    let totalText = searchState.total.map { String($0) } ?? "?"
+                    Text("\(selected + 1)/\(totalText)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                        .padding(.trailing, 8)
+                } else if let total = searchState.total {
+                    Text("-/\(total)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                        .padding(.trailing, 8)
+                }
+            }
+
+            Button(action: {
+                #if DEBUG
+                dlog("findbar.next surface=\(surfaceId.uuidString.prefix(5))")
+                #endif
+                onNavigateSearch("navigate_search:next")
+            }) {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(SearchButtonStyle())
+            .safeHelp(String(localized: "search.nextMatch.help", defaultValue: "Next match (Return)"))
+
+            Button(action: {
+                #if DEBUG
+                dlog("findbar.prev surface=\(surfaceId.uuidString.prefix(5))")
+                #endif
+                onNavigateSearch("navigate_search:previous")
+            }) {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(SearchButtonStyle())
+            .safeHelp(String(localized: "search.previousMatch.help", defaultValue: "Previous match (Shift+Return)"))
+
+            Button(action: {
+                #if DEBUG
+                dlog("findbar.close surface=\(surfaceId.uuidString.prefix(5))")
+                #endif
+                onClose()
+            }) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(SearchButtonStyle())
+            .safeHelp(String(localized: "search.close.help", defaultValue: "Close (Esc)"))
+        }
+        .padding(8)
+    }
+
+    @ViewBuilder
+    private var searchBarSurface: some View {
+        if usesNativeOverlayGlass {
+            ProgramaNativeGlassContentHost(
+                content: searchControls,
+                tintColor: nil,
+                cornerRadius: 8
+            )
+            .fixedSize(horizontal: true, vertical: true)
+            .shadow(radius: 4)
+        } else {
+            searchControls
+                .background(.background)
+                .clipShape(clipShape)
+                .shadow(radius: 4)
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
-            HStack(spacing: 4) {
-                SearchTextFieldRepresentable(
-                    text: $searchState.needle,
-                    isFocused: $isSearchFieldFocused,
-                    surfaceId: surfaceId,
-                    canApplyFocusRequest: canApplyFocusRequest,
-                    onFieldDidFocus: onFieldDidFocus,
-                    onEscape: {
-                        #if DEBUG
-                        dlog("find.nativeField.escape surface=\(surfaceId.uuidString.prefix(5)) needleEmpty=\(searchState.needle.isEmpty)")
-                        #endif
-                        if searchState.needle.isEmpty {
-                            onClose()
-                        } else {
-                            onMoveFocusToTerminal()
-                        }
-                    },
-                    onReturn: { isShift in
-                        let action = isShift
-                            ? "navigate_search:previous"
-                            : "navigate_search:next"
-                        onNavigateSearch(action)
-                    }
-                )
-                .accessibilityIdentifier("TerminalFindSearchTextField")
-                .frame(width: 180)
-                .padding(.leading, 8)
-                .padding(.trailing, 50)
-                .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.1))
-                .cornerRadius(6)
-                .overlay(alignment: .trailing) {
-                    if let selected = searchState.selected {
-                        let totalText = searchState.total.map { String($0) } ?? "?"
-                        Text("\(selected + 1)/\(totalText)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .monospacedDigit()
-                            .padding(.trailing, 8)
-                    } else if let total = searchState.total {
-                        Text("-/\(total)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .monospacedDigit()
-                            .padding(.trailing, 8)
-                    }
-                }
-
-                Button(action: {
-                    #if DEBUG
-                    dlog("findbar.next surface=\(surfaceId.uuidString.prefix(5))")
-                    #endif
-                    onNavigateSearch("navigate_search:next")
-                }) {
-                    Image(systemName: "chevron.up")
-                }
-                .buttonStyle(SearchButtonStyle())
-                .safeHelp(String(localized: "search.nextMatch.help", defaultValue: "Next match (Return)"))
-
-                Button(action: {
-                    #if DEBUG
-                    dlog("findbar.prev surface=\(surfaceId.uuidString.prefix(5))")
-                    #endif
-                    onNavigateSearch("navigate_search:previous")
-                }) {
-                    Image(systemName: "chevron.down")
-                }
-                .buttonStyle(SearchButtonStyle())
-                .safeHelp(String(localized: "search.previousMatch.help", defaultValue: "Previous match (Shift+Return)"))
-
-                Button(action: {
-                    #if DEBUG
-                    dlog("findbar.close surface=\(surfaceId.uuidString.prefix(5))")
-                    #endif
-                    onClose()
-                }) {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(SearchButtonStyle())
-                .safeHelp(String(localized: "search.close.help", defaultValue: "Close (Esc)"))
-            }
-            .padding(8)
-            .background(.background)
-            .clipShape(clipShape)
-            .shadow(radius: 4)
+            searchBarSurface
             .onAppear {
                 #if DEBUG
                 dlog("find.overlay.appear tab=\(tabId.uuidString.prefix(5)) surface=\(surfaceId.uuidString.prefix(5))")

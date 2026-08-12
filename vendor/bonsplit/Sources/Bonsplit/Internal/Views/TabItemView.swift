@@ -64,7 +64,28 @@ struct TabItemView: View {
     @AppStorage(TabControlShortcutHintDebugSettings.yKey) private var controlShortcutHintYOffset = TabControlShortcutHintDebugSettings.defaultY
     @AppStorage(TabControlShortcutHintDebugSettings.alwaysShowKey) private var alwaysShowShortcutHints = TabControlShortcutHintDebugSettings.defaultAlwaysShow
 
+    private var usesNativeLiquidGlass: Bool {
+        appearance.tabBarLiquidGlassEnabled && TabBarGlassStyling.isAvailable
+    }
+
+    private var usesNativeOverlayGlass: Bool {
+        appearance.overlayLiquidGlassEnabled && TabBarGlassStyling.isAvailable
+    }
+
+    @ViewBuilder
     var body: some View {
+        if usesNativeLiquidGlass {
+            TabPillGlassHost(
+                content: tabContent,
+                tintColor: TabBarGlassStyling.tintColor(isSelected: isSelected, isHovered: isHovered),
+                cornerRadius: TabBarGlassStyling.pillCornerRadius
+            )
+        } else {
+            tabContent
+        }
+    }
+
+    private var tabContent: some View {
         HStack(spacing: 0) {
             // Icon + title block uses the standard spacing, but keep the close affordance tight.
             HStack(spacing: TabBarMetrics.contentSpacing) {
@@ -171,7 +192,7 @@ struct TabItemView: View {
             minHeight: TabBarMetrics.tabHeight,
             maxHeight: TabBarMetrics.tabHeight
         )
-        .padding(.bottom, isSelected ? 1 : 0)
+        .padding(.bottom, isSelected && !usesNativeLiquidGlass ? 1 : 0)
         .background(tabBackground.saturation(saturation))
         .animation(.easeInOut(duration: 0.14), value: showsShortcutHint)
         .contentShape(Rectangle())
@@ -230,30 +251,45 @@ struct TabItemView: View {
     }
 
     @ViewBuilder
+    private func shortcutHintPill(label: String) -> some View {
+        let content = Text(label)
+            .font(.system(size: max(8, TabBarMetrics.titleFontSize - 2), weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .foregroundStyle(
+                isSelected
+                    ? TabBarColors.activeText(for: appearance)
+                    : TabBarColors.inactiveText(for: appearance)
+            )
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+
+        if usesNativeOverlayGlass {
+            TabPillGlassHost(
+                content: content,
+                tintColor: nil,
+                cornerRadius: 100
+            )
+        } else {
+            content
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(.regularMaterial)
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .stroke(Color.white.opacity(0.30), lineWidth: 0.8)
+                        )
+                        .shadow(color: Color.black.opacity(0.22), radius: 2, x: 0, y: 1)
+                )
+        }
+    }
+
+    @ViewBuilder
     private var trailingAccessory: some View {
         ZStack(alignment: .center) {
             if let shortcutHintLabel {
-                Text(shortcutHintLabel)
-                    .font(.system(size: max(8, TabBarMetrics.titleFontSize - 2), weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .foregroundStyle(
-                        isSelected
-                            ? TabBarColors.activeText(for: appearance)
-                            : TabBarColors.inactiveText(for: appearance)
-                    )
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(.regularMaterial)
-                            .overlay(
-                                Capsule(style: .continuous)
-                                    .stroke(Color.white.opacity(0.30), lineWidth: 0.8)
-                            )
-                            .shadow(color: Color.black.opacity(0.22), radius: 2, x: 0, y: 1)
-                    )
+                shortcutHintPill(label: shortcutHintLabel)
                     .offset(
                         x: TabControlShortcutHintDebugSettings.clamped(controlShortcutHintXOffset),
                         y: TabControlShortcutHintDebugSettings.clamped(controlShortcutHintYOffset)
@@ -427,7 +463,7 @@ struct TabItemView: View {
     private var tabBackground: some View {
         ZStack(alignment: .top) {
             // Background fill (hover)
-            if TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
+            if !usesNativeLiquidGlass && TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
                 Rectangle()
                     .fill(TabBarColors.hoveredTabBackground(for: appearance))
             } else {
@@ -435,18 +471,21 @@ struct TabItemView: View {
             }
 
             // Top accent indicator for selected tab
-            if isSelected {
+            if isSelected && !usesNativeLiquidGlass {
                 Rectangle()
                     .fill(Color.accentColor)
                     .frame(height: TabBarMetrics.activeIndicatorHeight)
             }
 
-            // Right border separator
-            HStack {
-                Spacer()
-                Rectangle()
-                    .fill(TabBarColors.separator(for: appearance))
-                    .frame(width: 1)
+            // The individual glass pill already supplies its own edge. Keep the
+            // legacy separator only for the flat tab-strip treatment.
+            if !usesNativeLiquidGlass {
+                HStack {
+                    Spacer()
+                    Rectangle()
+                        .fill(TabBarColors.separator(for: appearance))
+                        .frame(width: 1)
+                }
             }
         }
     }
