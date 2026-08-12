@@ -31,7 +31,7 @@ final class WindowGlassEffectTests: XCTestCase {
 
         if WindowGlassEffect.isAvailable {
             XCTAssertFalse(window.contentView === originalContentView)
-            XCTAssertTrue(window.contentView?.subviews.contains(where: { $0 === originalContentView }) == true)
+            XCTAssertTrue(WindowGlassEffect.hostedContentView(in: window.contentView!) === originalContentView)
         } else {
             XCTAssertTrue(window.contentView === originalContentView)
             XCTAssertTrue(originalContentView.subviews.contains(where: { $0 is NSVisualEffectView }))

@@ -205,7 +205,7 @@ struct VerticalTabsSidebar: View {
         let allSelectedRemoteContextMenuTargetsDisconnected = !selectedRemoteContextMenuTargets.isEmpty &&
             selectedRemoteContextMenuTargets.allSatisfy { $0.remoteConnectionState == .disconnected }
 
-        VStack(spacing: 0) {
+        SidebarSurface(content: VStack(spacing: 0) {
             GeometryReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
@@ -277,6 +277,7 @@ struct VerticalTabsSidebar: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                         SidebarEmptyArea(
+                            tabManager: tabManager,
                             rowSpacing: tabRowSpacing,
                             selection: $selection,
                             selectedTabIds: $selectedTabIds,
@@ -322,8 +323,7 @@ struct VerticalTabsSidebar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("Sidebar")
-        .ignoresSafeArea()
-        .background(SidebarBackdrop().ignoresSafeArea())
+        .ignoresSafeArea())
         .overlay(alignment: .trailing) {
             SidebarTrailingBorder()
         }

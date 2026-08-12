@@ -630,7 +630,7 @@ final class SidebarScrollViewResolverView: NSView {
 }
 
 struct SidebarEmptyArea: View {
-    @EnvironmentObject var tabManager: TabManager
+    let tabManager: TabManager
     let rowSpacing: CGFloat
     @Binding var selection: SidebarSelection
     @Binding var selectedTabIds: Set<UUID>
@@ -1220,6 +1220,125 @@ private struct SidebarVisualEffectBackground: NSViewRepresentable {
     }
 }
 
+/// Hosts the complete interactive sidebar inside the native glass content host. AppKit does
+/// not guarantee the z-order or rendering of controls added as arbitrary glass siblings.
+private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable {
+    let content: Content
+    let tintColor: NSColor?
+    let cornerRadius: CGFloat
+
+    final class Coordinator {
+        let hostingView: NSHostingView<Content>
+
+        init(content: Content) {
+            hostingView = NSHostingView(rootView: content)
+            hostingView.autoresizingMask = [.width, .height]
+            hostingView.wantsLayer = true
+            hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(content: content)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let hostingView = context.coordinator.hostingView
+
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView(frame: .zero)
+            glass.autoresizingMask = [.width, .height]
+            glass.wantsLayer = true
+            glass.style = .regular
+            glass.cornerRadius = cornerRadius
+            glass.tintColor = tintColor
+            hostingView.frame = glass.bounds
+            glass.contentView = hostingView
+            return glass
+        }
+        #endif
+
+        return hostingView
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.hostingView.rootView = content
+
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *), let glass = nsView as? NSGlassEffectView {
+            glass.cornerRadius = cornerRadius
+            glass.tintColor = tintColor
+        }
+        #endif
+    }
+}
+
+private enum SidebarLiquidGlassLayout {
+    static let inset: CGFloat = 8
+    static let cornerRadius: CGFloat = 22
+}
+
+/// Selects the native content-hosting topology only for sidebar-local Liquid Glass. Every
+/// fallback keeps the established SwiftUI content + background relationship, preserving the
+/// exact macOS 14–25 hierarchy and the behind-window whole-window glass mode.
+struct SidebarSurface<Content: View>: View {
+    let content: Content
+
+    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
+    @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = SidebarTintDefaults.opacity
+    @AppStorage("sidebarTintHex") private var sidebarTintHex = SidebarTintDefaults.hex
+    @AppStorage("sidebarTintHexLight") private var sidebarTintHexLight: String?
+    @AppStorage("sidebarTintHexDark") private var sidebarTintHexDark: String?
+    @AppStorage("sidebarMaterial") private var sidebarMaterial = SidebarMaterialOption.sidebar.rawValue
+    @AppStorage("sidebarBlendMode") private var sidebarBlendMode = SidebarBlendModeOption.withinWindow.rawValue
+    @AppStorage("sidebarCornerRadius") private var sidebarCornerRadius = 0.0
+    @Environment(\.colorScheme) private var colorScheme
+
+    @ViewBuilder
+    var body: some View {
+        if usesLocalNativeGlass {
+            SidebarNativeGlassContentHost(
+                content: content.environment(\.colorScheme, colorScheme),
+                tintColor: resolvedTintColor,
+                cornerRadius: max(CGFloat(sidebarCornerRadius), SidebarLiquidGlassLayout.cornerRadius)
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(SidebarLiquidGlassLayout.inset)
+        } else {
+            content
+                .background(SidebarBackdrop().ignoresSafeArea())
+        }
+    }
+
+    private var usesLocalNativeGlass: Bool {
+        guard !matchTerminalBackground, WindowGlassEffect.isAvailable else { return false }
+
+        let materialOption = SidebarMaterialOption(rawValue: sidebarMaterial)
+        let blendingMode = SidebarBlendModeOption(rawValue: sidebarBlendMode) ?? .behindWindow
+        let override = ProgramaGlassSettings.startupOverride(for: .sidebar)
+        let prefersLiquidGlass = override ?? materialOption?.usesLiquidGlass ?? false
+        let usesWindowLevelGlass = override == nil && prefersLiquidGlass && blendingMode == .behindWindow
+        return prefersLiquidGlass && !usesWindowLevelGlass
+    }
+
+    private var resolvedTintColor: NSColor? {
+        guard sidebarTintOpacity > 0 else { return nil }
+
+        let resolvedHex: String
+        if colorScheme == .dark, let sidebarTintHexDark {
+            resolvedHex = sidebarTintHexDark
+        } else if colorScheme == .light, let sidebarTintHexLight {
+            resolvedHex = sidebarTintHexLight
+        } else {
+            resolvedHex = sidebarTintHex
+        }
+
+        return (NSColor(hex: resolvedHex) ?? NSColor(hex: sidebarTintHex) ?? .black)
+            .withAlphaComponent(sidebarTintOpacity)
+    }
+}
+
 /// Reads the leading inset required to clear traffic lights + left titlebar accessories.
 final class TitlebarLeadingInsetPassthroughView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
@@ -1507,6 +1626,7 @@ enum SidebarTintDefaults {
 }
 
 enum SidebarPresetOption: String, CaseIterable, Identifiable {
+    case liquidGlass
     case nativeSidebar
     case glassBehind
     case softBlur
@@ -1518,6 +1638,7 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .liquidGlass: return String(localized: "settings.preset.liquidGlass", defaultValue: "Liquid Glass")
         case .nativeSidebar: return String(localized: "settings.preset.nativeSidebar", defaultValue: "Native Sidebar")
         case .glassBehind: return String(localized: "settings.preset.raycastGray", defaultValue: "Raycast Gray")
         case .softBlur: return String(localized: "settings.preset.softBlur", defaultValue: "Soft Blur")
@@ -1529,6 +1650,7 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var material: SidebarMaterialOption {
         switch self {
+        case .liquidGlass: return .liquidGlass
         case .nativeSidebar: return .sidebar
         case .glassBehind: return .sidebar
         case .softBlur: return .sidebar
@@ -1540,6 +1662,7 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var blendMode: SidebarBlendModeOption {
         switch self {
+        case .liquidGlass: return .withinWindow
         case .nativeSidebar: return .withinWindow
         case .glassBehind: return .behindWindow
         case .softBlur: return .behindWindow
@@ -1551,6 +1674,7 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var state: SidebarStateOption {
         switch self {
+        case .liquidGlass: return .followWindow
         case .nativeSidebar: return .followWindow
         case .glassBehind: return .active
         case .softBlur: return .active
@@ -1562,6 +1686,7 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var tintHex: String {
         switch self {
+        case .liquidGlass: return "#000000"
         case .nativeSidebar: return "#000000"
         case .glassBehind: return "#000000"
         case .softBlur: return "#000000"
@@ -1573,6 +1698,7 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var tintOpacity: Double {
         switch self {
+        case .liquidGlass: return 0.0
         case .nativeSidebar: return 0.18
         case .glassBehind: return 0.36
         case .softBlur: return 0.28
@@ -1584,6 +1710,7 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var cornerRadius: Double {
         switch self {
+        case .liquidGlass: return 22.0
         case .nativeSidebar: return 0.0
         case .glassBehind: return 0.0
         case .softBlur: return 0.0
@@ -1595,6 +1722,7 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var blurOpacity: Double {
         switch self {
+        case .liquidGlass: return 1.0
         case .nativeSidebar: return 1.0
         case .glassBehind: return 0.6
         case .softBlur: return 0.45

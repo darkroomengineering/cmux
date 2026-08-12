@@ -9633,6 +9633,12 @@
             "state": "translated",
             "value": "Liquid Glass (macOS 26+)"
           }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リキッドガラス（macOS 26以降）"
+          }
         }
       }
     },
@@ -10310,6 +10316,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "HUD Glass"
+          }
+        }
+      }
+    },
+    "settings.preset.liquidGlass": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Liquid Glass"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リキッドガラス"
           }
         }
       }

@@ -28,6 +28,18 @@ enum WindowGlassEffect {
         return false
     }
 
+    /// Returns the control host owned by a native glass view. Source content such as
+    /// portal-hosted terminal surfaces intentionally remains outside this host so AppKit
+    /// can sample it through the effect.
+    static func hostedContentView(in view: NSView) -> NSView? {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
+            return glass.contentView
+        }
+        #endif
+        return nil
+    }
+
     static func apply(to window: NSWindow, tintColor: NSColor? = nil) {
         guard let originalContentView = window.contentView else { return }
 
@@ -60,20 +72,14 @@ enum WindowGlassEffect {
         objc_setAssociatedObject(window, &originalContentViewKey, originalContentView, .OBJC_ASSOCIATION_RETAIN)
         window.contentView = glassView
 
-        // Re-add the original SwiftUI hosting view on top of the glass, filling entire area.
-        // Kept as a manual subview (not NSGlassEffectView.contentView) so the window portal
-        // installation code can rely on the subview hierarchy.
-        originalContentView.translatesAutoresizingMaskIntoConstraints = false
+        // AppKit only guarantees correct control placement when the controls are owned by
+        // NSGlassEffectView.contentView. Portal-hosted terminal surfaces remain siblings below
+        // this host, where they continue to provide the source pixels sampled by the effect.
+        originalContentView.frame = glassView.bounds
+        originalContentView.autoresizingMask = [.width, .height]
         originalContentView.wantsLayer = true
         originalContentView.layer?.backgroundColor = NSColor.clear.cgColor
-        glassView.addSubview(originalContentView)
-
-        NSLayoutConstraint.activate([
-            originalContentView.topAnchor.constraint(equalTo: glassView.topAnchor),
-            originalContentView.bottomAnchor.constraint(equalTo: glassView.bottomAnchor),
-            originalContentView.leadingAnchor.constraint(equalTo: glassView.leadingAnchor),
-            originalContentView.trailingAnchor.constraint(equalTo: glassView.trailingAnchor)
-        ])
+        glassView.contentView = originalContentView
 
         objc_setAssociatedObject(window, &glassViewKey, glassView, .OBJC_ASSOCIATION_RETAIN)
     }
@@ -147,8 +153,12 @@ enum WindowGlassEffect {
 
         if isGlassEffectView(glassView) {
             if let originalContentView = objc_getAssociatedObject(window, &originalContentViewKey) as? NSView {
+                #if compiler(>=6.2)
+                if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
+                    glass.contentView = nil
+                }
+                #endif
                 originalContentView.removeFromSuperview()
-                originalContentView.translatesAutoresizingMaskIntoConstraints = true
                 originalContentView.autoresizingMask = [.width, .height]
                 originalContentView.frame = glassView.bounds
                 window.contentView = originalContentView
