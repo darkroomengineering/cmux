@@ -19,6 +19,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - A restart after an update no longer kills every terminal when the new app comes up faster than the background session-holder notices the old one is gone. The app now waits out that window instead of giving up, escrow sockets no longer leak into shell processes (which silently delayed that detection), and a session that falls back anyway keeps its reattach records on disk while its process is still alive instead of deleting them.
 
 ### Changed
+- Hidden terminal panes now release their Metal renderer and IOSurface pool after a short idle period while keeping the shell, scrollback, and terminal state alive. Returning to the pane rebuilds its renderer before it becomes visible, so graphics memory scales with the terminals on screen instead of every workspace opened during the session.
 - Terminal output subscriptions now take one bounded snapshot per surface and publish only the changed suffix, reducing main-thread work and memory churn for automation clients watching busy terminals.
 - Less background churn under agent load: repeated identical progress and port reports no longer redraw workspaces, moving the mouse across a window no longer re-renders its chrome, and scrolling no longer builds debug strings that get thrown away.
 - Closing a browser tab now clears its leftover automation state (scripts, dialog queues, download logs), and a browser download wait that times out no longer risks corrupting a file handle.

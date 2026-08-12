@@ -155,6 +155,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
     private(set) var surface: ghostty_surface_t?
     private weak var attachedView: GhosttyNSView?
 
+    private var rendererRealized = true
+    private(set) var rendererLastVisibleAt: TimeInterval = Date().timeIntervalSince1970
+    private var rendererPortalVisible = false
+
     /// Whether the runtime Ghostty surface exists and has not begun teardown.
     ///
     /// Use this as a quick availability check. Before passing `surface` to
@@ -212,7 +216,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
     private let maxPendingSocketInputBytes = 1_048_576
     private var backgroundSurfaceStartQueued = false
     private var surfaceCallbackContext: Unmanaged<GhosttySurfaceCallbackContext>?
-    /// Per-surface userdata for the PTY output tap that feeds the session
+    /// Per-surface userdata for the PTY tee that feeds the session
     /// WAL. See SessionOutputTapSpike.swift (SessionWALStore) for the
     /// threading/lock tradeoff and full lifecycle contract. Registered right
     /// after `ghostty_surface_new` succeeds; cleared + released at every
@@ -254,7 +258,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// post-creation `updateSize` call, or a bounded fallback timer) runs
     /// first. `text` may be empty -- a revive with no scrollback to seed
     /// still needs this set so the post-seed SIGWINCH nudge below still
-    /// fires and the output tap still gets registered.
+    /// fires and the PTY tee still gets registered.
     private var pendingReviveSeed: (text: String, resetModes: Bool, workingDirectory: String?)?
     /// restore-replay-residuals (divider-race fix, garbled residual spinner
     /// output on multi-pane restore): `true` while this surface's
@@ -946,7 +950,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         Task { @MainActor in
             // Keep free behavior aligned across teardown sites: perform the runtime
             // teardown on the next main-actor turn so SIGHUP delivery is
-            // deterministic but non-reentrant. Clear the output tap right before
+            // deterministic but non-reentrant. Clear the PTY tee right before
             // free, per the C API contract. Both call sites are the surface's
             // genuine normal-close path, so delete its WAL directory now that
             // it's torn down.
@@ -1475,6 +1479,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
         guard let createdSurface = surface else { return }
         TerminalSurfaceRegistry.shared.registerRuntimeSurface(createdSurface, ownerId: id)
+        rendererRealized = true
         recordRuntimeSurfaceCreation()
 
         // For vsync-driven rendering, Ghostty needs to know which display we're on so it can
@@ -1532,7 +1537,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         let willDeferSeedAndTap = consumedReviveDescriptor != nil
             || (consumedFreshSeedText?.isEmpty == false)
         if !willDeferSeedAndTap {
-            // Register the PTY output tap now that the runtime surface
+            // Register the PTY tee now that the runtime surface
             // definitely exists, wiring it into the session WAL writer. See
             // SessionOutputTapSpike.swift (SessionWALStore). The revive case
             // and the fresh-spawn-with-seed-text case both register this
@@ -1606,8 +1611,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // main-queue pressure). Any live output *painted* during that window
         // is overwritten on screen when the seed finally runs (seeding
         // always writes over whatever is currently displayed) -- that part
-        // is cosmetic. But the output tap is also deferred until the same
-        // point (see the tap-registration comment above), so any pty bytes
+        // is cosmetic. But the PTY tee is also deferred until the same
+        // point (see the tee-registration comment above), so any pty bytes
         // that arrive during this window are never appended to this
         // session's own `wal.log` at all -- a real, if small, WAL recording
         // gap, not just a cosmetic one. It is bounded and self-healing: the
@@ -1910,7 +1915,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         )
         #endif
 
-        // Register the PTY output tap now -- deliberately after seeding, so
+        // Register the PTY tee now -- deliberately after seeding, so
         // this replay text is never captured into the new session's own
         // `wal.log`. Mirrors the non-revive registration in `createSurface`.
         outputTapContext?.release()
@@ -2126,6 +2131,41 @@ final class TerminalSurface: Identifiable, ObservableObject {
     func setOcclusion(_ visible: Bool) {
         guard let surface = surface else { return }
         ghostty_surface_set_occlusion(surface, visible)
+    }
+
+    var isRendererRealized: Bool { hasLiveSurface && rendererRealized }
+    var isRendererPortalVisible: Bool { rendererPortalVisible }
+
+    func setRendererPortalVisible(_ visible: Bool) {
+        let wasVisible = rendererPortalVisible
+        rendererPortalVisible = visible
+        if visible || wasVisible {
+            noteBecameVisibleForRendererReclamation()
+        }
+    }
+
+    func noteBecameVisibleForRendererReclamation() {
+        rendererLastVisibleAt = Date().timeIntervalSince1970
+    }
+
+    @MainActor
+    func releaseRenderer() {
+        guard rendererRealized, !rendererPortalVisible else { return }
+        guard let surface = liveSurfaceForGhosttyAccess(reason: "renderer.release") else { return }
+        if ghostty_surface_set_renderer_realized(surface, false) {
+            rendererRealized = false
+        }
+    }
+
+    @MainActor
+    func realizeRenderer() {
+        guard !rendererRealized else { return }
+        guard let surface = liveSurfaceForGhosttyAccess(reason: "renderer.realize") else { return }
+        if ghostty_surface_set_renderer_realized(surface, true) {
+            rendererRealized = true
+        } else {
+            RendererRealizationController.shared.scheduleImmediatePass()
+        }
     }
 
     func needsConfirmClose() -> Bool {

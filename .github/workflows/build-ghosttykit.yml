@@ -113,11 +113,10 @@ jobs:
           set -euo pipefail
           rm -rf GhosttyKit.xcframework
           cp -R ghostty/macos/GhosttyKit.xcframework GhosttyKit.xcframework
-          # ghostty has used both libghostty.a and libghostty-fat.a archive names
-          # across revisions; accept either.
-          ARCHIVE="$(find GhosttyKit.xcframework -type f \( -name 'libghostty.a' -o -name 'libghostty-fat.a' \) -print -quit)"
+          # Ghostty has used several archive names across revisions.
+          ARCHIVE="$(find GhosttyKit.xcframework -type f \( -name 'libghostty.a' -o -name 'libghostty-fat.a' -o -name 'libghostty-internal-fat.a' \) -print -quit)"
           if [ -z "$ARCHIVE" ]; then
-            echo "GhosttyKit.xcframework does not contain libghostty.a or libghostty-fat.a" >&2
+            echo "GhosttyKit.xcframework does not contain a supported macOS libghostty archive" >&2
             exit 1
           fi
           ./scripts/verify-release-architectures.sh "$ARCHIVE"

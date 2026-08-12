@@ -103,9 +103,11 @@ PUBLISH_TMP_DIR=""
 find_macos_archive() {
   local framework="$1"
   local candidate=""
-  # ghostty's xcframework output has used both libghostty.a and libghostty-fat.a
-  # (universal) archive names across revisions; accept either.
-  for candidate in "$framework"/macos-*/libghostty.a "$framework"/macos-*/libghostty-fat.a; do
+  # Ghostty's xcframework output has used several archive names across revisions.
+  for candidate in \
+    "$framework"/macos-*/libghostty.a \
+    "$framework"/macos-*/libghostty-fat.a \
+    "$framework"/macos-*/libghostty-internal-fat.a; do
     if [[ -f "$candidate" ]]; then
       printf '%s\n' "$candidate"
       return 0
@@ -228,7 +230,7 @@ prepare_archive_index() {
   local framework="$1"
   local archive
   if ! archive="$(find_macos_archive "$framework")"; then
-    echo "error: GhosttyKit.xcframework has no macOS libghostty.a" >&2
+    echo "error: GhosttyKit.xcframework has no supported macOS libghostty archive" >&2
     return 1
   fi
   echo "==> Refreshing libghostty archive index..."

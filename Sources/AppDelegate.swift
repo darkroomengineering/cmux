@@ -1178,6 +1178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         installBrowserAddressBarFocusObservers()
         installShortcutMonitor()
         installShortcutDefaultsObserver()
+        RendererRealizationController.shared.start()
         NSApp.servicesProvider = self
 #if DEBUG
         UpdateTestSupport.applyIfNeeded(to: updateController.viewModel)
