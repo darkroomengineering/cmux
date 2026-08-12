@@ -90,7 +90,7 @@ enum ProgramaGlassSettings {
             windowEnabledKey: nativeGlassAvailable,
             tabBarEnabledKey: false,
             browserToolbarEnabledKey: false,
-            overlaysEnabledKey: false,
+            overlaysEnabledKey: nativeGlassAvailable,
         ]
     }
 

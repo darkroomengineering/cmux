@@ -763,7 +763,7 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         )
     }
 
-    func testPlatformGlassDefaultsEnableWindowOnlyWhenNativeGlassIsAvailable() {
+    func testPlatformGlassDefaultsEnableGatedSurfacesOnlyWhenNativeGlassIsAvailable() {
         let nativeDefaults = ProgramaGlassSettings.platformDefaults(nativeGlassAvailable: true)
         let fallbackDefaults = ProgramaGlassSettings.platformDefaults(nativeGlassAvailable: false)
 
@@ -771,7 +771,8 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         XCTAssertEqual(fallbackDefaults[ProgramaGlassSettings.windowEnabledKey] as? Bool, false)
         XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.tabBarEnabledKey] as? Bool, false)
         XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.browserToolbarEnabledKey] as? Bool, false)
-        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.overlaysEnabledKey] as? Bool, false)
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.overlaysEnabledKey] as? Bool, true)
+        XCTAssertEqual(fallbackDefaults[ProgramaGlassSettings.overlaysEnabledKey] as? Bool, false)
     }
 
     func testExplicitWindowGlassChoiceOverridesRegisteredPlatformDefault() {
