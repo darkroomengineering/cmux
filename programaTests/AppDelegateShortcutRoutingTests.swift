@@ -1244,6 +1244,55 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertTrue(appDelegate.tabManager === secondManager, "Split shortcut routing should keep the event window active")
     }
 
+    func testConfiguredOpenReviewShortcutOpensReviewPanel() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = appDelegate.createMainWindow()
+        defer { closeWindow(withId: windowId) }
+
+        guard let window = window(withId: windowId),
+              let manager = appDelegate.tabManagerFor(windowId: windowId),
+              let workspace = manager.selectedWorkspace else {
+            XCTFail("Expected test window and workspace")
+            return
+        }
+
+        let panelCountBefore = workspace.panels.count
+        let shortcut = StoredShortcut(
+            key: "r",
+            command: false,
+            shift: false,
+            option: true,
+            control: true
+        )
+
+        withTemporaryShortcut(action: .openReview, shortcut: shortcut) {
+            guard let event = makeKeyDownEvent(
+                key: "r",
+                modifiers: [.control, .option],
+                keyCode: 15,
+                windowNumber: window.windowNumber
+            ) else {
+                XCTFail("Failed to construct Ctrl+Option+R event")
+                return
+            }
+
+#if DEBUG
+            XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: event))
+#else
+            XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+        }
+
+        waitUntil(description: "configured Open Review shortcut to create a review panel") {
+            workspace.panels.count == panelCountBefore + 1
+        }
+        XCTAssertEqual(workspace.panels.values.compactMap { $0 as? ReviewPanel }.count, 1)
+    }
+
     func testPerformSplitShortcutSplitsFocusedTerminalSurfaceWhenSelectedWorkspaceIsStale() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")

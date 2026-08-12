@@ -72,6 +72,20 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertTrue(panelSnapshot.listeningPorts.isEmpty)
     }
 
+    @MainActor
+    func testWorkspaceSessionSnapshotToleratesDuplicatePanelIDs() throws {
+        let workspace = Workspace()
+        var snapshot = workspace.sessionSnapshot(includeScrollback: false)
+        let originalPanel = try XCTUnwrap(snapshot.panels.first)
+        snapshot.panels.append(originalPanel)
+
+        let restored = Workspace()
+        restored.restoreSessionSnapshot(snapshot)
+
+        XCTAssertEqual(restored.panels.count, 1)
+        XCTAssertNotNil(restored.panels.values.first)
+    }
+
     func testSaveAndLoadRoundTripWithCustomSnapshotPath() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-session-tests-\(UUID().uuidString)", isDirectory: true)
