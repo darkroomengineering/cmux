@@ -43,7 +43,7 @@ capture() {
   local prefix="$output_dir/${surface}-${state}"
   footprint --pid "$pid" --format bytes --noCategories --json "$prefix.json" > "$prefix.txt"
   echo "$state snapshot: $prefix.txt"
-  grep -E 'Footprint|footprint' "$prefix.txt" | tail -n 1 || true
+  jq -r '"  total footprint: \(.["total footprint"]) B"' "$prefix.json"
 }
 
 for candidate in window sidebar tabBar browserToolbar overlays; do
@@ -58,4 +58,13 @@ capture on
 
 set_surface "$surface" false
 
-echo "Snapshots are report-only; compare the JSON totals after the app has reached the same idle state."
+off_total="$(jq -r '.["total footprint"]' "$output_dir/${surface}-off.json")"
+on_total="$(jq -r '.["total footprint"]' "$output_dir/${surface}-on.json")"
+delta_bytes="$((on_total - off_total))"
+ratio="$(awk -v on="$on_total" -v off="$off_total" 'BEGIN { printf "%.4f", on / off }')"
+
+echo "OFF total: $off_total B"
+echo "ON total:  $on_total B"
+echo "ON - OFF:  $delta_bytes B"
+echo "ON / OFF:  ${ratio}x"
+echo "Snapshots are report-only in Phase 1; compare equal-idle-state deltas for later phase gates."

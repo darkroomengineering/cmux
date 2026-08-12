@@ -76,6 +76,12 @@ enum ProgramaGlassSettings {
         startupOverride(for: surface) ?? persistedValue
     }
 
+    /// A clean install uses the native inset panel only where AppKit can provide real Liquid
+    /// Glass. Existing persisted sidebar choices continue to win over this startup default.
+    static func defaultSidebarPreset(nativeGlassAvailable: Bool) -> SidebarPresetOption {
+        nativeGlassAvailable ? .liquidGlass : .nativeSidebar
+    }
+
     #if DEBUG
     /// Mutates only debug-build preferences. This is used by the footprint script against a
     /// tagged app and intentionally performs no app activation or focus-changing work.

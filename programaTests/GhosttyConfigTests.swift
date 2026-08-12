@@ -752,6 +752,17 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         }
     }
 
+    func testCleanInstallSidebarPresetUsesLiquidGlassOnlyWhenNativeGlassIsAvailable() {
+        XCTAssertEqual(
+            ProgramaGlassSettings.defaultSidebarPreset(nativeGlassAvailable: true),
+            .liquidGlass
+        )
+        XCTAssertEqual(
+            ProgramaGlassSettings.defaultSidebarPreset(nativeGlassAvailable: false),
+            .nativeSidebar
+        )
+    }
+
     func testBehindWindowGlassPathKeepsTransparentWindowEnabled() {
         withTemporaryWindowBackgroundDefaults {
             let defaults = UserDefaults.standard

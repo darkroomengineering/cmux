@@ -256,7 +256,9 @@ struct programaApp: App {
             approximatelyEqual(cornerRadius, 0.0)
 
         if usesLegacyDefaults {
-            let preset = SidebarPresetOption.nativeSidebar
+            let preset = ProgramaGlassSettings.defaultSidebarPreset(
+                nativeGlassAvailable: WindowGlassEffect.isAvailable
+            )
             defaults.set(preset.rawValue, forKey: "sidebarPreset")
             defaults.set(preset.material.rawValue, forKey: "sidebarMaterial")
             defaults.set(preset.blendMode.rawValue, forKey: "sidebarBlendMode")
