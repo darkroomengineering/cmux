@@ -181,6 +181,9 @@ tend to conflict together during rebases.
   - Restores surface revival through an existing PTY master fd and running child PID without taking ownership of or signaling that process.
   - Programa now uses the fork's newer `ghostty_surface_set_pty_tee_cb` callback for its session WAL. That callback runs before VT parsing and supersedes the older Programa-only output-tap API, so the obsolete output-tap export was intentionally not restored.
   - Reconciles the reachable historical feature lineage with the concrete fork-main file tree, which is what consumers and release artifacts actually build.
+- Prebuilt framework:
+  - Release: `xcframework-96316fc506f0015f6e8e3906b995e2c4aba23ebf`
+  - Asset SHA-256: `0f12f0d6dd920ccfa49789eae1018be314344797894ef0aae7db3e90fc27a441`
 
 The fork branch head is now `96316fc50` on fork `main`.
 
