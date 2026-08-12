@@ -22,45 +22,6 @@ DOWNLOAD_URL="${GHOSTTYKIT_URL:-https://github.com/darkroomengineering/ghostty/r
 DOWNLOAD_RETRIES="${GHOSTTYKIT_DOWNLOAD_RETRIES:-2}"
 DOWNLOAD_RETRY_DELAY="${GHOSTTYKIT_DOWNLOAD_RETRY_DELAY:-20}"
 
-_fallback_source_build() {
-  echo "Prebuilt GhosttyKit unavailable, falling back to source build via ensure-ghosttykit.sh"
-  # ensure-ghosttykit.sh needs zig, but CI jobs may run this download step BEFORE their
-  # own zig setup — so make the fallback self-sufficient (zig 0.15.2 per ghostty/build.zig.zon).
-  if ! command -v zig >/dev/null 2>&1 || ! zig version 2>/dev/null | grep -q "^0.15.2"; then
-    ZIG_REQUIRED="0.15.2"
-    zig_arch="$(uname -m)"; [ "$zig_arch" = "arm64" ] && zig_arch="aarch64"
-    echo "Installing zig ${ZIG_REQUIRED} (${zig_arch}) for the source-build fallback"
-    curl -fSL "https://ziglang.org/download/${ZIG_REQUIRED}/zig-${zig_arch}-macos-${ZIG_REQUIRED}.tar.xz" -o /tmp/zig.tar.xz
-    tar xf /tmp/zig.tar.xz -C /tmp
-    sudo mkdir -p /usr/local/bin /usr/local/lib
-    sudo cp -f "/tmp/zig-${zig_arch}-macos-${ZIG_REQUIRED}/zig" /usr/local/bin/zig
-    sudo cp -rf "/tmp/zig-${zig_arch}-macos-${ZIG_REQUIRED}/lib" /usr/local/lib/zig
-    export PATH="/usr/local/bin:$PATH"
-    zig version
-  fi
-  "$SCRIPT_DIR/ensure-ghosttykit.sh"
-  # ensure-ghosttykit.sh leaves a symlink at $REPO_ROOT/GhosttyKit.xcframework.
-  # If OUTPUT_DIR differs from repo-root default, copy/link it there as well.
-  if [ ! -e "$OUTPUT_DIR" ] && [ -e "$REPO_ROOT/GhosttyKit.xcframework" ]; then
-    ln -sfn "$REPO_ROOT/GhosttyKit.xcframework" "$OUTPUT_DIR"
-  fi
-  if [ ! -e "$OUTPUT_DIR" ]; then
-    echo "Source build did not produce $OUTPUT_DIR" >&2
-    exit 1
-  fi
-  # ensure-ghosttykit.sh leaves a symlink into ~/.cache. CI caches ./GhosttyKit.xcframework
-  # by path, and a symlink caches as a 247-byte dangling link (real framework absent on a
-  # fresh runner). Materialize a real directory so the cache stores actual framework files.
-  for _link in "$OUTPUT_DIR" "$REPO_ROOT/GhosttyKit.xcframework"; do
-    if [ -L "$_link" ]; then
-      _target="$(readlink "$_link")"
-      rm -f "$_link"
-      cp -R "$_target" "$_link"
-    fi
-  done
-  echo "Source build complete: $OUTPUT_DIR is ready"
-}
-
 if [ ! -f "$CHECKSUMS_FILE" ]; then
   echo "Missing checksum file: $CHECKSUMS_FILE" >&2
   exit 1
@@ -82,9 +43,9 @@ EXPECTED_SHA256="$(
 )"
 
 if [ -z "$EXPECTED_SHA256" ]; then
-  echo "Missing pinned GhosttyKit checksum for ghostty $GHOSTTY_SHA in $CHECKSUMS_FILE" >&2
-  _fallback_source_build
-  exit 0
+  echo "Missing pinned GhosttyKit checksum for ghostty $GHOSTTY_SHA in $CHECKSUMS_FILE." >&2
+  echo "The Build GhosttyKit workflow publishes release xcframework-$GHOSTTY_SHA; add its sha256 to $CHECKSUMS_FILE." >&2
+  exit 1
 fi
 
 echo "Downloading $ARCHIVE_NAME for ghostty $GHOSTTY_SHA"
@@ -95,8 +56,8 @@ if ! curl --fail --show-error --location \
   -o "$ARCHIVE_NAME" \
   "$DOWNLOAD_URL"; then
   echo "curl download failed for $DOWNLOAD_URL" >&2
-  _fallback_source_build
-  exit 0
+  echo "Run the Build GhosttyKit workflow for ghostty $GHOSTTY_SHA and retry." >&2
+  exit 1
 fi
 
 ACTUAL_SHA256="$(shasum -a 256 "$ARCHIVE_NAME" | awk '{print $1}')"
@@ -105,8 +66,7 @@ if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
   echo "Expected: $EXPECTED_SHA256" >&2
   echo "Actual:   $ACTUAL_SHA256" >&2
   rm -f "$ARCHIVE_NAME"
-  _fallback_source_build
-  exit 0
+  exit 1
 fi
 
 rm -rf "$OUTPUT_DIR"

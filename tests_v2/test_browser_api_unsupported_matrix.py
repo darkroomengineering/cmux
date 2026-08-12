@@ -145,6 +145,10 @@ def main() -> int:
         sid = str(opened.get("surface_id") or "")
         _must(bool(sid), f"browser.open_split returned no surface_id: {opened}")
 
+        url_payload = c._call("browser.url.get", {"surface_id": sid}) or {}
+        _must(bool(url_payload.get("workspace_ref")), f"browser.url.get returned no workspace_ref: {url_payload}")
+        _must(bool(url_payload.get("surface_ref")), f"browser.url.get returned no surface_ref: {url_payload}")
+
         for method, extra in WKWEBVIEW_NOT_SUPPORTED.items():
             payload = {"surface_id": sid}
             payload.update(extra)

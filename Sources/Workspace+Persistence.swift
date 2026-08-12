@@ -111,7 +111,15 @@ extension Workspace {
             currentDirectory = normalizedCurrentDirectory
         }
 
-        let panelSnapshotsById = Dictionary(uniqueKeysWithValues: snapshot.panels.map { ($0.id, $0) })
+        // Recovery input can be user-edited or come from an older/crashed build. Keep the
+        // first snapshot for a panel ID instead of trapping in
+        // `Dictionary(uniqueKeysWithValues:)` when malformed input contains duplicates.
+        // The layout refers to panels by ID, so later duplicates cannot be addressed
+        // independently anyway.
+        var panelSnapshotsById: [UUID: SessionPanelSnapshot] = [:]
+        for panelSnapshot in snapshot.panels where panelSnapshotsById[panelSnapshot.id] == nil {
+            panelSnapshotsById[panelSnapshot.id] = panelSnapshot
+        }
         let leafEntries = restoreSessionLayout(snapshot.layout)
         var oldToNewPanelIds: [UUID: UUID] = [:]
 

@@ -122,4 +122,9 @@ if ! grep -Fq "Missing pinned GhosttyKit checksum for ghostty $FIXTURE_SHA" "$MI
   exit 1
 fi
 
+if grep -Fq "falling back to source build" "$MISSING_ENTRY_OUTPUT"; then
+  echo "FAIL: verification helper attempted a source build without a pinned checksum"
+  exit 1
+fi
+
 echo "PASS: GhosttyKit verification helper enforces pinned checksums"

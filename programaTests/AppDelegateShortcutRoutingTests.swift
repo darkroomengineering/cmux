@@ -1244,6 +1244,55 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertTrue(appDelegate.tabManager === secondManager, "Split shortcut routing should keep the event window active")
     }
 
+    func testConfiguredOpenReviewShortcutOpensReviewPanel() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = appDelegate.createMainWindow()
+        defer { closeWindow(withId: windowId) }
+
+        guard let window = window(withId: windowId),
+              let manager = appDelegate.tabManagerFor(windowId: windowId),
+              let workspace = manager.selectedWorkspace else {
+            XCTFail("Expected test window and workspace")
+            return
+        }
+
+        let panelCountBefore = workspace.panels.count
+        let shortcut = StoredShortcut(
+            key: "r",
+            command: false,
+            shift: false,
+            option: true,
+            control: true
+        )
+
+        withTemporaryShortcut(action: .openReview, shortcut: shortcut) {
+            guard let event = makeKeyDownEvent(
+                key: "r",
+                modifiers: [.control, .option],
+                keyCode: 15,
+                windowNumber: window.windowNumber
+            ) else {
+                XCTFail("Failed to construct Ctrl+Option+R event")
+                return
+            }
+
+#if DEBUG
+            XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: event))
+#else
+            XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+        }
+
+        waitUntil(description: "configured Open Review shortcut to create a review panel") {
+            workspace.panels.count == panelCountBefore + 1
+        }
+        XCTAssertEqual(workspace.panels.values.compactMap { $0 as? ReviewPanel }.count, 1)
+    }
+
     func testPerformSplitShortcutSplitsFocusedTerminalSurfaceWhenSelectedWorkspaceIsStale() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
@@ -1419,10 +1468,6 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId), "Confirmed close should unregister the window's context")
     }
 
-    // NOTE: This test is skipped in CI via -skip-testing in ci.yml because closing
-    // the last Ghostty surface tears down the PTY/shell, which blocks indefinitely
-    // on headless runners. The xcodebuild test host doesn't inherit CI env vars,
-    // so XCTSkip can't detect CI from inside the test.
     func testCmdWClosesWindowWhenClosingLastSurfaceInLastWorkspace() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
@@ -1460,12 +1505,15 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
 
-        waitUntil(description: "Cmd+W on the last surface to close the window") { self.window(withId: windowId) == nil }
+        waitUntil(description: "Cmd+W on the last surface to close and unregister the window") {
+            !targetWindow.isVisible && appDelegate.tabManagerFor(windowId: windowId) == nil
+        }
 
-        XCTAssertNil(
-            self.window(withId: windowId),
-            "Cmd+W on the last surface in the last workspace should close the window"
-        )
+        // `NSApp.windows` can retain a closed NSWindow in a headless test host. Visibility
+        // plus MainWindowContext removal are the observable close contract, matching the
+        // direct Cmd+Ctrl+W coverage above.
+        XCTAssertFalse(targetWindow.isVisible)
+        XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId))
     }
 
     func testCmdWClosesAuxiliaryWindowInsteadOfMainTerminalPanel() throws {

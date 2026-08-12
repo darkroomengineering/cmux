@@ -1004,6 +1004,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
     private var didHandleExplicitOpenIntentAtStartup = false
     private var isTerminatingApp = false
+    private var isAwaitingPowerOffTermination = false
     // Set to true when the user has already confirmed quit via the warning dialog,
     // so applicationShouldTerminate does not show a second alert.
     private var isQuitWarningConfirmed = false
@@ -1453,6 +1454,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 #endif
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        // `willPowerOffNotification` has no matching cancellation notification. If macOS
+        // becomes active again before termination, the shutdown was cancelled: resume
+        // autosave/session machinery and replace the provisional snapshot with a normal one.
+        if isAwaitingPowerOffTermination {
+            isAwaitingPowerOffTermination = false
+            isTerminatingApp = false
+            SessionMachineryGate.isApplicationTerminating = false
+            _ = saveSessionSnapshot(includeScrollback: false)
+        }
         guard let notificationStore else { return }
         notificationStore.handleApplicationDidBecomeActive()
         guard let tabManager else { return }
@@ -1470,7 +1480,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isTerminatingApp = true
         SessionMachineryGate.isApplicationTerminating = true
-        _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false, cleanShutdown: true)
+        // A warning dialog can still cancel this termination request. The final
+        // `applicationWillTerminate` callback is the only point that records a clean exit.
+        _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
 
         // Tagged DEV builds are ephemeral, skip quit confirmation entirely.
         if SocketControlSettings.isTaggedDevBuild() {
@@ -1523,6 +1535,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        isAwaitingPowerOffTermination = false
         isTerminatingApp = true
         SessionMachineryGate.isApplicationTerminating = true
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false, cleanShutdown: true)
@@ -2162,8 +2175,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.isAwaitingPowerOffTermination = true
                 self.isTerminatingApp = true
-                _ = self.saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false, cleanShutdown: true)
+                SessionMachineryGate.isApplicationTerminating = true
+                // `willPowerOff` can still be cancelled. Only applicationWillTerminate may
+                // label a snapshot as a clean shutdown.
+                _ = self.saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
             }
         }
         lifecycleSnapshotObservers.append(powerOffObserver)
@@ -6597,7 +6614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     ]
 
     private static let appShortcutPrecedenceOrderAfterLegacyTabNavigation: [KeyboardShortcutSettings.Action] = [
-        .newSurface, .openBrowser, .focusBrowserAddressBar, .browserBack, .browserForward, .browserReload,
+        .newSurface, .openBrowser, .openReview, .focusBrowserAddressBar, .browserBack, .browserForward, .browserReload,
         .toggleBrowserDeveloperTools, .showBrowserJavaScriptConsole, .toggleReactGrab, .browserZoomIn,
         .browserZoomOut, .browserZoomReset, .find, .findNext, .findPrevious, .hideFind, .useSelectionForFind,
         .reopenClosedBrowserPanel,
@@ -6779,10 +6796,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         case .reopenClosedBrowserPanel:
             return handleReopenClosedBrowserPanelShortcutAction(event: event)
         case .openReview:
-            // Only reachable via the command palette registry (see ContentView.swift's
-            // "palette.openReviewPanel" command) -- there is no app-level shortcut-monitor entry
-            // for it, matching the old if-chain, which never checked this action either.
-            return nil
+            return handleOpenReviewShortcutAction(event: event)
         }
     }
 
@@ -6790,6 +6804,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         guard matchConfiguredShortcut(event: event, action: .commandPalette) else { return nil }
         let targetWindow = commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
         requestCommandPaletteCommands(preferredWindow: targetWindow, source: "shortcut.commandPalette")
+        return true
+    }
+
+    private func handleOpenReviewShortcutAction(event: NSEvent) -> Bool? {
+        guard matchConfiguredShortcut(event: event, action: .openReview) else { return nil }
+        guard let workspace = tabManager?.selectedWorkspace,
+              let focusedPanelId = workspace.focusedPanelId else { return true }
+        _ = workspace.newReviewSplit(from: focusedPanelId, orientation: .horizontal, focus: true)
         return true
     }
 
