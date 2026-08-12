@@ -179,6 +179,7 @@ final class WindowBrowserSlotView: NSView {
         logSearchOverlayEvent("set", panelId: configuration.panelId)
         let rootView = BrowserSearchOverlay(
             panelId: configuration.panelId,
+            browserColorScheme: configuration.colorScheme,
             searchState: configuration.searchState,
             focusRequestGeneration: configuration.focusRequestGeneration,
             canApplyFocusRequest: configuration.canApplyFocusRequest,

@@ -173,6 +173,94 @@ enum WindowGlassEffect {
     }
 }
 
+/// AppKit-backed Liquid Glass host for compact in-window surfaces such as browser chrome and
+/// find controls. The complete SwiftUI subtree is installed as `NSGlassEffectView.contentView`
+/// so controls participate in AppKit's glass interaction and hit-testing contract.
+struct ProgramaNativeGlassContentHost<Content: View>: NSViewRepresentable {
+    let content: Content
+    var tintColor: NSColor?
+    var cornerRadius: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
+
+    final class Coordinator {
+        let hostingView: NSHostingView<Content>
+
+        init(content: Content) {
+            hostingView = NSHostingView(rootView: content)
+            hostingView.sizingOptions = [.intrinsicContentSize]
+            hostingView.autoresizingMask = [.width, .height]
+            hostingView.wantsLayer = true
+            hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(content: content)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let hostingView = context.coordinator.hostingView
+
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView(frame: .zero)
+            glass.autoresizingMask = [.width, .height]
+            glass.style = .regular
+            glass.cornerRadius = cornerRadius
+            glass.tintColor = tintColor
+            glass.appearance = resolvedAppearance
+
+            // NSGlassEffectView otherwise centers an intrinsic-size NSHostingView when the
+            // glass surface is taller than its content (most visible in suggestion popups).
+            // Use a fill container as the official contentView and pin the interactive SwiftUI
+            // subtree to all four edges inside it.
+            let contentView = NSView(frame: glass.bounds)
+            contentView.autoresizingMask = [.width, .height]
+            hostingView.translatesAutoresizingMaskIntoConstraints = false
+            contentView.addSubview(hostingView)
+            NSLayoutConstraint.activate([
+                hostingView.topAnchor.constraint(equalTo: contentView.topAnchor),
+                hostingView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+                hostingView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                hostingView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            ])
+            glass.contentView = contentView
+            return glass
+        }
+        #endif
+
+        return hostingView
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.hostingView.rootView = content
+
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *), let glass = nsView as? NSGlassEffectView {
+            glass.cornerRadius = cornerRadius
+            glass.tintColor = tintColor
+            glass.appearance = resolvedAppearance
+        }
+        #endif
+    }
+
+    private var resolvedAppearance: NSAppearance? {
+        NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView: NSView,
+        context: Context
+    ) -> CGSize? {
+        let fittingSize = context.coordinator.hostingView.fittingSize
+        return CGSize(
+            width: proposal.width ?? fittingSize.width,
+            height: proposal.height ?? fittingSize.height
+        )
+    }
+}
+
 /// CALayer-backed titlebar background. Uses layer-level opacity (not per-pixel alpha)
 /// to match how the terminal's Metal surface composites its background.
 struct TitlebarLayerBackground: NSViewRepresentable {

@@ -178,6 +178,9 @@ extension BonsplitConfiguration {
         /// Whether each visible tab pill uses native AppKit Liquid Glass where available.
         public var tabBarLiquidGlassEnabled: Bool
 
+        /// Whether compact tab overlays such as shortcut hints use native AppKit Liquid Glass.
+        public var overlayLiquidGlassEnabled: Bool
+
         /// Tooltip text for the tab bar's right-side action buttons
         public var splitButtonTooltips: SplitButtonTooltips
 
@@ -224,6 +227,7 @@ extension BonsplitConfiguration {
             splitButtonsOnHover: Bool = false,
             tabBarLeadingInset: CGFloat = 0,
             tabBarLiquidGlassEnabled: Bool = false,
+            overlayLiquidGlassEnabled: Bool = false,
             splitButtonTooltips: SplitButtonTooltips = .default,
             animationDuration: Double = 0.15,
             enableAnimations: Bool = true,
@@ -239,6 +243,7 @@ extension BonsplitConfiguration {
             self.splitButtonsOnHover = splitButtonsOnHover
             self.tabBarLeadingInset = tabBarLeadingInset
             self.tabBarLiquidGlassEnabled = tabBarLiquidGlassEnabled
+            self.overlayLiquidGlassEnabled = overlayLiquidGlassEnabled
             self.splitButtonTooltips = splitButtonTooltips
             self.animationDuration = animationDuration
             self.enableAnimations = enableAnimations

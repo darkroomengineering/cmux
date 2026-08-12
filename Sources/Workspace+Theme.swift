@@ -97,6 +97,10 @@ extension Workspace {
                 for: .tabBar,
                 persistedValue: UserDefaults.standard.bool(forKey: ProgramaGlassSettings.tabBarEnabledKey)
             ),
+            overlayLiquidGlassEnabled: WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+                for: .overlays,
+                persistedValue: UserDefaults.standard.bool(forKey: ProgramaGlassSettings.overlaysEnabledKey)
+            ),
             splitButtonTooltips: Self.currentSplitButtonTooltips(),
             enableAnimations: false,
             chromeColors: .init(

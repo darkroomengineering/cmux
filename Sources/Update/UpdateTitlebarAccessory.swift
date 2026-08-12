@@ -561,16 +561,17 @@ struct TitlebarControlsView: View {
         shortcut: StoredShortcut,
         config: TitlebarControlsStyleConfig
     ) -> some View {
-        Text(shortcut.displayString)
-            .font(.system(size: max(8, config.iconSize - 5), weight: .semibold, design: .rounded))
-            .monospacedDigit()
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .foregroundColor(.primary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .frame(minHeight: titlebarShortcutHintHeight(for: config))
-            .background(ShortcutHintPillBackground())
+        ShortcutHintPill {
+            Text(shortcut.displayString)
+                .font(.system(size: max(8, config.iconSize - 5), weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .foregroundColor(.primary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .frame(minHeight: titlebarShortcutHintHeight(for: config))
+        }
     }
 
     @ViewBuilder

@@ -140,6 +140,8 @@ struct BrowserPanelView: View {
     @AppStorage(BrowserThemeSettings.modeKey) private var browserThemeModeRaw = BrowserThemeSettings.defaultMode.rawValue
     @AppStorage(BrowserImportHintSettings.showOnBlankTabsKey) private var showBrowserImportHintOnBlankTabs = BrowserImportHintSettings.defaultShowOnBlankTabs
     @AppStorage(BrowserImportHintSettings.dismissedKey) private var isBrowserImportHintDismissed = BrowserImportHintSettings.defaultDismissed
+    @AppStorage(ProgramaGlassSettings.browserToolbarEnabledKey)
+    private var browserToolbarLiquidGlassEnabled = false
     @ObservedObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
     @State private var suggestionTask: Task<Void, Never>?
     @State private var isLoadingRemoteSuggestions: Bool = false
@@ -238,6 +240,19 @@ struct BrowserPanelView: View {
         browserChromeStyle.colorScheme
     }
 
+    private var usesNativeBrowserToolbarGlass: Bool {
+        WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+            for: .browserToolbar,
+            persistedValue: browserToolbarLiquidGlassEnabled
+        )
+    }
+
+    private var browserToolbarGlassTintColor: NSColor {
+        // Keep the toolbar in the existing Ghostty-derived BrowserChromeStyle palette while
+        // letting the system glass retain enough translucency to read as a native surface.
+        browserChromeStyle.backgroundColor.withAlphaComponent(0.18)
+    }
+
     private var browserContentAccessibilityIdentifier: String {
         "BrowserPanelContent.\(panel.id.uuidString)"
     }
@@ -291,6 +306,7 @@ struct BrowserPanelView: View {
             if !panel.shouldRenderWebView, let searchState = panel.searchState {
                 BrowserSearchOverlay(
                     panelId: panel.id,
+                    browserColorScheme: browserChromeColorScheme,
                     searchState: searchState,
                     focusRequestGeneration: panel.searchFocusRequestGeneration,
                     canApplyFocusRequest: { generation in
@@ -348,13 +364,6 @@ struct BrowserPanelView: View {
 
     private var browserClickContent: some View {
         layeredBrowserContent
-        .coordinateSpace(name: "BrowserPanelViewSpace")
-        .onPreferenceChange(OmnibarPillFramePreferenceKey.self) { frame in
-            omnibarPillFrame = frame
-        }
-        .onPreferenceChange(BrowserAddressBarHeightPreferenceKey.self) { height in
-            addressBarHeight = height
-        }
         .onReceive(NotificationCenter.default.publisher(for: .webViewDidReceiveClick).filter { [weak panel] note in
             // Only handle clicks from our own webview.
             guard let webView = note.object as? ProgramaWebView else { return false }
@@ -583,7 +592,26 @@ struct BrowserPanelView: View {
         }
     }
 
+    @ViewBuilder
     private var addressBar: some View {
+        Group {
+            if usesNativeBrowserToolbarGlass {
+                ProgramaNativeGlassContentHost(
+                    content: addressBarControls,
+                    tintColor: browserToolbarGlassTintColor,
+                    cornerRadius: 0
+                )
+            } else {
+                addressBarControls
+                    .background(browserChromeBackground)
+            }
+        }
+        // Keep the omnibar stack above WKWebView so the suggestions popup is visible.
+        .zIndex(1)
+        .environment(\.colorScheme, browserChromeColorScheme)
+    }
+
+    private var addressBarControls: some View {
         HStack(spacing: 8) {
             BrowserNavigationButtonsView(panel: panel)
 
@@ -624,7 +652,7 @@ struct BrowserPanelView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, addressBarVerticalPadding)
-        .background(browserChromeBackground)
+        .coordinateSpace(name: "BrowserAddressBarSpace")
         .background {
             GeometryReader { geo in
                 Color.clear
@@ -634,9 +662,15 @@ struct BrowserPanelView: View {
                     )
             }
         }
-        // Keep the omnibar stack above WKWebView so the suggestions popup is visible.
-        .zIndex(1)
-        .environment(\.colorScheme, browserChromeColorScheme)
+        // Preferences cannot cross the nested NSHostingView used by native AppKit glass.
+        // Consume them inside the hosted toolbar, where its coordinate space shares the
+        // browser panel's top-leading origin.
+        .onPreferenceChange(OmnibarPillFramePreferenceKey.self) { frame in
+            omnibarPillFrame = frame
+        }
+        .onPreferenceChange(BrowserAddressBarHeightPreferenceKey.self) { height in
+            addressBarHeight = height
+        }
     }
 
     private var reactGrabButton: some View {
@@ -792,7 +826,7 @@ struct BrowserPanelView: View {
                 Color.clear
                     .preference(
                         key: OmnibarPillFramePreferenceKey.self,
-                        value: geo.frame(in: .named("BrowserPanelViewSpace"))
+                        value: geo.frame(in: .named("BrowserAddressBarSpace"))
                     )
             }
         }
@@ -817,6 +851,7 @@ struct BrowserPanelView: View {
                     searchOverlay: panel.searchState.map { searchState in
                         BrowserPortalSearchOverlayConfiguration(
                             panelId: panel.id,
+                            colorScheme: browserChromeColorScheme,
                             searchState: searchState,
                             focusRequestGeneration: panel.searchFocusRequestGeneration,
                             canApplyFocusRequest: { generation in
@@ -1697,4 +1732,3 @@ struct BrowserPanelView: View {
         }
     }
 }
-

@@ -96,6 +96,51 @@ final class WindowGlassEffectTests: XCTestCase {
 
         throw XCTSkip("Native Liquid Glass requires the macOS 26 SDK and runtime")
     }
+
+    func testNativeGlassContentHostOwnsItsSwiftUIControls() throws {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            _ = NSApplication.shared
+            let hostingView = NSHostingView(
+                rootView: ProgramaNativeGlassContentHost(
+                    content: Button("Glass Control") {},
+                    tintColor: .systemBlue.withAlphaComponent(0.15),
+                    cornerRadius: 10
+                )
+                .frame(width: 180, height: 44)
+            )
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 220, height: 100),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            defer { window.orderOut(nil) }
+            window.contentView = hostingView
+            hostingView.frame = window.contentLayoutRect
+            hostingView.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            hostingView.layoutSubtreeIfNeeded()
+
+            func descendants(of root: NSView) -> [NSView] {
+                root.subviews.flatMap { [$0] + descendants(of: $0) }
+            }
+
+            guard let glass = descendants(of: hostingView).compactMap({ $0 as? NSGlassEffectView }).first else {
+                XCTFail("Expected a native glass content host")
+                return
+            }
+            XCTAssertNotNil(glass.contentView)
+            XCTAssertTrue(
+                descendants(of: glass.contentView!).contains(where: { $0 is NSHostingView<Button<Text>> }),
+                "The interactive SwiftUI subtree must be installed inside NSGlassEffectView.contentView"
+            )
+            return
+        }
+        #endif
+
+        throw XCTSkip("Native Liquid Glass requires the macOS 26 SDK and runtime")
+    }
 }
 
 @MainActor

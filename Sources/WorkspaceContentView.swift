@@ -238,6 +238,8 @@ struct WorkspaceContentView: View {
     private var workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
     @AppStorage(ProgramaGlassSettings.tabBarEnabledKey)
     private var tabBarLiquidGlassEnabled = false
+    @AppStorage(ProgramaGlassSettings.overlaysEnabledKey)
+    private var overlayLiquidGlassEnabled = false
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject var notificationStore: TerminalNotificationStore
 
@@ -351,6 +353,9 @@ struct WorkspaceContentView: View {
         .onChange(of: tabBarLiquidGlassEnabled) { _, _ in
             syncBonsplitGlassAppearance()
         }
+        .onChange(of: overlayLiquidGlassEnabled) { _, _ in
+            syncBonsplitGlassAppearance()
+        }
         .onChange(of: notificationStore.notifications) { _, _ in
             syncBonsplitNotificationBadges()
         }
@@ -422,14 +427,20 @@ struct WorkspaceContentView: View {
     }
 
     private func syncBonsplitGlassAppearance() {
-        let enabled = WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+        let tabBarEnabled = WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
             for: .tabBar,
             persistedValue: tabBarLiquidGlassEnabled
         )
-        guard workspace.bonsplitController.configuration.appearance.tabBarLiquidGlassEnabled != enabled else {
-            return
+        let overlaysEnabled = WindowGlassEffect.isAvailable && ProgramaGlassSettings.resolvedEnabled(
+            for: .overlays,
+            persistedValue: overlayLiquidGlassEnabled
+        )
+        if workspace.bonsplitController.configuration.appearance.tabBarLiquidGlassEnabled != tabBarEnabled {
+            workspace.bonsplitController.configuration.appearance.tabBarLiquidGlassEnabled = tabBarEnabled
         }
-        workspace.bonsplitController.configuration.appearance.tabBarLiquidGlassEnabled = enabled
+        if workspace.bonsplitController.configuration.appearance.overlayLiquidGlassEnabled != overlaysEnabled {
+            workspace.bonsplitController.configuration.appearance.overlayLiquidGlassEnabled = overlaysEnabled
+        }
     }
 
     private var splitZoomRenderIdentity: String {

@@ -122,6 +122,10 @@ enum ProgramaGlassSettings {
                 enabled ? SidebarMaterialOption.liquidGlass.rawValue : SidebarMaterialOption.sidebar.rawValue,
                 forKey: "sidebarMaterial"
             )
+            defaults.set(
+                enabled ? SidebarPresetOption.liquidGlass.cornerRadius : SidebarPresetOption.nativeSidebar.cornerRadius,
+                forKey: "sidebarCornerRadius"
+            )
         case .tabBar:
             defaults.set(enabled, forKey: tabBarEnabledKey)
         case .browserToolbar:

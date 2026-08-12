@@ -417,6 +417,7 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
             return true
         case let (lhs?, rhs?):
             return lhs.panelId == rhs.panelId &&
+                lhs.colorScheme == rhs.colorScheme &&
                 lhs.searchState === rhs.searchState &&
                 lhs.focusRequestGeneration == rhs.focusRequestGeneration
         default:

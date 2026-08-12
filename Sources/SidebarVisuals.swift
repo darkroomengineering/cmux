@@ -1225,7 +1225,7 @@ private struct SidebarVisualEffectBackground: NSViewRepresentable {
 private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable {
     let content: Content
     let tintColor: NSColor?
-    let cornerRadius: CGFloat
+    let innerCornerRadius: CGFloat
 
     final class Coordinator {
         let hostingView: NSHostingView<Content>
@@ -1251,8 +1251,8 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
             glass.autoresizingMask = [.width, .height]
             glass.wantsLayer = true
             glass.style = .regular
-            glass.cornerRadius = cornerRadius
             glass.tintColor = tintColor
+            applyInnerCornerMask(to: glass)
             hostingView.frame = glass.bounds
             glass.contentView = hostingView
             return glass
@@ -1267,11 +1267,24 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
 
         #if compiler(>=6.2)
         if #available(macOS 26.0, *), let glass = nsView as? NSGlassEffectView {
-            glass.cornerRadius = cornerRadius
             glass.tintColor = tintColor
+            applyInnerCornerMask(to: glass)
         }
         #endif
     }
+
+    #if compiler(>=6.2)
+    @available(macOS 26.0, *)
+    private func applyInnerCornerMask(to glass: NSGlassEffectView) {
+        // The NSWindow mask owns the two outer corners. Clip only the terminal-facing edge so
+        // the sidebar reads as Apple's split glass surface without drawing a second perimeter.
+        glass.cornerRadius = 0
+        glass.layer?.cornerRadius = innerCornerRadius
+        glass.layer?.cornerCurve = .continuous
+        glass.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
+        glass.layer?.masksToBounds = innerCornerRadius > 0
+    }
+    #endif
 }
 
 /// Selects the native content-hosting topology only for sidebar-local Liquid Glass. Every
@@ -1296,7 +1309,7 @@ struct SidebarSurface<Content: View>: View {
             SidebarNativeGlassContentHost(
                 content: content.environment(\.colorScheme, colorScheme),
                 tintColor: resolvedTintColor,
-                cornerRadius: max(0, CGFloat(sidebarCornerRadius))
+                innerCornerRadius: max(0, CGFloat(sidebarCornerRadius))
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -1704,10 +1717,9 @@ enum SidebarPresetOption: String, CaseIterable, Identifiable {
 
     var cornerRadius: Double {
         switch self {
-        // A flush sidebar defers its outer corners to the NSWindow mask. Giving the
-        // glass view a second radius draws a duplicate perimeter and an awkward
-        // interior top-right notch against the tab strip.
-        case .liquidGlass: return 0.0
+        // Native glass applies this only to the terminal-facing edge. The NSWindow mask
+        // continues to own the flush outer corners, avoiding a duplicate perimeter.
+        case .liquidGlass: return 18.0
         case .nativeSidebar: return 0.0
         case .glassBehind: return 0.0
         case .softBlur: return 0.0

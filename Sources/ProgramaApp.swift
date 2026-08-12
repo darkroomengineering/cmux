@@ -228,7 +228,7 @@ struct programaApp: App {
 
     private func migrateSidebarAppearanceDefaultsIfNeeded(defaults: UserDefaults) {
         let migrationKey = "sidebarAppearanceDefaultsVersion"
-        let targetVersion = 1
+        let targetVersion = 2
         guard defaults.integer(forKey: migrationKey) < targetVersion else { return }
 
         func normalizeHex(_ value: String) -> String {
@@ -271,6 +271,11 @@ struct programaApp: App {
             defaults.set(preset.tintOpacity, forKey: "sidebarTintOpacity")
             defaults.set(preset.blurOpacity, forKey: "sidebarBlurOpacity")
             defaults.set(preset.cornerRadius, forKey: "sidebarCornerRadius")
+        } else if material == SidebarMaterialOption.liquidGlass.rawValue,
+                  approximatelyEqual(cornerRadius, 0.0) {
+            // Version 1 shipped the local glass sidebar flush on all four corners. Version 2
+            // rounds only its terminal-facing edge; the NSWindow still masks the outer edge.
+            defaults.set(SidebarPresetOption.liquidGlass.cornerRadius, forKey: "sidebarCornerRadius")
         }
 
         defaults.set(targetVersion, forKey: migrationKey)
@@ -443,11 +448,22 @@ struct programaApp: App {
                     ) {
                         BrowserProfilePopoverDebugWindowController.shared.show()
                     }
+                    Button(
+                        String(
+                            localized: "debug.menu.browserToolbarGlass",
+                            defaultValue: "Browser Toolbar Glass Debug…"
+                        )
+                    ) {
+                        BrowserToolbarGlassDebugWindowController.shared.show()
+                    }
                     Button(String(localized: "debug.menu.windowControls", defaultValue: "Debug Window Controls…")) {
                         DebugWindowControlsWindowController.shared.show()
                     }
                     Button(String(localized: "debug.menu.menuBarExtra", defaultValue: "Menu Bar Extra Debug…")) {
                         MenuBarExtraDebugWindowController.shared.show()
+                    }
+                    Button(String(localized: "debug.menu.overlayGlass", defaultValue: "Overlay Glass Debug…")) {
+                        OverlayGlassDebugWindowController.shared.show()
                     }
                     Button(String(localized: "debug.menu.settingsAboutTitlebar", defaultValue: "Settings/About Titlebar Debug…")) {
                         SettingsAboutTitlebarDebugWindowController.shared.show()
@@ -1130,10 +1146,12 @@ struct programaApp: App {
 #if DEBUG
     private func openAllDebugWindows() {
         BrowserProfilePopoverDebugWindowController.shared.show()
+        BrowserToolbarGlassDebugWindowController.shared.show()
         SettingsAboutTitlebarDebugWindowController.shared.show()
         SidebarDebugWindowController.shared.show()
         BackgroundDebugWindowController.shared.show()
         MenuBarExtraDebugWindowController.shared.show()
+        OverlayGlassDebugWindowController.shared.show()
         TabBarGlassDebugWindowController.shared.show()
     }
 #endif

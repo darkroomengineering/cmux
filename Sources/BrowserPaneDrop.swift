@@ -1,5 +1,6 @@
 import AppKit
 import Bonsplit
+import SwiftUI
 
 final class BrowserDropZoneOverlayView: NSView {
     override var acceptsFirstResponder: Bool { false }
@@ -11,6 +12,7 @@ final class BrowserDropZoneOverlayView: NSView {
 
 struct BrowserPortalSearchOverlayConfiguration {
     let panelId: UUID
+    let colorScheme: ColorScheme
     let searchState: BrowserSearchState
     let focusRequestGeneration: UInt64
     let canApplyFocusRequest: (UInt64) -> Bool

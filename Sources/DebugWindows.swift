@@ -324,6 +324,14 @@ private struct DebugWindowControlsView: View {
                         ) {
                             BrowserProfilePopoverDebugWindowController.shared.show()
                         }
+                        Button(
+                            String(
+                                localized: "debug.menu.browserToolbarGlass",
+                                defaultValue: "Browser Toolbar Glass Debug…"
+                            )
+                        ) {
+                            BrowserToolbarGlassDebugWindowController.shared.show()
+                        }
                         Button(localizedDebugLabel("Settings/About Titlebar Debug…")) {
                             SettingsAboutTitlebarDebugWindowController.shared.show()
                         }
@@ -336,12 +344,17 @@ private struct DebugWindowControlsView: View {
                         Button(localizedDebugLabel("Menu Bar Extra Debug…")) {
                             MenuBarExtraDebugWindowController.shared.show()
                         }
+                        Button(String(localized: "debug.menu.overlayGlass", defaultValue: "Overlay Glass Debug…")) {
+                            OverlayGlassDebugWindowController.shared.show()
+                        }
                         Button(localizedDebugLabel("Open All Debug Windows")) {
                             BrowserProfilePopoverDebugWindowController.shared.show()
+                            BrowserToolbarGlassDebugWindowController.shared.show()
                             SettingsAboutTitlebarDebugWindowController.shared.show()
                             SidebarDebugWindowController.shared.show()
                             BackgroundDebugWindowController.shared.show()
                             MenuBarExtraDebugWindowController.shared.show()
+                            OverlayGlassDebugWindowController.shared.show()
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1234,6 +1247,156 @@ private struct MenuBarExtraDebugView: View {
 
     private func applyLiveUpdate() {
         AppDelegate.shared?.refreshMenuBarExtraForDebug()
+    }
+}
+
+// MARK: - Browser Toolbar Glass Debug Window
+
+final class BrowserToolbarGlassDebugWindowController: NSWindowController, NSWindowDelegate {
+    static let shared = BrowserToolbarGlassDebugWindowController()
+
+    private init() {
+        let window = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 170),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = String(
+            localized: "debug.browserToolbarGlass.title",
+            defaultValue: "Browser Toolbar Glass"
+        )
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier("programa.browserToolbarGlassDebug")
+        window.center()
+        window.contentView = NSHostingView(rootView: BrowserToolbarGlassDebugView())
+        AppDelegate.shared?.applyWindowDecorations(to: window)
+        super.init(window: window)
+        window.delegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+    }
+}
+
+private struct BrowserToolbarGlassDebugView: View {
+    @AppStorage(ProgramaGlassSettings.browserToolbarEnabledKey)
+    private var browserToolbarLiquidGlassEnabled = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(
+                String(
+                    localized: "debug.browserToolbarGlass.title",
+                    defaultValue: "Browser Toolbar Glass"
+                )
+            )
+            .font(.headline)
+
+            Toggle(
+                String(
+                    localized: "debug.browserToolbarGlass.enable",
+                    defaultValue: "Enable Native Glass Browser Toolbar"
+                ),
+                isOn: $browserToolbarLiquidGlassEnabled
+            )
+            .disabled(!WindowGlassEffect.isAvailable)
+
+            Text(
+                WindowGlassEffect.isAvailable
+                    ? String(localized: "debug.glass.changesApplyLive", defaultValue: "Changes apply live.")
+                    : String(localized: "debug.glass.requiresMacOS26", defaultValue: "Native Liquid Glass requires macOS 26.")
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+// MARK: - Overlay Glass Debug Window
+
+final class OverlayGlassDebugWindowController: NSWindowController, NSWindowDelegate {
+    static let shared = OverlayGlassDebugWindowController()
+
+    private init() {
+        let window = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 170),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = String(
+            localized: "debug.overlayGlass.title",
+            defaultValue: "Overlay Glass"
+        )
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier("programa.overlayGlassDebug")
+        window.center()
+        window.contentView = NSHostingView(rootView: OverlayGlassDebugView())
+        AppDelegate.shared?.applyWindowDecorations(to: window)
+        super.init(window: window)
+        window.delegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+    }
+}
+
+private struct OverlayGlassDebugView: View {
+    @AppStorage(ProgramaGlassSettings.overlaysEnabledKey)
+    private var overlayLiquidGlassEnabled = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(
+                String(
+                    localized: "debug.overlayGlass.title",
+                    defaultValue: "Overlay Glass"
+                )
+            )
+            .font(.headline)
+
+            Toggle(
+                String(
+                    localized: "debug.overlayGlass.enable",
+                    defaultValue: "Enable Native Glass Overlays"
+                ),
+                isOn: $overlayLiquidGlassEnabled
+            )
+            .disabled(!WindowGlassEffect.isAvailable)
+
+            Text(
+                WindowGlassEffect.isAvailable
+                    ? String(localized: "debug.glass.changesApplyLive", defaultValue: "Changes apply live.")
+                    : String(localized: "debug.glass.requiresMacOS26", defaultValue: "Native Liquid Glass requires macOS 26.")
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
