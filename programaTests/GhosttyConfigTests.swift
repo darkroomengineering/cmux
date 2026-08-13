@@ -677,7 +677,7 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         }
     }
 
-    func testGlassEnabledDecisionIgnoresGlassImplementationAvailability() {
+    func testGlassEnabledDecisionIsIndependentOfSidebarBlendAndImplementationAvailability() {
         XCTAssertTrue(
             cmuxShouldApplyWindowGlass(
                 sidebarBlendMode: "behindWindow",
@@ -692,7 +692,7 @@ final class WindowTransparencyDecisionTests: XCTestCase {
                 glassEffectAvailable: true
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             cmuxShouldApplyWindowGlass(
                 sidebarBlendMode: "withinWindow",
                 bgGlassEnabled: true,
@@ -701,7 +701,7 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         )
         XCTAssertFalse(
             cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "behindWindow",
+                sidebarBlendMode: "withinWindow",
                 bgGlassEnabled: false,
                 glassEffectAvailable: true
             )
@@ -763,13 +763,66 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         )
     }
 
+    func testTerminalBackgroundOpacityCapsOpaqueFillWhenWindowGlassIsEnabled() {
+        XCTAssertEqual(
+            ProgramaGlassSettings.effectiveTerminalBackgroundOpacity(
+                configuredOpacity: 1.0,
+                windowGlassEnabled: true
+            ),
+            0.82,
+            accuracy: 0.0001
+        )
+    }
+
+    func testTerminalBackgroundOpacityPreservesLowerTranslucentFillWithWindowGlass() {
+        XCTAssertEqual(
+            ProgramaGlassSettings.effectiveTerminalBackgroundOpacity(
+                configuredOpacity: 0.55,
+                windowGlassEnabled: true
+            ),
+            0.55,
+            accuracy: 0.0001
+        )
+    }
+
+    func testTerminalBackgroundOpacityPreservesConfiguredFillWithoutWindowGlass() {
+        XCTAssertEqual(
+            ProgramaGlassSettings.effectiveTerminalBackgroundOpacity(
+                configuredOpacity: 0.96,
+                windowGlassEnabled: false
+            ),
+            0.96,
+            accuracy: 0.0001
+        )
+    }
+
+    func testTerminalBackgroundOpacityClampsConfiguredValue() {
+        XCTAssertEqual(
+            ProgramaGlassSettings.effectiveTerminalBackgroundOpacity(
+                configuredOpacity: -0.25,
+                windowGlassEnabled: false
+            ),
+            0.0,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            ProgramaGlassSettings.effectiveTerminalBackgroundOpacity(
+                configuredOpacity: 1.25,
+                windowGlassEnabled: false
+            ),
+            1.0,
+            accuracy: 0.0001
+        )
+    }
+
     func testPlatformGlassDefaultsEnableGatedSurfacesOnlyWhenNativeGlassIsAvailable() {
         let nativeDefaults = ProgramaGlassSettings.platformDefaults(nativeGlassAvailable: true)
         let fallbackDefaults = ProgramaGlassSettings.platformDefaults(nativeGlassAvailable: false)
 
         XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.windowEnabledKey] as? Bool, true)
         XCTAssertEqual(fallbackDefaults[ProgramaGlassSettings.windowEnabledKey] as? Bool, false)
-        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.tabBarEnabledKey] as? Bool, false)
+        XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.tabBarEnabledKey] as? Bool, true)
+        XCTAssertEqual(fallbackDefaults[ProgramaGlassSettings.tabBarEnabledKey] as? Bool, false)
         XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.browserToolbarEnabledKey] as? Bool, false)
         XCTAssertEqual(nativeDefaults[ProgramaGlassSettings.overlaysEnabledKey] as? Bool, true)
         XCTAssertEqual(fallbackDefaults[ProgramaGlassSettings.overlaysEnabledKey] as? Bool, false)
@@ -789,10 +842,24 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         XCTAssertFalse(defaults.bool(forKey: ProgramaGlassSettings.windowEnabledKey))
     }
 
-    func testBehindWindowGlassPathKeepsTransparentWindowEnabled() {
+    func testExplicitTabGlassChoiceOverridesRegisteredPlatformDefault() {
+        let suite = "programa-tests-tab-glass-explicit-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: ProgramaGlassSettings.tabBarEnabledKey)
+
+        ProgramaGlassSettings.registerPlatformDefaults(
+            defaults: defaults,
+            nativeGlassAvailable: true
+        )
+
+        XCTAssertFalse(defaults.bool(forKey: ProgramaGlassSettings.tabBarEnabledKey))
+    }
+
+    func testWithinWindowSidebarBlendKeepsIndependentWindowGlassEnabled() {
         withTemporaryWindowBackgroundDefaults {
             let defaults = UserDefaults.standard
-            defaults.set("behindWindow", forKey: sidebarBlendModeKey)
+            defaults.set("withinWindow", forKey: sidebarBlendModeKey)
             defaults.set(true, forKey: bgGlassEnabledKey)
 
             XCTAssertTrue(cmuxShouldUseTransparentBackgroundWindow())

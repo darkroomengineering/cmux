@@ -166,6 +166,12 @@ class GhosttyApp {
     private let _tickLock = NSLock()
     private(set) var defaultBackgroundColor: NSColor = .windowBackgroundColor
     private(set) var defaultBackgroundOpacity: Double = 1.0
+    var effectiveTerminalBackgroundOpacity: Double {
+        ProgramaGlassSettings.effectiveTerminalBackgroundOpacity(
+            configuredOpacity: defaultBackgroundOpacity,
+            windowGlassEnabled: cmuxShouldUseTransparentBackgroundWindow()
+        )
+    }
     private(set) var usesHostLayerBackground = true
     private static func resolveBackgroundLogURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
