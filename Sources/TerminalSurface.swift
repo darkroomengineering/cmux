@@ -1865,6 +1865,29 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// in `seedRevivedScrollbackIfPending`.
     private static let reviveReplayChunkBytes = 8 * 1024
 
+#if DEBUG
+    /// Test-only observation hook: invoked once per `ghostty_surface_process_output`
+    /// chunk during a revive replay, with `Thread.isMainThread` captured at the
+    /// moment of that call. Regression tests use this to assert the replay loop
+    /// never runs on the main thread (see the 0.4.231 app-mailbox deadlock
+    /// documented on `seedRevivedScrollbackIfPending`).
+    static var reviveReplayChunkObserverForTesting: ((_ isMainThread: Bool) -> Void)?
+
+    /// Test-only entry point that drives the SAME production replay pipeline
+    /// (`replayRevivedScrollback`) with a caller-supplied transcript, calling
+    /// `completion` once the replay — including its post-replay finish work —
+    /// has completed.
+    func replayRevivedScrollbackForTesting(text: String, completion: @escaping () -> Void) {
+        let pending: (text: String, resetModes: Bool, workingDirectory: String?) = (
+            text: text,
+            resetModes: false,
+            workingDirectory: nil
+        )
+        replayRevivedScrollback(pending: pending, trigger: "testing")
+        completion()
+    }
+#endif
+
     private func replayRevivedScrollback(
         pending: (text: String, resetModes: Bool, workingDirectory: String?),
         trigger: String
@@ -1891,6 +1914,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
                     }
             }
             offset = end
+#if DEBUG
+            Self.reviveReplayChunkObserverForTesting?(Thread.isMainThread)
+#endif
         }
 
         // The seeded transcript is historical: any DECSET inside it was

@@ -2215,3 +2215,104 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
         )
     }
 }
+
+/// Regression coverage for the 0.4.231 revive-replay main-thread deadlock.
+///
+/// `TerminalSurface.replayRevivedScrollback` feeds a revived session's
+/// scrollback to `ghostty_surface_process_output` in chunks. Every OSC
+/// sequence in that transcript that produces an apprt surface message (title
+/// set OSC 0/2, pwd report OSC 7 — shells emit these on every prompt) is
+/// pushed into ghostty's app mailbox (`BlockingQueue(Message, 64)`,
+/// ghostty/src/App.zig:662), which blocks with a `.forever` policy once full
+/// (ghostty/src/termio/stream_handler.zig:126-137). The ONLY drainer of that
+/// mailbox is `ghostty_app_tick`, which Programa runs on the main thread
+/// (`GhosttyApp.swift`). When the replay itself also runs on the main thread,
+/// a transcript with more than 64 surface-message-producing sequences
+/// self-deadlocks: the 65th push parks the main thread forever, and the tick
+/// that would drain it can never run.
+///
+/// The #285 fix (chunking `process_output` calls, see the comment on
+/// `replayRevivedScrollback`) only unblocks ghostty's *renderer* mailbox,
+/// which has an independent drainer thread. It cannot unblock the app
+/// mailbox, whose only drainer is the very thread running the replay.
+///
+/// This test asserts every replay chunk lands off the main thread. It is
+/// expected to be RED before the fix lands (chunks currently run on main via
+/// the `DispatchQueue.main.async` hop in `seedRevivedScrollbackIfPending`)
+/// and GREEN once the replay loop is moved to a background serial queue.
+/// CI is expected red on this commit per the repo's two-commit regression
+/// test policy.
+///
+/// The transcript here is intentionally tiny (10 OSC-prefixed lines, far
+/// below the 64-message mailbox capacity) — a transcript large enough to
+/// actually fill the mailbox would genuinely deadlock the main thread on the
+/// unfixed code and hang the CI job instead of failing this assertion.
+@MainActor
+final class ReviveReplayMainThreadRegressionTests: XCTestCase {
+    func testReviveReplayNeverFeedsGhosttyOnTheMainThread() {
+        _ = NSApplication.shared
+
+        let surface = TerminalSurface(
+            tabId: UUID(),
+            context: GHOSTTY_SURFACE_CONTEXT_SPLIT,
+            configTemplate: nil,
+            workingDirectory: nil
+        )
+        let hostedView = surface.hostedView
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 240),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer {
+            TerminalSurface.reviveReplayChunkObserverForTesting = nil
+            window.orderOut(nil)
+        }
+
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+        hostedView.frame = contentView.bounds
+        hostedView.autoresizingMask = [.width, .height]
+        contentView.addSubview(hostedView)
+
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        contentView.layoutSubtreeIfNeeded()
+        hostedView.setVisibleInUI(true)
+        hostedView.setActive(true)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+        // CRITICAL: 10 OSC sequences, far below the app mailbox's 64-message
+        // capacity. A larger transcript would genuinely deadlock the unfixed
+        // code and hang CI instead of failing the assertion below.
+        let transcript = String(repeating: "\u{1B}]0;t\u{07}hello\r\n", count: 10)
+
+        var observedMainThreadFlags: [Bool] = []
+        TerminalSurface.reviveReplayChunkObserverForTesting = { isMainThread in
+            observedMainThreadFlags.append(isMainThread)
+        }
+
+        let expectation = expectation(description: "revive replay completes")
+        surface.replayRevivedScrollbackForTesting(text: transcript) {
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 30)
+
+        XCTAssertFalse(
+            observedMainThreadFlags.isEmpty,
+            "Expected at least one replay chunk to be observed"
+        )
+        XCTAssertFalse(
+            observedMainThreadFlags.contains(true),
+            "Revive replay must feed ghostty off the main thread — the app mailbox " +
+            "(BlockingQueue(Message, 64)) is drained only by ghostty_app_tick on the " +
+            "main thread, so replaying on main can self-deadlock past 64 OSC messages " +
+            "(shipped in 0.4.231)"
+        )
+    }
+}
