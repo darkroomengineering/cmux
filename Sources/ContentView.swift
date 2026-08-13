@@ -1392,6 +1392,10 @@ struct ContentView: View {
             .onChange(of: bgGlassTintOpacity) {
                 updateWindowGlassTint()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
+                // Stock tint derives from the terminal background; track theme changes.
+                updateWindowGlassTint()
+            }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { notification in
                 guard let window = notification.object as? NSWindow,
                       window === observedWindow else { return }
@@ -1758,7 +1762,7 @@ struct ContentView: View {
     private func updateWindowGlassTint() {
         // Find this view's main window by identifier (keyWindow might be a debug panel/settings).
         guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == windowIdentifier }) else { return }
-        let tintColor = (NSColor(hex: bgGlassTintHex) ?? .black).withAlphaComponent(bgGlassTintOpacity)
+        let tintColor = WindowGlassEffect.resolvedWindowTint(hex: bgGlassTintHex, opacity: bgGlassTintOpacity)
         WindowGlassEffect.updateTint(to: window, color: tintColor)
     }
 

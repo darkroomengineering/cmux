@@ -3,8 +3,18 @@ import Bonsplit
 import Combine
 import SwiftUI
 
+extension Notification.Name {
+    static let programaSidebarVisibilityDidChange =
+        Notification.Name("programaSidebarVisibilityDidChange")
+}
+
 final class SidebarState: ObservableObject {
-    @Published var isVisible: Bool
+    @Published var isVisible: Bool {
+        didSet {
+            guard isVisible != oldValue else { return }
+            NotificationCenter.default.post(name: .programaSidebarVisibilityDidChange, object: nil)
+        }
+    }
     @Published var persistedWidth: CGFloat
 
     init(isVisible: Bool = true, persistedWidth: CGFloat = CGFloat(SessionPersistencePolicy.defaultSidebarWidth)) {
@@ -169,10 +179,10 @@ struct VerticalTabsSidebar: View {
     @AppStorage(WorkspacePresentationModeSettings.modeKey)
     private var workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
 
-    /// Space at top of sidebar for traffic light buttons
-    private let trafficLightPadding: CGFloat = 28
+    /// Content clearance inside the glass panel for the traffic lights and the
+    /// always-visible titlebar controls that share the panel's top strip.
+    private let trafficLightPadding: CGFloat = 38
     private let tabRowSpacing: CGFloat = 2
-    private let hiddenTitlebarControlsLeadingInset: CGFloat = 72
 
     private var isMinimalMode: Bool {
         WorkspacePresentationModeSettings.mode(for: workspacePresentationMode) == .minimal
@@ -204,14 +214,28 @@ struct VerticalTabsSidebar: View {
             selectedRemoteContextMenuTargets.allSatisfy { $0.remoteConnectionState == .connecting }
         let allSelectedRemoteContextMenuTargetsDisconnected = !selectedRemoteContextMenuTargets.isEmpty &&
             selectedRemoteContextMenuTargets.allSatisfy { $0.remoteConnectionState == .disconnected }
+        let sidebarContent = VStack(spacing: 0) {
+            // Single header row shared with the traffic lights (Maps-style): the
+            // lights float over its leading side, controls sit trailing, and the
+            // whole strip drags/double-clicks like a titlebar.
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                // Right-aligned: the controls view carries its own ~18pt trailing
+                // inset (shortcut-hint clearance), which serves as the edge padding.
+                HiddenTitlebarSidebarControlsView(notificationStore: notificationStore)
+            }
+            .frame(height: trafficLightPadding)
+            .contentShape(Rectangle())
+            .background(
+                WindowDragHandleView()
+                    .background(TitlebarDoubleClickMonitorView())
+            )
 
-        SidebarSurface(content: VStack(spacing: 0) {
             GeometryReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
-                        // Space for traffic lights / fullscreen controls
                         Spacer()
-                            .frame(height: trafficLightPadding)
+                            .frame(height: 6)
 
                         // Workspaces are bounded, so prefer a non-lazy stack here.
                         // LazyVStack + drag-state invalidations can recurse through layout.
@@ -274,6 +298,7 @@ struct VerticalTabsSidebar: View {
                             }
                         }
                         .padding(.vertical, 8)
+                        .padding(.horizontal, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                         SidebarEmptyArea(
@@ -296,24 +321,6 @@ struct VerticalTabsSidebar: View {
                     }
                     .frame(width: 0, height: 0)
                 )
-                .overlay(alignment: .top) {
-                    SidebarTopScrim(height: trafficLightPadding + 20)
-                        .allowsHitTesting(false)
-                }
-                .overlay(alignment: .top) {
-                    // Match native titlebar behavior in the sidebar top strip:
-                    // drag-to-move and double-click action (zoom/minimize).
-                    WindowDragHandleView()
-                        .frame(height: trafficLightPadding)
-                        .background(TitlebarDoubleClickMonitorView())
-                }
-                .overlay(alignment: .topLeading) {
-                    if isMinimalMode {
-                        HiddenTitlebarSidebarControlsView(notificationStore: notificationStore)
-                            .padding(.leading, hiddenTitlebarControlsLeadingInset)
-                            .padding(.top, 2)
-                    }
-                }
                 .background(Color.clear)
                 .modifier(ClearScrollBackground())
             }
@@ -323,19 +330,25 @@ struct VerticalTabsSidebar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("Sidebar")
-        // The inset surface intentionally extends through native titlebar space.
-        // AppKit keeps ownership of the traffic-light buttons while they visually
-        // sit on this same sidebar panel, matching standard macOS window chrome.
-        .ignoresSafeArea())
-        .overlay(alignment: .trailing) {
-            SidebarTrailingBorder()
+
+        ZStack {
+            SidebarTerminalBasePlane()
+                .ignoresSafeArea()
+
+            // Maps-style: the panel includes the traffic lights and simply pads
+            // its content below them; insets stay uniform so the panel radius is
+            // concentric with the window corner on all four sides.
+            SidebarSurface(content: sidebarContent)
+                .padding(6)
         }
-        .background(
-            WindowAccessor { window in
-                modifierKeyMonitor.setHostWindow(window)
-            }
-            .frame(width: 0, height: 0)
-        )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
+            .background(
+                WindowAccessor { window in
+                    modifierKeyMonitor.setHostWindow(window)
+                }
+                .frame(width: 0, height: 0)
+            )
         .onAppear {
             modifierKeyMonitor.start()
             draggedTabId = nil

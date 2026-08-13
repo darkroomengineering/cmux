@@ -1170,6 +1170,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             updateController.startUpdaterIfNeeded()
         }
         titlebarAccessoryController.start()
+        windowDecorationsController.isMainTerminalWindow = { [weak self] window in
+            self?.isMainTerminalWindow(window) ?? false
+        }
         windowDecorationsController.start()
         installMainWindowKeyObserver()
         refreshGhosttyGotoSplitShortcuts()
@@ -9283,7 +9286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
         if shouldApplyWindowGlass {
             // Apply liquid glass effect to the window with tint from settings
-            let tintColor = (NSColor(hex: bgGlassTintHex) ?? .black).withAlphaComponent(bgGlassTintOpacity)
+            let tintColor = WindowGlassEffect.resolvedWindowTint(hex: bgGlassTintHex, opacity: bgGlassTintOpacity)
             WindowGlassEffect.apply(to: window, tintColor: tintColor)
         } else {
             WindowGlassEffect.remove(from: window)
