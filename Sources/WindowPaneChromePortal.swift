@@ -1,0 +1,813 @@
+import AppKit
+import Bonsplit
+import ObjectiveC
+
+extension Notification.Name {
+    /// Posted by the terminal portal (object: NSWindow) after it repositions a
+    /// hosted SwiftUI container — the chrome anchors inside move without their
+    /// own frames changing.
+    static let programaTerminalPortalDidMoveHostedContent =
+        Notification.Name("programaTerminalPortalDidMoveHostedContent")
+}
+
+@MainActor
+@available(macOS 26.0, *)
+final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBridge {
+    private static var associationKey: UInt8 = 0
+
+    static func bridge(for window: NSWindow) -> WindowPaneChromePortalRegistry {
+        if let existing = objc_getAssociatedObject(window, &associationKey) as? WindowPaneChromePortalRegistry {
+            existing.ensureInstalled()
+            return existing
+        }
+        let bridge = WindowPaneChromePortalRegistry(window: window)
+        objc_setAssociatedObject(window, &associationKey, bridge, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        return bridge
+    }
+
+    let supportsNativePaneChrome = true
+
+    private weak var window: NSWindow?
+    private let hostView = PaneChromePortalHostView(frame: .zero)
+    private var bars: [PaneID: NativePaneTabBarView] = [:]
+    private var descriptors: [PaneID: BonsplitPaneChromeDescriptor] = [:]
+    private var observers: [NSObjectProtocol] = []
+    private var isTornDown = false
+    /// Workspace-level split controls, pinned to the terminal area's top-right like
+    /// Maps' map controls; they act on the focused pane rather than per-pane copies.
+    private let splitCluster = GlassIconClusterView(symbols: [
+        (name: "square.split.2x1", tooltip: String(localized: "tabBar.splitRight", defaultValue: "Split Right")),
+        (name: "square.split.1x2", tooltip: String(localized: "tabBar.splitDown", defaultValue: "Split Down")),
+    ])
+    private let newTabCluster = GlassIconClusterView(symbols: [
+        (name: "terminal", tooltip: String(localized: "tabBar.newTerminalTab", defaultValue: "New Terminal Tab")),
+        (name: "globe", tooltip: String(localized: "tabBar.newBrowserTab", defaultValue: "New Browser Tab")),
+    ])
+
+    private init(window: NSWindow) {
+        self.window = window
+        super.init()
+        hostView.translatesAutoresizingMaskIntoConstraints = false
+        hostView.wantsLayer = true
+        hostView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostView.addSubview(splitCluster)
+        hostView.addSubview(newTabCluster)
+        splitCluster.isHidden = true
+        newTabCluster.isHidden = true
+        applyTerminalAppearance()
+        installObservers(window)
+        ensureInstalled()
+    }
+
+    /// Pills float over terminal content, so their glass and labels must resolve
+    /// contrast against the terminal background, not the window appearance —
+    /// otherwise a light-mode window draws near-black labels on a dark terminal.
+    private func applyTerminalAppearance() {
+        let name: NSAppearance.Name =
+            SidebarTerminalAppearance.colorScheme() == .dark ? .darkAqua : .aqua
+        if hostView.appearance?.name != name {
+            hostView.appearance = NSAppearance(named: name)
+        }
+    }
+
+    deinit {
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    func updatePaneChrome(_ descriptor: BonsplitPaneChromeDescriptor) {
+        descriptors[descriptor.paneID] = descriptor
+        ensureInstalled()
+#if DEBUG
+        dlog(
+            "paneChrome.update pane=\(descriptor.paneID.id.uuidString.prefix(5)) " +
+            "tabs=\(descriptor.tabs.count) visible=\(descriptor.isVisible ? 1 : 0) " +
+            "anchorWin=\(descriptor.anchorView?.window != nil ? 1 : 0) " +
+            "hostSuper=\(hostView.superview != nil ? 1 : 0)"
+        )
+#endif
+        let bar = bars[descriptor.paneID] ?? {
+            let newBar = NativePaneTabBarView(frame: .zero)
+            bars[descriptor.paneID] = newBar
+            hostView.addSubview(newBar)
+            return newBar
+        }()
+        bar.update(descriptor)
+        synchronize(descriptor.paneID)
+        updateClusters()
+        scheduleSettledSynchronize()
+    }
+
+    /// Workspace-level controls follow the focused visible pane, stacked down the
+    /// right edge like Maps' control pills: new-tab capsule first, splits below.
+    private func updateClusters() {
+        // Anchors can move to another window (workspace drag-out); their stale
+        // descriptors must not steer this window's controls.
+        let visible = descriptors.values.filter {
+            $0.isVisible && $0.anchorView?.window === window
+        }
+        guard let active = visible.first(where: { $0.isFocused }) ?? visible.first else {
+            newTabCluster.isHidden = true
+            splitCluster.isHidden = true
+            return
+        }
+        let barHeight: CGFloat = 28
+        var y = hostView.bounds.maxY - barHeight - 5
+
+        newTabCluster.setActions([active.onNewTab, active.onNewBrowserTab])
+        newTabCluster.isHidden = false
+        hostView.addSubview(newTabCluster)  // keep above pane bars
+        newTabCluster.frame = NSRect(
+            x: hostView.bounds.maxX - newTabCluster.preferredWidth - 8,
+            y: y,
+            width: newTabCluster.preferredWidth,
+            height: barHeight
+        )
+        y -= barHeight + 7
+
+        // Cap workspace splits at a 2x2-equivalent depth; deeper trees degenerate
+        // into slivers. Checked here (live pane count) rather than at publish time,
+        // where it goes stale when panes collapse without a republish.
+        if visible.count < 4, active.showsSplitButtons {
+            splitCluster.setActions([active.onSplitRight, active.onSplitDown])
+            splitCluster.isHidden = false
+            hostView.addSubview(splitCluster)
+            splitCluster.frame = NSRect(
+                x: hostView.bounds.maxX - splitCluster.preferredWidth - 8,
+                y: y,
+                width: splitCluster.preferredWidth,
+                height: barHeight
+            )
+        } else {
+            splitCluster.isHidden = true
+        }
+    }
+
+    func removePaneChrome(for paneID: PaneID, anchorView: NSView) {
+        let matches = descriptors[paneID]?.anchorView === anchorView
+#if DEBUG
+        dlog(
+            "paneChrome.remove pane=\(paneID.id.uuidString.prefix(5)) " +
+            "matches=\(matches ? 1 : 0) remaining=\(descriptors.count)"
+        )
+#endif
+        guard matches else { return }
+        descriptors.removeValue(forKey: paneID)
+        bars.removeValue(forKey: paneID)?.removeFromSuperview()
+        updateClusters()
+        // Split-tree churn can register two anchor instances for one pane; the
+        // dying instance publishes last and its dismantle lands here, deleting the
+        // survivor's registration. Ask live anchors to reassert on the next turn.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: BonsplitPaneChromeAnchorNotifications.reassertRequest,
+                object: nil
+            )
+        }
+    }
+
+    private func installObservers(_ window: NSWindow) {
+        let center = NotificationCenter.default
+        for name in [NSWindow.didResizeNotification, NSWindow.didEndLiveResizeNotification] {
+            observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.synchronizeAll() }
+            })
+        }
+        observers.append(center.addObserver(
+            forName: NSSplitView.didResizeSubviewsNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, (note.object as? NSSplitView)?.window === self.window else { return }
+                self.synchronizeAll()
+            }
+        })
+        for name in [
+            NSView.frameDidChangeNotification,
+            NSView.boundsDidChangeNotification,
+            BonsplitPaneChromeAnchorNotifications.anchorDidMoveToWindow,
+        ] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, let view = note.object as? NSView, view.window === self.window else { return }
+                    if let paneID = self.descriptors.first(where: { $0.value.anchorView === view })?.key {
+                        // The anchor can join the window before the terminal host exists
+                        // in the hierarchy; re-check installation before syncing.
+                        self.ensureInstalled()
+                        self.synchronize(paneID)
+                        return
+                    }
+                    // Split collapses and divider animation move the anchor via its
+                    // ancestors — the anchor's own frame never changes, so resync
+                    // whenever an ancestor of any anchor resizes (coalesced).
+                    let ancestorOfAnchor = self.descriptors.values.contains {
+                        $0.anchorView?.isDescendant(of: view) == true
+                    }
+                    if ancestorOfAnchor { self.scheduleSynchronizeAll() }
+                }
+            })
+        }
+        observers.append(center.addObserver(
+            forName: .programaTerminalPortalDidMoveHostedContent,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, (note.object as? NSWindow) === self.window else { return }
+                self.scheduleSynchronizeAll()
+            }
+        })
+        observers.append(center.addObserver(
+            forName: .ghosttyDefaultBackgroundDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyTerminalAppearance() }
+        })
+        observers.append(center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.teardown() }
+        })
+    }
+
+    private func ensureInstalled() {
+        guard !isTornDown, supportsNativePaneChrome, let window else { return }
+        guard let terminalHost = findTerminalHost(in: window.contentView) else {
+#if DEBUG
+            dlog("paneChrome.install.noTerminalHost win=\(window.windowNumber)")
+#endif
+            return
+        }
+        guard let container = terminalHost.superview else {
+#if DEBUG
+            dlog("paneChrome.install.noContainer win=\(window.windowNumber)")
+#endif
+            return
+        }
+#if DEBUG
+        dlog(
+            "paneChrome.install win=\(window.windowNumber) " +
+            "termHost=\(ObjectIdentifier(terminalHost)) hidden=\(terminalHost.isHiddenOrHasHiddenAncestor ? 1 : 0) " +
+            "termFrame=\(Int(terminalHost.frame.width))x\(Int(terminalHost.frame.height)) " +
+            "already=\(hostView.superview === container ? 1 : 0)"
+        )
+#endif
+        if hostView.superview !== container {
+            hostView.removeFromSuperview()
+            container.addSubview(hostView, positioned: .above, relativeTo: terminalHost)
+            NSLayoutConstraint.activate([
+                hostView.leadingAnchor.constraint(equalTo: terminalHost.leadingAnchor),
+                hostView.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor),
+                hostView.topAnchor.constraint(equalTo: terminalHost.topAnchor),
+                hostView.bottomAnchor.constraint(equalTo: terminalHost.bottomAnchor),
+            ])
+            // A fresh install means earlier synchronize calls ran without a host
+            // and hid their bars; bring them back now that geometry can resolve.
+            container.layoutSubtreeIfNeeded()
+            for paneID in descriptors.keys { synchronize(paneID) }
+        } else if let portalIndex = container.subviews.firstIndex(of: hostView) {
+            // Pane chrome must float above every content portal in this container —
+            // the browser portal installs `.above` the terminal host too, so ordering
+            // against the terminal host alone can leave pills under browser content.
+            let topContentIndex = container.subviews.enumerated()
+                .filter { $0.element is WindowTerminalHostView || $0.element is WindowBrowserHostView }
+                .map(\.offset)
+                .max()
+            if let topContentIndex, portalIndex < topContentIndex {
+                container.addSubview(hostView, positioned: .above, relativeTo: container.subviews[topContentIndex])
+            }
+        }
+    }
+
+    private func findTerminalHost(in root: NSView?) -> WindowTerminalHostView? {
+        guard let root else { return nil }
+        if let host = root as? WindowTerminalHostView { return host }
+        for child in root.subviews {
+            if let host = findTerminalHost(in: child) { return host }
+        }
+        return nil
+    }
+
+    private var syncAllScheduled = false
+    private var settledSyncScheduled = false
+
+    /// One extra geometry pass after churn settles: split/collapse animations keep
+    /// moving anchors briefly after the last descriptor update or notification.
+    private func scheduleSettledSynchronize() {
+        guard !settledSyncScheduled else { return }
+        settledSyncScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            self.settledSyncScheduled = false
+#if DEBUG
+            dlog("paneChrome.settledSync descriptors=\(self.descriptors.count)")
+#endif
+            self.synchronizeAll()
+        }
+    }
+
+    /// Coalesces ancestor-resize storms (divider drags, collapse animations) into
+    /// one geometry pass per runloop turn.
+    private func scheduleSynchronizeAll() {
+        guard !syncAllScheduled else { return }
+        syncAllScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.syncAllScheduled = false
+            self.synchronizeAll()
+        }
+    }
+
+    private func synchronizeAll() {
+        guard !isTornDown else { return }
+        ensureInstalled()
+        for paneID in descriptors.keys { synchronize(paneID) }
+        updateClusters()
+    }
+
+    private func synchronize(_ paneID: PaneID) {
+        guard let descriptor = descriptors[paneID],
+              let anchor = descriptor.anchorView,
+              anchor.window === window,
+              let bar = bars[paneID],
+              !anchor.isHidden,
+              descriptor.isVisible else {
+#if DEBUG
+            let descriptor = descriptors[paneID]
+            let anchor = descriptor?.anchorView
+            dlog(
+                "paneChrome.sync.hide pane=\(paneID.id.uuidString.prefix(5)) " +
+                "hasDesc=\(descriptor != nil ? 1 : 0) hasAnchor=\(anchor != nil ? 1 : 0) " +
+                "anchorWinMatch=\(anchor?.window === window ? 1 : 0) " +
+                "hasBar=\(bars[paneID] != nil ? 1 : 0) " +
+                "anchorHidden=\(anchor?.isHidden == true ? 1 : 0) " +
+                "descVisible=\(descriptor?.isVisible == true ? 1 : 0)"
+            )
+#endif
+            bars[paneID]?.isHidden = true
+            return
+        }
+        let windowRect = anchor.convert(anchor.bounds, to: nil)
+        guard windowRect.width > 1, windowRect.height > 1 else {
+#if DEBUG
+            dlog("paneChrome.sync.zeroRect pane=\(paneID.id.uuidString.prefix(5)) rect=\(windowRect)")
+#endif
+            bar.isHidden = true
+            return
+        }
+        bar.frame = hostView.convert(windowRect, from: nil)
+        bar.isHidden = false
+#if DEBUG
+        dlog(
+            "paneChrome.sync.show pane=\(paneID.id.uuidString.prefix(5)) " +
+            "barFrame=\(bar.frame) hostFrame=\(hostView.frame) " +
+            "hostHidden=\(hostView.isHiddenOrHasHiddenAncestor ? 1 : 0)"
+        )
+#endif
+    }
+
+    private func teardown() {
+        isTornDown = true
+        descriptors.removeAll()
+        bars.values.forEach { $0.removeFromSuperview() }
+        bars.removeAll()
+        splitCluster.isHidden = true
+        newTabCluster.isHidden = true
+        hostView.removeFromSuperview()
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers.removeAll()
+    }
+
+    func nativeGlassViewsForTesting() -> [NSGlassEffectView] {
+        func descendants(_ root: NSView) -> [NSView] {
+            root.subviews.flatMap { [$0] + descendants($0) }
+        }
+        return descendants(hostView).compactMap { $0 as? NSGlassEffectView }
+    }
+
+    var hostViewForTesting: NSView { hostView }
+}
+
+private final class PaneChromePortalHostView: NSView {
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden else { return nil }
+        // `point` arrives in the superview's coordinate space; NSView.hitTest on a
+        // child also expects the child's superview (self) space. Convert once here,
+        // never per-child, or every hit lands offset by the child's origin.
+        let local = convert(point, from: superview)
+        for child in subviews.reversed() where !child.isHidden && child.frame.contains(local) {
+            if let hit = child.hitTest(local) { return hit }
+        }
+        return nil
+    }
+}
+
+@MainActor
+@available(macOS 26.0, *)
+private final class NativePaneTabBarView: NSView {
+    private let scrollView = NSScrollView(frame: .zero)
+    private let documentView = FlippedDocumentView(frame: .zero)
+    private var pillViews: [TabID: NativeGlassTabPillView] = [:]
+    private var descriptor: BonsplitPaneChromeDescriptor?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        scrollView.drawsBackground = false
+        // The portal lives in a full-size-content window; the automatic titlebar
+        // content inset would scroll the 28pt row completely out of the clip band.
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
+        scrollView.horizontalScrollElasticity = .automatic
+        scrollView.verticalScrollElasticity = .none
+        scrollView.documentView = documentView
+        addSubview(scrollView)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        scrollView.frame = bounds.insetBy(dx: 8, dy: 5)
+        layoutPills()
+        // Early zero-sized layout passes can leave the clip view scrolled to a
+        // negative vertical origin, which parks the whole tab row outside the
+        // visible band. The row never scrolls vertically, so pin y to 0.
+        let clipOrigin = scrollView.contentView.bounds.origin
+        if clipOrigin.y != 0 {
+            scrollView.contentView.setBoundsOrigin(NSPoint(x: clipOrigin.x, y: 0))
+        }
+    }
+
+    func update(_ descriptor: BonsplitPaneChromeDescriptor) {
+        self.descriptor = descriptor
+        let valid = Set(descriptor.tabs.map(\.id))
+        let staleIDs = pillViews.keys.filter { !valid.contains($0) }
+        for id in staleIDs {
+            pillViews.removeValue(forKey: id)?.removeFromSuperview()
+        }
+        for tab in descriptor.tabs {
+            let pill = pillViews[tab.id] ?? {
+                let view = NativeGlassTabPillView(frame: .zero)
+                pillViews[tab.id] = view
+                documentView.addSubview(view)
+                return view
+            }()
+            pill.update(
+                tab,
+                select: { [weak descriptor] in descriptor?.onSelect(tab.id) },
+                close: { [weak descriptor] in descriptor?.onClose(tab.id) },
+                context: { [weak descriptor] action in descriptor?.onContextAction(tab.id, action) },
+                dragData: { [weak descriptor] in descriptor?.dragPasteboardData(tab.id) },
+                dragState: { [weak descriptor] active in descriptor?.onDragStateChanged(tab.id, active) }
+            )
+        }
+        // Title changes arrive outside AppKit's layout cadence; relayout now so
+        // pill widths track the new intrinsic text size instead of one update late.
+        needsLayout = true
+        layoutPills()
+    }
+
+    private func layoutPills() {
+        guard let descriptor else { return }
+        let gap: CGFloat = 7
+        let minPillWidth: CGFloat = 78
+        let leadingInset = max(0, descriptor.leadingInset)
+        let height = max(28, scrollView.contentSize.height)
+        let pills = descriptor.tabs.compactMap { pillViews[$0.id] }
+
+        // Natural width per pill; only compress (which is what introduces
+        // truncation) once the row genuinely runs out of space.
+        var widths = pills.map { min(220, max(minPillWidth, $0.preferredWidth)) }
+        let available = scrollView.contentSize.width - leadingInset
+        let naturalTotal = widths.reduce(0, +) + gap * CGFloat(max(0, widths.count - 1))
+        if naturalTotal > available, !widths.isEmpty {
+            let evenWidth = (available - gap * CGFloat(widths.count - 1)) / CGFloat(widths.count)
+            let compressed = max(minPillWidth, evenWidth.rounded(.down))
+            widths = widths.map { min($0, max(compressed, minPillWidth)) }
+        }
+
+        var x = leadingInset
+        for (pill, width) in zip(pills, widths) {
+            pill.frame = NSRect(x: x, y: 0, width: width, height: height)
+            pill.layoutSubtreeIfNeeded()
+            x += width + gap
+        }
+        documentView.frame = NSRect(x: 0, y: 0, width: max(x, scrollView.contentSize.width), height: height)
+    }
+}
+
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+/// A Maps-style always-visible control capsule: one glass surface holding a row
+/// of icon buttons (Maps groups map-mode + navigation in one pill the same way).
+@MainActor
+@available(macOS 26.0, *)
+private final class GlassIconClusterView: NSView {
+    private let glass = NSGlassEffectView(frame: .zero)
+    private let container = NSView(frame: .zero)
+    private var buttons: [NSButton] = []
+    private var actions: [() -> Void] = []
+
+    static let buttonWidth: CGFloat = 34
+
+    init(symbols: [(name: String, tooltip: String)]) {
+        super.init(frame: .zero)
+        #if compiler(>=6.2)
+        glass.style = .regular
+        glass.cornerRadius = 14
+        glass.contentView = container
+        #endif
+        addSubview(glass)
+        for (index, symbol) in symbols.enumerated() {
+            let button = NSButton(frame: .zero)
+            button.image = NSImage(systemSymbolName: symbol.name, accessibilityDescription: symbol.tooltip)
+            button.isBordered = false
+            button.contentTintColor = .secondaryLabelColor
+            button.toolTip = symbol.tooltip
+            button.target = self
+            button.action = #selector(buttonPressed(_:))
+            button.tag = index
+            button.setAccessibilityLabel(symbol.tooltip)
+            container.addSubview(button)
+            buttons.append(button)
+        }
+        actions = Array(repeating: {}, count: symbols.count)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    var preferredWidth: CGFloat { CGFloat(buttons.count) * Self.buttonWidth }
+
+    func setActions(_ newActions: [() -> Void]) {
+        guard newActions.count == buttons.count else { return }
+        actions = newActions
+    }
+
+    override func layout() {
+        super.layout()
+        glass.frame = bounds
+        container.frame = glass.bounds
+        for (index, button) in buttons.enumerated() {
+            button.frame = NSRect(
+                x: CGFloat(index) * Self.buttonWidth,
+                y: 0,
+                width: Self.buttonWidth,
+                height: bounds.height
+            )
+        }
+    }
+
+    /// Same NSGlassEffectView caveat as the tab pills: its internals do not
+    /// hit-test through to the reparented contentView, so route directly.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        guard bounds.contains(local) else { return nil }
+        for button in buttons where button.frame.contains(local) { return button }
+        return self
+    }
+
+    @objc private func buttonPressed(_ sender: NSButton) {
+        guard actions.indices.contains(sender.tag) else { return }
+        actions[sender.tag]()
+    }
+}
+
+@MainActor
+@available(macOS 26.0, *)
+private final class NativeGlassTabPillView: NSView, NSDraggingSource {
+    private let glass = NSGlassEffectView(frame: .zero)
+    private let control = NativeTabPillControl(frame: .zero)
+
+    var preferredWidth: CGFloat { control.preferredWidth }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        #if compiler(>=6.2)
+        glass.style = .regular
+        glass.cornerRadius = 14
+        glass.contentView = control
+        #endif
+        addSubview(glass)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        glass.frame = bounds
+        control.frame = glass.bounds
+    }
+
+    /// NSGlassEffectView's internal hierarchy does not reliably hit-test through
+    /// to the reparented contentView; route pointer events to the control directly.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        guard bounds.contains(local) else { return nil }
+        // The control shares the pill's geometry, so the pill-local point is
+        // valid in the control's superview space as well.
+        return control.hitTest(local) ?? control
+    }
+
+    func update(
+        _ tab: BonsplitPaneChromeTabDescriptor,
+        select: @escaping () -> Void,
+        close: @escaping () -> Void,
+        context: @escaping (TabContextAction) -> Void,
+        dragData: @escaping () -> Data?,
+        dragState: @escaping (Bool) -> Void
+    ) {
+        control.update(tab, select: select, close: close, context: context, dragData: dragData, dragState: dragState)
+        #if compiler(>=6.2)
+        // Maps-style states: the selected pill reads as a solid lit surface,
+        // unselected pills stay quiet glass. Accent-colored fills fight the
+        // native material, so tint with the adaptive text primary instead.
+        glass.tintColor = tab.isSelected
+            ? NSColor.labelColor.withAlphaComponent(0.16)
+            : nil
+        #endif
+        alphaValue = tab.isSelected ? 1.0 : 0.82
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        .move
+    }
+}
+
+@MainActor
+@available(macOS 26.0, *)
+private final class NativeTabPillControl: NSControl, NSMenuDelegate, NSDraggingSource {
+    private let iconView = NSImageView(frame: .zero)
+    private let titleField = NSTextField(labelWithString: "")
+    private let closeButton = NSButton(frame: .zero)
+    private var tracking: NSTrackingArea?
+    private var tab: BonsplitPaneChromeTabDescriptor?
+    private var selectAction: (() -> Void)?
+    private var closeAction: (() -> Void)?
+    private var contextAction: ((TabContextAction) -> Void)?
+    private var dragData: (() -> Data?)?
+    private var dragState: ((Bool) -> Void)?
+    private var mouseDownPoint: NSPoint?
+
+    var preferredWidth: CGFloat {
+        // Mirror of layout(): icon leading 12 + icon 16 + gap 6 + trailing close
+        // region 34, plus breathing room so the label never truncates.
+        ceil(titleField.intrinsicContentSize.width) + 78
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        titleField.lineBreakMode = .byTruncatingTail
+        titleField.font = .systemFont(ofSize: 13, weight: .medium)
+        iconView.imageScaling = .scaleProportionallyDown
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
+        closeButton.isBordered = false
+        closeButton.target = self
+        closeButton.action = #selector(closePressed)
+        addSubview(iconView)
+        addSubview(titleField)
+        addSubview(closeButton)
+        setAccessibilityRole(.button)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        iconView.frame = NSRect(x: 12, y: (bounds.height - 16) / 2, width: 16, height: 16)
+        closeButton.frame = NSRect(x: bounds.width - 28, y: (bounds.height - 20) / 2, width: 20, height: 20)
+        titleField.frame = NSRect(x: 34, y: (bounds.height - 18) / 2, width: max(10, bounds.width - 68), height: 18)
+    }
+
+    /// Inner label/icon views don't reliably bubble middle-click and context
+    /// events; claim everything except the close button so the whole pill acts
+    /// as one control.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        guard bounds.contains(local) else { return nil }
+        if !closeButton.isHidden, closeButton.frame.contains(local) { return closeButton }
+        return self
+    }
+
+    override func updateTrackingAreas() {
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.activeInKeyWindow, .mouseEnteredAndExited], owner: self)
+        addTrackingArea(area)
+        tracking = area
+        super.updateTrackingAreas()
+    }
+
+    func update(
+        _ tab: BonsplitPaneChromeTabDescriptor,
+        select: @escaping () -> Void,
+        close: @escaping () -> Void,
+        context: @escaping (TabContextAction) -> Void,
+        dragData: @escaping () -> Data?,
+        dragState: @escaping (Bool) -> Void
+    ) {
+        self.tab = tab
+        selectAction = select
+        closeAction = close
+        contextAction = context
+        self.dragData = dragData
+        self.dragState = dragState
+        titleField.stringValue = tab.title
+        titleField.font = .systemFont(ofSize: 13, weight: tab.isSelected ? .semibold : .medium)
+        titleField.textColor = tab.isSelected ? .labelColor : .secondaryLabelColor
+        iconView.contentTintColor = tab.isSelected ? .labelColor : .secondaryLabelColor
+        closeButton.contentTintColor = .secondaryLabelColor
+        if let data = tab.iconImageData, let image = NSImage(data: data) {
+            iconView.image = image
+        } else if let icon = tab.icon {
+            iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+                ?? NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+        } else {
+            iconView.image = nil
+        }
+        closeButton.isHidden = tab.isPinned
+        setAccessibilityLabel(tab.title)
+        setAccessibilityValue(tab.accessibilityValue)
+        needsLayout = true
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+#if DEBUG
+        dlog("paneChrome.pill.mouseDown title=\(titleField.stringValue)")
+#endif
+        mouseDownPoint = convert(event.locationInWindow, from: nil)
+        selectAction?()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = mouseDownPoint else { return }
+        let current = convert(event.locationInWindow, from: nil)
+        guard hypot(current.x - start.x, current.y - start.y) > 4,
+              let data = dragData?() else { return }
+        let item = NSPasteboardItem()
+        item.setData(data, forType: NSPasteboard.PasteboardType("com.splittabbar.tabtransfer"))
+        let draggingItem = NSDraggingItem(pasteboardWriter: item)
+        draggingItem.setDraggingFrame(bounds, contents: bitmapImageRepForCachingDisplay(in: bounds))
+        dragState?(true)
+        let session = beginDraggingSession(with: [draggingItem], event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = true
+        mouseDownPoint = nil
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else {
+            super.otherMouseDown(with: event)
+            return
+        }
+#if DEBUG
+        dlog("paneChrome.pill.middleClick title=\(titleField.stringValue)")
+#endif
+        closeAction?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        guard let tab else { return }
+        let menu = NSMenu()
+        for item in tab.menuItems {
+            switch item {
+            case .separator:
+                menu.addItem(.separator())
+            case .action(let title, let action, let enabled):
+                let menuItem = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
+                menuItem.target = self
+                menuItem.representedObject = ActionBox(action)
+                menuItem.isEnabled = enabled
+                menu.addItem(menuItem)
+            }
+        }
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func closePressed() { closeAction?() }
+
+    @objc private func menuAction(_ sender: NSMenuItem) {
+        guard let action = (sender.representedObject as? ActionBox)?.action else { return }
+        contextAction?(action)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        .move
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        dragState?(false)
+    }
+}
+
+private final class ActionBox: NSObject {
+    let action: TabContextAction
+    init(_ action: TabContextAction) { self.action = action }
+}

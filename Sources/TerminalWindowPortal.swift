@@ -830,6 +830,13 @@ final class WindowTerminalPortal: HostedViewPortalRegistry {
             if geometryChanged {
                 hostedView.reconcileGeometryNow()
                 hostedView.refreshSurfaceNow(reason: "portal.frameChange")
+                // Window-level chrome (pane tab pills) anchors inside this hosted
+                // subtree; a portal reposition moves those anchors without any
+                // frame change of their own, so tell chrome to re-derive geometry.
+                NotificationCenter.default.post(
+                    name: .programaTerminalPortalDidMoveHostedContent,
+                    object: hostView.window
+                )
             }
         }
 

@@ -55,6 +55,25 @@ public final class BonsplitController {
     /// Internal host-driven closes should not use this hook.
     @ObservationIgnored public var onTabCloseRequest: ((_ tabId: TabID, _ paneId: PaneID) -> Void)?
 
+    /// Window-owned renderer for native pane chrome. Weak to avoid retaining an NSWindow
+    /// through a controller that can outlive its current view hierarchy.
+    @ObservationIgnored public private(set) weak var paneChromePortalBridge: (any BonsplitPaneChromePortalBridge)?
+    public private(set) var paneChromePortalRevision = 0
+
+    public func setPaneChromePortalBridge(_ bridge: (any BonsplitPaneChromePortalBridge)?) {
+        guard paneChromePortalBridge !== bridge else { return }
+        paneChromePortalBridge = bridge
+        paneChromePortalRevision &+= 1
+    }
+
+    /// Forces the pane chrome anchors to re-mount and republish. Split-tree
+    /// restructures (pane collapse) can dismantle a surviving pane's anchor with
+    /// no replacement ever mounting; bumping the revision re-evaluates the
+    /// native-chrome branch and recreates the anchor.
+    public func republishPaneChrome() {
+        paneChromePortalRevision &+= 1
+    }
+
     // MARK: - Internal State
 
     internal var internalController: SplitViewController

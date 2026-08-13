@@ -13,6 +13,20 @@ import UserNotifications
 @testable import Programa
 #endif
 
+private struct ShortcutHintSizingTestLabel: View {
+    let label: String
+
+    var body: some View {
+        Text(label)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .font(.system(size: 10, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+    }
+}
+
 @MainActor
 final class WindowGlassEffectTests: XCTestCase {
     func testRemoveRestoresOriginalContentHierarchy() {
@@ -43,53 +57,54 @@ final class WindowGlassEffectTests: XCTestCase {
         XCTAssertFalse(originalContentView.subviews.contains(where: { $0 is NSVisualEffectView }))
     }
 
-    func testEnabledBonsplitTabBarHostsPeerPillsInNativeGlassContainer() throws {
+    func testNativePaneChromePillsOwnAppKitControlsAboveTerminalPortal() throws {
         #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             _ = NSApplication.shared
-            var appearance = Workspace.bonsplitAppearance(
-                from: NSColor(calibratedWhite: 0.12, alpha: 1),
-                backgroundOpacity: 1
-            )
-            // Keep the hierarchy test independent from process-wide UserDefaults so
-            // parallel platform-default tests cannot observe a transient override.
-            appearance.tabBarLiquidGlassEnabled = true
-            let controller = BonsplitController(
-                configuration: BonsplitConfiguration(appearance: appearance)
-            )
-            controller.createTab(title: "One")
-            controller.createTab(title: "Two")
-
-            let hostingView = NSHostingView(
-                rootView: BonsplitView(controller: controller) { tab, _ in
-                    Text(tab.title)
-                }
-            )
+            let root = NSView(frame: NSRect(x: 0, y: 0, width: 520, height: 320))
+            let terminalHost = WindowTerminalHostView(frame: root.bounds)
+            let anchor = NSView(frame: NSRect(x: 20, y: 270, width: 420, height: 40))
+            root.addSubview(anchor)
+            root.addSubview(terminalHost, positioned: .above, relativeTo: anchor)
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 520, height: 320),
+                contentRect: root.bounds,
                 styleMask: [.titled, .closable, .resizable],
                 backing: .buffered,
                 defer: false
             )
             defer { window.orderOut(nil) }
-            window.contentView = hostingView
-            hostingView.frame = window.contentLayoutRect
-            hostingView.layoutSubtreeIfNeeded()
-            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-            hostingView.layoutSubtreeIfNeeded()
+            window.contentView = root
 
-            func descendants(of root: NSView) -> [NSView] {
-                root.subviews.flatMap { [$0] + descendants(of: $0) }
+            let bridge = WindowPaneChromePortalRegistry.bridge(for: window)
+            let paneID = PaneID()
+            let tabs = ["One", "Two"].map { title in
+                BonsplitPaneChromeTabDescriptor(
+                    id: TabID(), title: title, icon: "terminal", iconImageData: nil,
+                    isSelected: title == "One", isPinned: false, isDirty: false,
+                    showsNotificationBadge: false, accessibilityValue: "", menuItems: []
+                )
             }
+            bridge.updatePaneChrome(BonsplitPaneChromeDescriptor(
+                paneID: paneID, anchorView: anchor, tabs: tabs, isFocused: true,
+                isVisible: true, leadingInset: 0, showsSplitButtons: false,
+                onSelect: { _ in }, onClose: { _ in }, onContextAction: { _, _ in },
+                dragPasteboardData: { _ in nil }, onDragStateChanged: { _, _ in },
+                onNewTab: {}, onNewBrowserTab: {}, onSplitRight: {}, onSplitDown: {}
+            ))
+            root.layoutSubtreeIfNeeded()
 
-            let allViews = descendants(of: hostingView)
-            guard let container = allViews.first(where: { $0 is NSGlassEffectContainerView }) else {
-                XCTFail("Expected one native glass container for the tab strip")
-                return
-            }
-            let pillGlassViews = descendants(of: container).compactMap { $0 as? NSGlassEffectView }
-            XCTAssertGreaterThanOrEqual(pillGlassViews.count, 2)
-            XCTAssertTrue(pillGlassViews.allSatisfy { $0.contentView != nil })
+            let tabPillGlassViews = bridge.nativeGlassViewsForTesting()
+            XCTAssertEqual(tabPillGlassViews.count, 2)
+            XCTAssertTrue(
+                tabPillGlassViews.allSatisfy { $0.contentView is NSControl },
+                "Every native glass pill must own its AppKit control through contentView"
+            )
+            XCTAssertTrue(bridge.hostViewForTesting.superview === terminalHost.superview)
+            let siblings = terminalHost.superview?.subviews ?? []
+            XCTAssertGreaterThan(
+                siblings.firstIndex(of: bridge.hostViewForTesting) ?? -1,
+                siblings.firstIndex(of: terminalHost) ?? -1
+            )
             return
         }
         #endif
@@ -140,6 +155,87 @@ final class WindowGlassEffectTests: XCTestCase {
         #endif
 
         throw XCTSkip("Native Liquid Glass requires the macOS 26 SDK and runtime")
+    }
+
+    func testShortcutHintSlotExpandsToFitRoundedWideChord() {
+        _ = NSApplication.shared
+
+        let defaults = UserDefaults.standard
+        let previousOverlaySetting = defaults.object(forKey: ProgramaGlassSettings.overlaysEnabledKey)
+        defaults.set(true, forKey: ProgramaGlassSettings.overlaysEnabledKey)
+        defer {
+            if let previousOverlaySetting {
+                defaults.set(previousOverlaySetting, forKey: ProgramaGlassSettings.overlaysEnabledKey)
+            } else {
+                defaults.removeObject(forKey: ProgramaGlassSettings.overlaysEnabledKey)
+            }
+        }
+
+        let label = "⌃⌥⌘1"
+        let baseFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        let roundedFont = baseFont.fontDescriptor.withDesign(.rounded)
+            .flatMap { NSFont(descriptor: $0, size: 10) } ?? baseFont
+        let expectedWidth = (label as NSString).size(withAttributes: [.font: roundedFont]).width + 12
+        let reservedWidth = SidebarWorkspaceShortcutHintMetrics.hintWidth(for: label)
+        let hostingView = NSHostingView(
+            rootView: SidebarTrailingAccessorySlot(
+                minimumWidth: reservedWidth,
+                minimumHeight: 16,
+                alignment: .trailing
+            ) {
+                ShortcutHintPill {
+                    ShortcutHintSizingTestLabel(label: label)
+                }
+            }
+        )
+        hostingView.sizingOptions = [.intrinsicContentSize]
+
+        let initialFittingSize = hostingView.fittingSize
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: initialFittingSize),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        window.contentView = hostingView
+        hostingView.frame = window.contentLayoutRect
+        hostingView.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        hostingView.layoutSubtreeIfNeeded()
+
+        XCTAssertGreaterThanOrEqual(
+            hostingView.fittingSize.width + 0.5,
+            expectedWidth,
+            "The shortcut hint must contain the rounded glyphs plus 12 points of horizontal padding"
+        )
+
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            func descendants(of root: NSView) -> [NSView] {
+                root.subviews.flatMap { [$0] + descendants(of: $0) }
+            }
+
+            guard let glass = descendants(of: hostingView).compactMap({ $0 as? NSGlassEffectView }).first else {
+                XCTFail("Expected the shortcut hint to use native Liquid Glass")
+                return
+            }
+            guard let contentView = glass.contentView,
+                  let nestedHost = descendants(of: contentView)
+                    .compactMap({ $0 as? NSHostingView<ShortcutHintSizingTestLabel> })
+                    .first
+            else {
+                XCTFail("Expected the shortcut label hosting view inside the glass content view")
+                return
+            }
+
+            XCTAssertGreaterThanOrEqual(glass.frame.width + 0.5, nestedHost.fittingSize.width)
+            XCTAssertTrue(
+                glass.bounds.insetBy(dx: -0.5, dy: -0.5).contains(nestedHost.frame),
+                "The native glass bounds must contain the nested shortcut label host"
+            )
+        }
+        #endif
     }
 }
 
