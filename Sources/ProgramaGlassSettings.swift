@@ -83,6 +83,75 @@ enum ProgramaGlassSettings {
         nativeGlassAvailable ? .liquidGlass : .nativeSidebar
     }
 
+    static let sidebarMigrationVersionKey = "sidebarAppearanceDefaultsVersion"
+
+    /// One-time sidebar appearance migration, version-gated via
+    /// `sidebarAppearanceDefaultsVersion`. Values that the app itself stamped are
+    /// migratable; values the user changed by hand are an explicit choice and win.
+    static func migrateSidebarAppearanceDefaultsIfNeeded(
+        defaults: UserDefaults,
+        nativeGlassAvailable: Bool
+    ) {
+        let targetVersion = 2
+        guard defaults.integer(forKey: sidebarMigrationVersionKey) < targetVersion else { return }
+
+        let material = defaults.string(forKey: "sidebarMaterial") ?? SidebarMaterialOption.sidebar.rawValue
+        let blendMode = defaults.string(forKey: "sidebarBlendMode") ?? SidebarBlendModeOption.behindWindow.rawValue
+        let state = defaults.string(forKey: "sidebarState") ?? SidebarStateOption.followWindow.rawValue
+        let tintHex = defaults.string(forKey: "sidebarTintHex") ?? "#101010"
+        let tintOpacity = defaults.object(forKey: "sidebarTintOpacity") as? Double ?? 0.54
+        let blurOpacity = defaults.object(forKey: "sidebarBlurOpacity") as? Double ?? 0.79
+        let cornerRadius = defaults.object(forKey: "sidebarCornerRadius") as? Double ?? 0.0
+
+        let usesLegacyDefaults =
+            material == SidebarMaterialOption.sidebar.rawValue &&
+            blendMode == SidebarBlendModeOption.behindWindow.rawValue &&
+            state == SidebarStateOption.followWindow.rawValue &&
+            normalizeHex(tintHex) == "101010" &&
+            approximatelyEqual(tintOpacity, 0.54) &&
+            approximatelyEqual(blurOpacity, 0.79) &&
+            approximatelyEqual(cornerRadius, 0.0)
+
+        if usesLegacyDefaults {
+            applySidebarPreset(
+                defaultSidebarPreset(nativeGlassAvailable: nativeGlassAvailable),
+                defaults: defaults
+            )
+        } else if material == SidebarMaterialOption.liquidGlass.rawValue,
+                  approximatelyEqual(cornerRadius, 0.0) {
+            // Version 1 shipped the local glass sidebar flush on all four corners. Version 2
+            // rounds only its terminal-facing edge; the NSWindow still masks the outer edge.
+            defaults.set(SidebarPresetOption.liquidGlass.cornerRadius, forKey: "sidebarCornerRadius")
+        }
+
+        defaults.set(targetVersion, forKey: sidebarMigrationVersionKey)
+    }
+
+    private static func applySidebarPreset(
+        _ preset: SidebarPresetOption,
+        defaults: UserDefaults
+    ) {
+        defaults.set(preset.rawValue, forKey: "sidebarPreset")
+        defaults.set(preset.material.rawValue, forKey: "sidebarMaterial")
+        defaults.set(preset.blendMode.rawValue, forKey: "sidebarBlendMode")
+        defaults.set(preset.state.rawValue, forKey: "sidebarState")
+        defaults.set(preset.tintHex, forKey: "sidebarTintHex")
+        defaults.set(preset.tintOpacity, forKey: "sidebarTintOpacity")
+        defaults.set(preset.blurOpacity, forKey: "sidebarBlurOpacity")
+        defaults.set(preset.cornerRadius, forKey: "sidebarCornerRadius")
+    }
+
+    private static func normalizeHex(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+            .uppercased()
+    }
+
+    private static func approximatelyEqual(_ lhs: Double, _ rhs: Double, tolerance: Double = 0.0001) -> Bool {
+        abs(lhs - rhs) <= tolerance
+    }
+
     /// Registers platform defaults without overwriting an explicit user choice. Only surfaces
     /// that have passed their independent gate are enabled here; later phases extend this map.
     static func platformDefaults(nativeGlassAvailable: Bool) -> [String: Any] {

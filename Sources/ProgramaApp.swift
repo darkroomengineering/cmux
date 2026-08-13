@@ -124,7 +124,10 @@ struct programaApp: App {
             && !SocketControlSettings.isStagingBundleIdentifier(bundleID) {
             SocketControlPasswordStore.migrateLegacyKeychainPasswordIfNeeded(defaults: defaults)
         }
-        migrateSidebarAppearanceDefaultsIfNeeded(defaults: defaults)
+        ProgramaGlassSettings.migrateSidebarAppearanceDefaultsIfNeeded(
+            defaults: defaults,
+            nativeGlassAvailable: WindowGlassEffect.isAvailable
+        )
 
         // UI tests depend on AppDelegate wiring happening even if SwiftUI view appearance
         // callbacks (e.g. `.onAppear`) are delayed or skipped.
@@ -223,61 +226,6 @@ struct programaApp: App {
         guard defaults.integer(forKey: migrationKey) < targetVersion else { return }
         defaults.removeObject(forKey: "AppleLanguages")
         defaults.removeObject(forKey: "appLanguage")
-        defaults.set(targetVersion, forKey: migrationKey)
-    }
-
-    private func migrateSidebarAppearanceDefaultsIfNeeded(defaults: UserDefaults) {
-        let migrationKey = "sidebarAppearanceDefaultsVersion"
-        let targetVersion = 2
-        guard defaults.integer(forKey: migrationKey) < targetVersion else { return }
-
-        func normalizeHex(_ value: String) -> String {
-            value
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .replacingOccurrences(of: "#", with: "")
-                .uppercased()
-        }
-
-        func approximatelyEqual(_ lhs: Double, _ rhs: Double, tolerance: Double = 0.0001) -> Bool {
-            abs(lhs - rhs) <= tolerance
-        }
-
-        let material = defaults.string(forKey: "sidebarMaterial") ?? SidebarMaterialOption.sidebar.rawValue
-        let blendMode = defaults.string(forKey: "sidebarBlendMode") ?? SidebarBlendModeOption.behindWindow.rawValue
-        let state = defaults.string(forKey: "sidebarState") ?? SidebarStateOption.followWindow.rawValue
-        let tintHex = defaults.string(forKey: "sidebarTintHex") ?? "#101010"
-        let tintOpacity = defaults.object(forKey: "sidebarTintOpacity") as? Double ?? 0.54
-        let blurOpacity = defaults.object(forKey: "sidebarBlurOpacity") as? Double ?? 0.79
-        let cornerRadius = defaults.object(forKey: "sidebarCornerRadius") as? Double ?? 0.0
-
-        let usesLegacyDefaults =
-            material == SidebarMaterialOption.sidebar.rawValue &&
-            blendMode == SidebarBlendModeOption.behindWindow.rawValue &&
-            state == SidebarStateOption.followWindow.rawValue &&
-            normalizeHex(tintHex) == "101010" &&
-            approximatelyEqual(tintOpacity, 0.54) &&
-            approximatelyEqual(blurOpacity, 0.79) &&
-            approximatelyEqual(cornerRadius, 0.0)
-
-        if usesLegacyDefaults {
-            let preset = ProgramaGlassSettings.defaultSidebarPreset(
-                nativeGlassAvailable: WindowGlassEffect.isAvailable
-            )
-            defaults.set(preset.rawValue, forKey: "sidebarPreset")
-            defaults.set(preset.material.rawValue, forKey: "sidebarMaterial")
-            defaults.set(preset.blendMode.rawValue, forKey: "sidebarBlendMode")
-            defaults.set(preset.state.rawValue, forKey: "sidebarState")
-            defaults.set(preset.tintHex, forKey: "sidebarTintHex")
-            defaults.set(preset.tintOpacity, forKey: "sidebarTintOpacity")
-            defaults.set(preset.blurOpacity, forKey: "sidebarBlurOpacity")
-            defaults.set(preset.cornerRadius, forKey: "sidebarCornerRadius")
-        } else if material == SidebarMaterialOption.liquidGlass.rawValue,
-                  approximatelyEqual(cornerRadius, 0.0) {
-            // Version 1 shipped the local glass sidebar flush on all four corners. Version 2
-            // rounds only its terminal-facing edge; the NSWindow still masks the outer edge.
-            defaults.set(SidebarPresetOption.liquidGlass.cornerRadius, forKey: "sidebarCornerRadius")
-        }
-
         defaults.set(targetVersion, forKey: migrationKey)
     }
 
