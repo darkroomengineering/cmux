@@ -10,6 +10,7 @@ import Carbon.HIToolbox
 import Bonsplit
 import IOSurface
 import UniformTypeIdentifiers
+import os
 
 // MARK: - Debug Render Instrumentation (split out, Nuclear Review #97; verbatim move)
 
@@ -285,6 +286,21 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// ignore, so a stale or reused target is a silent no-op.
     private var pendingReviveWinchPGID: pid_t?
     private var pendingReviveWinchChildPID: Int64?
+
+    /// Serial queue the revive-replay chunk loop runs on, off the main
+    /// thread. See the 0.4.231 app-mailbox deadlock documented on
+    /// `seedRevivedScrollbackIfPending` for why this cannot run on main.
+    /// Also serializes this surface's deferred `ghostty_surface_free` (in
+    /// `performSurfaceTeardown`) after any in-flight replay for this surface,
+    /// via FIFO ordering on this same queue -- see that method's comment.
+    private let reviveReplayQueue = DispatchQueue(
+        label: "com.darkroom.programa.revive-replay",
+        qos: .userInitiated
+    )
+    /// Set before the surface's C pointer is freed (`performSurfaceTeardown`)
+    /// so an in-flight revive-replay chunk loop stops promptly instead of
+    /// continuing to feed a surface that is about to disappear.
+    private let reviveReplayCanceled = OSAllocatedUnfairLock(initialState: false)
 
     /// Pid registered with `TerminalController.registerRevivedRoot` for this
     /// surface, if it was revived from escrow. Held so teardown can withdraw
@@ -892,6 +908,11 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// synchronously, so this stays a plain nonisolated method callable from
     /// both `deinit` and the `@MainActor`-isolated `teardownSurface()`.
     private func performSurfaceTeardown(reason: String) {
+        // Stop any in-flight revive-replay chunk loop for this surface
+        // promptly, before the free below can enqueue behind it. Harmless
+        // (and cheap) to set even when no replay is running.
+        reviveReplayCanceled.withLock { $0 = true }
+
         if let leftoverReviveDescriptor = reviveDescriptor {
             close(leftoverReviveDescriptor.masterFD)
             reviveDescriptor = nil
@@ -947,22 +968,31 @@ final class TerminalSurface: Identifiable, ObservableObject {
         )
 #endif
 
-        Task { @MainActor in
-            // Keep free behavior aligned across teardown sites: perform the runtime
-            // teardown on the next main-actor turn so SIGHUP delivery is
-            // deterministic but non-reentrant. Clear the PTY tee right before
-            // free, per the C API contract. Both call sites are the surface's
-            // genuine normal-close path, so delete its WAL directory now that
-            // it's torn down.
-            SessionWALStore.shared.unregister(surface: surfaceToFree, surfaceId: surfaceIdForTap, deleteDirectory: true)
-            ghostty_surface_free(surfaceToFree)
-            GhosttySurfaceUserdataRegistry.release(callbackContext)
-            tapContext?.release()
+        // Route the free through `reviveReplayQueue` so it can never run
+        // while a background revive-replay chunk loop for this surface still
+        // holds `surfaceToFree`. That queue is serial (FIFO), so this block
+        // only starts once any replay enqueued before this teardown call has
+        // finished (or observed `reviveReplayCanceled` and broken out).
+        // Deliberately does not capture `self` -- everything the Task body
+        // needs is snapshotted above, same discipline as before.
+        reviveReplayQueue.async {
+            Task { @MainActor in
+                // Keep free behavior aligned across teardown sites: perform the runtime
+                // teardown on the next main-actor turn so SIGHUP delivery is
+                // deterministic but non-reentrant. Clear the PTY tee right before
+                // free, per the C API contract. Both call sites are the surface's
+                // genuine normal-close path, so delete its WAL directory now that
+                // it's torn down.
+                SessionWALStore.shared.unregister(surface: surfaceToFree, surfaceId: surfaceIdForTap, deleteDirectory: true)
+                ghostty_surface_free(surfaceToFree)
+                GhosttySurfaceUserdataRegistry.release(callbackContext)
+                tapContext?.release()
 #if DEBUG
-            dlog(
-                "surface.lifecycle.\(reason).end surface=\(surfaceIdForTap.prefix(5)) freed=1"
-            )
+                dlog(
+                    "surface.lifecycle.\(reason).end surface=\(surfaceIdForTap.prefix(5)) freed=1"
+                )
 #endif
+            }
         }
     }
 
@@ -1854,6 +1884,28 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // them. Chunk boundaries are safe anywhere: the VT parser is a stream
         // parser and already handles escape sequences and UTF-8 code points
         // split across reads, because real PTY reads split them too.
+        //
+        // 0.4.231: chunking alone is not enough. Every OSC sequence in the
+        // replayed transcript that produces an apprt surface message (title
+        // set OSC 0/2, pwd report OSC 7 -- shells emit these on every prompt)
+        // is pushed by ghostty's stream handler into the app mailbox
+        // (`BlockingQueue(Message, 64)`, ghostty/src/App.zig:662), which also
+        // blocks with a `.forever` policy once full
+        // (ghostty/src/termio/stream_handler.zig:126-137). The ONLY drainer of
+        // that mailbox is `ghostty_app_tick`, which Programa runs on the main
+        // thread (`GhosttyApp.swift`). Chunking the renderer mailbox does
+        // nothing for this one: the renderer mailbox has an independent
+        // drainer thread, but the app mailbox's only drainer is the very
+        // thread running the replay. A transcript with more than 64
+        // surface-message-producing sequences self-deadlocks the main thread
+        // on the 65th push no matter how small the chunks are. The chunk loop
+        // (and the trailing mode-reset write) therefore runs on
+        // `reviveReplayQueue`, a background serial queue, not on main.
+        // `ghostty_surface_process_output` is safe to call off-main: it is
+        // ghostty's documented "manual API that users can call"
+        // (ghostty/src/termio/Termio.zig:764-767) and takes
+        // `renderer_state.mutex` itself -- the PTY read thread already calls
+        // it from a non-main thread.
         DispatchQueue.main.async { [weak self] in
             self?.replayRevivedScrollback(pending: pending, trigger: trigger)
         }
@@ -1865,85 +1917,133 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// in `seedRevivedScrollbackIfPending`.
     private static let reviveReplayChunkBytes = 8 * 1024
 
+#if DEBUG
+    /// Test-only observation hook: invoked once per `ghostty_surface_process_output`
+    /// chunk during a revive replay, with `Thread.isMainThread` captured at the
+    /// moment of that call. Regression tests use this to assert the replay loop
+    /// never runs on the main thread (see the 0.4.231 app-mailbox deadlock
+    /// documented on `seedRevivedScrollbackIfPending`).
+    static var reviveReplayChunkObserverForTesting: ((_ isMainThread: Bool) -> Void)?
+
+    /// Test-only entry point that drives the SAME production replay pipeline
+    /// (`replayRevivedScrollback`) with a caller-supplied transcript, calling
+    /// `completion` once the replay — including its post-replay finish work —
+    /// has completed.
+    func replayRevivedScrollbackForTesting(text: String, completion: @escaping () -> Void) {
+        let pending: (text: String, resetModes: Bool, workingDirectory: String?) = (
+            text: text,
+            resetModes: false,
+            workingDirectory: nil
+        )
+        replayRevivedScrollback(pending: pending, trigger: "testing", completion: completion)
+    }
+#endif
+
+    /// Feeds `pending`'s transcript to ghostty and performs the post-replay
+    /// finish work. The chunk loop (and trailing mode-reset write) runs on
+    /// `reviveReplayQueue`, off the main thread -- see the 0.4.231 comment on
+    /// `seedRevivedScrollbackIfPending` for why. Finish work that touches
+    /// `TerminalSurface` state (the debug log, PTY tee registration, SIGWINCH
+    /// delivery) hops back to main afterward. `completion` -- used only by
+    /// the DEBUG testing entry point above -- fires after that finish work
+    /// completes, whether or not the surface was still live to receive it.
     private func replayRevivedScrollback(
         pending: (text: String, resetModes: Bool, workingDirectory: String?),
-        trigger: String
+        trigger: String,
+        completion: @escaping () -> Void = {}
     ) {
         // The surface can be torn down between the trigger and this hop (pane
         // closed mid-restore); dropping the replay is the correct outcome.
-        guard let surface else { return }
-
-        // The chunk loop runs to completion here rather than yielding the run
-        // loop between chunks. Releasing the mutex is what breaks the deadlock;
-        // yielding as well would additionally let live output from the revived
-        // shell land *between* chunks and interleave itself into the middle of
-        // the historical transcript. A tight loop keeps that window down to the
-        // gap between two calls.
-        let bytes = Array(pending.text.utf8)
-        var offset = 0
-        while offset < bytes.count {
-            let end = min(offset + Self.reviveReplayChunkBytes, bytes.count)
-            bytes.withUnsafeBufferPointer { buffer in
-                guard let baseAddress = buffer.baseAddress else { return }
-                UnsafeRawPointer(baseAddress + offset)
-                    .withMemoryRebound(to: CChar.self, capacity: end - offset) { chunk in
-                        ghostty_surface_process_output(surface, chunk, UInt(end - offset))
-                    }
-            }
-            offset = end
+        guard let capturedSurface = surface else {
+            completion()
+            return
         }
 
-        // The seeded transcript is historical: any DECSET inside it was
-        // balanced by a DECRST that the relaunch-killed program never
-        // sent, so replaying it re-arms the mode in this fresh terminal
-        // for good. Disarm mouse tracking before live output resumes --
-        // otherwise the revived shell's bare prompt fills with mouse
-        // motion reports.
-        if !bytes.isEmpty, pending.resetModes {
-            let modeReset = Data(TerminalReplayModeReset.disableSequence.utf8)
-            modeReset.withUnsafeBytes { rawBuffer in
-                guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
-                ghostty_surface_process_output(surface, baseAddress, UInt(rawBuffer.count))
-            }
-        }
-
-        #if DEBUG
-        let currentSize = ghostty_surface_size(surface)
-        dlog(
-            "session.escrow.revive.seed surface=\(id.uuidString.prefix(8)) bytes=\(bytes.count) " +
-            "px=\(currentSize.width_px)x\(currentSize.height_px) grid=\(currentSize.columns)x\(currentSize.rows) trigger=\(trigger)"
-        )
-        #endif
-
-        // Register the PTY tee now -- deliberately after seeding, so
-        // this replay text is never captured into the new session's own
-        // `wal.log`. Mirrors the non-revive registration in `createSurface`.
-        outputTapContext?.release()
-        outputTapContext = SessionWALStore.shared.register(
-            surface: surface,
-            surfaceId: id.uuidString,
-            workingDirectory: pending.workingDirectory
-        )
-
-        // Post-seed SIGWINCH: a live TUI that survived the relaunch (and
-        // thus handles SIGWINCH) repaints over any replay artifacts on its
-        // own, replacing the manual window-resize users otherwise do today.
-        // SIGWINCH's default disposition is ignore, so delivering it to a
-        // stale/reused pgid or pid is a silent no-op, not a hazard.
+        let surfaceIdString = id.uuidString
+        let workingDirectory = pending.workingDirectory
         let pgid = pendingReviveWinchPGID
         let childPID = pendingReviveWinchChildPID
         pendingReviveWinchPGID = nil
         pendingReviveWinchChildPID = nil
-        if let pgid, pgid > 0 {
-            killpg(pgid, SIGWINCH)
-            #if DEBUG
-            dlog("session.escrow.revive.winch surface=\(id.uuidString.prefix(8)) pgid=\(pgid) child=0")
-            #endif
-        } else if let childPID, childPID > 0 {
-            kill(pid_t(childPID), SIGWINCH)
-            #if DEBUG
-            dlog("session.escrow.revive.winch surface=\(id.uuidString.prefix(8)) pgid=0 child=\(childPID)")
-            #endif
+
+        reviveReplayQueue.async { [reviveReplayCanceled] in
+            // The chunk loop runs to completion here rather than yielding the
+            // run loop between chunks. Releasing the mutex is what breaks the
+            // deadlock; yielding as well would additionally let live output
+            // from the revived shell land *between* chunks and interleave
+            // itself into the middle of the historical transcript. A tight
+            // loop keeps that window down to the gap between two calls.
+            let bytes = Array(pending.text.utf8)
+            var offset = 0
+            while offset < bytes.count {
+                if reviveReplayCanceled.withLock({ $0 }) { break }
+                let end = min(offset + Self.reviveReplayChunkBytes, bytes.count)
+                bytes.withUnsafeBufferPointer { buffer in
+                    guard let baseAddress = buffer.baseAddress else { return }
+                    UnsafeRawPointer(baseAddress + offset)
+                        .withMemoryRebound(to: CChar.self, capacity: end - offset) { chunk in
+                            ghostty_surface_process_output(capturedSurface, chunk, UInt(end - offset))
+                        }
+                }
+                offset = end
+#if DEBUG
+                Self.reviveReplayChunkObserverForTesting?(Thread.isMainThread)
+#endif
+            }
+
+            // The seeded transcript is historical: any DECSET inside it was
+            // balanced by a DECRST that the relaunch-killed program never
+            // sent, so replaying it re-arms the mode in this fresh terminal
+            // for good. Disarm mouse tracking before live output resumes --
+            // otherwise the revived shell's bare prompt fills with mouse
+            // motion reports.
+            if !bytes.isEmpty, pending.resetModes, !reviveReplayCanceled.withLock({ $0 }) {
+                let modeReset = Data(TerminalReplayModeReset.disableSequence.utf8)
+                modeReset.withUnsafeBytes { rawBuffer in
+                    guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
+                    ghostty_surface_process_output(capturedSurface, baseAddress, UInt(rawBuffer.count))
+                }
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                defer { completion() }
+                guard let self, self.surface == capturedSurface else { return }
+
+                #if DEBUG
+                let currentSize = ghostty_surface_size(capturedSurface)
+                dlog(
+                    "session.escrow.revive.seed surface=\(surfaceIdString.prefix(8)) bytes=\(bytes.count) " +
+                    "px=\(currentSize.width_px)x\(currentSize.height_px) grid=\(currentSize.columns)x\(currentSize.rows) trigger=\(trigger)"
+                )
+                #endif
+
+                // Register the PTY tee now -- deliberately after seeding, so
+                // this replay text is never captured into the new session's own
+                // `wal.log`. Mirrors the non-revive registration in `createSurface`.
+                self.outputTapContext?.release()
+                self.outputTapContext = SessionWALStore.shared.register(
+                    surface: capturedSurface,
+                    surfaceId: surfaceIdString,
+                    workingDirectory: workingDirectory
+                )
+
+                // Post-seed SIGWINCH: a live TUI that survived the relaunch (and
+                // thus handles SIGWINCH) repaints over any replay artifacts on its
+                // own, replacing the manual window-resize users otherwise do today.
+                // SIGWINCH's default disposition is ignore, so delivering it to a
+                // stale/reused pgid or pid is a silent no-op, not a hazard.
+                if let pgid, pgid > 0 {
+                    killpg(pgid, SIGWINCH)
+                    #if DEBUG
+                    dlog("session.escrow.revive.winch surface=\(surfaceIdString.prefix(8)) pgid=\(pgid) child=0")
+                    #endif
+                } else if let childPID, childPID > 0 {
+                    kill(pid_t(childPID), SIGWINCH)
+                    #if DEBUG
+                    dlog("session.escrow.revive.winch surface=\(surfaceIdString.prefix(8)) pgid=0 child=\(childPID)")
+                    #endif
+                }
+            }
         }
     }
 
