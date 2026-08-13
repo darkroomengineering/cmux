@@ -83,6 +83,115 @@ enum ProgramaGlassSettings {
         nativeGlassAvailable ? .liquidGlass : .nativeSidebar
     }
 
+    static let sidebarMigrationVersionKey = "sidebarAppearanceDefaultsVersion"
+
+    /// One-time sidebar appearance migration, version-gated via
+    /// `sidebarAppearanceDefaultsVersion`. Values that the app itself stamped are
+    /// migratable; values the user changed by hand are an explicit choice and win.
+    static func migrateSidebarAppearanceDefaultsIfNeeded(
+        defaults: UserDefaults,
+        nativeGlassAvailable: Bool
+    ) {
+        let targetVersion = 3
+        guard defaults.integer(forKey: sidebarMigrationVersionKey) < targetVersion else { return }
+
+        let material = defaults.string(forKey: "sidebarMaterial") ?? SidebarMaterialOption.sidebar.rawValue
+        let blendMode = defaults.string(forKey: "sidebarBlendMode") ?? SidebarBlendModeOption.behindWindow.rawValue
+        let state = defaults.string(forKey: "sidebarState") ?? SidebarStateOption.followWindow.rawValue
+        let tintHex = defaults.string(forKey: "sidebarTintHex") ?? "#101010"
+        let tintOpacity = defaults.object(forKey: "sidebarTintOpacity") as? Double ?? 0.54
+        let blurOpacity = defaults.object(forKey: "sidebarBlurOpacity") as? Double ?? 0.79
+        let cornerRadius = defaults.object(forKey: "sidebarCornerRadius") as? Double ?? 0.0
+
+        let usesLegacyDefaults =
+            material == SidebarMaterialOption.sidebar.rawValue &&
+            blendMode == SidebarBlendModeOption.behindWindow.rawValue &&
+            state == SidebarStateOption.followWindow.rawValue &&
+            normalizeHex(tintHex) == "101010" &&
+            approximatelyEqual(tintOpacity, 0.54) &&
+            approximatelyEqual(blurOpacity, 0.79) &&
+            approximatelyEqual(cornerRadius, 0.0)
+
+        // Migration v1 stamped every stock install with the nativeSidebar preset,
+        // so on any machine that ran a post-v1 build the legacy fingerprint above
+        // can no longer match — the Liquid Glass default would only ever reach
+        // clean installs. The exact stamp is programmatic, not a user choice, so
+        // v3 treats it as migratable too. Any hand-tuned value breaks the match
+        // and keeps the user's setup.
+        //
+        // The stamp values are frozen literals, not the live nativeSidebar preset
+        // accessors: if the preset's values ever change in a later release, the
+        // historical stamp on users' disks does not, and reading the preset live
+        // would make this fingerprint silently stop matching for anyone skipping
+        // versions.
+        //
+        // The per-scheme tints and the match-terminal toggle are written only by
+        // explicit user configuration (settings UI / config file), never by v1's
+        // stamp — any of them present means this sidebar is not the untouched
+        // default.
+        let usesV1NativeSidebarStamp =
+            material == SidebarMaterialOption.sidebar.rawValue &&
+            blendMode == SidebarBlendModeOption.withinWindow.rawValue &&
+            state == SidebarStateOption.followWindow.rawValue &&
+            normalizeHex(tintHex) == "000000" &&
+            approximatelyEqual(tintOpacity, 0.18) &&
+            approximatelyEqual(blurOpacity, 1.0) &&
+            approximatelyEqual(cornerRadius, 0.0) &&
+            defaults.string(forKey: "sidebarTintHexLight") == nil &&
+            defaults.string(forKey: "sidebarTintHexDark") == nil &&
+            !defaults.bool(forKey: "sidebarMatchTerminalBackground")
+
+        if usesLegacyDefaults || usesV1NativeSidebarStamp {
+            applySidebarPreset(
+                defaultSidebarPreset(nativeGlassAvailable: nativeGlassAvailable),
+                defaults: defaults
+            )
+            // Where native glass is unavailable (older macOS) the stamp upgrade is a
+            // no-op re-stamp, so leave the version below 3: a later launch after a
+            // macOS upgrade re-evaluates instead of burning the migration on a
+            // machine that could not show glass. v2 semantics are complete either way.
+            defaults.set(
+                nativeGlassAvailable ? targetVersion : 2,
+                forKey: sidebarMigrationVersionKey
+            )
+            return
+        }
+
+        if material == SidebarMaterialOption.liquidGlass.rawValue,
+           approximatelyEqual(cornerRadius, 0.0) {
+            // Version 1 shipped the local glass sidebar flush on all four corners. Version 2
+            // rounds only its terminal-facing edge; the NSWindow still masks the outer edge.
+            defaults.set(SidebarPresetOption.liquidGlass.cornerRadius, forKey: "sidebarCornerRadius")
+        }
+
+        defaults.set(targetVersion, forKey: sidebarMigrationVersionKey)
+    }
+
+    private static func applySidebarPreset(
+        _ preset: SidebarPresetOption,
+        defaults: UserDefaults
+    ) {
+        defaults.set(preset.rawValue, forKey: "sidebarPreset")
+        defaults.set(preset.material.rawValue, forKey: "sidebarMaterial")
+        defaults.set(preset.blendMode.rawValue, forKey: "sidebarBlendMode")
+        defaults.set(preset.state.rawValue, forKey: "sidebarState")
+        defaults.set(preset.tintHex, forKey: "sidebarTintHex")
+        defaults.set(preset.tintOpacity, forKey: "sidebarTintOpacity")
+        defaults.set(preset.blurOpacity, forKey: "sidebarBlurOpacity")
+        defaults.set(preset.cornerRadius, forKey: "sidebarCornerRadius")
+    }
+
+    private static func normalizeHex(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+            .uppercased()
+    }
+
+    private static func approximatelyEqual(_ lhs: Double, _ rhs: Double, tolerance: Double = 0.0001) -> Bool {
+        abs(lhs - rhs) <= tolerance
+    }
+
     /// Registers platform defaults without overwriting an explicit user choice. Only surfaces
     /// that have passed their independent gate are enabled here; later phases extend this map.
     static func platformDefaults(nativeGlassAvailable: Bool) -> [String: Any] {
