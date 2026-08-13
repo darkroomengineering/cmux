@@ -92,7 +92,7 @@ enum ProgramaGlassSettings {
         defaults: UserDefaults,
         nativeGlassAvailable: Bool
     ) {
-        let targetVersion = 2
+        let targetVersion = 3
         guard defaults.integer(forKey: sidebarMigrationVersionKey) < targetVersion else { return }
 
         let material = defaults.string(forKey: "sidebarMaterial") ?? SidebarMaterialOption.sidebar.rawValue
@@ -112,7 +112,23 @@ enum ProgramaGlassSettings {
             approximatelyEqual(blurOpacity, 0.79) &&
             approximatelyEqual(cornerRadius, 0.0)
 
-        if usesLegacyDefaults {
+        // Migration v1 stamped every stock install with the nativeSidebar preset,
+        // so on any machine that ran a post-v1 build the legacy fingerprint above
+        // can no longer match — the Liquid Glass default would only ever reach
+        // clean installs. The exact stamp is programmatic, not a user choice, so
+        // v3 treats it as migratable too. Any hand-tuned value breaks the match
+        // and keeps the user's setup.
+        let v1Stamp = SidebarPresetOption.nativeSidebar
+        let usesV1NativeSidebarStamp =
+            material == v1Stamp.material.rawValue &&
+            blendMode == v1Stamp.blendMode.rawValue &&
+            state == v1Stamp.state.rawValue &&
+            normalizeHex(tintHex) == normalizeHex(v1Stamp.tintHex) &&
+            approximatelyEqual(tintOpacity, v1Stamp.tintOpacity) &&
+            approximatelyEqual(blurOpacity, v1Stamp.blurOpacity) &&
+            approximatelyEqual(cornerRadius, v1Stamp.cornerRadius)
+
+        if usesLegacyDefaults || usesV1NativeSidebarStamp {
             applySidebarPreset(
                 defaultSidebarPreset(nativeGlassAvailable: nativeGlassAvailable),
                 defaults: defaults
