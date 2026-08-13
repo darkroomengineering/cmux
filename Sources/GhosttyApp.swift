@@ -2217,41 +2217,55 @@ class GhosttyApp {
                     "host=\(host) url=\(url) tabId=\(sourceWorkspaceId) surfaceId=\(sourcePanelId)"
                 )
                 #endif
-                return performOnMain {
-                    guard let app = AppDelegate.shared,
-                          let resolved = app.workspaceContainingPanel(
-                            panelId: sourcePanelId,
-                            preferredWorkspaceId: sourceWorkspaceId
-                          ) else {
+                // ghostty invokes this action from Surface.mouseUp with renderer_state.mutex
+                // held (Surface.zig:4164). Running the split+focus inline re-enters
+                // ghostty_surface_set_focus and recursively locks an os_unfair_lock (crash in
+                // 0.4.233). Defer to the next main-queue turn so the callout returns and
+                // releases the lock first. Claim the action now (return true) so ghostty
+                // doesn't also run its own fallback opener.
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let app = AppDelegate.shared,
+                              let resolved = app.workspaceContainingPanel(
+                                panelId: sourcePanelId,
+                                preferredWorkspaceId: sourceWorkspaceId
+                              ) else {
+                            #if DEBUG
+                            dlog(
+                                "link.openURL embedded but workspace lookup failed " +
+                                "tabId=\(sourceWorkspaceId) surfaceId=\(sourcePanelId)"
+                            )
+                            #endif
+                            NSWorkspace.shared.open(url)
+                            return
+                        }
+                        let workspace = resolved.workspace
                         #if DEBUG
-                        dlog(
-                            "link.openURL embedded but workspace lookup failed " +
-                            "tabId=\(sourceWorkspaceId) surfaceId=\(sourcePanelId)"
-                        )
+                        if workspace.id != sourceWorkspaceId {
+                            dlog(
+                                "link.openURL workspace.remap sourceTab=\(sourceWorkspaceId) " +
+                                "resolvedTab=\(workspace.id) surfaceId=\(sourcePanelId)"
+                            )
+                        }
                         #endif
-                        return false
-                    }
-                    let workspace = resolved.workspace
-                    #if DEBUG
-                    if workspace.id != sourceWorkspaceId {
-                        dlog(
-                            "link.openURL workspace.remap sourceTab=\(sourceWorkspaceId) " +
-                            "resolvedTab=\(workspace.id) surfaceId=\(sourcePanelId)"
-                        )
-                    }
-                    #endif
-                    if let targetPane = workspace.preferredBrowserTargetPane(fromPanelId: sourcePanelId) {
-                        #if DEBUG
-                        dlog("link.openURL opening in existing browser pane=\(targetPane)")
-                        #endif
-                        return workspace.newBrowserSurface(inPane: targetPane, url: url, focus: true) != nil
-                    } else {
-                        #if DEBUG
-                        dlog("link.openURL opening as new browser split from surface=\(sourcePanelId)")
-                        #endif
-                        return workspace.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, url: url) != nil
+                        if let targetPane = workspace.preferredBrowserTargetPane(fromPanelId: sourcePanelId) {
+                            #if DEBUG
+                            dlog("link.openURL opening in existing browser pane=\(targetPane)")
+                            #endif
+                            if workspace.newBrowserSurface(inPane: targetPane, url: url, focus: true) == nil {
+                                NSWorkspace.shared.open(url)
+                            }
+                        } else {
+                            #if DEBUG
+                            dlog("link.openURL opening as new browser split from surface=\(sourcePanelId)")
+                            #endif
+                            if workspace.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, url: url) == nil {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
                     }
                 }
+                return true
             }
         default:
             return false
