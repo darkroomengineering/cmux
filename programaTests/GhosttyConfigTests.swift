@@ -4563,16 +4563,17 @@ final class SidebarGlassMigrationTests: XCTestCase {
     }
 
     /// Writes the exact values migration v1 stamped on every stock install.
+    /// Frozen literals on purpose — these are the historical on-disk values, and
+    /// must not drift if SidebarPresetOption.nativeSidebar ever changes.
     private func stampNativeSidebarPreset() {
-        let preset = SidebarPresetOption.nativeSidebar
-        defaults.set(preset.rawValue, forKey: "sidebarPreset")
-        defaults.set(preset.material.rawValue, forKey: "sidebarMaterial")
-        defaults.set(preset.blendMode.rawValue, forKey: "sidebarBlendMode")
-        defaults.set(preset.state.rawValue, forKey: "sidebarState")
-        defaults.set(preset.tintHex, forKey: "sidebarTintHex")
-        defaults.set(preset.tintOpacity, forKey: "sidebarTintOpacity")
-        defaults.set(preset.blurOpacity, forKey: "sidebarBlurOpacity")
-        defaults.set(preset.cornerRadius, forKey: "sidebarCornerRadius")
+        defaults.set("nativeSidebar", forKey: "sidebarPreset")
+        defaults.set("sidebar", forKey: "sidebarMaterial")
+        defaults.set("withinWindow", forKey: "sidebarBlendMode")
+        defaults.set("followWindow", forKey: "sidebarState")
+        defaults.set("#000000", forKey: "sidebarTintHex")
+        defaults.set(0.18, forKey: "sidebarTintOpacity")
+        defaults.set(1.0, forKey: "sidebarBlurOpacity")
+        defaults.set(0.0, forKey: "sidebarCornerRadius")
     }
 
     func testV1NativeSidebarStampUpgradesToLiquidGlassWhenNativeGlassAvailable() {
@@ -4603,6 +4604,52 @@ final class SidebarGlassMigrationTests: XCTestCase {
 
         XCTAssertEqual(defaults.string(forKey: "sidebarPreset"), SidebarPresetOption.nativeSidebar.rawValue)
         XCTAssertEqual(defaults.string(forKey: "sidebarMaterial"), SidebarMaterialOption.sidebar.rawValue)
+    }
+
+    func testGlassUnavailableRunStaysReRunnableAfterOSUpgrade() {
+        stampNativeSidebarPreset()
+        defaults.set(2, forKey: ProgramaGlassSettings.sidebarMigrationVersionKey)
+
+        // Launch on an older macOS: no glass, migration must not burn its version.
+        ProgramaGlassSettings.migrateSidebarAppearanceDefaultsIfNeeded(
+            defaults: defaults,
+            nativeGlassAvailable: false
+        )
+        XCTAssertEqual(defaults.string(forKey: "sidebarPreset"), SidebarPresetOption.nativeSidebar.rawValue)
+
+        // First launch after upgrading to a glass-capable macOS.
+        ProgramaGlassSettings.migrateSidebarAppearanceDefaultsIfNeeded(
+            defaults: defaults,
+            nativeGlassAvailable: true
+        )
+        XCTAssertEqual(defaults.string(forKey: "sidebarPreset"), SidebarPresetOption.liquidGlass.rawValue)
+    }
+
+    func testPerSchemeTintMarksSidebarAsUserConfigured() {
+        stampNativeSidebarPreset()
+        defaults.set("#0A0A0A", forKey: "sidebarTintHexLight")
+        defaults.set(2, forKey: ProgramaGlassSettings.sidebarMigrationVersionKey)
+
+        ProgramaGlassSettings.migrateSidebarAppearanceDefaultsIfNeeded(
+            defaults: defaults,
+            nativeGlassAvailable: true
+        )
+
+        XCTAssertEqual(defaults.string(forKey: "sidebarPreset"), SidebarPresetOption.nativeSidebar.rawValue)
+        XCTAssertEqual(defaults.string(forKey: "sidebarTintHexLight"), "#0A0A0A")
+    }
+
+    func testMatchTerminalBackgroundMarksSidebarAsUserConfigured() {
+        stampNativeSidebarPreset()
+        defaults.set(true, forKey: "sidebarMatchTerminalBackground")
+        defaults.set(2, forKey: ProgramaGlassSettings.sidebarMigrationVersionKey)
+
+        ProgramaGlassSettings.migrateSidebarAppearanceDefaultsIfNeeded(
+            defaults: defaults,
+            nativeGlassAvailable: true
+        )
+
+        XCTAssertEqual(defaults.string(forKey: "sidebarPreset"), SidebarPresetOption.nativeSidebar.rawValue)
     }
 
     func testCustomizedSidebarSettingsSurviveMigration() {

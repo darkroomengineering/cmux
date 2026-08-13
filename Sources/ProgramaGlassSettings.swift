@@ -118,23 +118,47 @@ enum ProgramaGlassSettings {
         // clean installs. The exact stamp is programmatic, not a user choice, so
         // v3 treats it as migratable too. Any hand-tuned value breaks the match
         // and keeps the user's setup.
-        let v1Stamp = SidebarPresetOption.nativeSidebar
+        //
+        // The stamp values are frozen literals, not the live nativeSidebar preset
+        // accessors: if the preset's values ever change in a later release, the
+        // historical stamp on users' disks does not, and reading the preset live
+        // would make this fingerprint silently stop matching for anyone skipping
+        // versions.
+        //
+        // The per-scheme tints and the match-terminal toggle are written only by
+        // explicit user configuration (settings UI / config file), never by v1's
+        // stamp — any of them present means this sidebar is not the untouched
+        // default.
         let usesV1NativeSidebarStamp =
-            material == v1Stamp.material.rawValue &&
-            blendMode == v1Stamp.blendMode.rawValue &&
-            state == v1Stamp.state.rawValue &&
-            normalizeHex(tintHex) == normalizeHex(v1Stamp.tintHex) &&
-            approximatelyEqual(tintOpacity, v1Stamp.tintOpacity) &&
-            approximatelyEqual(blurOpacity, v1Stamp.blurOpacity) &&
-            approximatelyEqual(cornerRadius, v1Stamp.cornerRadius)
+            material == SidebarMaterialOption.sidebar.rawValue &&
+            blendMode == SidebarBlendModeOption.withinWindow.rawValue &&
+            state == SidebarStateOption.followWindow.rawValue &&
+            normalizeHex(tintHex) == "000000" &&
+            approximatelyEqual(tintOpacity, 0.18) &&
+            approximatelyEqual(blurOpacity, 1.0) &&
+            approximatelyEqual(cornerRadius, 0.0) &&
+            defaults.string(forKey: "sidebarTintHexLight") == nil &&
+            defaults.string(forKey: "sidebarTintHexDark") == nil &&
+            !defaults.bool(forKey: "sidebarMatchTerminalBackground")
 
         if usesLegacyDefaults || usesV1NativeSidebarStamp {
             applySidebarPreset(
                 defaultSidebarPreset(nativeGlassAvailable: nativeGlassAvailable),
                 defaults: defaults
             )
-        } else if material == SidebarMaterialOption.liquidGlass.rawValue,
-                  approximatelyEqual(cornerRadius, 0.0) {
+            // Where native glass is unavailable (older macOS) the stamp upgrade is a
+            // no-op re-stamp, so leave the version below 3: a later launch after a
+            // macOS upgrade re-evaluates instead of burning the migration on a
+            // machine that could not show glass. v2 semantics are complete either way.
+            defaults.set(
+                nativeGlassAvailable ? targetVersion : 2,
+                forKey: sidebarMigrationVersionKey
+            )
+            return
+        }
+
+        if material == SidebarMaterialOption.liquidGlass.rawValue,
+           approximatelyEqual(cornerRadius, 0.0) {
             // Version 1 shipped the local glass sidebar flush on all four corners. Version 2
             // rounds only its terminal-facing edge; the NSWindow still masks the outer edge.
             defaults.set(SidebarPresetOption.liquidGlass.cornerRadius, forKey: "sidebarCornerRadius")
