@@ -93,12 +93,13 @@ final class WindowGlassEffectTests: XCTestCase {
             ))
             root.layoutSubtreeIfNeeded()
 
-            let tabPillGlassViews = bridge.nativeGlassViewsForTesting()
-            XCTAssertEqual(tabPillGlassViews.count, 2)
-            XCTAssertTrue(
-                tabPillGlassViews.allSatisfy { $0.contentView is NSControl },
-                "Every native glass pill must own its AppKit control through contentView"
-            )
+            let glassViews = bridge.nativeGlassViewsForTesting()
+            // Two tab pills own NSControls; the workspace-level new-tab and
+            // split clusters contribute two more glass surfaces whose content
+            // is a plain button container.
+            let pillGlassViews = glassViews.filter { $0.contentView is NSControl }
+            XCTAssertEqual(pillGlassViews.count, 2)
+            XCTAssertEqual(glassViews.count, 4)
             XCTAssertTrue(bridge.hostViewForTesting.superview === terminalHost.superview)
             let siblings = terminalHost.superview?.subviews ?? []
             XCTAssertGreaterThan(
