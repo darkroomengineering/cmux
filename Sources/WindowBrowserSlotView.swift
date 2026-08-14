@@ -54,8 +54,10 @@ final class WindowBrowserSlotView: NSView {
         wantsLayer = true
         layer?.masksToBounds = true
         // Inverted glass layout: browser panes are elevated cards like terminal
-        // panes (GhosttySurfaceScrollView carries the same radius).
-        if WindowGlassEffect.isAvailable {
+        // panes (GhosttySurfaceScrollView carries the same radius). Same
+        // predicate as the card insets — see GhosttySurfaceScrollView.
+        if WindowGlassEffect.isAvailable,
+           !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
             layer?.cornerRadius = WindowGlassEffect.contentCardCornerRadius
             layer?.cornerCurve = .continuous
         }

@@ -748,13 +748,15 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         )
     }
 
-    func testTerminalBackgroundOpacityCapsOpaqueFillWhenWindowGlassIsEnabled() {
+    func testTerminalBackgroundOpacityStaysOpaqueWithWindowGlass() {
+        // Inverted layout: panes are opaque elevated cards — window glass no
+        // longer clamps an opaque terminal fill.
         XCTAssertEqual(
             ProgramaGlassSettings.effectiveTerminalBackgroundOpacity(
                 configuredOpacity: 1.0,
                 windowGlassEnabled: true
             ),
-            0.82,
+            1.0,
             accuracy: 0.0001
         )
     }

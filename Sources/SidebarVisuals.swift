@@ -1270,9 +1270,17 @@ struct SidebarSurface<Content: View>: View {
                 SidebarBackdropContentHost(content: content)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // Fallback path (pre-26 / Reduce Transparency): the backdrop can
+                // render terminal-colored when Match Terminal Background is on,
+                // so labels must resolve contrast against the terminal, not the
+                // system scheme.
                 ZStack {
                     SidebarBackdrop()
-                    content
+                    if matchTerminalBackground {
+                        content.environment(\.colorScheme, terminalScheme)
+                    } else {
+                        content
+                    }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: standaloneCornerRadius, style: .continuous))
             }

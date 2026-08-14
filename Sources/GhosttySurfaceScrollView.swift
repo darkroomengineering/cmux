@@ -418,8 +418,11 @@ final class GhosttySurfaceScrollView: NSView {
         layer?.masksToBounds = true
         // Inverted glass layout: each pane is an elevated card over the window
         // backdrop. The layer already masks to bounds, so rounding it clips the
-        // Metal surface to the card shape for free.
-        if WindowGlassEffect.isAvailable {
+        // Metal surface to the card shape for free. Same predicate as the card
+        // insets (ContentView): Reduce Transparency disables the card layout,
+        // so it must not leave rounded corners on flush content.
+        if WindowGlassEffect.isAvailable,
+           !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
             layer?.cornerRadius = WindowGlassEffect.contentCardCornerRadius
             layer?.cornerCurve = .continuous
         }
