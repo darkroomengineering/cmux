@@ -70,6 +70,10 @@ struct SinglePaneWrapper<Content: View, EmptyContent: View>: NSViewRepresentable
         )
         let hostingController = NSHostingController(rootView: paneView)
         hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        // This hosting view lives inside the pane, not under the titlebar; the
+        // window's titlebar safe area must not inset the tab strip (it read as
+        // ~24pt of dead space above the tabs in full-size-content windows).
+        hostingController.safeAreaRegions = []
 
         let containerView = PaneDragContainerView()
         containerView.wantsLayer = true
