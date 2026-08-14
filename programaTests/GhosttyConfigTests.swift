@@ -129,6 +129,37 @@ final class GhosttyConfigTests: XCTestCase {
         XCTAssertTrue(paths.contains("\(pathB)/ghostty/themes/Solarized Light"))
     }
 
+    func testAvailableThemeNamesEnumeratesDirectoriesResolvedByThemeSearchPaths() throws {
+        let resourcesRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-theme-catalog-\(UUID().uuidString)", isDirectory: true)
+        let themesDirectory = resourcesRoot.appendingPathComponent("themes", isDirectory: true)
+        try FileManager.default.createDirectory(at: themesDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: resourcesRoot) }
+
+        try "background = #ffffff\n".write(
+            to: themesDirectory.appendingPathComponent("Cloud Light", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "background = #111111\n".write(
+            to: themesDirectory.appendingPathComponent("Midnight Dark", isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+        try FileManager.default.createDirectory(
+            at: themesDirectory.appendingPathComponent("Not A Theme", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let names = GhosttyConfig.availableThemeNames(
+            environment: ["GHOSTTY_RESOURCES_DIR": resourcesRoot.path],
+            bundleResourceURL: nil,
+            fileManager: .default
+        )
+
+        XCTAssertEqual(names, ["Cloud Light", "Midnight Dark"])
+    }
+
     func testLoadThemeResolvesPairedThemeValueByColorScheme() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-ghostty-theme-pair-\(UUID().uuidString)")

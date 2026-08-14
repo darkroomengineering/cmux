@@ -10793,6 +10793,23 @@
         }
       }
     },
+    "settings.section.terminal": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Terminal"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ターミナル"
+          }
+        }
+      }
+    },
     "settings.shortcuts.chords": {
       "extractionState": "manual",
       "localizations": {
@@ -10966,6 +10983,125 @@
           "stringUnit": {
             "state": "translated",
             "value": "Inactive"
+          }
+        }
+      }
+    },
+    "settings.terminalTheme.changeFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn’t change the terminal theme."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ターミナルテーマを変更できませんでした。"
+          }
+        }
+      }
+    },
+    "settings.terminalTheme.dark": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Dark Theme"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ダークテーマ"
+          }
+        }
+      }
+    },
+    "settings.terminalTheme.dark.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used when Programa has a dark appearance."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programa がダーク表示のときに使用します。"
+          }
+        }
+      }
+    },
+    "settings.terminalTheme.light": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Light Theme"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ライトテーマ"
+          }
+        }
+      }
+    },
+    "settings.terminalTheme.light.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used when Programa has a light appearance."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programa がライト表示のときに使用します。"
+          }
+        }
+      }
+    },
+    "settings.terminalTheme.managedByFile": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Managed in settings.json"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "settings.json で管理されています"
+          }
+        }
+      }
+    },
+    "settings.terminalTheme.useGhosttyConfiguration": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Ghostty Configuration"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ghostty の設定を使用"
           }
         }
       }

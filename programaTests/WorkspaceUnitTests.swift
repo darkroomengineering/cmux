@@ -1201,6 +1201,120 @@ final class KeyboardShortcutSettingsFileStoreTests: XCTestCase {
 }
 
 
+final class TerminalThemeSettingsTests: XCTestCase {
+    private let settingsFileBackupsDefaultsKey = "programa.settingsFile.backups.v1"
+
+    func testManagedOverrideRoundTripsAndPreservesUnrelatedConfig() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configURL = directoryURL.appendingPathComponent("config.ghostty", isDirectory: false)
+        try "font-size = 15\n".write(to: configURL, atomically: true, encoding: .utf8)
+        let store = TerminalThemeStore(
+            fileManager: .default,
+            managedConfigURL: configURL,
+            configSearchURLs: [configURL]
+        )
+
+        let firstMutation = try store.set(light: "Cloud Light", dark: "Midnight Dark")
+        XCTAssertTrue(firstMutation.didChange)
+        XCTAssertEqual(firstMutation.configURL, configURL)
+
+        let selection = store.currentSelection()
+        XCTAssertEqual(selection.rawValue, "light:Cloud Light,dark:Midnight Dark")
+        XCTAssertEqual(selection.light, "Cloud Light")
+        XCTAssertEqual(selection.dark, "Midnight Dark")
+        XCTAssertEqual(selection.sourcePath, configURL.path)
+
+        let managedContents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertTrue(managedContents.contains("font-size = 15"))
+        XCTAssertTrue(managedContents.contains("# programa themes start"))
+        XCTAssertTrue(managedContents.contains("theme = light:Cloud Light,dark:Midnight Dark"))
+
+        let repeatedMutation = try store.set(light: "Cloud Light", dark: "Midnight Dark")
+        XCTAssertFalse(repeatedMutation.didChange)
+
+        let clearMutation = try store.clear()
+        XCTAssertTrue(clearMutation.didChange)
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), "font-size = 15\n")
+        XCTAssertNil(store.managedRawThemeValue())
+    }
+
+    func testSettingsFileManagesThemeAndRestoresPriorOverrideWhenRemoved() throws {
+        let defaults = UserDefaults.standard
+        let previousBackups = defaults.data(forKey: settingsFileBackupsDefaultsKey)
+        defer {
+            if let previousBackups {
+                defaults.set(previousBackups, forKey: settingsFileBackupsDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: settingsFileBackupsDefaultsKey)
+            }
+        }
+        defaults.removeObject(forKey: settingsFileBackupsDefaultsKey)
+
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let settingsURL = directoryURL.appendingPathComponent("settings.json", isDirectory: false)
+        let configURL = directoryURL.appendingPathComponent("config.ghostty", isDirectory: false)
+        let themeStore = TerminalThemeStore(
+            fileManager: .default,
+            managedConfigURL: configURL,
+            configSearchURLs: [configURL]
+        )
+        _ = try themeStore.set(light: "Original Light", dark: "Original Dark")
+        try writeSettingsFile(
+            """
+            {
+              "app": {
+                "terminalTheme": {
+                  "light": "Managed Light",
+                  "dark": "Managed Dark"
+                }
+              }
+            }
+            """,
+            to: settingsURL
+        )
+
+        var reloadRequestCount = 0
+        let settingsStore = ProgramaSettingsFileStore(
+            primaryPath: settingsURL.path,
+            fallbackPath: nil,
+            fileManager: .default,
+            notificationCenter: .default,
+            terminalThemeStore: themeStore,
+            terminalThemeReloadHandler: { reloadRequestCount += 1 },
+            startWatching: false
+        )
+
+        XCTAssertTrue(settingsStore.isTerminalThemeManagedByFile())
+        XCTAssertEqual(themeStore.currentSelection().light, "Managed Light")
+        XCTAssertEqual(themeStore.currentSelection().dark, "Managed Dark")
+        XCTAssertEqual(reloadRequestCount, 1)
+
+        try writeSettingsFile("{ \"app\": {} }", to: settingsURL)
+        settingsStore.reload()
+
+        XCTAssertFalse(settingsStore.isTerminalThemeManagedByFile())
+        XCTAssertEqual(themeStore.currentSelection().light, "Original Light")
+        XCTAssertEqual(themeStore.currentSelection().dark, "Original Dark")
+        XCTAssertEqual(reloadRequestCount, 2)
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        return directoryURL
+    }
+
+    private func writeSettingsFile(_ contents: String, to url: URL) throws {
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+    }
+}
+
+
 final class WorkspaceShortcutMapperTests: XCTestCase {
     func testCommandNineMapsToLastWorkspaceIndex() {
         XCTAssertEqual(WorkspaceShortcutMapper.workspaceIndex(forDigit: 9, workspaceCount: 1), 0)
