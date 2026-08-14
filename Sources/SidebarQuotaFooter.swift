@@ -20,9 +20,11 @@ struct SidebarQuotaFooter: View {
                     window: snapshot.sevenDay
                 )
             }
-            // Sidebar spacing grid: 4pt base, edges on 8.
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            // Sidebar spacing grid: bare rows align to the content line (card
+            // edge 8 + row inset 8), not the card-edge line.
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
         } else {
             EmptyView()
         }
