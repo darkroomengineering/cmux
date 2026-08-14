@@ -273,7 +273,7 @@ final class NativeTrafficLightLifecycleTests: XCTestCase {
             defer: false
         )
         window.identifier = NSUserInterfaceItemIdentifier("cmux.settings")
-        defer { window.close() }
+        defer { window.orderOut(nil) }
 
         window.contentView?.superview?.layoutSubtreeIfNeeded()
         drainMainQueue()
