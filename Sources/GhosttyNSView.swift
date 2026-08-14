@@ -249,7 +249,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 
     private func effectiveBackgroundColor() -> NSColor {
         let base = backgroundColor ?? GhosttyApp.shared.defaultBackgroundColor
-        let opacity = GhosttyApp.shared.defaultBackgroundOpacity
+        let opacity = GhosttyApp.shared.effectiveTerminalBackgroundOpacity
         return base.withAlphaComponent(opacity)
     }
 

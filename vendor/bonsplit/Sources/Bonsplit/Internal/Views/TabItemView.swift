@@ -64,25 +64,13 @@ struct TabItemView: View {
     @AppStorage(TabControlShortcutHintDebugSettings.yKey) private var controlShortcutHintYOffset = TabControlShortcutHintDebugSettings.defaultY
     @AppStorage(TabControlShortcutHintDebugSettings.alwaysShowKey) private var alwaysShowShortcutHints = TabControlShortcutHintDebugSettings.defaultAlwaysShow
 
-    private var usesNativeLiquidGlass: Bool {
-        appearance.tabBarLiquidGlassEnabled && TabBarGlassStyling.isAvailable
-    }
-
     private var usesNativeOverlayGlass: Bool {
         appearance.overlayLiquidGlassEnabled && TabBarGlassStyling.isAvailable
     }
 
     @ViewBuilder
     var body: some View {
-        if usesNativeLiquidGlass {
-            TabPillGlassHost(
-                content: tabContent,
-                tintColor: TabBarGlassStyling.tintColor(isSelected: isSelected, isHovered: isHovered),
-                cornerRadius: TabBarGlassStyling.pillCornerRadius
-            )
-        } else {
-            tabContent
-        }
+        tabContent
     }
 
     private var tabContent: some View {
@@ -192,7 +180,7 @@ struct TabItemView: View {
             minHeight: TabBarMetrics.tabHeight,
             maxHeight: TabBarMetrics.tabHeight
         )
-        .padding(.bottom, isSelected && !usesNativeLiquidGlass ? 1 : 0)
+        .padding(.bottom, isSelected ? 1 : 0)
         .background(tabBackground.saturation(saturation))
         .animation(.easeInOut(duration: 0.14), value: showsShortcutHint)
         .contentShape(Rectangle())
@@ -302,7 +290,11 @@ struct TabItemView: View {
                 .opacity(showsShortcutHint ? 0 : 1)
                 .allowsHitTesting(!showsShortcutHint)
         }
-        .frame(width: shortcutHintSlotWidth, height: TabBarMetrics.closeButtonSize, alignment: .center)
+        .frame(
+            minWidth: shortcutHintSlotWidth,
+            minHeight: TabBarMetrics.closeButtonSize,
+            alignment: .center
+        )
         .animation(.easeInOut(duration: 0.14), value: showsShortcutHint)
     }
 
@@ -463,7 +455,7 @@ struct TabItemView: View {
     private var tabBackground: some View {
         ZStack(alignment: .top) {
             // Background fill (hover)
-            if !usesNativeLiquidGlass && TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
+            if TabItemStyling.shouldShowHoverBackground(isHovered: isHovered, isSelected: isSelected) {
                 Rectangle()
                     .fill(TabBarColors.hoveredTabBackground(for: appearance))
             } else {
@@ -471,21 +463,17 @@ struct TabItemView: View {
             }
 
             // Top accent indicator for selected tab
-            if isSelected && !usesNativeLiquidGlass {
+            if isSelected {
                 Rectangle()
                     .fill(Color.accentColor)
                     .frame(height: TabBarMetrics.activeIndicatorHeight)
             }
 
-            // The individual glass pill already supplies its own edge. Keep the
-            // legacy separator only for the flat tab-strip treatment.
-            if !usesNativeLiquidGlass {
-                HStack {
-                    Spacer()
-                    Rectangle()
-                        .fill(TabBarColors.separator(for: appearance))
-                        .frame(width: 1)
-                }
+            HStack {
+                Spacer()
+                Rectangle()
+                    .fill(TabBarColors.separator(for: appearance))
+                    .frame(width: 1)
             }
         }
     }

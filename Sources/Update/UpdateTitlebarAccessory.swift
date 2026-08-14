@@ -599,7 +599,9 @@ struct HiddenTitlebarSidebarControlsView: View {
 
     // Sized to fit all 3 titlebar buttons (sidebar toggle, notifications, new tab)
     // plus spacing/insets across every TitlebarControlsStyle config, including roomy.
-    private let hostWidth: CGFloat = 170
+    // Sized to hug the 3 buttons at the roomiest style config (3x28 + spacing
+    // + trailing hint inset) so the box doesn't reach toward the traffic lights.
+    private let hostWidth: CGFloat = 140
     private let hostHeight: CGFloat = 28
 
     var body: some View {
@@ -614,9 +616,9 @@ struct HiddenTitlebarSidebarControlsView: View {
                 )
             },
             onNewTab: { _ = AppDelegate.shared?.tabManager?.addTab() },
-            visibilityMode: .onHover
+            visibilityMode: .alwaysVisible
         )
-        .frame(width: hostWidth, height: hostHeight, alignment: .leading)
+        .frame(width: hostWidth, height: hostHeight, alignment: .trailing)
     }
 }
 
@@ -830,8 +832,14 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
     private var lastAppliedLayoutSnapshot: TitlebarControlsLayoutSnapshot?
     private let viewModel = TitlebarControlsViewModel()
     private var userDefaultsObserver: NSObjectProtocol?
+    private var sidebarVisibilityObserver: NSObjectProtocol?
     var popoverIsShownForTesting: Bool { notificationsPopover.isShown }
-    private var showsWorkspaceTitlebar: Bool { !WorkspacePresentationModeSettings.isMinimal() }
+    /// The sidebar panel renders its own always-visible controls in its header;
+    /// the titlebar accessory copy only appears when the sidebar is hidden.
+    private var showsWorkspaceTitlebar: Bool {
+        !WorkspacePresentationModeSettings.isMinimal() &&
+            AppDelegate.shared?.sidebarState?.isVisible != true
+    }
     /// Box for deferred weak-self capture so the sidebar toggle closure
     /// can resolve the window this accessory is attached to (#1779).
     private final class WeakSelfBox {
@@ -890,6 +898,16 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
                 self?.restoreSizeAfterMinimalMode()
             }
         }
+        sidebarVisibilityObserver = NotificationCenter.default.addObserver(
+            forName: .programaSidebarVisibilityDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyWorkspaceTitlebarVisibility()
+            if self?.showsWorkspaceTitlebar == true {
+                self?.restoreSizeAfterMinimalMode()
+            }
+        }
 
         applyWorkspaceTitlebarVisibility()
         scheduleSizeUpdate(invalidateFittingSize: true)
@@ -902,6 +920,9 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
     deinit {
         if let userDefaultsObserver {
             NotificationCenter.default.removeObserver(userDefaultsObserver)
+        }
+        if let sidebarVisibilityObserver {
+            NotificationCenter.default.removeObserver(sidebarVisibilityObserver)
         }
     }
 

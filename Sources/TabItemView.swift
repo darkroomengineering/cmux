@@ -12,6 +12,29 @@ import Bonsplit
 import Combine
 import SwiftUI
 
+struct SidebarTrailingAccessorySlot<Content: View>: View {
+    let minimumWidth: CGFloat
+    let minimumHeight: CGFloat
+    let alignment: Alignment
+    let content: Content
+
+    init(
+        minimumWidth: CGFloat,
+        minimumHeight: CGFloat,
+        alignment: Alignment,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.minimumWidth = minimumWidth
+        self.minimumHeight = minimumHeight
+        self.alignment = alignment
+        self.content = content()
+    }
+
+    var body: some View {
+        content.frame(minWidth: minimumWidth, minHeight: minimumHeight, alignment: alignment)
+    }
+}
+
 
 // PERF: TabItemView is Equatable so SwiftUI skips body re-evaluation when
 // the parent rebuilds with unchanged values. Without this, every TabManager
@@ -174,8 +197,11 @@ struct TabItemView: View, Equatable {
         }
     }
 
+    /// Only a user-chosen selection color needs a forced light foreground. The
+    /// default selection is a translucent neutral wash, where standard adaptive
+    /// primary/secondary text keeps contrast in both schemes (Maps-style).
     private var usesInvertedActiveForeground: Bool {
-        isActive
+        isActive && sidebarSelectionColorHex != nil
     }
 
     private var activePrimaryTextColor: Color {
@@ -450,43 +476,48 @@ struct TabItemView: View, Equatable {
 
                 Spacer(minLength: 0)
 
-                ZStack(alignment: .trailing) {
-                    Button(action: {
-                        #if DEBUG
-                        dlog("sidebar.close workspace=\(tab.id.uuidString.prefix(5)) method=button")
-                        #endif
-                        tabManager.closeWorkspaceWithConfirmation(tab)
-                    }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(activeSecondaryColor(0.7))
-                    }
-                    .buttonStyle(.plain)
-                    .safeHelp(closeButtonTooltip)
-                    .frame(width: SidebarTrailingAccessoryWidthPolicy.closeButtonWidth, height: 16, alignment: .center)
-                    .opacity(showCloseButton && !showsWorkspaceShortcutHint ? 1 : 0)
-                    .allowsHitTesting(showCloseButton && !showsWorkspaceShortcutHint)
-
-                    if showsWorkspaceShortcutHint, let workspaceShortcutLabel {
-                        ShortcutHintPill(emphasis: shortcutHintEmphasis) {
-                            Text(workspaceShortcutLabel)
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .font(.system(size: 10, weight: .semibold, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundColor(activePrimaryTextColor)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
+                SidebarTrailingAccessorySlot(
+                    minimumWidth: trailingAccessoryWidth,
+                    minimumHeight: 16,
+                    alignment: .trailing
+                ) {
+                    ZStack(alignment: .trailing) {
+                        Button(action: {
+                            #if DEBUG
+                            dlog("sidebar.close workspace=\(tab.id.uuidString.prefix(5)) method=button")
+                            #endif
+                            tabManager.closeWorkspaceWithConfirmation(tab)
+                        }) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundColor(activeSecondaryColor(0.7))
                         }
-                            .offset(
-                                x: ShortcutHintDebugSettings.clamped(sidebarShortcutHintXOffset),
-                                y: ShortcutHintDebugSettings.clamped(sidebarShortcutHintYOffset)
-                            )
-                            .transition(.opacity)
+                        .buttonStyle(.plain)
+                        .safeHelp(closeButtonTooltip)
+                        .frame(width: SidebarTrailingAccessoryWidthPolicy.closeButtonWidth, height: 16, alignment: .center)
+                        .opacity(showCloseButton && !showsWorkspaceShortcutHint ? 1 : 0)
+                        .allowsHitTesting(showCloseButton && !showsWorkspaceShortcutHint)
+
+                        if showsWorkspaceShortcutHint, let workspaceShortcutLabel {
+                            ShortcutHintPill(emphasis: shortcutHintEmphasis) {
+                                Text(workspaceShortcutLabel)
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundColor(activePrimaryTextColor)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                            }
+                                .offset(
+                                    x: ShortcutHintDebugSettings.clamped(sidebarShortcutHintXOffset),
+                                    y: ShortcutHintDebugSettings.clamped(sidebarShortcutHintYOffset)
+                                )
+                                .transition(.opacity)
+                        }
                     }
+                    .animation(.easeInOut(duration: 0.14), value: showsModifierShortcutHints || alwaysShowShortcutHints)
                 }
-                .animation(.easeInOut(duration: 0.14), value: showsModifierShortcutHints || alwaysShowShortcutHints)
-                .frame(width: trailingAccessoryWidth, height: 16, alignment: .trailing)
             }
 
             if let description = tab.customDescription {
@@ -1135,7 +1166,9 @@ struct TabItemView: View, Equatable {
         if let hex = sidebarSelectionColorHex, let parsed = NSColor(hex: hex) {
             return parsed
         }
-        return programaAccentNSColor(for: colorScheme)
+        // Default: quiet neutral selection that harmonizes with the glass sidebar
+        // instead of a saturated accent card.
+        return NSColor.labelColor.withAlphaComponent(0.14)
     }
 
     private var backgroundColor: Color {

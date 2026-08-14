@@ -7,10 +7,17 @@ import XCTest
 #endif
 
 final class SidebarWidthPolicyTests: XCTestCase {
-    func testContentViewClampAllowsNarrowSidebarBelowLegacyMinimum() {
+    func testContentViewClampEnforcesHeaderSafeMinimum() {
+        // Below the floor, widths clamp up: the header row needs 220pt so the
+        // traffic lights and the always-visible controls never collide.
         XCTAssertEqual(
             ContentView.clampedSidebarWidth(184, maximumWidth: 600),
-            184,
+            CGFloat(SessionPersistencePolicy.minimumSidebarWidth),
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            ContentView.clampedSidebarWidth(240, maximumWidth: 600),
+            240,
             accuracy: 0.001
         )
     }

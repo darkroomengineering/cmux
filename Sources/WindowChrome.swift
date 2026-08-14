@@ -40,6 +40,81 @@ enum WindowGlassEffect {
         return nil
     }
 
+    /// The Maps-style large window radius; the sidebar panel derives its own
+    /// radius from this minus its inset so the two curves stay concentric.
+    static let windowCornerRadius: CGFloat = 26
+
+    /// The stock tint (#000000 @ 0.03) is effectively clear, which lets the
+    /// desktop color wash through every translucent region and corner. Stock
+    /// resolves to a terminal-toned grounding tint; explicit user tints win.
+    static func resolvedWindowTint(hex: String, opacity: Double) -> NSColor {
+        let normalized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "").uppercased()
+        let isStock = normalized == "000000" && abs(opacity - 0.03) < 0.001
+        if isStock {
+            return GhosttyBackgroundTheme.currentColor().withAlphaComponent(0.55)
+        }
+        return (NSColor(hex: hex) ?? .black).withAlphaComponent(opacity)
+    }
+    private static var fullScreenObserverKey: UInt8 = 0
+
+    @available(macOS 26.0, *)
+    private static func applyWindowCornerMask(to glassView: NSView, rounded: Bool) {
+        glassView.layer?.cornerRadius = rounded ? windowCornerRadius : 0
+        glassView.layer?.cornerCurve = .continuous
+        glassView.layer?.masksToBounds = rounded
+    }
+
+    /// The transparent titlebar still hosts a material backdrop that peeks out
+    /// in the crescent between our large corner mask and the legacy frame shape
+    /// at the two top corners — a lighter glitchy wedge. Hide the material; the
+    /// buttons and accessories are separate views and stay visible.
+    private static func hideTitlebarBackdrop(in window: NSWindow) {
+        guard let frameView = window.contentView?.superview else { return }
+        for child in frameView.subviews
+        where String(describing: type(of: child)).contains("NSTitlebarContainerView") {
+            for titlebarChild in descendants(of: child)
+            where titlebarChild is NSVisualEffectView {
+                titlebarChild.isHidden = true
+            }
+        }
+    }
+
+    private static func descendants(of view: NSView) -> [NSView] {
+        view.subviews.flatMap { [$0] + descendants(of: $0) }
+    }
+
+    @available(macOS 26.0, *)
+    private static func installFullScreenRadiusObservers(for window: NSWindow, glassView: NSView) {
+        let center = NotificationCenter.default
+        let tokens: [NSObjectProtocol] = [
+            center.addObserver(
+                forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main
+            ) { [weak glassView] _ in
+                guard let glassView else { return }
+                applyWindowCornerMask(to: glassView, rounded: false)
+            },
+            center.addObserver(
+                forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main
+            ) { [weak glassView] _ in
+                guard let glassView else { return }
+                applyWindowCornerMask(to: glassView, rounded: true)
+            },
+            // Shadow must re-derive from content alpha after size/shape changes.
+            center.addObserver(
+                forName: NSWindow.didEndLiveResizeNotification, object: window, queue: .main
+            ) { [weak window] _ in
+                window?.invalidateShadow()
+            },
+            center.addObserver(
+                forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main
+            ) { [weak window] _ in
+                DispatchQueue.main.async { window?.invalidateShadow() }
+            },
+        ]
+        objc_setAssociatedObject(window, &fullScreenObserverKey, tokens, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
     static func apply(to window: NSWindow, tintColor: NSColor? = nil) {
         guard let originalContentView = window.contentView else { return }
 
@@ -64,7 +139,38 @@ enum WindowGlassEffect {
     private static func applyGlass(to window: NSWindow, originalContentView: NSView, tintColor: NSColor?) {
         let glassView = NSGlassEffectView(frame: originalContentView.bounds)
         glassView.wantsLayer = true
+        // Match the modern large window radius (Maps-style); the sidebar panel's
+        // radius is derived as this minus its inset to stay concentric. Shape via
+        // a plain layer mask, not NSGlassEffectView.cornerRadius: the glass draws
+        // a specular rim at its own rounded boundary, which reads as a ghost
+        // border against dark content. A layer cut has no rim.
         glassView.cornerRadius = 0
+        // Opaque terminal-colored backing: backdrop sampling bleeds the desktop
+        // into a rim wherever fills are translucent, which reads as a glitchy
+        // inconsistent border. In-window glass elements are unaffected — they
+        // sample window content, not the desktop.
+        glassView.layer?.backgroundColor =
+            GhosttyBackgroundTheme.currentColor().withAlphaComponent(1.0).cgColor
+        applyWindowCornerMask(to: glassView, rounded: !window.styleMask.contains(.fullScreen))
+        installFullScreenRadiusObservers(for: window, glassView: glassView)
+        // The system window backdrop keeps its own smaller-radius shape; between
+        // it and our larger mask it peeks out as a ghost arc in each corner.
+        // A clear window lets the shadow and edge follow the masked shape only.
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        // A non-opaque window's shadow only re-derives from content alpha on
+        // explicit invalidation; without it the old square-ish shadow rings the
+        // corner crescents and they read as transparent holes.
+        DispatchQueue.main.async { [weak window] in
+            guard let window else { return }
+            hideTitlebarBackdrop(in: window)
+            window.invalidateShadow()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak window] in
+            guard let window else { return }
+            hideTitlebarBackdrop(in: window)
+            window.invalidateShadow()
+        }
         glassView.tintColor = tintColor
         glassView.autoresizingMask = [.width, .height]
 
@@ -137,6 +243,9 @@ enum WindowGlassEffect {
         #if compiler(>=6.2)
         if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
             glass.tintColor = color
+            // Keep the opaque backing in step with the terminal theme.
+            glass.layer?.backgroundColor =
+                GhosttyBackgroundTheme.currentColor().withAlphaComponent(1.0).cgColor
             return
         }
         #endif

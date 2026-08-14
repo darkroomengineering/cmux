@@ -396,6 +396,16 @@ struct WorkspaceContentView: View {
                 bonsplitView
             }
         }
+        .background(
+            WindowAccessor(dedupeByWindow: false) { window in
+                if #available(macOS 26.0, *) {
+                    workspace.bonsplitController.setPaneChromePortalBridge(
+                        WindowPaneChromePortalRegistry.bridge(for: window)
+                    )
+                }
+            }
+            .frame(width: 0, height: 0)
+        )
     }
 
     private func syncBonsplitNotificationBadges() {

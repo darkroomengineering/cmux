@@ -5,7 +5,7 @@
 //
 // Access-level widening: SidebarFooter, SidebarTopScrim, SidebarScrollViewResolver,
 // SidebarEmptyArea, ClearScrollBackground, DraggableFolderIcon,
-// TitlebarLeadingInsetReader, SidebarTrailingBorder, and SidebarBackdrop were
+// TitlebarLeadingInsetReader, and SidebarBackdrop were
 // file-private to the old ContentView.swift; widened to internal (dropped the
 // `private` modifier) because VerticalTabsSidebar and ContentView, which stay in
 // ContentView.swift, still construct/reference them. No other behavior change.
@@ -521,11 +521,19 @@ enum SidebarTerminalAppearance {
 /// terminal background, so every label in it picks contrast from the colour it sits on.
 struct SidebarTerminalColorScheme: ViewModifier {
     @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
     @State private var scheme: ColorScheme = SidebarTerminalAppearance.colorScheme()
+
+    /// The native glass sidebar floats over the terminal-colored base plane, so its
+    /// content must always resolve contrast against the terminal, not the app scheme.
+    private var followsTerminal: Bool {
+        matchTerminalBackground ||
+            (WindowGlassEffect.isAvailable && !accessibilityReduceTransparency)
+    }
 
     func body(content: Content) -> some View {
         Group {
-            if matchTerminalBackground {
+            if followsTerminal {
                 content.environment(\.colorScheme, scheme)
             } else {
                 content
@@ -540,11 +548,20 @@ struct SidebarTerminalColorScheme: ViewModifier {
 struct SidebarTopScrim: View {
     let height: CGFloat
     @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
     @State private var terminalColor = Color(nsColor: GhosttyBackgroundTheme.currentColor())
+
+    private var usesNativeGlassSidebar: Bool {
+        WindowGlassEffect.isAvailable && !accessibilityReduceTransparency
+    }
 
     var body: some View {
         Group {
-            if matchTerminalBackground {
+            if usesNativeGlassSidebar {
+                // The glass surface provides its own top treatment; a material
+                // scrim reads as an opaque gray band on it (Maps has none).
+                Color.clear
+            } else if matchTerminalBackground {
                 // The system material stays light over a terminal-coloured sidebar, which
                 // reads as a grey wash across the top. Fade the terminal colour instead.
                 LinearGradient(
@@ -1225,7 +1242,8 @@ private struct SidebarVisualEffectBackground: NSViewRepresentable {
 private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable {
     let content: Content
     let tintColor: NSColor?
-    let innerCornerRadius: CGFloat
+    let cornerRadius: CGFloat
+    let appearance: NSAppearance?
 
     final class Coordinator {
         let hostingView: NSHostingView<Content>
@@ -1235,6 +1253,9 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
             hostingView.autoresizingMask = [.width, .height]
             hostingView.wantsLayer = true
             hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+            // The panel owns its own titlebar-like header row; the window safe
+            // area must not add a second inset on top of it.
+            hostingView.safeAreaRegions = []
         }
     }
 
@@ -1252,7 +1273,8 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
             glass.wantsLayer = true
             glass.style = .regular
             glass.tintColor = tintColor
-            applyInnerCornerMask(to: glass)
+            glass.appearance = appearance
+            applyCornerMask(to: glass)
             hostingView.frame = glass.bounds
             glass.contentView = hostingView
             return glass
@@ -1268,81 +1290,95 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
         #if compiler(>=6.2)
         if #available(macOS 26.0, *), let glass = nsView as? NSGlassEffectView {
             glass.tintColor = tintColor
-            applyInnerCornerMask(to: glass)
+            glass.appearance = appearance
+            applyCornerMask(to: glass)
         }
         #endif
     }
 
     #if compiler(>=6.2)
     @available(macOS 26.0, *)
-    private func applyInnerCornerMask(to glass: NSGlassEffectView) {
-        // The NSWindow mask owns the two outer corners. Clip only the terminal-facing edge so
-        // the sidebar reads as Apple's split glass surface without drawing a second perimeter.
-        glass.cornerRadius = 0
-        glass.layer?.cornerRadius = innerCornerRadius
+    private func applyCornerMask(to glass: NSGlassEffectView) {
+        glass.cornerRadius = cornerRadius
+        glass.layer?.cornerRadius = cornerRadius
         glass.layer?.cornerCurve = .continuous
-        glass.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
-        glass.layer?.masksToBounds = innerCornerRadius > 0
+        glass.layer?.maskedCorners = [
+            .layerMinXMinYCorner,
+            .layerMaxXMinYCorner,
+            .layerMinXMaxYCorner,
+            .layerMaxXMaxYCorner,
+        ]
+        glass.layer?.masksToBounds = cornerRadius > 0
     }
     #endif
 }
 
-/// Selects the native content-hosting topology only for sidebar-local Liquid Glass. Every
-/// fallback keeps the established SwiftUI content + background relationship, preserving the
-/// exact macOS 14–25 hierarchy and the behind-window whole-window glass mode.
+/// Owns the sidebar as a distinct native glass surface above the terminal-colored base plane.
 struct SidebarSurface<Content: View>: View {
     let content: Content
 
-    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
+    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = true
     @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = SidebarTintDefaults.opacity
     @AppStorage("sidebarTintHex") private var sidebarTintHex = SidebarTintDefaults.hex
     @AppStorage("sidebarTintHexLight") private var sidebarTintHexLight: String?
     @AppStorage("sidebarTintHexDark") private var sidebarTintHexDark: String?
     @AppStorage("sidebarMaterial") private var sidebarMaterial = SidebarMaterialOption.sidebar.rawValue
-    @AppStorage("sidebarBlendMode") private var sidebarBlendMode = SidebarBlendModeOption.withinWindow.rawValue
-    @AppStorage("sidebarCornerRadius") private var sidebarCornerRadius = 0.0
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
     @Environment(\.colorScheme) private var colorScheme
+    @State private var terminalScheme: ColorScheme = SidebarTerminalAppearance.colorScheme()
 
-    @ViewBuilder
+    // Concentric with the macOS 26 window corner (~26pt) at a 6pt inset.
+    private let standaloneCornerRadius: CGFloat = 20
+
     var body: some View {
-        if usesLocalNativeGlass {
-            SidebarNativeGlassContentHost(
-                content: content.environment(\.colorScheme, colorScheme),
-                tintColor: resolvedTintColor,
-                innerCornerRadius: max(0, CGFloat(sidebarCornerRadius))
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            content
-                .background(SidebarBackdrop().ignoresSafeArea())
+        Group {
+            if usesLocalNativeGlass {
+                // One radius, one mask: the glass host owns the corner treatment.
+                // The sidebar floats over the terminal-colored plane, so its glass and
+                // content must resolve against the terminal scheme, not the app scheme.
+                SidebarNativeGlassContentHost(
+                    content: content.environment(\.colorScheme, terminalScheme),
+                    tintColor: resolvedTintColor,
+                    cornerRadius: standaloneCornerRadius,
+                    appearance: NSAppearance(named: terminalScheme == .dark ? .darkAqua : .aqua)
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ZStack {
+                    SidebarBackdrop()
+                    content
+                }
+                .clipShape(RoundedRectangle(cornerRadius: standaloneCornerRadius, style: .continuous))
+            }
+        }
+        // Subscribed outside the glass branch so the scheme stays current while
+        // Reduce Transparency toggles the branch off and back on.
+        .onReceive(
+            NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)
+        ) { _ in
+            terminalScheme = SidebarTerminalAppearance.colorScheme()
         }
     }
 
     private var usesLocalNativeGlass: Bool {
-        guard !matchTerminalBackground, WindowGlassEffect.isAvailable else { return false }
-
-        let materialOption = SidebarMaterialOption(rawValue: sidebarMaterial)
-        let blendingMode = SidebarBlendModeOption(rawValue: sidebarBlendMode) ?? .behindWindow
-        let override = ProgramaGlassSettings.startupOverride(for: .sidebar)
-        let prefersLiquidGlass = override ?? materialOption?.usesLiquidGlass ?? false
-        let usesWindowLevelGlass = override == nil && prefersLiquidGlass && blendingMode == .behindWindow
-        return prefersLiquidGlass && !usesWindowLevelGlass
+        guard !accessibilityReduceTransparency,
+              WindowGlassEffect.isAvailable
+        else {
+            return false
+        }
+        return true
     }
 
     private var resolvedTintColor: NSColor? {
-        guard sidebarTintOpacity > 0 else { return nil }
-
-        let resolvedHex: String
-        if colorScheme == .dark, let sidebarTintHexDark {
-            resolvedHex = sidebarTintHexDark
-        } else if colorScheme == .light, let sidebarTintHexLight {
-            resolvedHex = sidebarTintHexLight
-        } else {
-            resolvedHex = sidebarTintHex
+        // Per-scheme hexes are only ever written by explicit user configuration
+        // (the preset stamp never sets them) — honor those. Otherwise tint the
+        // glass with the terminal background so the panel reads as the same
+        // material family as the terminal, not a desktop-colored slab.
+        let explicitHex: String? = terminalScheme == .dark ? sidebarTintHexDark : sidebarTintHexLight
+        if let explicitHex, sidebarTintOpacity > 0, let color = NSColor(hex: explicitHex) {
+            return color.withAlphaComponent(sidebarTintOpacity)
         }
-
-        return (NSColor(hex: resolvedHex) ?? NSColor(hex: sidebarTintHex) ?? .black)
-            .withAlphaComponent(sidebarTintOpacity)
+        return GhosttyBackgroundTheme.currentColor().withAlphaComponent(0.5)
     }
 }
 
@@ -1379,47 +1415,6 @@ struct TitlebarLeadingInsetReader: NSViewRepresentable {
     }
 }
 
-/// 1px trailing border on the sidebar, derived from the terminal chrome background
-/// using the same logic as bonsplit's TabBarColors.nsColorSeparator:
-/// dark bg → lighten RGB by 0.16 at 0.36 alpha; light bg → darken by 0.12 at 0.26 alpha.
-struct SidebarTrailingBorder: View {
-    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
-    @State private var separatorColor: NSColor = chromeSeparatorColor()
-
-    var body: some View {
-        if matchTerminalBackground {
-            Rectangle()
-                .fill(Color(nsColor: separatorColor))
-                .frame(width: 1)
-                .ignoresSafeArea()
-                .onAppear {
-                    separatorColor = Self.chromeSeparatorColor()
-                }
-                .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
-                    separatorColor = Self.chromeSeparatorColor()
-                }
-        }
-    }
-
-    /// Replicates bonsplit TabBarColors.nsColorSeparator derivation from chrome background.
-    private static func chromeSeparatorColor() -> NSColor {
-        let chrome = GhosttyBackgroundTheme.currentColor()
-        let srgb = chrome.usingColorSpace(.sRGB) ?? chrome
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        srgb.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let luminance = 0.299 * r + 0.587 * g + 0.114 * b
-        let isLight = luminance > 0.5
-        let amount: CGFloat = isLight ? -0.12 : 0.16
-        let alpha: CGFloat = isLight ? 0.26 : 0.36
-        return NSColor(
-            red: min(1.0, max(0.0, r + amount)),
-            green: min(1.0, max(0.0, g + amount)),
-            blue: min(1.0, max(0.0, b + amount)),
-            alpha: alpha
-        )
-    }
-}
-
 /// Sidebar background that uses the same technique as TitlebarLayerBackground:
 /// fully opaque layer color + layer-level opacity. This matches how the terminal's
 /// Metal surface composites its background.
@@ -1441,8 +1436,25 @@ private struct SidebarTerminalBackgroundView: NSViewRepresentable {
     }
 }
 
+/// The non-glass plane shared visually with terminal content beneath the floating sidebar.
+struct SidebarTerminalBasePlane: View {
+    @State private var backgroundColor = GhosttyApp.shared.defaultBackgroundColor
+    @State private var backgroundOpacity = CGFloat(GhosttyApp.shared.effectiveTerminalBackgroundOpacity)
+
+    var body: some View {
+        SidebarTerminalBackgroundView(
+            backgroundColor: backgroundColor,
+            opacity: backgroundOpacity
+        )
+        .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
+            backgroundColor = GhosttyApp.shared.defaultBackgroundColor
+            backgroundOpacity = CGFloat(GhosttyApp.shared.effectiveTerminalBackgroundOpacity)
+        }
+    }
+}
+
 struct SidebarBackdrop: View {
-    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
+    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = true
     @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = SidebarTintDefaults.opacity
     @AppStorage("sidebarTintHex") private var sidebarTintHex = SidebarTintDefaults.hex
     @AppStorage("sidebarTintHexLight") private var sidebarTintHexLight: String?
@@ -1450,28 +1462,38 @@ struct SidebarBackdrop: View {
     @AppStorage("sidebarMaterial") private var sidebarMaterial = SidebarMaterialOption.sidebar.rawValue
     @AppStorage("sidebarBlendMode") private var sidebarBlendMode = SidebarBlendModeOption.withinWindow.rawValue
     @AppStorage("sidebarState") private var sidebarState = SidebarStateOption.followWindow.rawValue
-    @AppStorage("sidebarCornerRadius") private var sidebarCornerRadius = 0.0
     @AppStorage("sidebarBlurOpacity") private var sidebarBlurOpacity = 1.0
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
     @Environment(\.colorScheme) private var colorScheme
-    @State private var terminalBackgroundColor: NSColor = GhosttyBackgroundTheme.currentColor()
+    @Environment(\.displayScale) private var displayScale
+    @State private var terminalBackgroundColor: NSColor = GhosttyApp.shared.defaultBackgroundColor
+
+    private let standaloneCornerRadius: CGFloat = 18
 
     var body: some View {
-        let cornerRadius = CGFloat(max(0, sidebarCornerRadius))
-
         if matchTerminalBackground {
             // The terminal background is provided by a single CALayer, so
-            // the sidebar uses the configured opacity directly.
-            let alpha = CGFloat(GhosttyApp.shared.defaultBackgroundOpacity)
+            // the sidebar matches the opacity applied to that layer.
+            let alpha = CGFloat(GhosttyApp.shared.effectiveTerminalBackgroundOpacity)
             return AnyView(
                 SidebarTerminalBackgroundView(
-                    backgroundColor: GhosttyApp.shared.defaultBackgroundColor,
+                    backgroundColor: terminalBackgroundColor,
                     opacity: alpha
                 )
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
-                    terminalBackgroundColor = GhosttyBackgroundTheme.currentColor()
+                    terminalBackgroundColor = GhosttyApp.shared.defaultBackgroundColor
                 }
             )
+        }
+
+        let usesWholeWindowGlass = cmuxShouldUseTransparentBackgroundWindow()
+
+        if accessibilityReduceTransparency {
+            return AnyView(adaptiveSurface(opaque: true))
+        }
+
+        if usesWholeWindowGlass {
+            return AnyView(adaptiveSurface(opaque: false))
         }
 
         let materialOption = SidebarMaterialOption(rawValue: sidebarMaterial)
@@ -1485,40 +1507,69 @@ struct SidebarBackdrop: View {
             }
             return sidebarTintHex
         }()
-        let tintColor = (NSColor(hex: resolvedHex) ?? NSColor(hex: sidebarTintHex) ?? .black).withAlphaComponent(sidebarTintOpacity)
+        let tintColor = (NSColor(hex: resolvedHex) ?? NSColor(hex: sidebarTintHex) ?? .controlAccentColor)
+            .withAlphaComponent(sidebarTintOpacity)
         let sidebarGlassOverride = ProgramaGlassSettings.startupOverride(for: .sidebar)
         let useLiquidGlass = sidebarGlassOverride ?? materialOption?.usesLiquidGlass ?? false
         let resolvedMaterial: NSVisualEffectView.Material? = sidebarGlassOverride == true
             ? .underWindowBackground
             : materialOption?.material
-        // A forced sidebar sample must stay local to the sidebar so the window and sidebar
-        // performance gates remain independent even if the saved blend mode is behindWindow.
-        let useWindowLevelGlass = sidebarGlassOverride == nil && useLiquidGlass && blendingMode == .behindWindow
 
         return AnyView(
             ZStack {
                 if let material = resolvedMaterial {
-                    // When using liquidGlass + behindWindow, window handles glass + tint
-                    // Sidebar is fully transparent
-                    if !useWindowLevelGlass {
-                        SidebarVisualEffectBackground(
-                            material: material,
-                            blendingMode: blendingMode,
-                            state: state,
-                            opacity: sidebarBlurOpacity,
-                            tintColor: tintColor,
-                            cornerRadius: cornerRadius,
-                            preferLiquidGlass: useLiquidGlass
-                        )
-                        // Tint overlay for NSVisualEffectView fallback
-                        if !useLiquidGlass {
-                            Color(nsColor: tintColor)
-                        }
+                    SidebarVisualEffectBackground(
+                        material: material,
+                        blendingMode: blendingMode,
+                        state: state,
+                        opacity: sidebarBlurOpacity,
+                        tintColor: tintColor,
+                        cornerRadius: standaloneCornerRadius,
+                        preferLiquidGlass: useLiquidGlass
+                    )
+                    // Tint overlay for NSVisualEffectView fallback
+                    if !useLiquidGlass {
+                        Color(nsColor: tintColor)
                     }
                 }
-                // When material is none or useWindowLevelGlass, render nothing
             }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: standaloneCornerRadius, style: .continuous))
+        )
+    }
+
+    private func adaptiveSurface(opaque: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: standaloneCornerRadius, style: .continuous)
+        let baseColor = Color(nsColor: .windowBackgroundColor)
+        let baseOpacity = colorScheme == .dark ? 0.48 : 0.62
+        let tintOpacity = min(sidebarTintOpacity, opaque ? 0.16 : 0.12)
+        let resolvedHex: String = {
+            if colorScheme == .dark, let dark = sidebarTintHexDark {
+                return dark
+            } else if colorScheme == .light, let light = sidebarTintHexLight {
+                return light
+            }
+            return sidebarTintHex
+        }()
+        let tintColor = (NSColor(hex: resolvedHex) ?? NSColor(hex: sidebarTintHex) ?? .controlAccentColor)
+            .withAlphaComponent(tintOpacity)
+        let outlineWidth = 1 / max(displayScale, 1)
+
+        return ZStack {
+            shape.fill(opaque ? baseColor : baseColor.opacity(baseOpacity))
+            if tintOpacity > 0 {
+                shape.fill(Color(nsColor: tintColor))
+            }
+        }
+        .overlay {
+            shape.strokeBorder(
+                Color(nsColor: .separatorColor).opacity(opaque ? 0.72 : 0.58),
+                lineWidth: outlineWidth
+            )
+        }
+        .shadow(
+            color: Color(nsColor: .shadowColor).opacity(colorScheme == .dark ? 0.2 : 0.12),
+            radius: 8,
+            y: 2
         )
     }
 }

@@ -145,6 +145,306 @@ struct PaneDropInteractionContainer<Content: View, DropLayer: View>: View {
     }
 }
 
+private final class BonsplitPaneChromeAnchorView: NSView {
+    var onReassert: (() -> Void)?
+    private var reassertObserver: NSObjectProtocol?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        reassertObserver = NotificationCenter.default.addObserver(
+            forName: BonsplitPaneChromeAnchorNotifications.reassertRequest,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.window != nil else { return }
+            self.onReassert?()
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    deinit {
+        if let reassertObserver {
+            NotificationCenter.default.removeObserver(reassertObserver)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.post(
+            name: BonsplitPaneChromeAnchorNotifications.anchorDidMoveToWindow,
+            object: self
+        )
+    }
+}
+
+private struct BonsplitPaneChromeAnchor: NSViewRepresentable {
+    weak var pane: PaneState?
+    weak var splitController: SplitViewController?
+    weak var bonsplitController: BonsplitController?
+    let tabs: [TabItem]
+    let selectedTabID: UUID?
+    let isFocused: Bool
+    let isVisible: Bool
+    let leadingInset: CGFloat
+    let showsSplitButtons: Bool
+
+    final class Coordinator {
+        weak var bridge: (any BonsplitPaneChromePortalBridge)?
+        weak var bonsplitController: BonsplitController?
+        var paneID: PaneID?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> BonsplitPaneChromeAnchorView {
+        let view = BonsplitPaneChromeAnchorView(frame: .zero)
+        view.postsFrameChangedNotifications = true
+        view.postsBoundsChangedNotifications = true
+#if DEBUG
+        dlog("paneChrome.anchor.make pane=\(pane?.id.id.uuidString.prefix(5) ?? "nil")")
+#endif
+        publish(view, coordinator: context.coordinator)
+        return view
+    }
+
+    func updateNSView(_ nsView: BonsplitPaneChromeAnchorView, context: Context) {
+        publish(nsView, coordinator: context.coordinator)
+    }
+
+    static func dismantleNSView(_ nsView: BonsplitPaneChromeAnchorView, coordinator: Coordinator) {
+        nsView.onReassert = nil
+        guard let paneID = coordinator.paneID else { return }
+        coordinator.bridge?.removePaneChrome(for: paneID, anchorView: nsView)
+        // Split-tree restructures dismantle a SURVIVING pane's anchor without
+        // mounting a replacement (structural identity churn). If the pane still
+        // exists, force a republish so a fresh anchor mounts for it.
+        if let controller = coordinator.bonsplitController {
+            DispatchQueue.main.async { [weak controller] in
+                let exists = controller?.allPaneIds.contains(paneID) == true
+#if DEBUG
+                dlog(
+                    "paneChrome.anchor.dismantleNudge pane=\(paneID.id.uuidString.prefix(5)) " +
+                    "ctrl=\(controller != nil ? 1 : 0) paneExists=\(exists ? 1 : 0)"
+                )
+#endif
+                guard let controller, exists else { return }
+                controller.republishPaneChrome()
+            }
+        } else {
+#if DEBUG
+            dlog("paneChrome.anchor.dismantleNudge pane=\(paneID.id.uuidString.prefix(5)) ctrl=0")
+#endif
+        }
+    }
+
+    private func publish(_ anchorView: NSView, coordinator: Coordinator) {
+        guard let pane, let splitController, let bonsplitController,
+              let bridge = bonsplitController.paneChromePortalBridge else {
+#if DEBUG
+            dlog(
+                "paneChrome.publish.guardFail pane=\(pane?.id.id.uuidString.prefix(5) ?? "nil") " +
+                "split=\(splitController != nil ? 1 : 0) ctrl=\(bonsplitController != nil ? 1 : 0) " +
+                "bridge=\(bonsplitController?.paneChromePortalBridge != nil ? 1 : 0)"
+            )
+#endif
+            return
+        }
+
+        // SwiftUI can reuse this representable for a different pane; stale
+        // registrations must go whenever the bridge OR the pane identity changes.
+        if let priorBridge = coordinator.bridge,
+           let priorPaneID = coordinator.paneID,
+           priorBridge !== bridge || priorPaneID != pane.id {
+            priorBridge.removePaneChrome(for: priorPaneID, anchorView: anchorView)
+        }
+        coordinator.bridge = bridge
+        coordinator.bonsplitController = bonsplitController
+        coordinator.paneID = pane.id
+        (anchorView as? BonsplitPaneChromeAnchorView)?.onReassert = { [weak anchorView, weak coordinator] in
+            guard let anchorView, let coordinator else { return }
+            self.publish(anchorView, coordinator: coordinator)
+        }
+
+        let tabDescriptors = tabs.enumerated().map { index, tab in
+            BonsplitPaneChromeTabDescriptor(
+                id: TabID(id: tab.id),
+                title: tab.title,
+                icon: tab.icon,
+                iconImageData: tab.iconImageData,
+                isSelected: selectedTabID == tab.id,
+                isPinned: tab.isPinned,
+                isDirty: tab.isDirty,
+                showsNotificationBadge: tab.showsNotificationBadge,
+                accessibilityValue: accessibilityValue(for: tab),
+                menuItems: menuItems(for: tab, at: index, splitController: splitController)
+            )
+        }
+
+        let descriptor = BonsplitPaneChromeDescriptor(
+            paneID: pane.id,
+            anchorView: anchorView,
+            tabs: tabDescriptors,
+            isFocused: isFocused,
+            isVisible: isVisible,
+            leadingInset: leadingInset,
+            showsSplitButtons: showsSplitButtons,
+            onSelect: { [weak pane, weak bonsplitController] tabID in
+                guard let pane, let bonsplitController,
+                      pane.tabs.contains(where: { $0.id == tabID.id }) else { return }
+                pane.selectTab(tabID.id)
+                bonsplitController.focusPane(pane.id)
+            },
+            onClose: { [weak pane, weak bonsplitController] tabID in
+                guard let pane, let bonsplitController,
+                      let tab = pane.tabs.first(where: { $0.id == tabID.id }),
+                      !tab.isPinned else { return }
+                bonsplitController.onTabCloseRequest?(tabID, pane.id)
+                _ = bonsplitController.closeTab(tabID, inPane: pane.id)
+            },
+            onContextAction: { [weak pane, weak bonsplitController] tabID, action in
+                guard let pane, let bonsplitController else { return }
+                bonsplitController.requestTabContextAction(action, for: tabID, inPane: pane.id)
+            },
+            dragPasteboardData: { [weak pane, weak splitController] tabID in
+                guard let pane, let splitController,
+                      let tab = pane.tabs.first(where: { $0.id == tabID.id }) else { return nil }
+                splitController.dragGeneration += 1
+                splitController.draggingTab = tab
+                splitController.dragSourcePaneId = pane.id
+                splitController.activeDragTab = tab
+                splitController.activeDragSourcePaneId = pane.id
+                let transfer = TabTransferData(tab: tab, sourcePaneId: pane.id.id)
+                return try? JSONEncoder().encode(transfer)
+            },
+            onDragStateChanged: { [weak splitController] tabID, isDragging in
+                guard let splitController, !isDragging else { return }
+                guard splitController.activeDragTab?.id == tabID.id ||
+                        splitController.draggingTab?.id == tabID.id else { return }
+                splitController.draggingTab = nil
+                splitController.dragSourcePaneId = nil
+                splitController.activeDragTab = nil
+                splitController.activeDragSourcePaneId = nil
+            },
+            onNewTab: { [weak pane, weak bonsplitController] in
+                guard let pane, let bonsplitController else { return }
+                bonsplitController.requestNewTab(kind: "terminal", inPane: pane.id)
+            },
+            onNewBrowserTab: { [weak pane, weak bonsplitController] in
+                guard let pane, let bonsplitController else { return }
+                bonsplitController.requestNewTab(kind: "browser", inPane: pane.id)
+            },
+            onSplitRight: { [weak pane, weak splitController, weak bonsplitController] in
+                guard let pane, let splitController, let bonsplitController else { return }
+                splitController.splitPane(pane.id, orientation: .horizontal)
+                Self.populateFreshSplit(after: pane.id, splitController: splitController, bonsplitController: bonsplitController)
+            },
+            onSplitDown: { [weak pane, weak splitController, weak bonsplitController] in
+                guard let pane, let splitController, let bonsplitController else { return }
+                splitController.splitPane(pane.id, orientation: .vertical)
+                Self.populateFreshSplit(after: pane.id, splitController: splitController, bonsplitController: bonsplitController)
+            }
+        )
+        bridge.updatePaneChrome(descriptor)
+    }
+
+    /// A bare split leaves an "Empty Panel" limbo with no close affordance; seed the
+    /// new pane with a terminal so it is usable immediately and collapses back via
+    /// normal tab-close when the last tab goes.
+    private static func populateFreshSplit(
+        after sourcePaneID: PaneID,
+        splitController: SplitViewController,
+        bonsplitController: BonsplitController
+    ) {
+        guard let newPaneID = splitController.focusedPaneId,
+              newPaneID != sourcePaneID,
+              splitController.rootNode.findPane(newPaneID)?.tabs.isEmpty == true else { return }
+        bonsplitController.requestNewTab(kind: "terminal", inPane: newPaneID)
+    }
+
+    private func accessibilityValue(for tab: TabItem) -> String {
+        var values: [String] = []
+        if tab.isLoading { values.append(localized("Loading")) }
+        if tab.isPinned { values.append(localized("Pinned")) }
+        if tab.showsNotificationBadge { values.append(localized("Unread")) }
+        if tab.isDirty { values.append(localized("Modified")) }
+        return values.joined(separator: ", ")
+    }
+
+    private func menuItems(
+        for tab: TabItem,
+        at index: Int,
+        splitController: SplitViewController
+    ) -> [BonsplitPaneChromeMenuItem] {
+        let canCloseToLeft = tabs.prefix(index).contains(where: { !$0.isPinned })
+        let canCloseToRight = index + 1 < tabs.count &&
+            tabs.suffix(from: index + 1).contains(where: { !$0.isPinned })
+        let canCloseOthers = tabs.enumerated().contains { $0.offset != index && !$0.element.isPinned }
+        let canMoveLeft = splitController.adjacentPane(to: pane?.id ?? PaneID(), direction: .left) != nil
+        let canMoveRight = splitController.adjacentPane(to: pane?.id ?? PaneID(), direction: .right) != nil
+        let hasSplits = splitController.rootNode.allPaneIds.count > 1
+        let isZoomed = splitController.zoomedPaneId == pane?.id
+
+        var items: [BonsplitPaneChromeMenuItem] = [
+            .action(title: localized("Rename Tab…"), action: .rename, isEnabled: true),
+        ]
+        if tab.hasCustomTitle {
+            items.append(.action(title: localized("Remove Custom Tab Name"), action: .clearName, isEnabled: true))
+        }
+        items.append(contentsOf: [
+            .separator,
+            .action(title: localized("Close Tabs to Left"), action: .closeToLeft, isEnabled: canCloseToLeft),
+            .action(title: localized("Close Tabs to Right"), action: .closeToRight, isEnabled: canCloseToRight),
+            .action(title: localized("Close Other Tabs"), action: .closeOthers, isEnabled: canCloseOthers),
+            .action(title: localized("Move Tab…"), action: .move, isEnabled: true),
+        ])
+        if tab.kind == "terminal" {
+            items.append(contentsOf: [
+                .action(title: localized("Move to Left Pane"), action: .moveToLeftPane, isEnabled: canMoveLeft),
+                .action(title: localized("Move to Right Pane"), action: .moveToRightPane, isEnabled: canMoveRight),
+            ])
+        }
+        items.append(contentsOf: [
+            .separator,
+            .action(title: localized("New Terminal Tab to Right"), action: .newTerminalToRight, isEnabled: true),
+            .action(title: localized("New Browser Tab to Right"), action: .newBrowserToRight, isEnabled: true),
+        ])
+        if tab.kind == "browser" {
+            items.append(contentsOf: [
+                .separator,
+                .action(title: localized("Reload Tab"), action: .reload, isEnabled: true),
+                .action(title: localized("Duplicate Tab"), action: .duplicate, isEnabled: true),
+            ])
+        }
+        items.append(.separator)
+        if hasSplits {
+            items.append(.action(
+                title: localized(isZoomed ? "Exit Zoom" : "Zoom Pane"),
+                action: .toggleZoom,
+                isEnabled: true
+            ))
+        }
+        items.append(.action(
+            title: localized(tab.isPinned ? "Unpin Tab" : "Pin Tab"),
+            action: .togglePin,
+            isEnabled: true
+        ))
+        items.append(.action(
+            title: localized(tab.showsNotificationBadge ? "Mark Tab as Read" : "Mark Tab as Unread"),
+            action: tab.showsNotificationBadge ? .markAsRead : .markAsUnread,
+            isEnabled: true
+        ))
+        return items
+    }
+
+    private func localized(_ value: String) -> String {
+        Bundle.module.localizedString(forKey: value, value: value, table: nil)
+    }
+}
+
 /// Container for a single pane with its tab bar and content area
 struct PaneContainerView<Content: View, EmptyContent: View>: View {
     @Environment(BonsplitController.self) private var bonsplitController
@@ -167,14 +467,40 @@ struct PaneContainerView<Content: View, EmptyContent: View>: View {
         controller.draggingTab != nil || controller.activeDragTab != nil
     }
 
+    private var usesNativePaneChrome: Bool {
+        let _ = bonsplitController.paneChromePortalRevision
+        return bonsplitController.configuration.appearance.tabBarLiquidGlassEnabled &&
+            TabBarGlassStyling.isAvailable &&
+            bonsplitController.paneChromePortalBridge?.supportsNativePaneChrome == true
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Tab bar
-            TabBarView(
-                pane: pane,
-                isFocused: isFocused,
-                showSplitButtons: showSplitButtons
-            )
+            if usesNativePaneChrome {
+                BonsplitPaneChromeAnchor(
+                    pane: pane,
+                    splitController: controller,
+                    bonsplitController: bonsplitController,
+                    tabs: pane.tabs,
+                    selectedTabID: pane.selectedTabId,
+                    isFocused: isFocused,
+                    isVisible: bonsplitController.isInteractive,
+                    leadingInset: controller.rootNode.allPaneIds.first == pane.id
+                        ? bonsplitController.configuration.appearance.tabBarLeadingInset
+                        : 0,
+                    showsSplitButtons: showSplitButtons
+                )
+                .frame(height: TabBarGlassStyling.barHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            } else {
+                // macOS 14–25 and bridge-unavailable windows retain the flat SwiftUI strip.
+                TabBarView(
+                    pane: pane,
+                    isFocused: isFocused,
+                    showSplitButtons: showSplitButtons
+                )
+            }
 
             // Content area with drop zones
             contentAreaWithDropZones

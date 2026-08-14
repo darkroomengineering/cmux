@@ -83,6 +83,16 @@ enum ProgramaGlassSettings {
         nativeGlassAvailable ? .liquidGlass : .nativeSidebar
     }
 
+    /// Returns the terminal fill opacity applied above the window glass. Opaque terminal
+    /// backgrounds retain enough tint for readable text while allowing the glass to show through.
+    static func effectiveTerminalBackgroundOpacity(
+        configuredOpacity: Double,
+        windowGlassEnabled: Bool
+    ) -> Double {
+        let clampedOpacity = min(1.0, max(0.0, configuredOpacity))
+        return windowGlassEnabled ? min(clampedOpacity, 0.82) : clampedOpacity
+    }
+
     static let sidebarMigrationVersionKey = "sidebarAppearanceDefaultsVersion"
 
     /// One-time sidebar appearance migration, version-gated via
@@ -197,7 +207,7 @@ enum ProgramaGlassSettings {
     static func platformDefaults(nativeGlassAvailable: Bool) -> [String: Any] {
         [
             windowEnabledKey: nativeGlassAvailable,
-            tabBarEnabledKey: false,
+            tabBarEnabledKey: nativeGlassAvailable,
             browserToolbarEnabledKey: false,
             overlaysEnabledKey: nativeGlassAvailable,
         ]

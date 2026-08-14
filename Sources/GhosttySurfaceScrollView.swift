@@ -419,7 +419,7 @@ final class GhosttySurfaceScrollView: NSView {
 
         backgroundView.wantsLayer = true
         let initialTerminalBackground = GhosttyApp.shared.defaultBackgroundColor
-            .withAlphaComponent(GhosttyApp.shared.defaultBackgroundOpacity)
+            .withAlphaComponent(GhosttyApp.shared.effectiveTerminalBackgroundOpacity)
         backgroundView.layer?.backgroundColor = initialTerminalBackground.cgColor
         backgroundView.layer?.isOpaque = initialTerminalBackground.alphaComponent >= 1.0
         addSubview(backgroundView)

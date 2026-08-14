@@ -1641,8 +1641,12 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         contentView.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
 
+        // With window glass active, NSGlassEffectView wraps the hosting view as
+        // the window's contentView; the zero-inset contract lives on the hosted
+        // MainWindowHostingView, which owns the actual content layout.
+        let effectiveContentView = WindowGlassEffect.hostedContentView(in: contentView) ?? contentView
         XCTAssertEqual(
-            contentView.safeAreaInsets.top,
+            effectiveContentView.safeAreaInsets.top,
             0,
             accuracy: 0.5,
             "Minimal mode should not leave a top safe-area inset in the main window content view"
