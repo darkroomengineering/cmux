@@ -155,8 +155,13 @@ private final class BonsplitPaneChromeAnchorView: NSView {
             forName: BonsplitPaneChromeAnchorNotifications.reassertRequest,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            guard let self, self.window != nil else { return }
+        ) { [weak self] note in
+            guard let self, let window = self.window else { return }
+            // A request scoped to one window (object = NSWindow) must not fan
+            // out to every anchor in the app — workspace churn posts these per
+            // pane close, and app-wide republish storms cost typing latency.
+            // nil object stays a broadcast for compatibility.
+            if let target = note.object as? NSWindow, target !== window { return }
             self.onReassert?()
         }
     }
