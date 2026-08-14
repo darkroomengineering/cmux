@@ -28,7 +28,6 @@ final class SettingsAboutTitlebarDebugWindowController: NSWindowController, NSWi
         window.identifier = NSUserInterfaceItemIdentifier("programa.settingsAboutTitlebarDebug")
         window.center()
         window.contentView = NSHostingView(rootView: SettingsAboutTitlebarDebugView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -259,7 +258,6 @@ final class DebugWindowControlsWindowController: NSWindowController, NSWindowDel
         window.identifier = NSUserInterfaceItemIdentifier("programa.debugWindowControls")
         window.center()
         window.contentView = NSHostingView(rootView: DebugWindowControlsView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -575,7 +573,6 @@ final class BrowserProfilePopoverDebugWindowController: NSWindowController, NSWi
         window.identifier = NSUserInterfaceItemIdentifier("programa.browserProfilePopoverDebug")
         window.center()
         window.contentView = NSHostingView(rootView: BrowserProfilePopoverDebugView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -771,7 +768,6 @@ final class SidebarDebugWindowController: NSWindowController, NSWindowDelegate {
         window.identifier = NSUserInterfaceItemIdentifier("programa.sidebarDebug")
         window.center()
         window.contentView = NSHostingView(rootView: SidebarDebugView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -1100,7 +1096,6 @@ final class MenuBarExtraDebugWindowController: NSWindowController, NSWindowDeleg
         window.identifier = NSUserInterfaceItemIdentifier("programa.menubarDebug")
         window.center()
         window.contentView = NSHostingView(rootView: MenuBarExtraDebugView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -1273,7 +1268,6 @@ final class BrowserToolbarGlassDebugWindowController: NSWindowController, NSWind
         window.identifier = NSUserInterfaceItemIdentifier("programa.browserToolbarGlassDebug")
         window.center()
         window.contentView = NSHostingView(rootView: BrowserToolbarGlassDebugView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -1348,7 +1342,6 @@ final class OverlayGlassDebugWindowController: NSWindowController, NSWindowDeleg
         window.identifier = NSUserInterfaceItemIdentifier("programa.overlayGlassDebug")
         window.center()
         window.contentView = NSHostingView(rootView: OverlayGlassDebugView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -1423,7 +1416,6 @@ final class TabBarGlassDebugWindowController: NSWindowController, NSWindowDelega
         window.identifier = NSUserInterfaceItemIdentifier("programa.tabBarGlassDebug")
         window.center()
         window.contentView = NSHostingView(rootView: TabBarGlassDebugView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -1501,7 +1493,6 @@ final class SplitButtonLayoutDebugWindowController: NSWindowController, NSWindow
         window.identifier = NSUserInterfaceItemIdentifier("programa.splitButtonLayoutDebug")
         window.center()
         window.contentView = NSHostingView(rootView: SplitButtonLayoutDebugView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -1571,7 +1562,6 @@ final class BackgroundDebugWindowController: NSWindowController, NSWindowDelegat
         window.identifier = NSUserInterfaceItemIdentifier("programa.backgroundDebug")
         window.center()
         window.contentView = NSHostingView(rootView: BackgroundDebugView())
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
