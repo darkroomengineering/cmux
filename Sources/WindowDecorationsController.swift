@@ -78,11 +78,14 @@ final class WindowDecorationsController {
             guard let button = window.standardWindowButton(type), let base = baseFrames[type] else { continue }
             var target = NSPoint(x: base.origin.x + offset.x, y: base.origin.y + offset.y)
             if isMainTerminalWindow?(window) == true,
-               let container = button.superview {
-                // Match Maps' Tahoe-style metrics: first light 15pt in, 24pt
-                // pitch (the hidden-titlebar default keeps the cramped legacy
-                // 20pt pitch), centered on the panel header's midline
-                // (panel top inset 6 + 38pt header row -> 25pt from window top).
+               let container = button.superview,
+               container.bounds.height >= 25 + base.height {
+                // Match Maps' Tahoe-style metrics: 24pt pitch (the hidden-
+                // titlebar default keeps the cramped legacy 20pt pitch),
+                // centered on the sidebar header's 25pt midline. Skipped when
+                // the titlebar container is collapsed (minimal mode) — pushing
+                // buttons into a degenerate container re-expands it and
+                // reintroduces a top safe-area inset the mode must not have.
                 let firstButtonX: CGFloat = 17
                 let buttonPitch: CGFloat = 24
                 let rowCenterFromTop: CGFloat = 25
