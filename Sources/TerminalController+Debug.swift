@@ -478,6 +478,47 @@ extension TerminalController {
         return .ok(payload)
     }
 
+    /// Dumps the key window's AppKit view tree with frames, visibility, and any
+    /// opaque layer background — chrome-layering bugs (a stray view painting
+    /// over content) are otherwise invisible to log-based diagnosis.
+    func v2DebugViewTree() -> V2CallResult {
+        let lines: [String] = v2MainSync {
+            guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }) else {
+                return []
+            }
+            var out: [String] = []
+            out.append(
+                "WINDOW isOpaque=\(window.isOpaque) bg=\(window.backgroundColor.hexString())@\(String(format: "%.3f", window.backgroundColor.alphaComponent)) " +
+                "appearance=\(window.effectiveAppearance.name.rawValue)"
+            )
+            func walk(_ view: NSView, depth: Int) {
+                let frame = view.frame
+                var line = String(repeating: "  ", count: depth)
+                line += String(describing: type(of: view)).prefix(48)
+                line += String(format: " (%.0f,%.0f %.0fx%.0f)", frame.origin.x, frame.origin.y, frame.width, frame.height)
+                if view.isHidden { line += " HIDDEN" }
+                if let bg = view.layer?.backgroundColor, let color = NSColor(cgColor: bg), color.alphaComponent > 0.01 {
+                    line += " bg=\(color.hexString())@\(String(format: "%.2f", color.alphaComponent))"
+                }
+                if view.layer?.cornerRadius ?? 0 > 0 {
+                    line += " r=\(Int(view.layer?.cornerRadius ?? 0))"
+                }
+                if let effect = view as? NSVisualEffectView {
+                    line += " material=\(effect.material.rawValue) blend=\(effect.blendingMode.rawValue) " +
+                        "state=\(effect.state.rawValue) alpha=\(String(format: "%.2f", effect.alphaValue)) " +
+                        "emphasized=\(effect.isEmphasized)"
+                }
+                out.append(line)
+                for child in view.subviews { walk(child, depth: depth + 1) }
+            }
+            if let root = window.contentView?.superview ?? window.contentView {
+                walk(root, depth: 0)
+            }
+            return out
+        }
+        return .ok(["tree": lines])
+    }
+
     func v2DebugBonsplitUnderflowCount() -> V2CallResult {
         let resp = bonsplitUnderflowCount()
         guard resp.hasPrefix("OK ") else { return .err(code: "internal_error", message: resp, data: nil) }

@@ -277,10 +277,13 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         // Called from every descriptor update and geometry pass; a full-window
         // recursive search each time is the dominant cost, so cache the host and
         // re-find only when it leaves the window.
+        // The terminal portal installs its host in the theme frame (the
+        // contentView's superview), so the search must start there.
+        let searchRoot = window.contentView?.superview ?? window.contentView
         let terminalHost: WindowTerminalHostView
         if let cached = cachedTerminalHost, cached.window === window {
             terminalHost = cached
-        } else if let found = findTerminalHost(in: window.contentView) {
+        } else if let found = findTerminalHost(in: searchRoot) {
             cachedTerminalHost = found
             terminalHost = found
         } else {
@@ -578,7 +581,7 @@ private final class GlassIconClusterView: NSView {
         super.init(frame: .zero)
         #if compiler(>=6.2)
         glass.style = .regular
-        glass.cornerRadius = 14
+        glass.cornerRadius = WindowGlassEffect.controlCornerRadius
         glass.contentView = container
         #endif
         addSubview(glass)
@@ -659,7 +662,7 @@ private final class NativeGlassTabPillView: NSView, NSDraggingSource {
         super.init(frame: frameRect)
         #if compiler(>=6.2)
         glass.style = .regular
-        glass.cornerRadius = 14
+        glass.cornerRadius = WindowGlassEffect.controlCornerRadius
         glass.contentView = control
         #endif
         addSubview(glass)
@@ -836,7 +839,11 @@ private final class NativeTabPillControl: NSControl, NSMenuDelegate, NSDraggingS
     override var focusRingMaskBounds: NSRect { bounds }
 
     override func drawFocusRingMask() {
-        NSBezierPath(roundedRect: bounds, xRadius: 14, yRadius: 14).fill()
+        NSBezierPath(
+            roundedRect: bounds,
+            xRadius: WindowGlassEffect.controlCornerRadius,
+            yRadius: WindowGlassEffect.controlCornerRadius
+        ).fill()
     }
 
     override func keyDown(with event: NSEvent) {

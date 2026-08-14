@@ -524,11 +524,11 @@ struct SidebarTerminalColorScheme: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
     @State private var scheme: ColorScheme = SidebarTerminalAppearance.colorScheme()
 
-    /// The native glass sidebar floats over the terminal-colored base plane, so its
-    /// content must always resolve contrast against the terminal, not the app scheme.
+    /// Inverted layout: the sidebar sits on the system-appearance window glass, so
+    /// it follows the system scheme. Only the explicit terminal-background option
+    /// still borrows the terminal's luminance.
     private var followsTerminal: Bool {
-        matchTerminalBackground ||
-            (WindowGlassEffect.isAvailable && !accessibilityReduceTransparency)
+        matchTerminalBackground
     }
 
     func body(content: Content) -> some View {
@@ -1237,13 +1237,13 @@ private struct SidebarVisualEffectBackground: NSViewRepresentable {
     }
 }
 
-/// Hosts the complete interactive sidebar inside the native glass content host. AppKit does
-/// not guarantee the z-order or rendering of controls added as arbitrary glass siblings.
-private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable {
+/// Hosts the complete interactive sidebar directly on the window's glass backdrop
+/// (inverted, Aside-style layout). No inner glass surface: the window contentView
+/// glass provides the material, so this host is a transparent AppKit container
+/// whose only job is zeroing the window safe area — the sidebar owns its own
+/// titlebar-like header row.
+private struct SidebarBackdropContentHost<Content: View>: NSViewRepresentable {
     let content: Content
-    let tintColor: NSColor?
-    let cornerRadius: CGFloat
-    let appearance: NSAppearance?
 
     final class Coordinator {
         let hostingView: NSHostingView<Content>
@@ -1253,7 +1253,7 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
             hostingView.autoresizingMask = [.width, .height]
             hostingView.wantsLayer = true
             hostingView.layer?.backgroundColor = NSColor.clear.cgColor
-            // The panel owns its own titlebar-like header row; the window safe
+            // The sidebar owns its own titlebar-like header row; the window safe
             // area must not add a second inset on top of it.
             hostingView.safeAreaRegions = []
         }
@@ -1264,53 +1264,12 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
     }
 
     func makeNSView(context: Context) -> NSView {
-        let hostingView = context.coordinator.hostingView
-
-        #if compiler(>=6.2)
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView(frame: .zero)
-            glass.autoresizingMask = [.width, .height]
-            glass.wantsLayer = true
-            glass.style = .regular
-            glass.tintColor = tintColor
-            glass.appearance = appearance
-            applyCornerMask(to: glass)
-            hostingView.frame = glass.bounds
-            glass.contentView = hostingView
-            return glass
-        }
-        #endif
-
-        return hostingView
+        context.coordinator.hostingView
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.hostingView.rootView = content
-
-        #if compiler(>=6.2)
-        if #available(macOS 26.0, *), let glass = nsView as? NSGlassEffectView {
-            glass.tintColor = tintColor
-            glass.appearance = appearance
-            applyCornerMask(to: glass)
-        }
-        #endif
     }
-
-    #if compiler(>=6.2)
-    @available(macOS 26.0, *)
-    private func applyCornerMask(to glass: NSGlassEffectView) {
-        glass.cornerRadius = cornerRadius
-        glass.layer?.cornerRadius = cornerRadius
-        glass.layer?.cornerCurve = .continuous
-        glass.layer?.maskedCorners = [
-            .layerMinXMinYCorner,
-            .layerMaxXMinYCorner,
-            .layerMinXMaxYCorner,
-            .layerMaxXMaxYCorner,
-        ]
-        glass.layer?.masksToBounds = cornerRadius > 0
-    }
-    #endif
 }
 
 /// Owns the sidebar as a distinct native glass surface above the terminal-colored base plane.
@@ -1332,16 +1291,12 @@ struct SidebarSurface<Content: View>: View {
     var body: some View {
         Group {
             if usesLocalNativeGlass {
-                // One radius, one mask: the glass host owns the corner treatment.
-                // The sidebar floats over the terminal-colored plane, so its glass and
-                // content must resolve against the terminal scheme, not the app scheme.
-                SidebarNativeGlassContentHost(
-                    content: content.environment(\.colorScheme, terminalScheme),
-                    tintColor: resolvedTintColor,
-                    cornerRadius: standaloneCornerRadius,
-                    appearance: NSAppearance(named: terminalScheme == .dark ? .darkAqua : .aqua)
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Inverted layout: the sidebar sits directly on the window's glass
+                // backdrop, which follows the SYSTEM appearance (light sidebar in
+                // light mode) — only the content card and its pills stay
+                // terminal-toned. No inner glass, no clip: window-level material.
+                SidebarBackdropContentHost(content: content)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ZStack {
                     SidebarBackdrop()

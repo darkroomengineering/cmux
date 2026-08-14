@@ -53,6 +53,12 @@ final class WindowBrowserSlotView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.masksToBounds = true
+        // Inverted glass layout: browser panes are elevated cards like terminal
+        // panes (GhosttySurfaceScrollView carries the same radius).
+        if WindowGlassEffect.isAvailable {
+            layer?.cornerRadius = WindowGlassEffect.contentCardCornerRadius
+            layer?.cornerCurve = .continuous
+        }
         translatesAutoresizingMaskIntoConstraints = true
         autoresizingMask = []
 

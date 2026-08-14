@@ -241,10 +241,16 @@ struct WorkspaceContentView: View {
     @AppStorage(ProgramaGlassSettings.overlaysEnabledKey)
     private var overlayLiquidGlassEnabled = false
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
     @EnvironmentObject var notificationStore: TerminalNotificationStore
 
     private var isMinimalMode: Bool {
         WorkspacePresentationModeSettings.mode(for: workspacePresentationMode) == .minimal
+    }
+
+    /// Inverted glass layout: content floats as an inset card (see ContentView).
+    private var usesCardLayout: Bool {
+        WindowGlassEffect.isAvailable && !accessibilityReduceTransparency
     }
 
     static func panelVisibleInUI(
@@ -389,10 +395,13 @@ struct WorkspaceContentView: View {
         }
 
         Group {
-            if isMinimalMode && !isFullScreen {
+            if isMinimalMode && !isFullScreen && !usesCardLayout {
                 bonsplitView
                     .ignoresSafeArea(.container, edges: .top)
             } else {
+                // Card layout: the inset card owns its geometry — expanding
+                // through the top safe area would push the card past the
+                // window edge.
                 bonsplitView
             }
         }

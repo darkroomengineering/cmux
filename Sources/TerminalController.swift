@@ -2069,6 +2069,8 @@ class TerminalController {
             return v2Result(id: id, self.v2DebugLayout())
         case "debug.portal.stats":
             return v2Result(id: id, self.v2DebugPortalStats())
+        case "debug.viewtree":
+            return v2Result(id: id, self.v2DebugViewTree())
         case "debug.bonsplit_underflow.count":
             return v2Result(id: id, self.v2DebugBonsplitUnderflowCount())
         case "debug.bonsplit_underflow.reset":

@@ -87,10 +87,13 @@ enum ProgramaGlassSettings {
     /// backgrounds retain enough tint for readable text while allowing the glass to show through.
     static func effectiveTerminalBackgroundOpacity(
         configuredOpacity: Double,
-        windowGlassEnabled: Bool
+        windowGlassEnabled _: Bool
     ) -> Double {
-        let clampedOpacity = min(1.0, max(0.0, configuredOpacity))
-        return windowGlassEnabled ? min(clampedOpacity, 0.82) : clampedOpacity
+        // Inverted backdrop layout: the terminal pane is an opaque elevated card;
+        // the glass material lives behind it in the sidebar backdrop. The old
+        // 0.82 glass clamp forced a translucent terminal, which in turn forced a
+        // transparent window and killed the backdrop's window-server blur.
+        min(1.0, max(0.0, configuredOpacity))
     }
 
     static let sidebarMigrationVersionKey = "sidebarAppearanceDefaultsVersion"

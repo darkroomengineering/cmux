@@ -23,15 +23,15 @@ func ghostty_surface_select_cursor_cell_compat(_ surface: ghostty_surface_t) -> 
 func cmuxShouldApplyWindowGlass(
     sidebarBlendMode _: String,
     bgGlassEnabled: Bool,
-    glassEffectAvailable _: Bool,
+    glassEffectAvailable: Bool,
     performanceOverride: Bool? = nil
 ) -> Bool {
     if let performanceOverride {
         return performanceOverride
     }
-    // Window glass is independent from the sidebar material and blend mode. Native
-    // NSGlassEffectView vs NSVisualEffectView fallback is chosen in WindowGlassEffect.apply.
-    return bgGlassEnabled
+    // Inverted layout: on macOS 26 the glass backdrop is the stock window
+    // treatment, not an opt-in. Pre-26 keeps the legacy opt-in flag.
+    return glassEffectAvailable || bgGlassEnabled
 }
 
 func cmuxShouldUseTransparentBackgroundWindow() -> Bool {
@@ -47,6 +47,9 @@ func cmuxShouldUseTransparentBackgroundWindow() -> Bool {
 }
 
 func cmuxShouldUseClearWindowBackground(for opacity: Double) -> Bool {
+    // The glass backdrop samples BEHIND the window, which requires a
+    // non-opaque window — same compositing the translucent-terminal mode has
+    // always used (standard frame, no custom masks, so no corner artifacts).
     cmuxShouldUseTransparentBackgroundWindow() || opacity < 0.999
 }
 

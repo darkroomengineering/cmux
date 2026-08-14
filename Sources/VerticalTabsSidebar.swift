@@ -182,6 +182,12 @@ struct VerticalTabsSidebar: View {
     /// Content clearance inside the glass panel for the traffic lights and the
     /// always-visible titlebar controls that share the panel's top strip.
     private let trafficLightPadding: CGFloat = WindowGlassEffect.sidebarHeaderHeight
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
+
+    /// Inverted layout: sidebar rendered directly on the window glass backdrop.
+    private var usesBackdropSidebar: Bool {
+        WindowGlassEffect.isAvailable && !accessibilityReduceTransparency
+    }
     private let tabRowSpacing: CGFloat = 2
 
     private var isMinimalMode: Bool {
@@ -225,6 +231,9 @@ struct VerticalTabsSidebar: View {
                 HiddenTitlebarSidebarControlsView(notificationStore: notificationStore)
             }
             .frame(height: trafficLightPadding)
+            // Flush sidebar (no panel inset): keep the header content on the
+            // 25pt traffic-light midline the decorations controller targets.
+            .padding(.top, usesBackdropSidebar ? WindowGlassEffect.sidebarPanelInset : 0)
             .contentShape(Rectangle())
             .background(
                 WindowDragHandleView()
@@ -332,14 +341,16 @@ struct VerticalTabsSidebar: View {
         .accessibilityIdentifier("Sidebar")
 
         ZStack {
-            SidebarTerminalBasePlane()
-                .ignoresSafeArea()
-
-            // Maps-style: the panel includes the traffic lights and simply pads
-            // its content below them; insets stay uniform so the panel radius is
-            // concentric with the window corner on all four sides.
-            SidebarSurface(content: sidebarContent)
-                .padding(WindowGlassEffect.sidebarPanelInset)
+            if usesBackdropSidebar {
+                // Inverted (Aside-style): the sidebar sits flush on the window's
+                // glass backdrop — no base plane, no panel inset.
+                SidebarSurface(content: sidebarContent)
+            } else {
+                SidebarTerminalBasePlane()
+                    .ignoresSafeArea()
+                SidebarSurface(content: sidebarContent)
+                    .padding(WindowGlassEffect.sidebarPanelInset)
+            }
         }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
