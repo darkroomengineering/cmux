@@ -129,7 +129,7 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
 
         newTabCluster.setActions([active.onNewTab, active.onNewBrowserTab])
         newTabCluster.isHidden = false
-        hostView.addSubview(newTabCluster)  // keep above pane bars
+        ensureAboveBars(newTabCluster)
         let newTabX = strip.maxX - gap - newTabCluster.preferredWidth
         newTabCluster.frame = NSRect(
             x: newTabX,
@@ -156,7 +156,7 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
                 )
             )
             splitCluster.isHidden = false
-            hostView.addSubview(splitCluster)
+            ensureAboveBars(splitCluster)
             splitCluster.frame = NSRect(
                 x: newTabX - gap - splitCluster.preferredWidth,
                 y: y,
@@ -170,6 +170,26 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
 
         for (paneID, bar) in bars {
             bar.trailingReservedWidth = paneID == active.paneID ? reserved : 0
+        }
+    }
+
+    /// Re-adding an already-parented subview removes and re-inserts it, which
+    /// dirties layout — and updateClusters runs on every coalesced geometry
+    /// pass during animation storms. Reorder only when a pane bar (added on
+    /// top by updatePaneChrome) actually sits above the cluster.
+    private func ensureAboveBars(_ cluster: NSView) {
+        guard cluster.superview === hostView else {
+            hostView.addSubview(cluster)
+            return
+        }
+        let subviews = hostView.subviews
+        guard let clusterIndex = subviews.firstIndex(of: cluster) else { return }
+        let topBarIndex = subviews.enumerated()
+            .filter { $0.element is NativePaneTabBarView }
+            .map(\.offset)
+            .max()
+        if let topBarIndex, clusterIndex < topBarIndex {
+            hostView.addSubview(cluster)
         }
     }
 
@@ -190,11 +210,17 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         updateClusters()
         // Split-tree churn can register two anchor instances for one pane; the
         // dying instance publishes last and its dismantle lands here, deleting the
-        // survivor's registration. Ask live anchors to reassert on the next turn.
-        DispatchQueue.main.async {
+        // survivor's registration. Ask live anchors to reassert on the next turn —
+        // scoped to this window so workspace churn (a storm of pane closes) does
+        // not trigger app-wide republish storms.
+        // Capture the window itself: posting with a nil object would be an
+        // app-wide broadcast (the storm this scoping exists to prevent), and a
+        // window that died before the post has no anchors left to reassert.
+        DispatchQueue.main.async { [weak window = self.window] in
+            guard let window else { return }
             NotificationCenter.default.post(
                 name: BonsplitPaneChromeAnchorNotifications.reassertRequest,
-                object: nil
+                object: window
             )
         }
     }

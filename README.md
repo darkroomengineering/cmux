@@ -59,6 +59,10 @@ Programa is a terminal, a browser, notifications, workspaces, and a CLI to contr
 
 ⌘⇧P opens the command palette, which lists every action. Full reference: [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md). Everything is editable in `Settings → Keyboard Shortcuts`.
 
+## Terminal themes
+
+Choose separate light and dark Ghostty themes in `Settings → Appearance → Terminal`, with matching CLI and `settings.json` support. See [docs/terminal-themes.md](docs/terminal-themes.md).
+
 ## Agent skill
 
 Agents running inside programa (Claude Code, Codex, OpenCode) can drive the app itself, splitting panes, reading a sibling pane's output, spawning and coordinating a helper agent, all without stealing your focus. `programa claude/codex/opencode install-integration` installs [`SKILL.md`](SKILL.md) alongside the existing hooks; see [docs/agent-skill.md](docs/agent-skill.md) for the full walkthrough.

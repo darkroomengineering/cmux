@@ -94,6 +94,7 @@ struct SettingsView: View {
 
     @ObservedObject private var notificationStore = TerminalNotificationStore.shared
     @StateObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
+    @StateObject private var terminalThemeSettings = TerminalThemeSettingsModel()
     @State private var shortcutResetToken = UUID()
     @State private var topBlurOpacity: Double = 0
     @State private var topBlurBaselineOffset: CGFloat?
@@ -147,6 +148,20 @@ struct SettingsView: View {
         Binding(
             get: { selectedSidebarActiveTabIndicatorStyle.rawValue },
             set: { sidebarActiveTabIndicatorStyle = $0 }
+        )
+    }
+
+    private var terminalLightThemeSelection: Binding<String> {
+        Binding(
+            get: { terminalThemeSettings.lightTheme },
+            set: { terminalThemeSettings.selectLightTheme($0) }
+        )
+    }
+
+    private var terminalDarkThemeSelection: Binding<String> {
+        Binding(
+            get: { terminalThemeSettings.darkTheme },
+            set: { terminalThemeSettings.selectDarkTheme($0) }
         )
     }
 
@@ -916,6 +931,60 @@ struct SettingsView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+
+        SettingsSectionHeader(
+            title: String(localized: "settings.section.terminal", defaultValue: "Terminal")
+        )
+        SettingsCard {
+            SettingsPickerRow(
+                String(localized: "settings.terminalTheme.light", defaultValue: "Light Theme"),
+                subtitle: terminalThemeSettings.isManagedBySettingsFile
+                    ? String(localized: "settings.terminalTheme.managedByFile", defaultValue: "Managed in settings.json")
+                    : String(localized: "settings.terminalTheme.light.subtitle", defaultValue: "Used when Programa has a light appearance."),
+                controlWidth: pickerColumnWidth,
+                selection: terminalLightThemeSelection,
+                accessibilityId: "TerminalLightThemePicker"
+            ) {
+                Text(
+                    String(
+                        localized: "settings.terminalTheme.useGhosttyConfiguration",
+                        defaultValue: "Use Ghostty Configuration"
+                    )
+                ).tag("")
+                ForEach(terminalThemeSettings.themeNames, id: \.self) { themeName in
+                    Text(themeName).tag(themeName)
+                }
+            }
+            .disabled(terminalThemeSettings.isManagedBySettingsFile)
+
+            SettingsCardDivider()
+
+            SettingsPickerRow(
+                String(localized: "settings.terminalTheme.dark", defaultValue: "Dark Theme"),
+                subtitle: terminalThemeSettings.isManagedBySettingsFile
+                    ? String(localized: "settings.terminalTheme.managedByFile", defaultValue: "Managed in settings.json")
+                    : String(localized: "settings.terminalTheme.dark.subtitle", defaultValue: "Used when Programa has a dark appearance."),
+                controlWidth: pickerColumnWidth,
+                selection: terminalDarkThemeSelection,
+                accessibilityId: "TerminalDarkThemePicker"
+            ) {
+                Text(
+                    String(
+                        localized: "settings.terminalTheme.useGhosttyConfiguration",
+                        defaultValue: "Use Ghostty Configuration"
+                    )
+                ).tag("")
+                ForEach(terminalThemeSettings.themeNames, id: \.self) { themeName in
+                    Text(themeName).tag(themeName)
+                }
+            }
+            .disabled(terminalThemeSettings.isManagedBySettingsFile)
+
+            if let errorMessage = terminalThemeSettings.errorMessage {
+                SettingsCardDivider()
+                SettingsCardNote(errorMessage)
             }
         }
 
@@ -1758,6 +1827,7 @@ struct SettingsView: View {
         sidebarTintOpacity = SidebarTintDefaults.opacity
         sidebarMatchTerminalBackground = false
         showClaudeQuota = true
+        terminalThemeSettings.clearManagedOverride()
         showOpenAccessConfirmation = false
         pendingOpenAccessMode = nil
         socketPasswordDraft = ""
@@ -1775,6 +1845,118 @@ struct SettingsView: View {
 
     private func refreshDetectedImportBrowsers() {
         detectedImportBrowsers = InstalledBrowserDetector.detectInstalledBrowsers()
+    }
+}
+
+@MainActor
+private final class TerminalThemeSettingsModel: ObservableObject {
+    @Published private(set) var themeNames: [String] = []
+    @Published private(set) var lightTheme = ""
+    @Published private(set) var darkTheme = ""
+    @Published private(set) var isManagedBySettingsFile = false
+    @Published private(set) var errorMessage: String?
+
+    private let store: TerminalThemeStore
+    private let notificationCenter: NotificationCenter
+    private var configReloadObserver: NSObjectProtocol?
+
+    init(
+        store: TerminalThemeStore = .live(),
+        notificationCenter: NotificationCenter = .default
+    ) {
+        self.store = store
+        self.notificationCenter = notificationCenter
+        refresh()
+        configReloadObserver = notificationCenter.addObserver(
+            forName: .ghosttyConfigDidReload,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refresh()
+            }
+        }
+    }
+
+    deinit {
+        if let configReloadObserver {
+            notificationCenter.removeObserver(configReloadObserver)
+        }
+    }
+
+    func selectLightTheme(_ themeName: String) {
+        guard !isManagedBySettingsFile else {
+            refresh()
+            return
+        }
+        if themeName.isEmpty {
+            clearManagedOverride()
+            return
+        }
+        let current = store.currentSelection()
+        apply(light: themeName, dark: current.dark)
+    }
+
+    func selectDarkTheme(_ themeName: String) {
+        guard !isManagedBySettingsFile else {
+            refresh()
+            return
+        }
+        if themeName.isEmpty {
+            clearManagedOverride()
+            return
+        }
+        let current = store.currentSelection()
+        apply(light: current.light, dark: themeName)
+    }
+
+    func clearManagedOverride() {
+        guard !isManagedBySettingsFile else { return }
+        apply(light: nil, dark: nil)
+    }
+
+    private func apply(light: String?, dark: String?) {
+        do {
+            let mutation = try store.set(light: light, dark: dark)
+            errorMessage = nil
+            refresh()
+            if mutation.didChange {
+                TerminalThemeStore.requestReload(
+                    targetBundleIdentifier: Bundle.main.bundleIdentifier
+                        ?? TerminalThemeStore.overrideBundleIdentifier
+                )
+            }
+        } catch {
+            let prefix = String(
+                localized: "settings.terminalTheme.changeFailed",
+                defaultValue: "Couldn’t change the terminal theme."
+            )
+            errorMessage = "\(prefix) \(error.localizedDescription)"
+            refreshSelectionAndOwnership()
+        }
+    }
+
+    private func refresh() {
+        let current = store.currentSelection()
+        var names = GhosttyConfig.availableThemeNames()
+        for selectedName in [current.light, current.dark].compactMap({ $0 }) {
+            if !names.contains(where: { $0.caseInsensitiveCompare(selectedName) == .orderedSame }) {
+                names.append(selectedName)
+            }
+        }
+        themeNames = names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        refreshSelectionAndOwnership(current: current)
+    }
+
+    private func refreshSelectionAndOwnership(
+        current: TerminalThemeSelection? = nil
+    ) {
+        let current = current ?? store.currentSelection()
+        let hasManagedOverride = store.managedRawThemeValue() != nil
+        lightTheme = hasManagedOverride ? current.light ?? "" : ""
+        darkTheme = hasManagedOverride ? current.dark ?? "" : ""
+        isManagedBySettingsFile = KeyboardShortcutSettings.settingsFileStore
+            .isTerminalThemeManagedByFile()
     }
 }
 
