@@ -1327,8 +1327,7 @@ struct SidebarSurface<Content: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var terminalScheme: ColorScheme = SidebarTerminalAppearance.colorScheme()
 
-    // Concentric with the macOS 26 window corner (~26pt) at a 6pt inset.
-    private let standaloneCornerRadius: CGFloat = 20
+    private let standaloneCornerRadius: CGFloat = WindowGlassEffect.sidebarPanelCornerRadius
 
     var body: some View {
         Group {

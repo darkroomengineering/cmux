@@ -169,7 +169,8 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         let center = NotificationCenter.default
         for name in [NSWindow.didResizeNotification, NSWindow.didEndLiveResizeNotification] {
             observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.synchronizeAll() }
+                // Live resize fires per frame; coalesce to one pass per runloop turn.
+                MainActor.assumeIsolated { self?.scheduleSynchronizeAll() }
             })
         }
         observers.append(center.addObserver(
@@ -179,7 +180,8 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         ) { [weak self] note in
             MainActor.assumeIsolated {
                 guard let self, (note.object as? NSSplitView)?.window === self.window else { return }
-                self.synchronizeAll()
+                // Interactive divider drags fire per tick; coalesce like resize.
+                self.scheduleSynchronizeAll()
             }
         })
         for name in [
@@ -467,10 +469,9 @@ private final class NativePaneTabBarView: NSView {
                 dragState: { [weak descriptor] active in descriptor?.onDragStateChanged(tab.id, active) }
             )
         }
-        // Title changes arrive outside AppKit's layout cadence; relayout now so
-        // pill widths track the new intrinsic text size instead of one update late.
+        // Title changes arrive outside AppKit's layout cadence; needsLayout
+        // reruns layoutPills() in the next pass (widths track intrinsic size).
         needsLayout = true
-        layoutPills()
     }
 
     private func layoutPills() {
@@ -625,15 +626,31 @@ private final class NativeGlassTabPillView: NSView, NSDraggingSource {
         dragState: @escaping (Bool) -> Void
     ) {
         control.update(tab, select: select, close: close, context: context, dragData: dragData, dragState: dragState)
+        isSelected = tab.isSelected
+        control.onHoverChanged = { [weak self] hovering in
+            self?.isHovered = hovering
+            self?.applySurfaceState()
+        }
+        applySurfaceState()
+    }
+
+    private var isSelected = false
+    private var isHovered = false
+
+    /// Maps-style states: the selected pill reads as a solid lit surface,
+    /// hover lifts a quiet pill slightly, unselected pills stay quiet glass.
+    /// Accent fills fight the native material; tint with the text primary.
+    private func applySurfaceState() {
         #if compiler(>=6.2)
-        // Maps-style states: the selected pill reads as a solid lit surface,
-        // unselected pills stay quiet glass. Accent-colored fills fight the
-        // native material, so tint with the adaptive text primary instead.
-        glass.tintColor = tab.isSelected
-            ? NSColor.labelColor.withAlphaComponent(0.16)
-            : nil
+        if isSelected {
+            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.16)
+        } else if isHovered {
+            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.08)
+        } else {
+            glass.tintColor = nil
+        }
         #endif
-        alphaValue = tab.isSelected ? 1.0 : 0.82
+        alphaValue = isSelected ? 1.0 : (isHovered ? 0.94 : 0.82)
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
@@ -654,6 +671,7 @@ private final class NativeTabPillControl: NSControl, NSMenuDelegate, NSDraggingS
     private var contextAction: ((TabContextAction) -> Void)?
     private var dragData: (() -> Data?)?
     private var dragState: ((Bool) -> Void)?
+    var onHoverChanged: ((Bool) -> Void)?
     private var mouseDownPoint: NSPoint?
 
     var preferredWidth: CGFloat {
@@ -667,7 +685,10 @@ private final class NativeTabPillControl: NSControl, NSMenuDelegate, NSDraggingS
         titleField.lineBreakMode = .byTruncatingTail
         titleField.font = .systemFont(ofSize: 13, weight: .medium)
         iconView.imageScaling = .scaleProportionallyDown
-        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
+        let closeTitle = String(localized: "tabBar.closeTab", defaultValue: "Close Tab")
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: closeTitle)
+        closeButton.setAccessibilityLabel(closeTitle)
+        closeButton.toolTip = closeTitle
         closeButton.isBordered = false
         closeButton.target = self
         closeButton.action = #selector(closePressed)
@@ -732,12 +753,21 @@ private final class NativeTabPillControl: NSControl, NSMenuDelegate, NSDraggingS
             iconView.image = nil
         }
         closeButton.isHidden = tab.isPinned
+        toolTip = tab.title
         setAccessibilityLabel(tab.title)
         setAccessibilityValue(tab.accessibilityValue)
         needsLayout = true
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
+    }
 
     override func mouseDown(with event: NSEvent) {
 #if DEBUG

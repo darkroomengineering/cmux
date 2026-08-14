@@ -43,6 +43,14 @@ enum WindowGlassEffect {
     /// The Maps-style large window radius; the sidebar panel derives its own
     /// radius from this minus its inset so the two curves stay concentric.
     static let windowCornerRadius: CGFloat = 26
+    /// Uniform inset of the sidebar glass panel from the window edges.
+    static let sidebarPanelInset: CGFloat = 6
+    /// Concentric with the window corner at the panel inset.
+    static var sidebarPanelCornerRadius: CGFloat { windowCornerRadius - sidebarPanelInset }
+    /// Height of the sidebar header row shared by the traffic lights and controls.
+    static let sidebarHeaderHeight: CGFloat = 38
+    /// Vertical midline of the header row measured from the window top.
+    static var sidebarHeaderCenterFromWindowTop: CGFloat { sidebarPanelInset + sidebarHeaderHeight / 2 }
 
     /// The stock tint (#000000 @ 0.03) is effectively clear, which lets the
     /// desktop color wash through every translucent region and corner. Stock
@@ -276,6 +284,10 @@ enum WindowGlassEffect {
             glassView.removeFromSuperview()
         }
 
+        if let tokens = objc_getAssociatedObject(window, &fullScreenObserverKey) as? [NSObjectProtocol] {
+            for token in tokens { NotificationCenter.default.removeObserver(token) }
+        }
+        objc_setAssociatedObject(window, &fullScreenObserverKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         objc_setAssociatedObject(window, &glassViewKey, nil, .OBJC_ASSOCIATION_RETAIN)
         objc_setAssociatedObject(window, &originalContentViewKey, nil, .OBJC_ASSOCIATION_RETAIN)
         objc_setAssociatedObject(window, &tintOverlayKey, nil, .OBJC_ASSOCIATION_RETAIN)

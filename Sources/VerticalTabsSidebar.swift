@@ -181,7 +181,7 @@ struct VerticalTabsSidebar: View {
 
     /// Content clearance inside the glass panel for the traffic lights and the
     /// always-visible titlebar controls that share the panel's top strip.
-    private let trafficLightPadding: CGFloat = 38
+    private let trafficLightPadding: CGFloat = WindowGlassEffect.sidebarHeaderHeight
     private let tabRowSpacing: CGFloat = 2
 
     private var isMinimalMode: Bool {
@@ -339,7 +339,7 @@ struct VerticalTabsSidebar: View {
             // its content below them; insets stay uniform so the panel radius is
             // concentric with the window corner on all four sides.
             SidebarSurface(content: sidebarContent)
-                .padding(6)
+                .padding(WindowGlassEffect.sidebarPanelInset)
         }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
