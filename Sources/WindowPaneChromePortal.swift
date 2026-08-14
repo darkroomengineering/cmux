@@ -105,32 +105,39 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         scheduleSettledSynchronize()
     }
 
-    /// Workspace-level controls follow the focused visible pane, stacked down the
-    /// right edge like Maps' control pills: new-tab capsule first, splits below.
+    /// Workspace-level controls follow the focused visible pane, sharing its tab
+    /// strip: pills on the left, both capsules side by side on the right, all
+    /// centered on the strip's midline. The pane's tab bar reserves trailing
+    /// space so pills never run under the controls.
     private func updateClusters() {
         // Anchors can move to another window (workspace drag-out); their stale
         // descriptors must not steer this window's controls.
         let inWindow = descriptors.values.filter { $0.anchorView?.window === window }
         let visible = inWindow.filter(\.isVisible)
-        guard let active = visible.first(where: { $0.isFocused }) ?? visible.first else {
+        guard let active = visible.first(where: { $0.isFocused }) ?? visible.first,
+              let anchor = active.anchorView else {
             newTabCluster.isHidden = true
             splitCluster.isHidden = true
+            for bar in bars.values { bar.trailingReservedWidth = 0 }
             return
         }
         let barHeight: CGFloat = 28
         // Chrome spacing grid: 4pt base, edges on 8.
-        var y = hostView.bounds.maxY - barHeight - 8
+        let gap: CGFloat = 8
+        let strip = hostView.convert(anchor.bounds, from: anchor)
+        let y = strip.midY - barHeight / 2
 
         newTabCluster.setActions([active.onNewTab, active.onNewBrowserTab])
         newTabCluster.isHidden = false
         hostView.addSubview(newTabCluster)  // keep above pane bars
+        let newTabX = strip.maxX - gap - newTabCluster.preferredWidth
         newTabCluster.frame = NSRect(
-            x: hostView.bounds.maxX - newTabCluster.preferredWidth - 8,
+            x: newTabX,
             y: y,
             width: newTabCluster.preferredWidth,
             height: barHeight
         )
-        y -= barHeight + 8
+        var reserved = gap + newTabCluster.preferredWidth
 
         // Cap workspace splits at a 2x2-equivalent depth; deeper trees degenerate
         // into slivers. Checked here (live pane count) rather than at publish time,
@@ -151,13 +158,18 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
             splitCluster.isHidden = false
             hostView.addSubview(splitCluster)
             splitCluster.frame = NSRect(
-                x: hostView.bounds.maxX - splitCluster.preferredWidth - 8,
+                x: newTabX - gap - splitCluster.preferredWidth,
                 y: y,
                 width: splitCluster.preferredWidth,
                 height: barHeight
             )
+            reserved += gap + splitCluster.preferredWidth
         } else {
             splitCluster.isHidden = true
+        }
+
+        for (paneID, bar) in bars {
+            bar.trailingReservedWidth = paneID == active.paneID ? reserved : 0
         }
     }
 
@@ -472,6 +484,12 @@ private final class NativePaneTabBarView: NSView {
     private var pillViews: [TabID: NativeGlassTabPillView] = [:]
     private var descriptor: BonsplitPaneChromeDescriptor?
 
+    /// Space kept clear at the trailing edge for the workspace control capsules
+    /// that share this strip.
+    var trailingReservedWidth: CGFloat = 0 {
+        didSet { if oldValue != trailingReservedWidth { needsLayout = true } }
+    }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -493,7 +511,9 @@ private final class NativePaneTabBarView: NSView {
 
     override func layout() {
         super.layout()
-        scrollView.frame = bounds.insetBy(dx: 8, dy: 5)
+        var scrollFrame = bounds.insetBy(dx: 8, dy: 5)
+        scrollFrame.size.width = max(0, scrollFrame.width - trailingReservedWidth)
+        scrollView.frame = scrollFrame
         layoutPills()
         // Early zero-sized layout passes can leave the clip view scrolled to a
         // negative vertical origin, which parks the whole tab row outside the
@@ -601,6 +621,9 @@ private final class GlassIconClusterView: NSView {
         }
         actions = Array(repeating: {}, count: symbols.count)
         defaultTooltips = symbols.map(\.tooltip)
+        // Same resting surface as an unselected tab pill, so the strip's three
+        // capsules read as one material family.
+        alphaValue = 0.82
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
