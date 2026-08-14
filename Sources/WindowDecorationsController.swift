@@ -79,7 +79,7 @@ final class WindowDecorationsController {
             var target = NSPoint(x: base.origin.x + offset.x, y: base.origin.y + offset.y)
             if isMainTerminalWindow?(window) == true,
                let container = button.superview,
-               container.bounds.height >= 25 + base.height {
+               container.bounds.height >= 28 {
                 // Match Maps' Tahoe-style metrics: 24pt pitch (the hidden-
                 // titlebar default keeps the cramped legacy 20pt pitch),
                 // centered on the sidebar header's 25pt midline. Skipped when
