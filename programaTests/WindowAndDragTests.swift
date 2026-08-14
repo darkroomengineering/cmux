@@ -251,6 +251,139 @@ final class WindowGlassEffectTests: XCTestCase {
 }
 
 @MainActor
+final class NativeTrafficLightLifecycleTests: XCTestCase {
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async {
+            DispatchQueue.main.async {
+                drained.fulfill()
+            }
+        }
+        wait(for: [drained], timeout: 5.0)
+    }
+
+    func testMainWindowLifecycleLeavesAppKitTrafficLightsUntouched() throws {
+        _ = NSApplication.shared
+        let appDelegate = try XCTUnwrap(AppDelegate.shared)
+
+        let defaults = UserDefaults.standard
+        let savedMode = defaults.object(forKey: WorkspacePresentationModeSettings.modeKey)
+        defaults.set(
+            WorkspacePresentationModeSettings.Mode.standard.rawValue,
+            forKey: WorkspacePresentationModeSettings.modeKey
+        )
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.identifier = NSUserInterfaceItemIdentifier("cmux.main.traffic-light-lifecycle-test")
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.contentView = NSView(frame: window.contentLayoutRect)
+        defer {
+            if let savedMode {
+                defaults.set(savedMode, forKey: WorkspacePresentationModeSettings.modeKey)
+            } else {
+                defaults.removeObject(forKey: WorkspacePresentationModeSettings.modeKey)
+            }
+            drainMainQueue()
+            window.close()
+        }
+
+        let buttonTypes: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+        let nativeButtons = try buttonTypes.map { type in
+            try XCTUnwrap(window.standardWindowButton(type))
+        }
+        let nativeTargets = nativeButtons.map(\.target)
+        let nativeActions = nativeButtons.map(\.action)
+        let nativeEnabledStates = nativeButtons.map(\.isEnabled)
+        let nativeHiddenStates = nativeButtons.map(\.isHidden)
+        let initialNativeFrames = nativeButtons.map(\.frame)
+        var settledNativeFrames = initialNativeFrames
+
+        for button in nativeButtons {
+            XCTAssertTrue(button.isEnabled, "A standard main-window button should retain its native enabled state")
+            XCTAssertFalse(button.isHidden, "A standard main-window button should remain visible")
+            XCTAssertNotNil(button.action, "A standard main-window button should retain its native action")
+        }
+        XCTAssertLessThan(initialNativeFrames[0].midX, initialNativeFrames[1].midX)
+        XCTAssertLessThan(initialNativeFrames[1].midX, initialNativeFrames[2].midX)
+
+        func assertNativeTrafficLightsUnchanged(
+            after lifecycleStage: String,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            let currentButtons = buttonTypes.compactMap { window.standardWindowButton($0) }
+            XCTAssertEqual(
+                currentButtons.count,
+                nativeButtons.count,
+                "\(lifecycleStage) should keep all three native window buttons",
+                file: file,
+                line: line
+            )
+            guard currentButtons.count == nativeButtons.count else { return }
+
+            for index in currentButtons.indices {
+                let current = currentButtons[index]
+                XCTAssertTrue(
+                    current === nativeButtons[index],
+                    "\(lifecycleStage) should preserve native button identity",
+                    file: file,
+                    line: line
+                )
+                XCTAssertTrue(
+                    current.target === nativeTargets[index],
+                    "\(lifecycleStage) should preserve the native target",
+                    file: file,
+                    line: line
+                )
+                XCTAssertEqual(
+                    current.action,
+                    nativeActions[index],
+                    "\(lifecycleStage) should preserve the native action",
+                    file: file,
+                    line: line
+                )
+                XCTAssertEqual(current.isEnabled, nativeEnabledStates[index], file: file, line: line)
+                XCTAssertEqual(current.isHidden, nativeHiddenStates[index], file: file, line: line)
+                XCTAssertEqual(current.frame.origin.x, settledNativeFrames[index].origin.x, accuracy: 0.01, file: file, line: line)
+                XCTAssertEqual(current.frame.origin.y, settledNativeFrames[index].origin.y, accuracy: 0.01, file: file, line: line)
+                XCTAssertEqual(current.frame.size.width, settledNativeFrames[index].size.width, accuracy: 0.01, file: file, line: line)
+                XCTAssertEqual(current.frame.size.height, settledNativeFrames[index].size.height, accuracy: 0.01, file: file, line: line)
+            }
+
+            XCTAssertLessThan(currentButtons[0].frame.midX, currentButtons[1].frame.midX, file: file, line: line)
+            XCTAssertLessThan(currentButtons[1].frame.midX, currentButtons[2].frame.midX, file: file, line: line)
+        }
+
+        appDelegate.attachUpdateAccessory(to: window)
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
+        drainMainQueue()
+        // AppKit owns any geometry change caused by installing the leading accessory.
+        // This settled native layout is the oracle for subsequent window lifecycle events.
+        settledNativeFrames = nativeButtons.map(\.frame)
+        assertNativeTrafficLightsUnchanged(after: "titlebar accessory setup")
+
+        let lifecycleNotifications: [(Notification.Name, String)] = [
+            (NSWindow.didEndLiveResizeNotification, "ending live resize"),
+            (NSWindow.didExitFullScreenNotification, "exiting full screen"),
+            (NSWindow.didBecomeKeyNotification, "becoming key"),
+            (NSWindow.didBecomeMainNotification, "becoming main"),
+        ]
+
+        for (notification, stage) in lifecycleNotifications {
+            NotificationCenter.default.post(name: notification, object: window)
+            drainMainQueue()
+            assertNativeTrafficLightsUnchanged(after: stage)
+        }
+    }
+}
+
+@MainActor
 final class AppDelegateWindowContextRoutingTests: XCTestCase {
     // Every test in this class constructs a throwaway `AppDelegate()`. `AppDelegate.init()`
     // unconditionally does `Self.shared = self`, so without saving/restoring here each test
