@@ -9261,7 +9261,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         // inside WindowGlassEffect.apply.
         let currentThemeBackground = GhosttyBackgroundTheme.currentColor()
         let shouldApplyWindowGlass = cmuxShouldApplyWindowGlass(
-            sidebarBlendMode: sidebarBlendMode,
             bgGlassEnabled: bgGlassEnabled,
             glassEffectAvailable: WindowGlassEffect.isAvailable
         )

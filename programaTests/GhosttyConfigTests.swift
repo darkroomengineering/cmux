@@ -696,58 +696,51 @@ final class WindowTransparencyDecisionTests: XCTestCase {
     private let sidebarBlendModeKey = "sidebarBlendMode"
     private let bgGlassEnabledKey = "bgGlassEnabled"
 
-    func testTranslucentOpacityForcesClearWindowBackgroundOutsideSidebarBlendModePath() {
+    func testWindowTransparencyFollowsGlassAvailabilityAndTerminalOpacity() {
         withTemporaryWindowBackgroundDefaults {
             let defaults = UserDefaults.standard
             defaults.set("withinWindow", forKey: sidebarBlendModeKey)
             defaults.set(false, forKey: bgGlassEnabledKey)
 
-            XCTAssertFalse(cmuxShouldUseTransparentBackgroundWindow())
+            if WindowGlassEffect.isAvailable {
+                // Inverted layout: the glass backdrop is stock, and it samples
+                // behind the window — transparency is on regardless of opacity.
+                XCTAssertTrue(cmuxShouldUseTransparentBackgroundWindow())
+                XCTAssertTrue(cmuxShouldUseClearWindowBackground(for: 1.0))
+            } else {
+                // Pre-26: opt-in off means only a translucent terminal clears it.
+                XCTAssertFalse(cmuxShouldUseTransparentBackgroundWindow())
+                XCTAssertFalse(cmuxShouldUseClearWindowBackground(for: 1.0))
+            }
             XCTAssertTrue(cmuxShouldUseClearWindowBackground(for: 0.80))
-            XCTAssertFalse(cmuxShouldUseClearWindowBackground(for: 1.0))
         }
     }
 
-    func testGlassEnabledDecisionIsIndependentOfSidebarBlendAndImplementationAvailability() {
+    func testGlassIsStockWhenAvailableAndOptInOtherwise() {
+        // Legacy opt-in still decides when the native glass is unavailable.
         XCTAssertTrue(
-            cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "behindWindow",
-                bgGlassEnabled: true,
-                glassEffectAvailable: false
-            )
-        )
-        XCTAssertTrue(
-            cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "behindWindow",
-                bgGlassEnabled: true,
-                glassEffectAvailable: true
-            )
-        )
-        XCTAssertTrue(
-            cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "withinWindow",
-                bgGlassEnabled: true,
-                glassEffectAvailable: true
-            )
+            cmuxShouldApplyWindowGlass(bgGlassEnabled: true, glassEffectAvailable: false)
         )
         XCTAssertFalse(
-            cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "withinWindow",
-                bgGlassEnabled: false,
-                glassEffectAvailable: true
-            )
+            cmuxShouldApplyWindowGlass(bgGlassEnabled: false, glassEffectAvailable: false)
+        )
+        // Inverted layout: glass is the stock treatment whenever available.
+        XCTAssertTrue(
+            cmuxShouldApplyWindowGlass(bgGlassEnabled: false, glassEffectAvailable: true)
         )
         XCTAssertTrue(
+            cmuxShouldApplyWindowGlass(bgGlassEnabled: true, glassEffectAvailable: true)
+        )
+        // The startup performance override wins in both directions.
+        XCTAssertTrue(
             cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "withinWindow",
                 bgGlassEnabled: false,
-                glassEffectAvailable: true,
+                glassEffectAvailable: false,
                 performanceOverride: true
             )
         )
         XCTAssertFalse(
             cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "behindWindow",
                 bgGlassEnabled: true,
                 glassEffectAvailable: true,
                 performanceOverride: false
@@ -794,13 +787,15 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         )
     }
 
-    func testTerminalBackgroundOpacityCapsOpaqueFillWhenWindowGlassIsEnabled() {
+    func testTerminalBackgroundOpacityStaysOpaqueWithWindowGlass() {
+        // Inverted layout: panes are opaque elevated cards — window glass no
+        // longer clamps an opaque terminal fill.
         XCTAssertEqual(
             ProgramaGlassSettings.effectiveTerminalBackgroundOpacity(
                 configuredOpacity: 1.0,
                 windowGlassEnabled: true
             ),
-            0.82,
+            1.0,
             accuracy: 0.0001
         )
     }

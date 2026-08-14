@@ -1035,17 +1035,10 @@ struct SettingsView: View {
             // calls WorkspaceTabColorSettings.reset() and nils both hex keys, so
             // anything set while these rows existed is still recoverable.
 
-            SettingsCardDivider()
-
-            SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.matchTerminalBackground", defaultValue: "Match Terminal Background"),
-                subtitle: String(localized: "settings.sidebarAppearance.matchTerminalBackground.subtitle", defaultValue: "Use the same background color and transparency as the terminal.")
-            ) {
-                Toggle("", isOn: $sidebarMatchTerminalBackground)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-            }
+            // "Match Terminal Background" removed with the inverted glass layout:
+            // the sidebar sits on the system-appearance glass backdrop by design,
+            // and the toggle's only remaining effect was forcing terminal-derived
+            // text contrast that fought the system scheme.
 
             SettingsCardDivider()
 

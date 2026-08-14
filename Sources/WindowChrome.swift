@@ -52,193 +52,106 @@ enum WindowGlassEffect {
     /// Vertical midline of the header row measured from the window top.
     static var sidebarHeaderCenterFromWindowTop: CGFloat { sidebarPanelInset + sidebarHeaderHeight / 2 }
 
-    /// The stock tint (#000000 @ 0.03) is effectively clear, which lets the
-    /// desktop color wash through every translucent region and corner. Stock
-    /// resolves to a terminal-toned grounding tint; explicit user tints win.
-    static func resolvedWindowTint(hex: String, opacity: Double) -> NSColor {
+    /// Inverted (Aside-style) layout: the window backdrop is the sidebar's
+    /// material, sampling the desktop and following the system appearance.
+    /// Stock (#000000 @ 0.03) means untinted system glass; explicit user
+    /// tints still win.
+    static func resolvedWindowTint(hex: String, opacity: Double) -> NSColor? {
         let normalized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "#", with: "").uppercased()
         let isStock = normalized == "000000" && abs(opacity - 0.03) < 0.001
         if isStock {
-            return GhosttyBackgroundTheme.currentColor().withAlphaComponent(0.55)
+            return nil
         }
         return (NSColor(hex: hex) ?? .black).withAlphaComponent(opacity)
     }
-    private static var fullScreenObserverKey: UInt8 = 0
 
-    @available(macOS 26.0, *)
-    private static func applyWindowCornerMask(to glassView: NSView, rounded: Bool) {
-        glassView.layer?.cornerRadius = rounded ? windowCornerRadius : 0
-        glassView.layer?.cornerCurve = .continuous
-        glassView.layer?.masksToBounds = rounded
-    }
-
-    /// The transparent titlebar still hosts a material backdrop that peeks out
-    /// in the crescent between our large corner mask and the legacy frame shape
-    /// at the two top corners — a lighter glitchy wedge. Hide the material; the
-    /// buttons and accessories are separate views and stay visible.
-    private static func hideTitlebarBackdrop(in window: NSWindow) {
-        guard let frameView = window.contentView?.superview else { return }
-        for child in frameView.subviews
-        where String(describing: type(of: child)).contains("NSTitlebarContainerView") {
-            for titlebarChild in descendants(of: child)
-            where titlebarChild is NSVisualEffectView {
-                titlebarChild.isHidden = true
-            }
-        }
-    }
-
-    private static func descendants(of view: NSView) -> [NSView] {
-        view.subviews.flatMap { [$0] + descendants(of: $0) }
-    }
-
-    @available(macOS 26.0, *)
-    private static func installFullScreenRadiusObservers(for window: NSWindow, glassView: NSView) {
-        let center = NotificationCenter.default
-        let tokens: [NSObjectProtocol] = [
-            center.addObserver(
-                forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main
-            ) { [weak glassView] _ in
-                guard let glassView else { return }
-                applyWindowCornerMask(to: glassView, rounded: false)
-            },
-            center.addObserver(
-                forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main
-            ) { [weak glassView] _ in
-                guard let glassView else { return }
-                applyWindowCornerMask(to: glassView, rounded: true)
-            },
-            // Shadow must re-derive from content alpha after size/shape changes.
-            center.addObserver(
-                forName: NSWindow.didEndLiveResizeNotification, object: window, queue: .main
-            ) { [weak window] _ in
-                window?.invalidateShadow()
-            },
-            center.addObserver(
-                forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main
-            ) { [weak window] _ in
-                DispatchQueue.main.async { window?.invalidateShadow() }
-            },
-        ]
-        objc_setAssociatedObject(window, &fullScreenObserverKey, tokens, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-    }
-
+    /// Corner radius of the elevated content card (terminal/browser panes).
+    static let contentCardCornerRadius: CGFloat = 12
+    /// Radius for floating glass controls: tab pills, icon capsule clusters.
+    static let controlCornerRadius: CGFloat = 10
+    /// Gap between the content card and the window edges / sidebar.
+    static let contentCardInset: CGFloat = 8
+    /// Inverted (Aside-style) backdrop. The window stays a completely standard
+    /// opaque AppKit window — system corner radius, system shadow, system frame.
+    /// The sidebar material is an NSVisualEffectView underlay that AppKit rounds
+    /// to the window shape itself, exactly like every native sidebar. No custom
+    /// corner mask, no non-opaque window, no contentView replacement: those were
+    /// the source of every "transparent corner" artifact, so they are gone, not
+    /// patched.
     static func apply(to window: NSWindow, tintColor: NSColor? = nil) {
         guard let originalContentView = window.contentView else { return }
 
-        // Check if we already applied glass (avoid re-wrapping)
-        if let existingGlass = objc_getAssociatedObject(window, &glassViewKey) as? NSView {
-            // Already applied, just update the tint
-            updateTint(on: existingGlass, color: tintColor, window: window)
+        if let existing = objc_getAssociatedObject(window, &glassViewKey) as? NSView {
+            updateTint(on: existing, color: tintColor, window: window)
             return
         }
 
+        let bounds = originalContentView.bounds
+        let backdrop: NSView
         #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
-            applyGlass(to: window, originalContentView: originalContentView, tintColor: tintColor)
-            return
+            // Liquid Glass backdrop: samples the desktop through the transparent
+            // window and blurs it — the mechanism proven to work on macOS 26.
+            let glass = NSGlassEffectView(frame: bounds)
+            glass.style = .regular
+            glass.cornerRadius = 0
+            glass.tintColor = tintColor
+            backdrop = glass
+        } else {
+            backdrop = Self.makeVisualEffectBackdrop(frame: bounds)
         }
+        #else
+        backdrop = Self.makeVisualEffectBackdrop(frame: bounds)
         #endif
-        applyVisualEffectFallback(to: window, originalContentView: originalContentView, tintColor: tintColor)
-    }
 
-    #if compiler(>=6.2)
-    @available(macOS 26.0, *)
-    private static func applyGlass(to window: NSWindow, originalContentView: NSView, tintColor: NSColor?) {
-        let glassView = NSGlassEffectView(frame: originalContentView.bounds)
-        glassView.wantsLayer = true
-        // Match the modern large window radius (Maps-style); the sidebar panel's
-        // radius is derived as this minus its inset to stay concentric. Shape via
-        // a plain layer mask, not NSGlassEffectView.cornerRadius: the glass draws
-        // a specular rim at its own rounded boundary, which reads as a ghost
-        // border against dark content. A layer cut has no rim.
-        glassView.cornerRadius = 0
-        // Opaque terminal-colored backing: backdrop sampling bleeds the desktop
-        // into a rim wherever fills are translucent, which reads as a glitchy
-        // inconsistent border. In-window glass elements are unaffected — they
-        // sample window content, not the desktop.
-        glassView.layer?.backgroundColor =
-            GhosttyBackgroundTheme.currentColor().withAlphaComponent(1.0).cgColor
-        applyWindowCornerMask(to: glassView, rounded: !window.styleMask.contains(.fullScreen))
-        installFullScreenRadiusObservers(for: window, glassView: glassView)
-        // The system window backdrop keeps its own smaller-radius shape; between
-        // it and our larger mask it peeks out as a ghost arc in each corner.
-        // A clear window lets the shadow and edge follow the masked shape only.
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        // A non-opaque window's shadow only re-derives from content alpha on
-        // explicit invalidation; without it the old square-ish shadow rings the
-        // corner crescents and they read as transparent holes.
-        DispatchQueue.main.async { [weak window] in
-            guard let window else { return }
-            hideTitlebarBackdrop(in: window)
-            window.invalidateShadow()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak window] in
-            guard let window else { return }
-            hideTitlebarBackdrop(in: window)
-            window.invalidateShadow()
-        }
-        glassView.tintColor = tintColor
-        glassView.autoresizingMask = [.width, .height]
-
-        // NSGlassEffectView is a full replacement for the contentView.
-        objc_setAssociatedObject(window, &originalContentViewKey, originalContentView, .OBJC_ASSOCIATION_RETAIN)
-        window.contentView = glassView
-
-        // AppKit only guarantees correct control placement when the controls are owned by
-        // NSGlassEffectView.contentView. Portal-hosted terminal surfaces remain siblings below
-        // this host, where they continue to provide the source pixels sampled by the effect.
-        originalContentView.frame = glassView.bounds
-        originalContentView.autoresizingMask = [.width, .height]
-        originalContentView.wantsLayer = true
-        originalContentView.layer?.backgroundColor = NSColor.clear.cgColor
-        glassView.contentView = originalContentView
-
-        objc_setAssociatedObject(window, &glassViewKey, glassView, .OBJC_ASSOCIATION_RETAIN)
-    }
-    #endif
-
-    private static func applyVisualEffectFallback(to window: NSWindow, originalContentView: NSView, tintColor: NSColor?) {
-        let bounds = originalContentView.bounds
-        let glassView = NSVisualEffectView(frame: bounds)
-        glassView.blendingMode = .behindWindow
-        // Favor a lighter fallback so behind-window glass reads more transparent.
-        glassView.material = .underWindowBackground
-        glassView.state = .active
-        glassView.wantsLayer = true
-        glassView.autoresizingMask = [.width, .height]
-
-        // For the NSVisualEffectView fallback, do NOT replace window.contentView.
-        // Replacing contentView can break traffic light rendering with
-        // `.fullSizeContentView` + `titlebarAppearsTransparent`.
-        glassView.translatesAutoresizingMaskIntoConstraints = false
-        originalContentView.addSubview(glassView, positioned: .below, relativeTo: nil)
+        // Never replace window.contentView — that breaks traffic-light rendering
+        // with `.fullSizeContentView` + `titlebarAppearsTransparent`, and it is
+        // what forced the old custom-mask architecture. The backdrop also cannot
+        // be a SUBVIEW of the hosting view: NSHostingView draws pure-SwiftUI
+        // content into its own layer, and any subview — even positioned .below —
+        // sits above that drawing, occluding the sidebar. Install it as a theme-
+        // frame sibling below the contentView instead (the terminal portal's
+        // proven pattern), pinned to the contentView's geometry.
+        guard let themeFrame = originalContentView.superview else { return }
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        themeFrame.addSubview(backdrop, positioned: .below, relativeTo: originalContentView)
 
         NSLayoutConstraint.activate([
-            glassView.topAnchor.constraint(equalTo: originalContentView.topAnchor),
-            glassView.bottomAnchor.constraint(equalTo: originalContentView.bottomAnchor),
-            glassView.leadingAnchor.constraint(equalTo: originalContentView.leadingAnchor),
-            glassView.trailingAnchor.constraint(equalTo: originalContentView.trailingAnchor)
+            backdrop.topAnchor.constraint(equalTo: originalContentView.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: originalContentView.bottomAnchor),
+            backdrop.leadingAnchor.constraint(equalTo: originalContentView.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: originalContentView.trailingAnchor)
         ])
 
-        // Add tint overlay between glass and content
-        if let tintColor {
-            let tintOverlay = NSView(frame: bounds)
-            tintOverlay.translatesAutoresizingMaskIntoConstraints = false
-            tintOverlay.wantsLayer = true
-            tintOverlay.layer?.backgroundColor = tintColor.cgColor
-            glassView.addSubview(tintOverlay)
-            NSLayoutConstraint.activate([
-                tintOverlay.topAnchor.constraint(equalTo: glassView.topAnchor),
-                tintOverlay.bottomAnchor.constraint(equalTo: glassView.bottomAnchor),
-                tintOverlay.leadingAnchor.constraint(equalTo: glassView.leadingAnchor),
-                tintOverlay.trailingAnchor.constraint(equalTo: glassView.trailingAnchor)
-            ])
-            objc_setAssociatedObject(window, &tintOverlayKey, tintOverlay, .OBJC_ASSOCIATION_RETAIN)
+        if let tintColor, !isGlassEffectView(backdrop) {
+            installTintOverlay(on: backdrop, color: tintColor, window: window)
         }
 
-        objc_setAssociatedObject(window, &glassViewKey, glassView, .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(window, &glassViewKey, backdrop, .OBJC_ASSOCIATION_RETAIN)
+    }
+
+    private static func makeVisualEffectBackdrop(frame: NSRect) -> NSVisualEffectView {
+        let view = NSVisualEffectView(frame: frame)
+        view.blendingMode = .behindWindow
+        view.material = .sidebar
+        view.state = .active
+        return view
+    }
+
+    private static func installTintOverlay(on backdrop: NSView, color: NSColor, window: NSWindow) {
+        let tintOverlay = NSView(frame: backdrop.bounds)
+        tintOverlay.translatesAutoresizingMaskIntoConstraints = false
+        tintOverlay.wantsLayer = true
+        tintOverlay.layer?.backgroundColor = color.cgColor
+        backdrop.addSubview(tintOverlay)
+        NSLayoutConstraint.activate([
+            tintOverlay.topAnchor.constraint(equalTo: backdrop.topAnchor),
+            tintOverlay.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor),
+            tintOverlay.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
+            tintOverlay.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor)
+        ])
+        objc_setAssociatedObject(window, &tintOverlayKey, tintOverlay, .OBJC_ASSOCIATION_RETAIN)
     }
 
     /// Update the tint color on an existing glass effect
@@ -247,47 +160,25 @@ enum WindowGlassEffect {
         updateTint(on: glassView, color: color, window: window)
     }
 
-    private static func updateTint(on glassView: NSView, color: NSColor?, window: NSWindow) {
+    private static func updateTint(on backdrop: NSView, color: NSColor?, window: NSWindow) {
         #if compiler(>=6.2)
-        if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
+        if #available(macOS 26.0, *), let glass = backdrop as? NSGlassEffectView {
             glass.tintColor = color
-            // Keep the opaque backing in step with the terminal theme.
-            glass.layer?.backgroundColor =
-                GhosttyBackgroundTheme.currentColor().withAlphaComponent(1.0).cgColor
             return
         }
         #endif
-        // For NSVisualEffectView fallback, update the tint overlay
         if let tintOverlay = objc_getAssociatedObject(window, &tintOverlayKey) as? NSView {
             tintOverlay.layer?.backgroundColor = color?.cgColor
+        } else if let color {
+            installTintOverlay(on: backdrop, color: color, window: window)
         }
     }
 
     static func remove(from window: NSWindow) {
-        guard let glassView = objc_getAssociatedObject(window, &glassViewKey) as? NSView else {
+        guard let backdrop = objc_getAssociatedObject(window, &glassViewKey) as? NSView else {
             return
         }
-
-        if isGlassEffectView(glassView) {
-            if let originalContentView = objc_getAssociatedObject(window, &originalContentViewKey) as? NSView {
-                #if compiler(>=6.2)
-                if #available(macOS 26.0, *), let glass = glassView as? NSGlassEffectView {
-                    glass.contentView = nil
-                }
-                #endif
-                originalContentView.removeFromSuperview()
-                originalContentView.autoresizingMask = [.width, .height]
-                originalContentView.frame = glassView.bounds
-                window.contentView = originalContentView
-            }
-        } else {
-            glassView.removeFromSuperview()
-        }
-
-        if let tokens = objc_getAssociatedObject(window, &fullScreenObserverKey) as? [NSObjectProtocol] {
-            for token in tokens { NotificationCenter.default.removeObserver(token) }
-        }
-        objc_setAssociatedObject(window, &fullScreenObserverKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        backdrop.removeFromSuperview()
         objc_setAssociatedObject(window, &glassViewKey, nil, .OBJC_ASSOCIATION_RETAIN)
         objc_setAssociatedObject(window, &originalContentViewKey, nil, .OBJC_ASSOCIATION_RETAIN)
         objc_setAssociatedObject(window, &tintOverlayKey, nil, .OBJC_ASSOCIATION_RETAIN)

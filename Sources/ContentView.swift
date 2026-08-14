@@ -663,7 +663,12 @@ struct ContentView: View {
     }
 
     private var effectiveTitlebarPadding: CGFloat {
+        // Inverted card layout with the sidebar visible: the strip owns the
+        // card's top — the legacy 32pt titlebar band is dead space there. With
+        // the sidebar hidden the titlebar accessory controls still need it.
+        if cardInsetAmount > 0 && sidebarState.isVisible { return 0 }
         if isMinimalMode {
+            if cardInsetAmount > 0 { return 0 }
             return isFullScreen ? 0 : -titlebarPadding
         }
         return titlebarPadding
@@ -728,7 +733,9 @@ struct ContentView: View {
         }
         .padding(.top, effectiveTitlebarPadding)
         .overlay(alignment: .top) {
-            if !isMinimalMode {
+            // Card layout with the sidebar visible has no titlebar band (see
+            // effectiveTitlebarPadding) — the overlay would float over pills.
+            if !isMinimalMode && !(cardInsetAmount > 0 && sidebarState.isVisible) {
                 // Titlebar overlay is only over terminal content, not the sidebar.
                 customTitlebar
             }
@@ -918,6 +925,15 @@ struct ContentView: View {
         return dir.isEmpty ? nil : dir
     }
 
+    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
+
+    /// Inverted glass layout: the terminal region floats as a rounded card over
+    /// the window's glass backdrop, inset from the edges and the sidebar.
+    private var cardInsetAmount: CGFloat {
+        WindowGlassEffect.isAvailable && !accessibilityReduceTransparency
+            ? WindowGlassEffect.contentCardInset : 0
+    }
+
     private var contentAndSidebarLayout: AnyView {
         let layout: AnyView
         // When matching terminal background, use HStack so both sidebar and terminal
@@ -930,6 +946,7 @@ struct ContentView: View {
             layout = AnyView(
                 ZStack(alignment: .leading) {
                     terminalContentWithSidebarDropOverlay
+                        .padding(cardInsetAmount)
                         .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
                     if sidebarState.isVisible {
                         sidebarView
@@ -944,6 +961,7 @@ struct ContentView: View {
                         sidebarView
                     }
                     terminalContentWithSidebarDropOverlay
+                        .padding(cardInsetAmount)
                 }
             )
         }

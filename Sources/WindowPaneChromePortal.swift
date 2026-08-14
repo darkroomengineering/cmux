@@ -105,31 +105,39 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         scheduleSettledSynchronize()
     }
 
-    /// Workspace-level controls follow the focused visible pane, stacked down the
-    /// right edge like Maps' control pills: new-tab capsule first, splits below.
+    /// Workspace-level controls follow the focused visible pane, sharing its tab
+    /// strip: pills on the left, both capsules side by side on the right, all
+    /// centered on the strip's midline. The pane's tab bar reserves trailing
+    /// space so pills never run under the controls.
     private func updateClusters() {
         // Anchors can move to another window (workspace drag-out); their stale
         // descriptors must not steer this window's controls.
         let inWindow = descriptors.values.filter { $0.anchorView?.window === window }
         let visible = inWindow.filter(\.isVisible)
-        guard let active = visible.first(where: { $0.isFocused }) ?? visible.first else {
+        guard let active = visible.first(where: { $0.isFocused }) ?? visible.first,
+              let anchor = active.anchorView else {
             newTabCluster.isHidden = true
             splitCluster.isHidden = true
+            for bar in bars.values { bar.trailingReservedWidth = 0 }
             return
         }
         let barHeight: CGFloat = 28
-        var y = hostView.bounds.maxY - barHeight - 5
+        // Chrome spacing grid: 4pt base, edges on 8.
+        let gap: CGFloat = 8
+        let strip = hostView.convert(anchor.bounds, from: anchor)
+        let y = strip.midY - barHeight / 2
 
         newTabCluster.setActions([active.onNewTab, active.onNewBrowserTab])
         newTabCluster.isHidden = false
         ensureAboveBars(newTabCluster)
+        let newTabX = strip.maxX - gap - newTabCluster.preferredWidth
         newTabCluster.frame = NSRect(
-            x: hostView.bounds.maxX - newTabCluster.preferredWidth - 8,
+            x: newTabX,
             y: y,
             width: newTabCluster.preferredWidth,
             height: barHeight
         )
-        y -= barHeight + 7
+        var reserved = gap + newTabCluster.preferredWidth
 
         // Cap workspace splits at a 2x2-equivalent depth; deeper trees degenerate
         // into slivers. Checked here (live pane count) rather than at publish time,
@@ -150,13 +158,18 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
             splitCluster.isHidden = false
             ensureAboveBars(splitCluster)
             splitCluster.frame = NSRect(
-                x: hostView.bounds.maxX - splitCluster.preferredWidth - 8,
+                x: newTabX - gap - splitCluster.preferredWidth,
                 y: y,
                 width: splitCluster.preferredWidth,
                 height: barHeight
             )
+            reserved += gap + splitCluster.preferredWidth
         } else {
             splitCluster.isHidden = true
+        }
+
+        for (paneID, bar) in bars {
+            bar.trailingReservedWidth = paneID == active.paneID ? reserved : 0
         }
     }
 
@@ -303,10 +316,13 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         // Called from every descriptor update and geometry pass; a full-window
         // recursive search each time is the dominant cost, so cache the host and
         // re-find only when it leaves the window.
+        // The terminal portal installs its host in the theme frame (the
+        // contentView's superview), so the search must start there.
+        let searchRoot = window.contentView?.superview ?? window.contentView
         let terminalHost: WindowTerminalHostView
         if let cached = cachedTerminalHost, cached.window === window {
             terminalHost = cached
-        } else if let found = findTerminalHost(in: window.contentView) {
+        } else if let found = findTerminalHost(in: searchRoot) {
             cachedTerminalHost = found
             terminalHost = found
         } else {
@@ -386,6 +402,12 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
     /// Coalesces ancestor-resize storms (divider drags, collapse animations) into
     /// one geometry pass per runloop turn.
     private func scheduleSynchronizeAll() {
+        // Live resize: a one-turn lag reads as chrome smearing behind the
+        // window edge — sync immediately (same trade the terminal portal makes).
+        if window?.inLiveResize == true {
+            synchronizeAll()
+            return
+        }
         guard !syncAllScheduled else { return }
         syncAllScheduled = true
         DispatchQueue.main.async { [weak self] in
@@ -493,6 +515,25 @@ private final class NativePaneTabBarView: NSView {
     private let documentView = FlippedDocumentView(frame: .zero)
     private var pillViews: [TabID: NativeGlassTabPillView] = [:]
     private var descriptor: BonsplitPaneChromeDescriptor?
+    /// Safari-style "+" after the last pill; scrolls with the tabs. Bare glyph,
+    /// no capsule — it's an affordance, not a peer of the tab pills.
+    private let newTabButton: NSButton = {
+        let title = String(localized: "tabBar.newTab", defaultValue: "New Tab")
+        let button = NSButton(frame: .zero)
+        button.image = NSImage(systemSymbolName: "plus", accessibilityDescription: title)
+        button.isBordered = false
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = title
+        button.setAccessibilityLabel(title)
+        return button
+    }()
+    private var newTabAction: (() -> Void)?
+
+    /// Space kept clear at the trailing edge for the workspace control capsules
+    /// that share this strip.
+    var trailingReservedWidth: CGFloat = 0 {
+        didSet { if oldValue != trailingReservedWidth { needsLayout = true } }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -509,13 +550,20 @@ private final class NativePaneTabBarView: NSView {
         scrollView.verticalScrollElasticity = .none
         scrollView.documentView = documentView
         addSubview(scrollView)
+        newTabButton.target = self
+        newTabButton.action = #selector(newTabPressed)
+        documentView.addSubview(newTabButton)
     }
+
+    @objc private func newTabPressed() { newTabAction?() }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func layout() {
         super.layout()
-        scrollView.frame = bounds.insetBy(dx: 8, dy: 5)
+        var scrollFrame = bounds.insetBy(dx: 8, dy: 8)
+        scrollFrame.size.width = max(0, scrollFrame.width - trailingReservedWidth)
+        scrollView.frame = scrollFrame
         layoutPills()
         // Early zero-sized layout passes can leave the clip view scrolled to a
         // negative vertical origin, which parks the whole tab row outside the
@@ -549,6 +597,7 @@ private final class NativePaneTabBarView: NSView {
                 dragState: { [weak descriptor] active in descriptor?.onDragStateChanged(tab.id, active) }
             )
         }
+        newTabAction = descriptor.onNewTab
         // Title changes arrive outside AppKit's layout cadence; needsLayout
         // reruns layoutPills() in the next pass (widths track intrinsic size).
         needsLayout = true
@@ -556,16 +605,18 @@ private final class NativePaneTabBarView: NSView {
 
     private func layoutPills() {
         guard let descriptor else { return }
-        let gap: CGFloat = 7
+        let gap: CGFloat = 8
         let minPillWidth: CGFloat = 78
         let leadingInset = max(0, descriptor.leadingInset)
         let height = max(28, scrollView.contentSize.height)
         let pills = descriptor.tabs.compactMap { pillViews[$0.id] }
+        let plusWidth: CGFloat = 28
 
         // Natural width per pill; only compress (which is what introduces
-        // truncation) once the row genuinely runs out of space.
+        // truncation) once the row genuinely runs out of space. The "+" always
+        // keeps its seat at the end of the row.
         var widths = pills.map { min(220, max(minPillWidth, $0.preferredWidth)) }
-        let available = scrollView.contentSize.width - leadingInset
+        let available = scrollView.contentSize.width - leadingInset - (gap + plusWidth)
         let naturalTotal = widths.reduce(0, +) + gap * CGFloat(max(0, widths.count - 1))
         if naturalTotal > available, !widths.isEmpty {
             let evenWidth = (available - gap * CGFloat(widths.count - 1)) / CGFloat(widths.count)
@@ -579,6 +630,8 @@ private final class NativePaneTabBarView: NSView {
             pill.layoutSubtreeIfNeeded()
             x += width + gap
         }
+        newTabButton.frame = NSRect(x: x, y: 0, width: plusWidth, height: height)
+        x += plusWidth + gap
         documentView.frame = NSRect(x: 0, y: 0, width: max(x, scrollView.contentSize.width), height: height)
     }
 }
@@ -604,7 +657,9 @@ private final class GlassIconClusterView: NSView {
         super.init(frame: .zero)
         #if compiler(>=6.2)
         glass.style = .regular
-        glass.cornerRadius = 14
+        glass.cornerRadius = WindowGlassEffect.controlCornerRadius
+        // Same surface tone as the selected pill (see applySurfaceState).
+        glass.tintColor = NSColor.labelColor.withAlphaComponent(0.12)
         glass.contentView = container
         #endif
         addSubview(glass)
@@ -623,6 +678,9 @@ private final class GlassIconClusterView: NSView {
         }
         actions = Array(repeating: {}, count: symbols.count)
         defaultTooltips = symbols.map(\.tooltip)
+        // Full-presence like the selected pill; the shared tint above keeps the
+        // strip's three capsule surfaces in one material family.
+        alphaValue = 1.0
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -685,7 +743,7 @@ private final class NativeGlassTabPillView: NSView, NSDraggingSource {
         super.init(frame: frameRect)
         #if compiler(>=6.2)
         glass.style = .regular
-        glass.cornerRadius = 14
+        glass.cornerRadius = WindowGlassEffect.controlCornerRadius
         glass.contentView = control
         #endif
         addSubview(glass)
@@ -734,15 +792,17 @@ private final class NativeGlassTabPillView: NSView, NSDraggingSource {
     /// Accent fills fight the native material; tint with the text primary.
     private func applySurfaceState() {
         #if compiler(>=6.2)
+        // One shared surface tone across the strip: selected pills and the
+        // control capsules use labelColor@0.12; quiet pills stay untinted.
         if isSelected {
-            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.16)
+            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.12)
         } else if isHovered {
-            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.08)
+            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.06)
         } else {
             glass.tintColor = nil
         }
         #endif
-        alphaValue = isSelected ? 1.0 : (isHovered ? 0.94 : 0.82)
+        alphaValue = isSelected ? 1.0 : (isHovered ? 0.94 : 0.85)
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
@@ -862,7 +922,11 @@ private final class NativeTabPillControl: NSControl, NSMenuDelegate, NSDraggingS
     override var focusRingMaskBounds: NSRect { bounds }
 
     override func drawFocusRingMask() {
-        NSBezierPath(roundedRect: bounds, xRadius: 14, yRadius: 14).fill()
+        NSBezierPath(
+            roundedRect: bounds,
+            xRadius: WindowGlassEffect.controlCornerRadius,
+            yRadius: WindowGlassEffect.controlCornerRadius
+        ).fill()
     }
 
     override func keyDown(with event: NSEvent) {

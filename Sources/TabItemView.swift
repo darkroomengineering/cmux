@@ -709,10 +709,10 @@ struct TabItemView: View, Equatable {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(backgroundColor)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 6)
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .strokeBorder(activeBorderColor, lineWidth: activeBorderLineWidth)
                 }
                 .overlay(alignment: .leading) {
@@ -1168,7 +1168,7 @@ struct TabItemView: View, Equatable {
         }
         // Default: quiet neutral selection that harmonizes with the glass sidebar
         // instead of a saturated accent card.
-        return NSColor.labelColor.withAlphaComponent(0.14)
+        return NSColor.quaternaryLabelColor
     }
 
     private var backgroundColor: Color {

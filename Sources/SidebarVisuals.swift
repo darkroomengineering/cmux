@@ -22,10 +22,10 @@ struct SidebarFooter: View {
 #if DEBUG
         SidebarDevFooter(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
 #else
+        // Sidebar spacing grid: 4pt base, edges on 8.
         SidebarFooterButtons(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
-            .padding(.leading, 6)
-            .padding(.trailing, 10)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
 #endif
     }
 }
@@ -487,7 +487,7 @@ private struct SidebarDevFooter: View {
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             SidebarFooterButtons(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
             if showSidebarDevBuildBanner {
                 Text(String(localized: "debug.devBuildBanner.title", defaultValue: "THIS IS A DEV BUILD"))
@@ -495,9 +495,9 @@ private struct SidebarDevFooter: View {
                     .foregroundColor(.red)
             }
         }
-        .padding(.leading, 6)
-        .padding(.trailing, 10)
-        .padding(.bottom, 6)
+        // Sidebar spacing grid: 4pt base, edges on 8.
+        .padding(.horizontal, 8)
+        .padding(.bottom, 8)
     }
 }
 #endif
@@ -514,34 +514,6 @@ enum SidebarTerminalAppearance {
         srgb.getRed(&r, green: &g, blue: &b, alpha: &a)
         let luminance = 0.299 * r + 0.587 * g + 0.114 * b
         return luminance > 0.5 ? .light : .dark
-    }
-}
-
-/// Applies the terminal-derived scheme to a subtree while the sidebar is matching the
-/// terminal background, so every label in it picks contrast from the colour it sits on.
-struct SidebarTerminalColorScheme: ViewModifier {
-    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
-    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
-    @State private var scheme: ColorScheme = SidebarTerminalAppearance.colorScheme()
-
-    /// The native glass sidebar floats over the terminal-colored base plane, so its
-    /// content must always resolve contrast against the terminal, not the app scheme.
-    private var followsTerminal: Bool {
-        matchTerminalBackground ||
-            (WindowGlassEffect.isAvailable && !accessibilityReduceTransparency)
-    }
-
-    func body(content: Content) -> some View {
-        Group {
-            if followsTerminal {
-                content.environment(\.colorScheme, scheme)
-            } else {
-                content
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
-            scheme = SidebarTerminalAppearance.colorScheme()
-        }
     }
 }
 
@@ -1237,13 +1209,13 @@ private struct SidebarVisualEffectBackground: NSViewRepresentable {
     }
 }
 
-/// Hosts the complete interactive sidebar inside the native glass content host. AppKit does
-/// not guarantee the z-order or rendering of controls added as arbitrary glass siblings.
-private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable {
+/// Hosts the complete interactive sidebar directly on the window's glass backdrop
+/// (inverted, Aside-style layout). No inner glass surface: the window contentView
+/// glass provides the material, so this host is a transparent AppKit container
+/// whose only job is zeroing the window safe area — the sidebar owns its own
+/// titlebar-like header row.
+private struct SidebarBackdropContentHost<Content: View>: NSViewRepresentable {
     let content: Content
-    let tintColor: NSColor?
-    let cornerRadius: CGFloat
-    let appearance: NSAppearance?
 
     final class Coordinator {
         let hostingView: NSHostingView<Content>
@@ -1253,7 +1225,7 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
             hostingView.autoresizingMask = [.width, .height]
             hostingView.wantsLayer = true
             hostingView.layer?.backgroundColor = NSColor.clear.cgColor
-            // The panel owns its own titlebar-like header row; the window safe
+            // The sidebar owns its own titlebar-like header row; the window safe
             // area must not add a second inset on top of it.
             hostingView.safeAreaRegions = []
         }
@@ -1264,53 +1236,12 @@ private struct SidebarNativeGlassContentHost<Content: View>: NSViewRepresentable
     }
 
     func makeNSView(context: Context) -> NSView {
-        let hostingView = context.coordinator.hostingView
-
-        #if compiler(>=6.2)
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView(frame: .zero)
-            glass.autoresizingMask = [.width, .height]
-            glass.wantsLayer = true
-            glass.style = .regular
-            glass.tintColor = tintColor
-            glass.appearance = appearance
-            applyCornerMask(to: glass)
-            hostingView.frame = glass.bounds
-            glass.contentView = hostingView
-            return glass
-        }
-        #endif
-
-        return hostingView
+        context.coordinator.hostingView
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.hostingView.rootView = content
-
-        #if compiler(>=6.2)
-        if #available(macOS 26.0, *), let glass = nsView as? NSGlassEffectView {
-            glass.tintColor = tintColor
-            glass.appearance = appearance
-            applyCornerMask(to: glass)
-        }
-        #endif
     }
-
-    #if compiler(>=6.2)
-    @available(macOS 26.0, *)
-    private func applyCornerMask(to glass: NSGlassEffectView) {
-        glass.cornerRadius = cornerRadius
-        glass.layer?.cornerRadius = cornerRadius
-        glass.layer?.cornerCurve = .continuous
-        glass.layer?.maskedCorners = [
-            .layerMinXMinYCorner,
-            .layerMaxXMinYCorner,
-            .layerMinXMaxYCorner,
-            .layerMaxXMaxYCorner,
-        ]
-        glass.layer?.masksToBounds = cornerRadius > 0
-    }
-    #endif
 }
 
 /// Owns the sidebar as a distinct native glass surface above the terminal-colored base plane.
@@ -1332,20 +1263,24 @@ struct SidebarSurface<Content: View>: View {
     var body: some View {
         Group {
             if usesLocalNativeGlass {
-                // One radius, one mask: the glass host owns the corner treatment.
-                // The sidebar floats over the terminal-colored plane, so its glass and
-                // content must resolve against the terminal scheme, not the app scheme.
-                SidebarNativeGlassContentHost(
-                    content: content.environment(\.colorScheme, terminalScheme),
-                    tintColor: resolvedTintColor,
-                    cornerRadius: standaloneCornerRadius,
-                    appearance: NSAppearance(named: terminalScheme == .dark ? .darkAqua : .aqua)
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Inverted layout: the sidebar sits directly on the window's glass
+                // backdrop, which follows the SYSTEM appearance (light sidebar in
+                // light mode) — only the content card and its pills stay
+                // terminal-toned. No inner glass, no clip: window-level material.
+                SidebarBackdropContentHost(content: content)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // Fallback path (pre-26 / Reduce Transparency): the backdrop can
+                // render terminal-colored when Match Terminal Background is on,
+                // so labels must resolve contrast against the terminal, not the
+                // system scheme.
                 ZStack {
                     SidebarBackdrop()
-                    content
+                    if matchTerminalBackground {
+                        content.environment(\.colorScheme, terminalScheme)
+                    } else {
+                        content
+                    }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: standaloneCornerRadius, style: .continuous))
             }

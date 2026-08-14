@@ -29,7 +29,7 @@ private struct ShortcutHintSizingTestLabel: View {
 
 @MainActor
 final class WindowGlassEffectTests: XCTestCase {
-    func testRemoveRestoresOriginalContentHierarchy() {
+    func testBackdropInstallsBelowContentViewAndRemovesCleanly() throws {
         _ = NSApplication.shared
 
         let originalContentView = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
@@ -41,20 +41,30 @@ final class WindowGlassEffectTests: XCTestCase {
         )
         window.contentView = originalContentView
 
+        // Track exactly what apply() adds — the theme frame carries its own
+        // system furniture (titlebar material) that a type check would match.
+        let themeFrame = try XCTUnwrap(originalContentView.superview)
+        let preexisting = Set(themeFrame.subviews.map(ObjectIdentifier.init))
+
         WindowGlassEffect.apply(to: window, tintColor: .systemBlue)
 
-        if WindowGlassEffect.isAvailable {
-            XCTAssertFalse(window.contentView === originalContentView)
-            XCTAssertTrue(WindowGlassEffect.hostedContentView(in: window.contentView!) === originalContentView)
-        } else {
-            XCTAssertTrue(window.contentView === originalContentView)
-            XCTAssertTrue(originalContentView.subviews.contains(where: { $0 is NSVisualEffectView }))
-        }
+        // Inverted layout: the contentView is never replaced; the backdrop is a
+        // theme-frame sibling BELOW it.
+        XCTAssertTrue(window.contentView === originalContentView)
+        let added = themeFrame.subviews.filter { !preexisting.contains(ObjectIdentifier($0)) }
+        XCTAssertEqual(added.count, 1)
+        let backdrop = try XCTUnwrap(added.first)
+        XCTAssertTrue(
+            WindowGlassEffect.isGlassEffectView(backdrop) || backdrop is NSVisualEffectView
+        )
+        let backdropIndex = try XCTUnwrap(themeFrame.subviews.firstIndex(of: backdrop))
+        let contentIndex = try XCTUnwrap(themeFrame.subviews.firstIndex(of: originalContentView))
+        XCTAssertLessThan(backdropIndex, contentIndex)
 
         WindowGlassEffect.remove(from: window)
 
         XCTAssertTrue(window.contentView === originalContentView)
-        XCTAssertFalse(originalContentView.subviews.contains(where: { $0 is NSVisualEffectView }))
+        XCTAssertFalse(themeFrame.subviews.contains(where: { $0 === backdrop }))
     }
 
     func testNativePaneChromePillsOwnAppKitControlsAboveTerminalPortal() throws {
