@@ -376,6 +376,12 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
     /// Coalesces ancestor-resize storms (divider drags, collapse animations) into
     /// one geometry pass per runloop turn.
     private func scheduleSynchronizeAll() {
+        // Live resize: a one-turn lag reads as chrome smearing behind the
+        // window edge — sync immediately (same trade the terminal portal makes).
+        if window?.inLiveResize == true {
+            synchronizeAll()
+            return
+        }
         guard !syncAllScheduled else { return }
         syncAllScheduled = true
         DispatchQueue.main.async { [weak self] in
@@ -483,6 +489,10 @@ private final class NativePaneTabBarView: NSView {
     private let documentView = FlippedDocumentView(frame: .zero)
     private var pillViews: [TabID: NativeGlassTabPillView] = [:]
     private var descriptor: BonsplitPaneChromeDescriptor?
+    /// Safari-style "+" after the last pill; scrolls with the tabs.
+    private let newTabButton = GlassIconClusterView(symbols: [
+        (name: "plus", tooltip: String(localized: "tabBar.newTab", defaultValue: "New Tab")),
+    ])
 
     /// Space kept clear at the trailing edge for the workspace control capsules
     /// that share this strip.
@@ -505,6 +515,7 @@ private final class NativePaneTabBarView: NSView {
         scrollView.verticalScrollElasticity = .none
         scrollView.documentView = documentView
         addSubview(scrollView)
+        documentView.addSubview(newTabButton)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -547,6 +558,7 @@ private final class NativePaneTabBarView: NSView {
                 dragState: { [weak descriptor] active in descriptor?.onDragStateChanged(tab.id, active) }
             )
         }
+        newTabButton.setActions([descriptor.onNewTab])
         // Title changes arrive outside AppKit's layout cadence; needsLayout
         // reruns layoutPills() in the next pass (widths track intrinsic size).
         needsLayout = true
@@ -554,16 +566,18 @@ private final class NativePaneTabBarView: NSView {
 
     private func layoutPills() {
         guard let descriptor else { return }
-        let gap: CGFloat = 7
+        let gap: CGFloat = 8
         let minPillWidth: CGFloat = 78
         let leadingInset = max(0, descriptor.leadingInset)
         let height = max(28, scrollView.contentSize.height)
         let pills = descriptor.tabs.compactMap { pillViews[$0.id] }
+        let plusWidth = newTabButton.preferredWidth
 
         // Natural width per pill; only compress (which is what introduces
-        // truncation) once the row genuinely runs out of space.
+        // truncation) once the row genuinely runs out of space. The "+" always
+        // keeps its seat at the end of the row.
         var widths = pills.map { min(220, max(minPillWidth, $0.preferredWidth)) }
-        let available = scrollView.contentSize.width - leadingInset
+        let available = scrollView.contentSize.width - leadingInset - (gap + plusWidth)
         let naturalTotal = widths.reduce(0, +) + gap * CGFloat(max(0, widths.count - 1))
         if naturalTotal > available, !widths.isEmpty {
             let evenWidth = (available - gap * CGFloat(widths.count - 1)) / CGFloat(widths.count)
@@ -577,6 +591,8 @@ private final class NativePaneTabBarView: NSView {
             pill.layoutSubtreeIfNeeded()
             x += width + gap
         }
+        newTabButton.frame = NSRect(x: x, y: 0, width: plusWidth, height: height)
+        x += plusWidth + gap
         documentView.frame = NSRect(x: 0, y: 0, width: max(x, scrollView.contentSize.width), height: height)
     }
 }
