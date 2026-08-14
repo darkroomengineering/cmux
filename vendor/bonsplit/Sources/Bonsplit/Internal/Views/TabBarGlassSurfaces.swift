@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 enum TabBarGlassStyling {
-    static let verticalInset: CGFloat = 4
-    static let barHeight: CGFloat = TabBarMetrics.tabHeight + (verticalInset * 2)
+    // Chrome spacing grid: 8pt above and below the 28pt pill row.
+    static let verticalInset: CGFloat = 8
+    static let barHeight: CGFloat = 28 + (verticalInset * 2)
 
     static var isAvailable: Bool {
         #if compiler(>=6.2)

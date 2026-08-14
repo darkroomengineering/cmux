@@ -511,7 +511,7 @@ private final class NativePaneTabBarView: NSView {
 
     override func layout() {
         super.layout()
-        var scrollFrame = bounds.insetBy(dx: 8, dy: 5)
+        var scrollFrame = bounds.insetBy(dx: 8, dy: 8)
         scrollFrame.size.width = max(0, scrollFrame.width - trailingReservedWidth)
         scrollView.frame = scrollFrame
         layoutPills()
@@ -603,6 +603,8 @@ private final class GlassIconClusterView: NSView {
         #if compiler(>=6.2)
         glass.style = .regular
         glass.cornerRadius = WindowGlassEffect.controlCornerRadius
+        // Same surface tone as the selected pill (see applySurfaceState).
+        glass.tintColor = NSColor.labelColor.withAlphaComponent(0.12)
         glass.contentView = container
         #endif
         addSubview(glass)
@@ -621,9 +623,9 @@ private final class GlassIconClusterView: NSView {
         }
         actions = Array(repeating: {}, count: symbols.count)
         defaultTooltips = symbols.map(\.tooltip)
-        // Same resting surface as an unselected tab pill, so the strip's three
-        // capsules read as one material family.
-        alphaValue = 0.82
+        // Full-presence like the selected pill; the shared tint above keeps the
+        // strip's three capsule surfaces in one material family.
+        alphaValue = 1.0
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -735,15 +737,17 @@ private final class NativeGlassTabPillView: NSView, NSDraggingSource {
     /// Accent fills fight the native material; tint with the text primary.
     private func applySurfaceState() {
         #if compiler(>=6.2)
+        // One shared surface tone across the strip: selected pills and the
+        // control capsules use labelColor@0.12; quiet pills stay untinted.
         if isSelected {
-            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.16)
+            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.12)
         } else if isHovered {
-            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.08)
+            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.06)
         } else {
             glass.tintColor = nil
         }
         #endif
-        alphaValue = isSelected ? 1.0 : (isHovered ? 0.94 : 0.82)
+        alphaValue = isSelected ? 1.0 : (isHovered ? 0.94 : 0.85)
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
