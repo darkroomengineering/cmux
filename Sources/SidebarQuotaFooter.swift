@@ -20,8 +20,9 @@ struct SidebarQuotaFooter: View {
                     window: snapshot.sevenDay
                 )
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            // Sidebar spacing grid: 4pt base, edges on 8.
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
         } else {
             EmptyView()
         }

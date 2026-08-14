@@ -243,9 +243,6 @@ struct VerticalTabsSidebar: View {
             GeometryReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
-                        Spacer()
-                            .frame(height: 6)
-
                         // Workspaces are bounded, so prefer a non-lazy stack here.
                         // LazyVStack + drag-state invalidations can recurse through layout.
                         VStack(spacing: tabRowSpacing) {

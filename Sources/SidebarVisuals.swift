@@ -22,10 +22,10 @@ struct SidebarFooter: View {
 #if DEBUG
         SidebarDevFooter(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
 #else
+        // Sidebar spacing grid: 4pt base, edges on 8.
         SidebarFooterButtons(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
-            .padding(.leading, 6)
-            .padding(.trailing, 10)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
 #endif
     }
 }
@@ -487,7 +487,7 @@ private struct SidebarDevFooter: View {
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             SidebarFooterButtons(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
             if showSidebarDevBuildBanner {
                 Text(String(localized: "debug.devBuildBanner.title", defaultValue: "THIS IS A DEV BUILD"))
@@ -495,9 +495,9 @@ private struct SidebarDevFooter: View {
                     .foregroundColor(.red)
             }
         }
-        .padding(.leading, 6)
-        .padding(.trailing, 10)
-        .padding(.bottom, 6)
+        // Sidebar spacing grid: 4pt base, edges on 8.
+        .padding(.horizontal, 8)
+        .padding(.bottom, 8)
     }
 }
 #endif

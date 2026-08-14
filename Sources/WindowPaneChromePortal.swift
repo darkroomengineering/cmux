@@ -118,7 +118,8 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
             return
         }
         let barHeight: CGFloat = 28
-        var y = hostView.bounds.maxY - barHeight - 5
+        // Chrome spacing grid: 4pt base, edges on 8.
+        var y = hostView.bounds.maxY - barHeight - 8
 
         newTabCluster.setActions([active.onNewTab, active.onNewBrowserTab])
         newTabCluster.isHidden = false
@@ -129,7 +130,7 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
             width: newTabCluster.preferredWidth,
             height: barHeight
         )
-        y -= barHeight + 7
+        y -= barHeight + 8
 
         // Cap workspace splits at a 2x2-equivalent depth; deeper trees degenerate
         // into slivers. Checked here (live pane count) rather than at publish time,

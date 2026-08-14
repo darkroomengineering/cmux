@@ -405,6 +405,12 @@ struct WorkspaceContentView: View {
                 bonsplitView
             }
         }
+        // The card's visible body is bonsplit's pane background; clip it to the
+        // card shape (portal-hosted surfaces above carry the same radius).
+        .clipShape(RoundedRectangle(
+            cornerRadius: usesCardLayout ? WindowGlassEffect.contentCardCornerRadius : 0,
+            style: .continuous
+        ))
         .background(
             WindowAccessor(dedupeByWindow: false) { window in
                 if #available(macOS 26.0, *) {
