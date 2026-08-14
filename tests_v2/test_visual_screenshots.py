@@ -744,16 +744,17 @@ def test_g19_alternating_close_reverse(client: cmux) -> StateChange:
     """G19: Alternating splits then close all in reverse."""
     change = StateChange(
         name="Alternating Splits: Close in Reverse", group="G",
-        description="right, down, right, down → close all in reverse order",
-        command="split right/down/right/down; close 4,3,2,1",
+        description="right, down, right → close all in reverse order",
+        command="split right/down/right; close 3,2,1",
     )
-    directions = ["right", "down", "right", "down"]
+    # 3 splits = 4 panes, the workspace split cap; a 4th split is refused.
+    directions = ["right", "down", "right"]
     for d in directions:
         client.new_split(d)
         time.sleep(SPLIT_WAIT)
     change.before, change.before_state = capture(client, "g19_before")
     try:
-        for i in range(4, 0, -1):
+        for i in range(3, 0, -1):
             surfaces = client.list_surfaces()
             n = len(surfaces)
             if n <= 1:
