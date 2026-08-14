@@ -663,10 +663,11 @@ struct ContentView: View {
     }
 
     private var effectiveTitlebarPadding: CGFloat {
+        // Inverted card layout with the sidebar visible: the strip owns the
+        // card's top — the legacy 32pt titlebar band is dead space there. With
+        // the sidebar hidden the titlebar accessory controls still need it.
+        if cardInsetAmount > 0 && sidebarState.isVisible { return 0 }
         if isMinimalMode {
-            // Inverted card layout: the card inset + pane tab strip own the top;
-            // pulling content up under the (hidden) titlebar overflows the card
-            // past the window edge.
             if cardInsetAmount > 0 { return 0 }
             return isFullScreen ? 0 : -titlebarPadding
         }
@@ -732,7 +733,9 @@ struct ContentView: View {
         }
         .padding(.top, effectiveTitlebarPadding)
         .overlay(alignment: .top) {
-            if !isMinimalMode {
+            // Card layout with the sidebar visible has no titlebar band (see
+            // effectiveTitlebarPadding) — the overlay would float over pills.
+            if !isMinimalMode && !(cardInsetAmount > 0 && sidebarState.isVisible) {
                 // Titlebar overlay is only over terminal content, not the sidebar.
                 customTitlebar
             }

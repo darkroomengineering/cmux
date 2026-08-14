@@ -489,10 +489,19 @@ private final class NativePaneTabBarView: NSView {
     private let documentView = FlippedDocumentView(frame: .zero)
     private var pillViews: [TabID: NativeGlassTabPillView] = [:]
     private var descriptor: BonsplitPaneChromeDescriptor?
-    /// Safari-style "+" after the last pill; scrolls with the tabs.
-    private let newTabButton = GlassIconClusterView(symbols: [
-        (name: "plus", tooltip: String(localized: "tabBar.newTab", defaultValue: "New Tab")),
-    ])
+    /// Safari-style "+" after the last pill; scrolls with the tabs. Bare glyph,
+    /// no capsule — it's an affordance, not a peer of the tab pills.
+    private let newTabButton: NSButton = {
+        let title = String(localized: "tabBar.newTab", defaultValue: "New Tab")
+        let button = NSButton(frame: .zero)
+        button.image = NSImage(systemSymbolName: "plus", accessibilityDescription: title)
+        button.isBordered = false
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = title
+        button.setAccessibilityLabel(title)
+        return button
+    }()
+    private var newTabAction: (() -> Void)?
 
     /// Space kept clear at the trailing edge for the workspace control capsules
     /// that share this strip.
@@ -515,8 +524,12 @@ private final class NativePaneTabBarView: NSView {
         scrollView.verticalScrollElasticity = .none
         scrollView.documentView = documentView
         addSubview(scrollView)
+        newTabButton.target = self
+        newTabButton.action = #selector(newTabPressed)
         documentView.addSubview(newTabButton)
     }
+
+    @objc private func newTabPressed() { newTabAction?() }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -558,7 +571,7 @@ private final class NativePaneTabBarView: NSView {
                 dragState: { [weak descriptor] active in descriptor?.onDragStateChanged(tab.id, active) }
             )
         }
-        newTabButton.setActions([descriptor.onNewTab])
+        newTabAction = descriptor.onNewTab
         // Title changes arrive outside AppKit's layout cadence; needsLayout
         // reruns layoutPills() in the next pass (widths track intrinsic size).
         needsLayout = true
@@ -571,7 +584,7 @@ private final class NativePaneTabBarView: NSView {
         let leadingInset = max(0, descriptor.leadingInset)
         let height = max(28, scrollView.contentSize.height)
         let pills = descriptor.tabs.compactMap { pillViews[$0.id] }
-        let plusWidth = newTabButton.preferredWidth
+        let plusWidth: CGFloat = 28
 
         // Natural width per pill; only compress (which is what introduces
         // truncation) once the row genuinely runs out of space. The "+" always
