@@ -33,6 +33,16 @@ final class WindowDecorationsController {
         // Titlebar layout resets button positions on resize and fullscreen churn.
         observers.append(center.addObserver(forName: NSWindow.didEndLiveResizeNotification, object: nil, queue: .main, using: handler))
         observers.append(center.addObserver(forName: NSWindow.didExitFullScreenNotification, object: nil, queue: .main, using: handler))
+        // Live resize relayouts the titlebar per frame and snaps the buttons back
+        // to the stock corner until the drag ends; re-seat them synchronously on
+        // every resize tick so they hold position through the whole drag.
+        observers.append(center.addObserver(forName: NSWindow.didResizeNotification, object: nil, queue: .main) { [weak self] notification in
+            guard let self, let window = notification.object as? NSWindow else { return }
+            guard window.inLiveResize else { return }
+            let hidden = self.shouldHideTrafficLights(for: window)
+            let offset = hidden ? NSPoint.zero : self.trafficLightOffset(for: window)
+            self.applyTrafficLightOffsetNow(on: window, offset: offset)
+        })
     }
 
     private func attachToExistingWindows() {
