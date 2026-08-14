@@ -200,10 +200,14 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         // survivor's registration. Ask live anchors to reassert on the next turn —
         // scoped to this window so workspace churn (a storm of pane closes) does
         // not trigger app-wide republish storms.
-        DispatchQueue.main.async { [weak self] in
+        // Capture the window itself: posting with a nil object would be an
+        // app-wide broadcast (the storm this scoping exists to prevent), and a
+        // window that died before the post has no anchors left to reassert.
+        DispatchQueue.main.async { [weak window = self.window] in
+            guard let window else { return }
             NotificationCenter.default.post(
                 name: BonsplitPaneChromeAnchorNotifications.reassertRequest,
-                object: self?.window
+                object: window
             )
         }
     }
