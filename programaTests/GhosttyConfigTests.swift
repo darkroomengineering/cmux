@@ -677,46 +677,31 @@ final class WindowTransparencyDecisionTests: XCTestCase {
         }
     }
 
-    func testGlassEnabledDecisionIsIndependentOfSidebarBlendAndImplementationAvailability() {
+    func testGlassIsStockWhenAvailableAndOptInOtherwise() {
+        // Legacy opt-in still decides when the native glass is unavailable.
         XCTAssertTrue(
-            cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "behindWindow",
-                bgGlassEnabled: true,
-                glassEffectAvailable: false
-            )
-        )
-        XCTAssertTrue(
-            cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "behindWindow",
-                bgGlassEnabled: true,
-                glassEffectAvailable: true
-            )
-        )
-        XCTAssertTrue(
-            cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "withinWindow",
-                bgGlassEnabled: true,
-                glassEffectAvailable: true
-            )
+            cmuxShouldApplyWindowGlass(bgGlassEnabled: true, glassEffectAvailable: false)
         )
         XCTAssertFalse(
-            cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "withinWindow",
-                bgGlassEnabled: false,
-                glassEffectAvailable: true
-            )
+            cmuxShouldApplyWindowGlass(bgGlassEnabled: false, glassEffectAvailable: false)
+        )
+        // Inverted layout: glass is the stock treatment whenever available.
+        XCTAssertTrue(
+            cmuxShouldApplyWindowGlass(bgGlassEnabled: false, glassEffectAvailable: true)
         )
         XCTAssertTrue(
+            cmuxShouldApplyWindowGlass(bgGlassEnabled: true, glassEffectAvailable: true)
+        )
+        // The startup performance override wins in both directions.
+        XCTAssertTrue(
             cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "withinWindow",
                 bgGlassEnabled: false,
-                glassEffectAvailable: true,
+                glassEffectAvailable: false,
                 performanceOverride: true
             )
         )
         XCTAssertFalse(
             cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: "behindWindow",
                 bgGlassEnabled: true,
                 glassEffectAvailable: true,
                 performanceOverride: false

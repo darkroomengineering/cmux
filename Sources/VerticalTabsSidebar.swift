@@ -404,7 +404,6 @@ struct VerticalTabsSidebar: View {
             draggedTabId = nil
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .modifier(SidebarTerminalColorScheme())
     }
 
     private func debugShortSidebarTabId(_ id: UUID?) -> String {

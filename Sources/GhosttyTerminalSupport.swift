@@ -21,7 +21,6 @@ func ghostty_surface_select_cursor_cell_compat(_ surface: ghostty_surface_t) -> 
 
 #if os(macOS)
 func cmuxShouldApplyWindowGlass(
-    sidebarBlendMode _: String,
     bgGlassEnabled: Bool,
     glassEffectAvailable: Bool,
     performanceOverride: Bool? = nil
@@ -36,10 +35,8 @@ func cmuxShouldApplyWindowGlass(
 
 func cmuxShouldUseTransparentBackgroundWindow() -> Bool {
     let defaults = UserDefaults.standard
-    let sidebarBlendMode = defaults.string(forKey: "sidebarBlendMode") ?? "withinWindow"
     let bgGlassEnabled = defaults.object(forKey: "bgGlassEnabled") as? Bool ?? false
     return cmuxShouldApplyWindowGlass(
-        sidebarBlendMode: sidebarBlendMode,
         bgGlassEnabled: bgGlassEnabled,
         glassEffectAvailable: WindowGlassEffect.isAvailable,
         performanceOverride: ProgramaGlassSettings.startupOverride(for: .window)

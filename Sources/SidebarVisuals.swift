@@ -517,34 +517,6 @@ enum SidebarTerminalAppearance {
     }
 }
 
-/// Applies the terminal-derived scheme to a subtree while the sidebar is matching the
-/// terminal background, so every label in it picks contrast from the colour it sits on.
-struct SidebarTerminalColorScheme: ViewModifier {
-    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
-    @Environment(\.accessibilityReduceTransparency) private var accessibilityReduceTransparency
-    @State private var scheme: ColorScheme = SidebarTerminalAppearance.colorScheme()
-
-    /// Inverted layout: the sidebar sits on the system-appearance window glass, so
-    /// it follows the system scheme. Only the explicit terminal-background option
-    /// still borrows the terminal's luminance.
-    private var followsTerminal: Bool {
-        matchTerminalBackground
-    }
-
-    func body(content: Content) -> some View {
-        Group {
-            if followsTerminal {
-                content.environment(\.colorScheme, scheme)
-            } else {
-                content
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
-            scheme = SidebarTerminalAppearance.colorScheme()
-        }
-    }
-}
-
 struct SidebarTopScrim: View {
     let height: CGFloat
     @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
