@@ -10,7 +10,21 @@ import Darwin
 import Network
 import CoreText
 
+/// One predicate for the workspace split cap: the pane-chrome split buttons
+/// disable at this count, and the delegate veto below enforces it for every
+/// other entry point (Cmd+D, drag-to-edge, socket commands).
+enum SplitPolicy {
+    static let maxPanesPerWorkspace = 4
+}
+
 extension Workspace: @preconcurrency BonsplitDelegate {
+    func splitTabBar(_ controller: BonsplitController, shouldSplitPane pane: PaneID, orientation: SplitOrientation) -> Bool {
+        // Deeper than 2x2 degenerates into slivers; the split-button capsule
+        // shows a "Split limit reached" tooltip at the same threshold. Session
+        // restore bypasses the cap — pre-cap layouts must round-trip intact.
+        isRestoringSessionLayout || controller.allPaneIds.count < SplitPolicy.maxPanesPerWorkspace
+    }
+
     @MainActor
     private func shouldCloseWorkspaceOnLastSurface(for tabId: TabID) -> Bool {
         let manager = owningTabManager ?? AppDelegate.shared?.tabManagerFor(tabId: id) ?? AppDelegate.shared?.tabManager

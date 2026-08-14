@@ -120,7 +120,9 @@ extension Workspace {
         for panelSnapshot in snapshot.panels where panelSnapshotsById[panelSnapshot.id] == nil {
             panelSnapshotsById[panelSnapshot.id] = panelSnapshot
         }
+        isRestoringSessionLayout = true
         let leafEntries = restoreSessionLayout(snapshot.layout)
+        isRestoringSessionLayout = false
         var oldToNewPanelIds: [UUID: UUID] = [:]
 
         for entry in leafEntries {

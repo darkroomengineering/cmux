@@ -191,7 +191,8 @@ def main() -> int:
         time.sleep(0.35)
 
         # Create a multi-pane layout to exercise bonsplit/SwiftUI focus races.
-        for _ in range(4):
+        # 3 splits = 4 panes, the workspace split cap; a 4th split is refused.
+        for _ in range(3):
             c.new_split("right")
             time.sleep(0.25)
 

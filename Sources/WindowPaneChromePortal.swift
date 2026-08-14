@@ -32,6 +32,8 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
     private var bars: [PaneID: NativePaneTabBarView] = [:]
     private var descriptors: [PaneID: BonsplitPaneChromeDescriptor] = [:]
     private var observers: [NSObjectProtocol] = []
+    private var anchorObservers: [PaneID: (anchor: NSView, tokens: [NSObjectProtocol])] = [:]
+    private weak var cachedTerminalHost: WindowTerminalHostView?
     private var isTornDown = false
     /// Workspace-level split controls, pinned to the terminal area's top-right like
     /// Maps' map controls; they act on the focused pane rather than per-pane copies.
@@ -72,10 +74,16 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
 
     deinit {
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        for entry in anchorObservers.values {
+            for token in entry.tokens { NotificationCenter.default.removeObserver(token) }
+        }
     }
 
     func updatePaneChrome(_ descriptor: BonsplitPaneChromeDescriptor) {
         descriptors[descriptor.paneID] = descriptor
+        if let anchor = descriptor.anchorView {
+            observeAnchor(anchor, paneID: descriptor.paneID)
+        }
         ensureInstalled()
 #if DEBUG
         dlog(
@@ -102,9 +110,8 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
     private func updateClusters() {
         // Anchors can move to another window (workspace drag-out); their stale
         // descriptors must not steer this window's controls.
-        let visible = descriptors.values.filter {
-            $0.isVisible && $0.anchorView?.window === window
-        }
+        let inWindow = descriptors.values.filter { $0.anchorView?.window === window }
+        let visible = inWindow.filter(\.isVisible)
         guard let active = visible.first(where: { $0.isFocused }) ?? visible.first else {
             newTabCluster.isHidden = true
             splitCluster.isHidden = true
@@ -126,9 +133,20 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
 
         // Cap workspace splits at a 2x2-equivalent depth; deeper trees degenerate
         // into slivers. Checked here (live pane count) rather than at publish time,
-        // where it goes stale when panes collapse without a republish.
-        if visible.count < 4, active.showsSplitButtons {
+        // where it goes stale when panes collapse without a republish. At the cap
+        // the capsule stays visible but disabled so the affordance doesn't vanish.
+        // Counts registered panes, not visible ones: zoomed-away panes still
+        // exist, and the Workspace delegate vetoes splits on the same predicate.
+        if active.showsSplitButtons {
+            let canSplit = inWindow.count < SplitPolicy.maxPanesPerWorkspace
             splitCluster.setActions([active.onSplitRight, active.onSplitDown])
+            splitCluster.setEnabled(
+                canSplit,
+                disabledTooltip: String(
+                    localized: "tabBar.splitLimitReached",
+                    defaultValue: "Split limit reached"
+                )
+            )
             splitCluster.isHidden = false
             hostView.addSubview(splitCluster)
             splitCluster.frame = NSRect(
@@ -153,6 +171,9 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         guard matches else { return }
         descriptors.removeValue(forKey: paneID)
         bars.removeValue(forKey: paneID)?.removeFromSuperview()
+        if let entry = anchorObservers.removeValue(forKey: paneID) {
+            for token in entry.tokens { NotificationCenter.default.removeObserver(token) }
+        }
         updateClusters()
         // Split-tree churn can register two anchor instances for one pane; the
         // dying instance publishes last and its dismantle lands here, deleting the
@@ -184,26 +205,18 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
                 self.scheduleSynchronizeAll()
             }
         })
-        for name in [
-            NSView.frameDidChangeNotification,
-            NSView.boundsDidChangeNotification,
-            BonsplitPaneChromeAnchorNotifications.anchorDidMoveToWindow,
-        ] {
+        // Split collapses and divider animation move the anchor via its
+        // ancestors — the anchor's own frame never changes, so resync whenever
+        // an ancestor of any anchor resizes (coalesced). Ancestors are arbitrary
+        // views, so this pair stays app-global with a cheap window gate; the
+        // anchors' own geometry is tracked per-object in observeAnchor(_:paneID:).
+        for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 MainActor.assumeIsolated {
                     guard let self, let view = note.object as? NSView, view.window === self.window else { return }
-                    if let paneID = self.descriptors.first(where: { $0.value.anchorView === view })?.key {
-                        // The anchor can join the window before the terminal host exists
-                        // in the hierarchy; re-check installation before syncing.
-                        self.ensureInstalled()
-                        self.synchronize(paneID)
-                        return
-                    }
-                    // Split collapses and divider animation move the anchor via its
-                    // ancestors — the anchor's own frame never changes, so resync
-                    // whenever an ancestor of any anchor resizes (coalesced).
                     let ancestorOfAnchor = self.descriptors.values.contains {
-                        $0.anchorView?.isDescendant(of: view) == true
+                        guard let anchor = $0.anchorView, anchor !== view else { return false }
+                        return anchor.isDescendant(of: view)
                     }
                     if ancestorOfAnchor { self.scheduleSynchronizeAll() }
                 }
@@ -232,9 +245,45 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
         })
     }
 
+    /// Tracks a single anchor's own frame/bounds/window-join notifications,
+    /// object-scoped so app-wide view churn never reaches these handlers.
+    private func observeAnchor(_ anchor: NSView, paneID: PaneID) {
+        if let existing = anchorObservers[paneID] {
+            if existing.anchor === anchor { return }
+            for token in existing.tokens { NotificationCenter.default.removeObserver(token) }
+        }
+        let center = NotificationCenter.default
+        var tokens: [NSObjectProtocol] = []
+        for name in [
+            NSView.frameDidChangeNotification,
+            NSView.boundsDidChangeNotification,
+            BonsplitPaneChromeAnchorNotifications.anchorDidMoveToWindow,
+        ] {
+            tokens.append(center.addObserver(forName: name, object: anchor, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // The anchor can join the window before the terminal host exists
+                    // in the hierarchy; re-check installation before syncing.
+                    self.ensureInstalled()
+                    self.synchronize(paneID)
+                }
+            })
+        }
+        anchorObservers[paneID] = (anchor, tokens)
+    }
+
     private func ensureInstalled() {
         guard !isTornDown, supportsNativePaneChrome, let window else { return }
-        guard let terminalHost = findTerminalHost(in: window.contentView) else {
+        // Called from every descriptor update and geometry pass; a full-window
+        // recursive search each time is the dominant cost, so cache the host and
+        // re-find only when it leaves the window.
+        let terminalHost: WindowTerminalHostView
+        if let cached = cachedTerminalHost, cached.window === window {
+            terminalHost = cached
+        } else if let found = findTerminalHost(in: window.contentView) {
+            cachedTerminalHost = found
+            terminalHost = found
+        } else {
 #if DEBUG
             dlog("paneChrome.install.noTerminalHost win=\(window.windowNumber)")
 #endif
@@ -371,6 +420,11 @@ final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBr
     private func teardown() {
         isTornDown = true
         descriptors.removeAll()
+        for entry in anchorObservers.values {
+            for token in entry.tokens { NotificationCenter.default.removeObserver(token) }
+        }
+        anchorObservers.removeAll()
+        cachedTerminalHost = nil
         bars.values.forEach { $0.removeFromSuperview() }
         bars.removeAll()
         splitCluster.isHidden = true
@@ -516,6 +570,7 @@ private final class GlassIconClusterView: NSView {
     private let container = NSView(frame: .zero)
     private var buttons: [NSButton] = []
     private var actions: [() -> Void] = []
+    private var defaultTooltips: [String] = []
 
     static let buttonWidth: CGFloat = 34
 
@@ -541,6 +596,7 @@ private final class GlassIconClusterView: NSView {
             buttons.append(button)
         }
         actions = Array(repeating: {}, count: symbols.count)
+        defaultTooltips = symbols.map(\.tooltip)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -550,6 +606,16 @@ private final class GlassIconClusterView: NSView {
     func setActions(_ newActions: [() -> Void]) {
         guard newActions.count == buttons.count else { return }
         actions = newActions
+    }
+
+    /// Disabled buttons keep the capsule visible (the affordance shouldn't
+    /// vanish at a limit) but explain themselves through the swapped tooltip.
+    func setEnabled(_ enabled: Bool, disabledTooltip: String? = nil) {
+        for (index, button) in buttons.enumerated() {
+            button.isEnabled = enabled
+            button.contentTintColor = enabled ? .secondaryLabelColor : .tertiaryLabelColor
+            button.toolTip = enabled ? defaultTooltips[index] : (disabledTooltip ?? defaultTooltips[index])
+        }
     }
 
     override func layout() {
@@ -760,6 +826,27 @@ private final class NativeTabPillControl: NSControl, NSMenuDelegate, NSDraggingS
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // Full Keyboard Access: the pill joins the key-view loop, activates on
+    // Space/Return, and draws the standard ring clipped to its capsule shape.
+    // Gated like NSButton — unconditional acceptance would let a plain click
+    // pull first responder off the terminal surface.
+    override var acceptsFirstResponder: Bool { NSApp.isFullKeyboardAccessEnabled }
+
+    override var focusRingMaskBounds: NSRect { bounds }
+
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds, xRadius: 14, yRadius: 14).fill()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        switch event.keyCode {
+        case 49, 36, 76:  // space, return, keypad enter
+            selectAction?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
 
     override func mouseEntered(with event: NSEvent) {
         onHoverChanged?(true)
