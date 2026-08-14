@@ -696,15 +696,23 @@ final class WindowTransparencyDecisionTests: XCTestCase {
     private let sidebarBlendModeKey = "sidebarBlendMode"
     private let bgGlassEnabledKey = "bgGlassEnabled"
 
-    func testTranslucentOpacityForcesClearWindowBackgroundOutsideSidebarBlendModePath() {
+    func testWindowTransparencyFollowsGlassAvailabilityAndTerminalOpacity() {
         withTemporaryWindowBackgroundDefaults {
             let defaults = UserDefaults.standard
             defaults.set("withinWindow", forKey: sidebarBlendModeKey)
             defaults.set(false, forKey: bgGlassEnabledKey)
 
-            XCTAssertFalse(cmuxShouldUseTransparentBackgroundWindow())
+            if WindowGlassEffect.isAvailable {
+                // Inverted layout: the glass backdrop is stock, and it samples
+                // behind the window — transparency is on regardless of opacity.
+                XCTAssertTrue(cmuxShouldUseTransparentBackgroundWindow())
+                XCTAssertTrue(cmuxShouldUseClearWindowBackground(for: 1.0))
+            } else {
+                // Pre-26: opt-in off means only a translucent terminal clears it.
+                XCTAssertFalse(cmuxShouldUseTransparentBackgroundWindow())
+                XCTAssertFalse(cmuxShouldUseClearWindowBackground(for: 1.0))
+            }
             XCTAssertTrue(cmuxShouldUseClearWindowBackground(for: 0.80))
-            XCTAssertFalse(cmuxShouldUseClearWindowBackground(for: 1.0))
         }
     }
 

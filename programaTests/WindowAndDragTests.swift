@@ -41,17 +41,22 @@ final class WindowGlassEffectTests: XCTestCase {
         )
         window.contentView = originalContentView
 
+        // Track exactly what apply() adds — the theme frame carries its own
+        // system furniture (titlebar material) that a type check would match.
+        let themeFrame = try XCTUnwrap(originalContentView.superview)
+        let preexisting = Set(themeFrame.subviews.map(ObjectIdentifier.init))
+
         WindowGlassEffect.apply(to: window, tintColor: .systemBlue)
 
         // Inverted layout: the contentView is never replaced; the backdrop is a
-        // theme-frame sibling BELOW it. (The titlebar's own material lives in a
-        // nested container, so direct theme-frame subviews identify ours.)
+        // theme-frame sibling BELOW it.
         XCTAssertTrue(window.contentView === originalContentView)
-        let themeFrame = try XCTUnwrap(originalContentView.superview)
-        func isBackdrop(_ view: NSView) -> Bool {
-            WindowGlassEffect.isGlassEffectView(view) || view is NSVisualEffectView
-        }
-        let backdrop = try XCTUnwrap(themeFrame.subviews.first(where: isBackdrop))
+        let added = themeFrame.subviews.filter { !preexisting.contains(ObjectIdentifier($0)) }
+        XCTAssertEqual(added.count, 1)
+        let backdrop = try XCTUnwrap(added.first)
+        XCTAssertTrue(
+            WindowGlassEffect.isGlassEffectView(backdrop) || backdrop is NSVisualEffectView
+        )
         let backdropIndex = try XCTUnwrap(themeFrame.subviews.firstIndex(of: backdrop))
         let contentIndex = try XCTUnwrap(themeFrame.subviews.firstIndex(of: originalContentView))
         XCTAssertLessThan(backdropIndex, contentIndex)
@@ -59,7 +64,7 @@ final class WindowGlassEffectTests: XCTestCase {
         WindowGlassEffect.remove(from: window)
 
         XCTAssertTrue(window.contentView === originalContentView)
-        XCTAssertFalse(themeFrame.subviews.contains(where: isBackdrop))
+        XCTAssertFalse(themeFrame.subviews.contains(where: { $0 === backdrop }))
     }
 
     func testNativePaneChromePillsOwnAppKitControlsAboveTerminalPortal() throws {
