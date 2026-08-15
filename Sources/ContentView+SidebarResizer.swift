@@ -135,7 +135,6 @@ private struct NativeSidebarDividerRepresentable: NSViewRepresentable {
         nsView.onResizeBegan = onResizeBegan
         nsView.onWidthChanged = onWidthChanged
         nsView.onResizeEnded = onResizeEnded
-        nsView.window?.invalidateCursorRects(for: nsView)
     }
 
     static func dismantleNSView(_ nsView: NativeSidebarDividerView, coordinator: Void) {

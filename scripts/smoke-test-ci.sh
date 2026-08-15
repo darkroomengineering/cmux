@@ -114,6 +114,11 @@ sleep "$STABILITY_WAIT"
 
 if ! kill -0 "$APP_PID" 2>/dev/null; then
   echo "ERROR: App crashed during ${STABILITY_WAIT}s stability check"
+  set +e
+  wait "$APP_PID"
+  APP_EXIT_STATUS=$?
+  set -e
+  echo "App exit status: $APP_EXIT_STATUS"
   echo "--- stdout/stderr ---"
   tail -200 /tmp/programa-smoke-stdout.log 2>/dev/null || true
   echo "--- debug log ---"
