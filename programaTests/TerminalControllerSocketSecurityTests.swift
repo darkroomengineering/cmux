@@ -48,11 +48,40 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         )
         await drainMainQueue()
 
+        workspace.statusEntries["present"] = SidebarStatusEntry(key: "present", value: "running")
+        workspace.logEntries = [
+            SidebarLogEntry(message: "running", level: .progress, source: nil, timestamp: Date()),
+        ]
+        workspace.progress = SidebarProgressState(value: 0.5, label: "running")
+
         var publishCount = 0
         let cancellable = workspace.objectWillChange.sink { _ in
             publishCount += 1
         }
         defer { cancellable.cancel() }
+
+        _ = TerminalController.shared.v2WorkspaceClearStatus(params: [
+            "workspace_id": workspace.id.uuidString,
+            "key": "present",
+        ])
+        _ = TerminalController.shared.v2WorkspaceClearLog(params: [
+            "workspace_id": workspace.id.uuidString,
+        ])
+        _ = TerminalController.shared.v2WorkspaceClearProgress(params: [
+            "workspace_id": workspace.id.uuidString,
+        ])
+        await drainMainQueue()
+
+        XCTAssertNil(workspace.statusEntries["present"])
+        XCTAssertTrue(workspace.logEntries.isEmpty)
+        XCTAssertNil(workspace.progress)
+        XCTAssertGreaterThanOrEqual(
+            publishCount,
+            3,
+            "Populated clear commands should reach the workspace and publish their removals"
+        )
+
+        publishCount = 0
 
         _ = TerminalController.shared.v2WorkspaceClearStatus(params: [
             "workspace_id": workspace.id.uuidString,
