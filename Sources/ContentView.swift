@@ -40,10 +40,7 @@ struct ContentView: View {
     @State var isResizerBandActive = false
     @State var isSidebarResizerCursorActive = false
     @State var sidebarResizerCursorStabilizer: DispatchSourceTimer?
-    // The dedicated CommandPaletteRootView observes this reference inside the
-    // AppKit overlay. Keeping only its identity in State prevents palette query
-    // and selection publishes from invalidating the whole window shell.
-    @State private var commandPaletteController = CommandPaletteController()
+    @StateObject private var commandPaletteController = CommandPaletteController()
     private var isCommandPalettePresented: Bool {
         get { commandPaletteController.isCommandPalettePresented }
         nonmutating set { commandPaletteController.isCommandPalettePresented = newValue }
@@ -1399,14 +1396,7 @@ struct ContentView: View {
                     let tmuxOverlayController = tmuxWorkspacePaneWindowOverlayController(for: window)
                     tmuxOverlayController.update(state: tmuxWorkspacePaneWindowOverlayState(for: window))
                     let overlayController = commandPaletteWindowOverlayController(for: window)
-                    let paletteRoot = CommandPaletteRootView(
-                        controller: commandPaletteController,
-                        content: { AnyView(commandPaletteOverlay) }
-                    )
-                    overlayController.update(
-                        rootView: AnyView(paletteRoot),
-                        controller: commandPaletteController
-                    )
+                    overlayController.update(rootView: AnyView(commandPaletteOverlay), isVisible: isCommandPalettePresented)
                 }
             })
     }

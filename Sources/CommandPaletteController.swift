@@ -4,12 +4,11 @@
 // ContentView and is exclusively used by the command palette (query, mode,
 // search corpus/results, rename/workspace-description drafts, focus-restore
 // targets, usage history, etc.). ContentView holds a single
-// `@State private var commandPaletteController` and exposes each
+// `@StateObject private var commandPaletteController` and exposes each
 // property back to its existing (unqualified) call sites in its body via
 // thin computed proxies — this keeps the ~4000 lines of palette orchestration
 // code that reads/writes these properties unchanged while genuinely moving
-// storage ownership onto the controller without subscribing the entire window
-// shell to palette-only updates.
+// storage ownership onto the controller (no more @State duplicated per-view).
 //
 // The two @FocusState properties (isCommandPaletteSearchFocused,
 // isCommandPaletteRenameFocused) stay on ContentView: @FocusState is a
@@ -69,21 +68,4 @@ final class CommandPaletteController: ObservableObject {
     @AppStorage(CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey)
     var commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
     @Published var commandPaletteShouldFocusWorkspaceDescriptionEditor = false
-}
-
-/// The existing AppKit window overlay hosts this root directly. It is the only
-/// SwiftUI owner that observes palette-only query, result, and selection state.
-struct CommandPaletteRootView: View {
-    @ObservedObject var controller: CommandPaletteController
-    let content: () -> AnyView
-
-    var body: some View {
-        Group {
-            if controller.isCommandPalettePresented {
-                content()
-            } else {
-                EmptyView()
-            }
-        }
-    }
 }
