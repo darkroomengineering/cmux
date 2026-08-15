@@ -46,6 +46,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
             socketPath: socketPath,
             accessMode: .allowAll
         )
+        await drainMainQueue()
 
         var publishCount = 0
         let cancellable = workspace.objectWillChange.sink { _ in

@@ -1275,6 +1275,24 @@ final class BrowserDeveloperToolsShortcutDefaultsTests: XCTestCase {
 
 @MainActor
 final class BrowserDeveloperToolsConfigurationTests: XCTestCase {
+    func testLifecycleOnlyProgressDoesNotRepublishBrowserChrome() {
+        let panel = BrowserPanel(workspaceId: UUID())
+        var publishCount = 0
+        let cancellable = panel.objectWillChange.sink {
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        panel.estimatedProgress = 0.5
+
+        XCTAssertEqual(
+            publishCount,
+            0,
+            "WebKit progress that the browser chrome does not render should not invalidate its SwiftUI observers"
+        )
+        XCTAssertEqual(panel.estimatedProgress, 0.5)
+    }
+
     func testBrowserPanelEnablesInspectableWebViewAndDeveloperExtras() {
         let panel = BrowserPanel(workspaceId: UUID())
         let developerExtras = panel.webView.configuration.preferences.value(forKey: "developerExtrasEnabled") as? Bool
