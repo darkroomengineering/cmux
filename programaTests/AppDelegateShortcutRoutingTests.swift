@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 
 #if canImport(Programa_DEV)
 @testable import Programa_DEV
@@ -10,6 +11,14 @@ private let appDelegateLastSurfaceCloseShortcutDefaultsKey = "closeWorkspaceOnLa
 private final class FakeWKInspectorContainerView: NSView {}
 private final class FocusableTestView: NSView {
     override var acceptsFirstResponder: Bool { true }
+}
+private final class CommandPaletteOverlayLifetimeProbe {}
+private struct CommandPaletteOverlayProbeView: View {
+    let probe: CommandPaletteOverlayLifetimeProbe
+
+    var body: some View {
+        EmptyView()
+    }
 }
 
 @MainActor
@@ -3206,6 +3215,64 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         wait(for: [moveExpectation], timeout: 1.0)
         XCTAssertEqual(observedWindow?.windowNumber, window.windowNumber)
         XCTAssertEqual(observedDelta, 1)
+    }
+
+    func testCommandPaletteOverlayReleasesHostedRootAndStopsAfterWindowClose() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = NSView(frame: window.contentLayoutRect)
+
+        let overlayController = commandPaletteWindowOverlayController(for: window)
+        let paletteController = CommandPaletteController()
+        paletteController.isCommandPalettePresented = true
+
+        weak var weakProbe: CommandPaletteOverlayLifetimeProbe?
+        do {
+            let probe = CommandPaletteOverlayLifetimeProbe()
+            weakProbe = probe
+            overlayController.update(
+                rootView: AnyView(CommandPaletteOverlayProbeView(probe: probe)),
+                controller: paletteController
+            )
+        }
+
+        guard let overlayContainer = findRealCommandPaletteOverlayContainer(in: window) else {
+            XCTFail("Expected the command palette overlay to be installed")
+            return
+        }
+        XCTAssertNotNil(weakProbe)
+        XCTAssertNotNil(overlayContainer.superview)
+
+        let paletteTextField = NSTextField(frame: NSRect(x: 12, y: 12, width: 180, height: 24))
+        overlayContainer.addSubview(paletteTextField)
+        XCTAssertTrue(window.makeFirstResponder(paletteTextField))
+        XCTAssertTrue(
+            window.firstResponder === paletteTextField ||
+                ((window.firstResponder as? NSTextView)?.delegate as? NSTextField) === paletteTextField
+        )
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        XCTAssertTrue(
+            waitUntil(description: "command palette hosted root release") {
+                weakProbe == nil
+            }
+        )
+        XCTAssertNil(overlayContainer.superview)
+        XCTAssertFalse(
+            window.firstResponder === paletteTextField ||
+                ((window.firstResponder as? NSTextView)?.delegate as? NSTextField) === paletteTextField
+        )
+
+        // A late controller publish and a duplicate close must both be harmless.
+        paletteController.isCommandPalettePresented = false
+        paletteController.isCommandPalettePresented = true
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertNil(overlayContainer.superview)
     }
 
     func testControlKDoesNotRoutePaletteMoveSelectionWhenSearchFieldIsFocused() {

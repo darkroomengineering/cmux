@@ -1,5 +1,6 @@
 import AppKit
 import Bonsplit
+import Combine
 import ObjectiveC
 import SwiftUI
 import WebKit
@@ -115,6 +116,10 @@ final class WindowCommandPaletteOverlayController: NSObject {
     private var isPaletteVisible = false
     private var windowDidBecomeKeyObserver: NSObjectProtocol?
     private var windowDidResignKeyObserver: NSObjectProtocol?
+    private var windowWillCloseObserver: NSObjectProtocol?
+    private var paletteVisibilityCancellable: AnyCancellable?
+    private var observedPaletteControllerID: ObjectIdentifier?
+    private var isTornDown = false
 
     init(window: NSWindow) {
         self.window = window
@@ -138,10 +143,12 @@ final class WindowCommandPaletteOverlayController: NSObject {
         ])
         _ = ensureInstalled()
         installWindowKeyObservers()
+        installWindowCloseObserver()
     }
 
     @discardableResult
     private func ensureInstalled() -> Bool {
+        guard !isTornDown else { return false }
         guard let window,
               let contentView = window.contentView,
               let themeFrame = contentView.superview else { return false }
@@ -335,6 +342,7 @@ final class WindowCommandPaletteOverlayController: NSObject {
     }
 
     private func focusIntoPalette(retries: Int) {
+        guard !isTornDown else { return }
         guard let window else { return }
 #if DEBUG
         dlog(
@@ -426,7 +434,56 @@ final class WindowCommandPaletteOverlayController: NSObject {
         }
     }
 
+    private func installWindowCloseObserver() {
+        guard let window else { return }
+        windowWillCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.tearDown()
+            }
+        }
+    }
+
+    private func tearDown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+
+        paletteVisibilityCancellable?.cancel()
+        paletteVisibilityCancellable = nil
+        observedPaletteControllerID = nil
+        stopFocusLockTimer()
+        isPaletteVisible = false
+
+        if let window, isPaletteResponder(window.firstResponder) {
+            _ = window.makeFirstResponder(nil)
+        }
+        hostingView.rootView = AnyView(EmptyView())
+        containerView.capturesMouseEvents = false
+        containerView.alphaValue = 0
+        containerView.isHidden = true
+        NSLayoutConstraint.deactivate(installConstraints)
+        installConstraints.removeAll()
+        containerView.removeFromSuperview()
+        installedThemeFrame = nil
+
+        for observer in [windowDidBecomeKeyObserver, windowDidResignKeyObserver, windowWillCloseObserver] {
+            if let observer {
+                NotificationCenter.default.removeObserver(observer)
+            }
+        }
+        windowDidBecomeKeyObserver = nil
+        windowDidResignKeyObserver = nil
+        windowWillCloseObserver = nil
+    }
+
     private func updateFocusLockForWindowState() {
+        guard !isTornDown else {
+            stopFocusLockTimer()
+            return
+        }
         guard let window else {
             stopFocusLockTimer()
             return
@@ -468,6 +525,7 @@ final class WindowCommandPaletteOverlayController: NSObject {
     }
 
     private func startFocusLockTimer() {
+        guard !isTornDown else { return }
         guard focusLockTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now(), repeating: .milliseconds(80), leeway: .milliseconds(12))
@@ -511,7 +569,30 @@ final class WindowCommandPaletteOverlayController: NSObject {
         editor.setSelectedRange(NSRange(location: length, length: 0))
     }
 
-    func update(rootView: AnyView, isVisible: Bool) {
+    func update(rootView: AnyView, controller: CommandPaletteController) {
+        guard !isTornDown else { return }
+        guard ensureInstalled() else { return }
+        hostingView.rootView = rootView
+
+        let controllerID = ObjectIdentifier(controller)
+        if observedPaletteControllerID != controllerID {
+            paletteVisibilityCancellable?.cancel()
+            observedPaletteControllerID = controllerID
+            paletteVisibilityCancellable = controller.$isCommandPalettePresented
+                .removeDuplicates()
+                .sink { [weak self] isVisible in
+                    Task { @MainActor [weak self] in
+                        self?.setVisible(isVisible)
+                    }
+                }
+        }
+        setVisible(controller.isCommandPalettePresented)
+    }
+
+    /// The AppKit owner observes only presentation state. Query, result, and
+    /// selection publishes remain scoped to `CommandPaletteRootView`.
+    private func setVisible(_ isVisible: Bool) {
+        guard !isTornDown else { return }
         guard ensureInstalled() else { return }
         let shouldPromote = CommandPaletteOverlayPromotionPolicy.shouldPromote(
             previouslyVisible: isPaletteVisible,
@@ -530,7 +611,6 @@ final class WindowCommandPaletteOverlayController: NSObject {
 #endif
         isPaletteVisible = isVisible
         if isVisible {
-            hostingView.rootView = rootView
             containerView.capturesMouseEvents = true
             containerView.isHidden = false
             containerView.alphaValue = 1
@@ -543,7 +623,6 @@ final class WindowCommandPaletteOverlayController: NSObject {
             if let window, isPaletteResponder(window.firstResponder) {
                 _ = window.makeFirstResponder(nil)
             }
-            hostingView.rootView = AnyView(EmptyView())
             containerView.capturesMouseEvents = false
             containerView.alphaValue = 0
             containerView.isHidden = true

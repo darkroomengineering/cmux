@@ -17,9 +17,7 @@ struct ContentView: View {
     @EnvironmentObject var programaConfigStore: ProgramaConfigStore
     @ObservedObject private var programaLayoutStore = ProgramaLayoutStore.shared
     @State var sidebarWidth: CGFloat = 200
-    @State var hoveredResizerHandles: Set<SidebarResizerHandle> = []
-    @State var isResizerDragging = false
-    @State var sidebarDragStartWidth: CGFloat?
+    @State var isSidebarResizerDragging = false
     @State private var selectedTabIds: Set<UUID> = []
     @State private var mountedWorkspaceIds: [UUID] = []
     @State private var lastSidebarSelectionIndex: Int? = nil
@@ -35,12 +33,10 @@ struct ContentView: View {
     @State private var titlebarThemeGeneration: UInt64 = 0
     @State private var sidebarDraggedTabId: UUID?
     @State private var titlebarTextUpdateCoalescer = NotificationBurstCoalescer(delay: 1.0 / 30.0)
-    @State var sidebarResizerCursorReleaseWorkItem: DispatchWorkItem?
-    @State var sidebarResizerPointerMonitor: Any?
-    @State var isResizerBandActive = false
-    @State var isSidebarResizerCursorActive = false
-    @State var sidebarResizerCursorStabilizer: DispatchSourceTimer?
-    @StateObject private var commandPaletteController = CommandPaletteController()
+    // The dedicated CommandPaletteRootView observes this reference inside the
+    // AppKit overlay. Keeping only its identity in State prevents palette query
+    // and selection publishes from invalidating the whole window shell.
+    @State private var commandPaletteController = CommandPaletteController()
     private var isCommandPalettePresented: Bool {
         get { commandPaletteController.isCommandPalettePresented }
         nonmutating set { commandPaletteController.isCommandPalettePresented = newValue }
@@ -1011,7 +1007,6 @@ struct ContentView: View {
                 tabManager.applyWindowBackgroundForSelectedTab()
                 reconcileMountedWorkspaceIds()
                 previousSelectedWorkspaceId = tabManager.selectedTabId
-                installSidebarResizerPointerMonitorIfNeeded()
                 let restoredWidth = normalizedSidebarWidth(sidebarState.persistedWidth)
                 if abs(sidebarWidth - restoredWidth) > 0.5 {
                     sidebarWidth = restoredWidth
@@ -1396,7 +1391,14 @@ struct ContentView: View {
                     let tmuxOverlayController = tmuxWorkspacePaneWindowOverlayController(for: window)
                     tmuxOverlayController.update(state: tmuxWorkspacePaneWindowOverlayState(for: window))
                     let overlayController = commandPaletteWindowOverlayController(for: window)
-                    overlayController.update(rootView: AnyView(commandPaletteOverlay), isVisible: isCommandPalettePresented)
+                    let paletteRoot = CommandPaletteRootView(
+                        controller: commandPaletteController,
+                        content: { AnyView(commandPaletteOverlay) }
+                    )
+                    overlayController.update(
+                        rootView: AnyView(paletteRoot),
+                        controller: commandPaletteController
+                    )
                 }
             })
     }
@@ -1434,7 +1436,6 @@ struct ContentView: View {
                 guard let window = notification.object as? NSWindow,
                       window === observedWindow else { return }
                 clampSidebarWidthIfNeeded(availableWidth: window.contentView?.bounds.width ?? window.contentLayoutRect.width)
-                updateSidebarResizerBandState()
             }
     }
 
@@ -1457,7 +1458,6 @@ struct ContentView: View {
                 } else {
                     TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronizeForAllWindows()
                 }
-                updateSidebarResizerBandState()
             }
             .onChange(of: sidebarState.isVisible) {
                 if let observedWindow {
@@ -1465,7 +1465,6 @@ struct ContentView: View {
                 } else {
                     TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronizeForAllWindows()
                 }
-                updateSidebarResizerBandState()
                 syncTrafficLightInset()
             }
             .onChange(of: sidebarMatchTerminalBackground) {
@@ -1486,7 +1485,7 @@ struct ContentView: View {
                     sidebarState.persistedWidth = sanitized
                     return
                 }
-                guard !isResizerDragging else { return }
+                guard !isSidebarResizerDragging else { return }
                 if abs(sidebarWidth - sanitized) > 0.5 {
                     sidebarWidth = sanitized
                 }
@@ -1497,14 +1496,6 @@ struct ContentView: View {
     private func attachFinalLifecycleHandlers(to view: some View) -> some View {
         view
             .ignoresSafeArea()
-            .onDisappear {
-                if isResizerDragging {
-                    TerminalWindowPortalRegistry.endInteractiveGeometryResize()
-                    isResizerDragging = false
-                    sidebarDragStartWidth = nil
-                }
-                removeSidebarResizerPointerMonitor()
-            }
     }
 
     @ViewBuilder
@@ -1534,8 +1525,6 @@ struct ContentView: View {
                         isFullScreen = window.styleMask.contains(.fullScreen)
                         clampSidebarWidthIfNeeded(availableWidth: window.contentView?.bounds.width ?? window.contentLayoutRect.width)
                         syncCommandPaletteDebugStateForObservedWindow()
-                        installSidebarResizerPointerMonitorIfNeeded()
-                        updateSidebarResizerBandState()
                     }
                 }
 

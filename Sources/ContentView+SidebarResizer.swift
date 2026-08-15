@@ -1,31 +1,157 @@
-// Sidebar resizer member group extracted from ContentView.swift (nuclear-review CV1 / issue #94).
-// The backing @State stays on `ContentView` (SwiftUI requires stored properties on the primary
-// declaration); those properties, plus `SidebarResizerHandle`, `updateSidebarResizerBandState`,
-// `installSidebarResizerPointerMonitorIfNeeded`, `removeSidebarResizerPointerMonitor`, and
-// `sidebarResizerOverlay`, were widened from `private` to internal so this extension and
-// ContentView.swift's view body can both see them. See the PR description for the exact list.
-
 import AppKit
 import SwiftUI
 
-extension ContentView {
-    private static let fixedSidebarResizeCursor = NSCursor(
+/// Owns the complete pointer lifecycle for the sidebar divider. AppKit keeps the
+/// drag capture after the pointer crosses a portal-hosted terminal or browser,
+/// so the SwiftUI root no longer needs a window-wide event monitor or cursor timer.
+private final class NativeSidebarDividerView: NSView {
+    private static let resizeCursor = NSCursor(
         image: NSCursor.resizeLeftRight.image,
         hotSpot: NSCursor.resizeLeftRight.hotSpot
     )
+
+    var currentWidth: CGFloat = 0
+    var onResizeBegan: () -> Void = {}
+    var onWidthChanged: (CGFloat) -> Void = { _ in }
+    var onResizeEnded: () -> Void = {}
+
+    private var trackingArea: NSTrackingArea?
+    private var windowResignObserver: NSObjectProtocol?
+    private var dragStartWidth: CGFloat = 0
+    private var dragStartWindowX: CGFloat = 0
+    private var isDragging = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.splitter)
+        setAccessibilityIdentifier("SidebarResizer")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        if let windowResignObserver {
+            NotificationCenter.default.removeObserver(windowResignObserver)
+        }
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: Self.resizeCursor)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let nextTrackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(nextTrackingArea)
+        trackingArea = nextTrackingArea
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let windowResignObserver {
+            NotificationCenter.default.removeObserver(windowResignObserver)
+            self.windowResignObserver = nil
+        }
+        guard let window else {
+            cancelActiveResize()
+            return
+        }
+        windowResignObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.cancelActiveResize()
+        }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        Self.resizeCursor.set()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        Self.resizeCursor.set()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !isDragging else { return }
+        isDragging = true
+        dragStartWidth = currentWidth
+        dragStartWindowX = event.locationInWindow.x
+        Self.resizeCursor.set()
+        onResizeBegan()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isDragging else { return }
+        Self.resizeCursor.set()
+        onWidthChanged(dragStartWidth + event.locationInWindow.x - dragStartWindowX)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        finishResize()
+    }
+
+    func cancelActiveResize() {
+        finishResize()
+    }
+
+    private func finishResize() {
+        guard isDragging else { return }
+        isDragging = false
+        onResizeEnded()
+    }
+}
+
+private struct NativeSidebarDividerRepresentable: NSViewRepresentable {
+    let currentWidth: CGFloat
+    let onResizeBegan: () -> Void
+    let onWidthChanged: (CGFloat) -> Void
+    let onResizeEnded: () -> Void
+
+    func makeNSView(context: Context) -> NativeSidebarDividerView {
+        NativeSidebarDividerView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NativeSidebarDividerView, context: Context) {
+        nsView.currentWidth = currentWidth
+        nsView.onResizeBegan = onResizeBegan
+        nsView.onWidthChanged = onWidthChanged
+        nsView.onResizeEnded = onResizeEnded
+        nsView.window?.invalidateCursorRects(for: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NativeSidebarDividerView, coordinator: Void) {
+        nsView.cancelActiveResize()
+        nsView.onResizeBegan = {}
+        nsView.onWidthChanged = { _ in }
+        nsView.onResizeEnded = {}
+    }
+}
+
+extension ContentView {
     private static let minimumSidebarWidth: CGFloat = CGFloat(SessionPersistencePolicy.minimumSidebarWidth)
     private static let maximumSidebarWidthRatio: CGFloat = 1.0 / 3.0
 
-    enum SidebarResizerHandle: Hashable {
-        case divider
-    }
-
     private var sidebarResizerSidebarHitWidth: CGFloat {
         SidebarResizeInteraction.sidebarSideHitWidth
-    }
-
-    private var sidebarResizerContentHitWidth: CGFloat {
-        SidebarResizeInteraction.contentSideHitWidth
     }
 
     private func maxSidebarWidth(availableWidth: CGFloat? = nil) -> CGFloat {
@@ -68,216 +194,6 @@ extension ContentView {
         Self.clampedSidebarWidth(candidate, maximumWidth: maxSidebarWidth())
     }
 
-    private func activateSidebarResizerCursor() {
-        sidebarResizerCursorReleaseWorkItem?.cancel()
-        sidebarResizerCursorReleaseWorkItem = nil
-        isSidebarResizerCursorActive = true
-        Self.fixedSidebarResizeCursor.set()
-    }
-
-    private func releaseSidebarResizerCursorIfNeeded(force: Bool = false) {
-        let isLeftMouseButtonDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
-        let shouldKeepCursor = !force
-            && (isResizerDragging || isResizerBandActive || !hoveredResizerHandles.isEmpty || isLeftMouseButtonDown)
-        guard !shouldKeepCursor else { return }
-        guard isSidebarResizerCursorActive else { return }
-        isSidebarResizerCursorActive = false
-        NSCursor.arrow.set()
-    }
-
-    private func scheduleSidebarResizerCursorRelease(force: Bool = false, delay: TimeInterval = 0) {
-        sidebarResizerCursorReleaseWorkItem?.cancel()
-        let workItem = DispatchWorkItem {
-            sidebarResizerCursorReleaseWorkItem = nil
-            releaseSidebarResizerCursorIfNeeded(force: force)
-        }
-        sidebarResizerCursorReleaseWorkItem = workItem
-        if delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
-        } else {
-            DispatchQueue.main.async(execute: workItem)
-        }
-    }
-
-    private func dividerBandContains(pointInContent point: NSPoint, contentBounds: NSRect) -> Bool {
-        guard point.y >= contentBounds.minY, point.y <= contentBounds.maxY else { return false }
-        let minX = sidebarWidth - sidebarResizerSidebarHitWidth
-        let maxX = sidebarWidth + sidebarResizerContentHitWidth
-        return point.x >= minX && point.x <= maxX
-    }
-
-    func updateSidebarResizerBandState(using event: NSEvent? = nil) {
-        guard sidebarState.isVisible,
-              let window = observedWindow,
-              let contentView = window.contentView else {
-            if isResizerBandActive { isResizerBandActive = false }
-            scheduleSidebarResizerCursorRelease(force: true)
-            return
-        }
-
-        // Use live global pointer location instead of per-event coordinates.
-        // Overlapping tracking areas (notably WKWebView) can deliver stale/jittery
-        // event locations during cursor updates, which causes visible cursor flicker.
-        let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
-        let pointInContent = contentView.convert(pointInWindow, from: nil)
-        let isInDividerBand = dividerBandContains(pointInContent: pointInContent, contentBounds: contentView.bounds)
-        if isResizerBandActive != isInDividerBand { isResizerBandActive = isInDividerBand }
-
-        if isInDividerBand || isResizerDragging {
-            activateSidebarResizerCursor()
-            startSidebarResizerCursorStabilizer()
-            // AppKit cursorUpdate handlers from overlapped portal/web views can run
-            // after our local monitor callback and temporarily reset the cursor.
-            // Re-assert on the next runloop turn to keep the resize cursor stable.
-            DispatchQueue.main.async {
-                Self.fixedSidebarResizeCursor.set()
-            }
-        } else {
-            stopSidebarResizerCursorStabilizer()
-            scheduleSidebarResizerCursorRelease()
-        }
-    }
-
-    private func startSidebarResizerCursorStabilizer() {
-        guard sidebarResizerCursorStabilizer == nil else { return }
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(16), leeway: .milliseconds(2))
-        timer.setEventHandler {
-            updateSidebarResizerBandState()
-            if isResizerBandActive || isResizerDragging {
-                Self.fixedSidebarResizeCursor.set()
-            } else {
-                stopSidebarResizerCursorStabilizer()
-            }
-        }
-        sidebarResizerCursorStabilizer = timer
-        timer.resume()
-    }
-
-    private func stopSidebarResizerCursorStabilizer() {
-        sidebarResizerCursorStabilizer?.cancel()
-        sidebarResizerCursorStabilizer = nil
-    }
-
-    func installSidebarResizerPointerMonitorIfNeeded() {
-        guard sidebarResizerPointerMonitor == nil else { return }
-        observedWindow?.acceptsMouseMovedEvents = true
-        sidebarResizerPointerMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [
-                .mouseMoved,
-                .mouseEntered,
-                .mouseExited,
-                .cursorUpdate,
-                .appKitDefined,
-                .systemDefined,
-                .leftMouseDown,
-                .leftMouseUp,
-                .leftMouseDragged,
-            ]
-        ) { event in
-            updateSidebarResizerBandState(using: event)
-            let shouldOverrideCursorEvent: Bool = {
-                switch event.type {
-                case .cursorUpdate, .mouseMoved, .mouseEntered, .mouseExited, .appKitDefined, .systemDefined:
-                    return true
-                default:
-                    return false
-                }
-            }()
-            if shouldOverrideCursorEvent, (isResizerBandActive || isResizerDragging) {
-                // Consume hover motion in divider band so overlapped views cannot
-                // continuously reassert their own cursor while we are resizing.
-                activateSidebarResizerCursor()
-                Self.fixedSidebarResizeCursor.set()
-                return nil
-            }
-            return event
-        }
-        updateSidebarResizerBandState()
-    }
-
-    func removeSidebarResizerPointerMonitor() {
-        if let monitor = sidebarResizerPointerMonitor {
-            NSEvent.removeMonitor(monitor)
-            sidebarResizerPointerMonitor = nil
-        }
-        if isResizerBandActive { isResizerBandActive = false }
-        isSidebarResizerCursorActive = false
-        stopSidebarResizerCursorStabilizer()
-        scheduleSidebarResizerCursorRelease(force: true)
-    }
-
-    private func sidebarResizerHandleOverlay(
-        _ handle: SidebarResizerHandle,
-        width: CGFloat,
-        availableWidth: CGFloat,
-        accessibilityIdentifier: String? = nil
-    ) -> some View {
-        Color.clear
-            .frame(width: width)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                if hovering {
-                    hoveredResizerHandles.insert(handle)
-                    activateSidebarResizerCursor()
-                } else {
-                    hoveredResizerHandles.remove(handle)
-                    let isLeftMouseButtonDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
-                    if isLeftMouseButtonDown {
-                        // Keep resize cursor pinned through mouse-down so AppKit
-                        // cursorUpdate events from overlapping views do not flash arrow.
-                        activateSidebarResizerCursor()
-                    } else {
-                        // Give mouse-down + drag-start callbacks time to establish state
-                        // before any cursor pop is attempted.
-                        scheduleSidebarResizerCursorRelease(delay: 0.05)
-                    }
-                }
-                updateSidebarResizerBandState()
-            }
-            .onDisappear {
-                hoveredResizerHandles.remove(handle)
-                if isResizerDragging {
-                    TerminalWindowPortalRegistry.endInteractiveGeometryResize()
-                    isResizerDragging = false
-                }
-                sidebarDragStartWidth = nil
-                if isResizerBandActive { isResizerBandActive = false }
-                scheduleSidebarResizerCursorRelease(force: true)
-            }
-            .gesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                    .onChanged { value in
-                        if !isResizerDragging {
-                            TerminalWindowPortalRegistry.beginInteractiveGeometryResize()
-                            isResizerDragging = true
-                            sidebarDragStartWidth = sidebarWidth
-                        }
-
-                        activateSidebarResizerCursor()
-                        let startWidth = sidebarDragStartWidth ?? sidebarWidth
-                        let nextWidth = Self.clampedSidebarWidth(
-                            startWidth + value.translation.width,
-                            maximumWidth: maxSidebarWidth(availableWidth: availableWidth)
-                        )
-                        withTransaction(Transaction(animation: nil)) {
-                            sidebarWidth = nextWidth
-                        }
-                    }
-                    .onEnded { _ in
-                        if isResizerDragging {
-                            TerminalWindowPortalRegistry.endInteractiveGeometryResize()
-                            isResizerDragging = false
-                            sidebarDragStartWidth = nil
-                        }
-                        activateSidebarResizerCursor()
-                        scheduleSidebarResizerCursorRelease()
-                    }
-            )
-            .modifier(SidebarResizerAccessibilityModifier(accessibilityIdentifier: accessibilityIdentifier))
-    }
-
     var sidebarResizerOverlay: some View {
         GeometryReader { proxy in
             let totalWidth = max(0, proxy.size.width)
@@ -289,12 +205,29 @@ extension ContentView {
                     .frame(width: leadingWidth)
                     .allowsHitTesting(false)
 
-                sidebarResizerHandleOverlay(
-                    .divider,
-                    width: SidebarResizeInteraction.totalHitWidth,
-                    availableWidth: totalWidth,
-                    accessibilityIdentifier: "SidebarResizer"
+                NativeSidebarDividerRepresentable(
+                    currentWidth: sidebarWidth,
+                    onResizeBegan: {
+                        isSidebarResizerDragging = true
+                        TerminalWindowPortalRegistry.beginInteractiveGeometryResize()
+                    },
+                    onWidthChanged: { candidate in
+                        let nextWidth = Self.clampedSidebarWidth(
+                            candidate,
+                            maximumWidth: maxSidebarWidth(availableWidth: totalWidth)
+                        )
+                        guard abs(nextWidth - sidebarWidth) > 0.5 else { return }
+                        withTransaction(Transaction(animation: nil)) {
+                            sidebarWidth = nextWidth
+                        }
+                    },
+                    onResizeEnded: {
+                        isSidebarResizerDragging = false
+                        TerminalWindowPortalRegistry.endInteractiveGeometryResize()
+                    }
                 )
+                .frame(width: SidebarResizeInteraction.totalHitWidth)
+                .frame(maxHeight: .infinity)
 
                 Color.clear
                     .frame(maxWidth: .infinity)
