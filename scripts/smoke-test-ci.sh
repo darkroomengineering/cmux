@@ -102,7 +102,10 @@ s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect('$SOCKET_PATH')
 s.settimeout(5.0)
 s.sendall(json.dumps({'id': 2, 'method': 'surface.send_text', 'params': {'text': 'time\n'}}).encode() + b'\n')
-data = s.recv(4096).decode().strip()
+try:
+    data = s.recv(4096).decode().strip()
+except TimeoutError:
+    data = 'TIMEOUT (terminal surface not ready)'
 s.close()
 print(data)
 ")
