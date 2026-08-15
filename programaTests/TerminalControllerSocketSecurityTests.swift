@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Combine
 import Darwin
 
 #if canImport(Programa_DEV)
@@ -25,6 +26,50 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
     override func tearDown() {
         TerminalController.shared.stop()
         super.tearDown()
+    }
+
+    private func drainMainQueue() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+    }
+
+    func testClearingEmptyWorkspaceTelemetryDoesNotRepublishWorkspace() async {
+        let tabManager = TabManager()
+        let workspace = tabManager.addWorkspace(select: true, eagerLoadTerminal: false)
+        let socketPath = makeSocketPath("empty-telemetry")
+
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+
+        var publishCount = 0
+        let cancellable = workspace.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        _ = TerminalController.shared.v2WorkspaceClearStatus(params: [
+            "workspace_id": workspace.id.uuidString,
+            "key": "missing",
+        ])
+        _ = TerminalController.shared.v2WorkspaceClearLog(params: [
+            "workspace_id": workspace.id.uuidString,
+        ])
+        _ = TerminalController.shared.v2WorkspaceClearProgress(params: [
+            "workspace_id": workspace.id.uuidString,
+        ])
+        await drainMainQueue()
+
+        XCTAssertEqual(
+            publishCount,
+            0,
+            "Clearing telemetry that is already absent should not invalidate workspace observers"
+        )
     }
 
     /// Regression for #6618: `shouldPublishShellActivity` used to record the state
