@@ -2378,7 +2378,7 @@ final class GhosttySurfaceScrollView: NSView {
             // Explicitly unfocus the terminal so cursor stops blinking immediately.
             // The notification observer also does this, but it runs async when posted from main.
             surfaceView.terminalSurface?.setFocus(false)
-            // Post notification — SearchTextFieldRepresentable's Coordinator
+            // Post notification — SearchTextFieldHost's Coordinator
             // observes it and calls makeFirstResponder on the native NSTextField.
             if let terminalSurface = surfaceView.terminalSurface {
                 NotificationCenter.default.post(name: .ghosttySearchFocus, object: terminalSurface)

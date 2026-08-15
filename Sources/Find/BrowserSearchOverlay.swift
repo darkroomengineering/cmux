@@ -30,14 +30,22 @@ struct BrowserSearchOverlay: View {
 
     private var searchControls: some View {
         HStack(spacing: 4) {
-            BrowserSearchTextFieldRepresentable(
+            SearchTextFieldHost(
                 text: $searchState.needle,
                 isFocused: $isSearchFieldFocused,
-                panelId: panelId,
-                focusRequestGeneration: focusRequestGeneration,
-                canApplyFocusRequest: canApplyFocusRequest,
+                accessibilityIdentifier: "BrowserFindSearchTextField",
+                focusNotificationName: .browserSearchFocus,
+                shouldApplyFocusNotification: { notification in
+                    guard let notifiedPanelId = notification.object as? UUID else { return false }
+                    return notifiedPanelId == panelId
+                },
+                canApplyFocusRequest: {
+                    canApplyFocusRequest(focusRequestGeneration)
+                },
+                focusSelection: .caretAtEnd,
+                debugContext: nil,
                 onFieldDidFocus: onFieldDidFocus,
-                onEscape: onClose,
+                onEscape: { _ in onClose() },
                 onReturn: { isShift in
                     if isShift {
                         onPrevious()
@@ -207,188 +215,5 @@ struct BrowserSearchOverlay: View {
             return point.y < midY ? .topLeft : .bottomLeft
         }
         return point.y < midY ? .topRight : .bottomRight
-    }
-}
-
-private final class BrowserSearchNativeTextField: NSTextField {
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        isBordered = false
-        isBezeled = false
-        drawsBackground = false
-        focusRingType = .none
-        usesSingleLineMode = true
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
-    @Binding var text: String
-    @Binding var isFocused: Bool
-    let panelId: UUID
-    let focusRequestGeneration: UInt64
-    let canApplyFocusRequest: (UInt64) -> Bool
-    let onFieldDidFocus: () -> Void
-    let onEscape: () -> Void
-    let onReturn: (_ isShift: Bool) -> Void
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: BrowserSearchTextFieldRepresentable
-        var isProgrammaticMutation = false
-        weak var parentField: BrowserSearchNativeTextField?
-        var pendingFocusRequest: Bool?
-        var searchFocusObserver: NSObjectProtocol?
-
-        init(parent: BrowserSearchTextFieldRepresentable) {
-            self.parent = parent
-        }
-
-        deinit {
-            if let searchFocusObserver {
-                NotificationCenter.default.removeObserver(searchFocusObserver)
-            }
-        }
-
-        func focusField(_ field: BrowserSearchNativeTextField, in window: NSWindow) {
-            guard window.makeFirstResponder(field) else { return }
-            DispatchQueue.main.async { [weak field] in
-                guard let field,
-                      let editor = field.currentEditor() as? NSTextView else { return }
-                let end = field.stringValue.utf16.count
-                editor.setSelectedRange(NSRange(location: end, length: 0))
-            }
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            guard !isProgrammaticMutation else { return }
-            guard let field = obj.object as? NSTextField else { return }
-            parent.text = field.stringValue
-        }
-
-        func controlTextDidBeginEditing(_ obj: Notification) {
-            parent.onFieldDidFocus()
-            if !parent.isFocused {
-                DispatchQueue.main.async {
-                    self.parent.isFocused = true
-                }
-            }
-        }
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            if parent.isFocused {
-                DispatchQueue.main.async {
-                    self.parent.isFocused = false
-                }
-            }
-        }
-
-        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            switch commandSelector {
-            case #selector(NSResponder.cancelOperation(_:)):
-                if textView.hasMarkedText() { return false }
-                parent.onEscape()
-                return true
-            case #selector(NSResponder.insertNewline(_:)):
-                if textView.hasMarkedText() { return false }
-                let isShift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
-                parent.onReturn(isShift)
-                return true
-            default:
-                return false
-            }
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    func makeNSView(context: Context) -> BrowserSearchNativeTextField {
-        let field = BrowserSearchNativeTextField(frame: .zero)
-        field.font = .systemFont(ofSize: NSFont.systemFontSize)
-        field.placeholderString = String(localized: "search.placeholder", defaultValue: "Search")
-        field.setAccessibilityIdentifier("BrowserFindSearchTextField")
-        field.delegate = context.coordinator
-        field.target = nil
-        field.action = nil
-        field.isEditable = true
-        field.isSelectable = true
-        field.isEnabled = true
-        field.stringValue = text
-        context.coordinator.parentField = field
-        context.coordinator.searchFocusObserver = NotificationCenter.default.addObserver(
-            forName: .browserSearchFocus,
-            object: nil,
-            queue: .main
-        ) { [weak field, weak coordinator = context.coordinator] notification in
-            guard let field, let coordinator else { return }
-            guard let notifiedPanelId = notification.object as? UUID,
-                  notifiedPanelId == coordinator.parent.panelId else { return }
-            guard coordinator.parent.canApplyFocusRequest(coordinator.parent.focusRequestGeneration) else { return }
-            guard let window = field.window else { return }
-            let fr = window.firstResponder
-            let alreadyFocused = fr === field ||
-                field.currentEditor() != nil ||
-                ((fr as? NSTextView)?.delegate as? NSTextField) === field
-            guard !alreadyFocused else { return }
-            coordinator.focusField(field, in: window)
-        }
-        return field
-    }
-
-    func updateNSView(_ nsView: BrowserSearchNativeTextField, context: Context) {
-        context.coordinator.parent = self
-        context.coordinator.parentField = nsView
-
-        if let editor = nsView.currentEditor() as? NSTextView {
-            if editor.string != text, !editor.hasMarkedText() {
-                context.coordinator.isProgrammaticMutation = true
-                editor.string = text
-                nsView.stringValue = text
-                context.coordinator.isProgrammaticMutation = false
-            }
-        } else if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
-
-        if let window = nsView.window {
-            let fr = window.firstResponder
-            let isFirstResponder =
-                fr === nsView ||
-                nsView.currentEditor() != nil ||
-                ((fr as? NSTextView)?.delegate as? NSTextField) === nsView
-
-            if isFocused,
-               canApplyFocusRequest(focusRequestGeneration),
-               !isFirstResponder,
-               context.coordinator.pendingFocusRequest != true {
-                context.coordinator.pendingFocusRequest = true
-                DispatchQueue.main.async { [weak nsView, weak coordinator = context.coordinator] in
-                    coordinator?.pendingFocusRequest = nil
-                    guard let coordinator,
-                          coordinator.parent.isFocused,
-                          coordinator.parent.canApplyFocusRequest(coordinator.parent.focusRequestGeneration) else { return }
-                    guard let nsView, let window = nsView.window else { return }
-                    let fr = window.firstResponder
-                    let alreadyFocused = fr === nsView ||
-                        nsView.currentEditor() != nil ||
-                        ((fr as? NSTextView)?.delegate as? NSTextField) === nsView
-                    guard !alreadyFocused else { return }
-                    coordinator.focusField(nsView, in: window)
-                }
-            }
-        }
-    }
-
-    static func dismantleNSView(_ nsView: BrowserSearchNativeTextField, coordinator: Coordinator) {
-        if let observer = coordinator.searchFocusObserver {
-            NotificationCenter.default.removeObserver(observer)
-            coordinator.searchFocusObserver = nil
-        }
-        nsView.delegate = nil
-        coordinator.parentField = nil
     }
 }
