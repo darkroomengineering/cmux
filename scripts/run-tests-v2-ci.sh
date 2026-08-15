@@ -14,6 +14,31 @@ cd "$(dirname "$0")/.."
 
 RUN_TAG="ci-v2"
 SUBSET_FILE="tests_v2/ci_subset.txt"
+APP_PID=""
+APP_LOG="/tmp/programa-v2-ci-stdout.log"
+
+report_failure() {
+  local status="$?"
+  echo "--- Programa process ---" >&2
+  if [ -n "$APP_PID" ] && kill -0 "$APP_PID" 2>/dev/null; then
+    echo "App PID $APP_PID is still alive" >&2
+  elif [ -n "$APP_PID" ]; then
+    set +e
+    wait "$APP_PID"
+    local app_status="$?"
+    set -e
+    echo "App PID $APP_PID exited with status $app_status" >&2
+  else
+    echo "App PID was not captured" >&2
+  fi
+  echo "--- Programa stdout/stderr ---" >&2
+  tail -200 "$APP_LOG" 2>/dev/null >&2 || true
+  echo "--- Programa debug log ---" >&2
+  tail -100 "/tmp/programa-debug-$RUN_TAG.log" 2>/dev/null >&2 || true
+  return "$status"
+}
+
+trap report_failure ERR
 
 APP="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Debug/Programa DEV.app" -print -quit 2>/dev/null || true)"
 if [ -z "$APP" ] || [ ! -d "$APP" ]; then
@@ -55,7 +80,9 @@ launch_and_wait() {
 
   # Launch the app binary directly (not `open`, which can silently flake on CI runners) with
   # UI test mode enabled so startup follows deterministic test codepaths.
-  PROGRAMA_TAG="$RUN_TAG" PROGRAMA_UI_TEST_MODE=1 "$APP/Contents/MacOS/Programa DEV" >/dev/null 2>&1 &
+  : > "$APP_LOG"
+  PROGRAMA_TAG="$RUN_TAG" PROGRAMA_UI_TEST_MODE=1 "$APP/Contents/MacOS/Programa DEV" >"$APP_LOG" 2>&1 &
+  APP_PID=$!
 
   SOCK=""
   for _ in {1..120}; do
