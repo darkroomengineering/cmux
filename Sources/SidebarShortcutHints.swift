@@ -46,6 +46,7 @@ struct ShortcutHintPill<Content: View>: View {
                 tintColor: nil,
                 cornerRadius: 100
             )
+            .fixedSize(horizontal: true, vertical: true)
         } else {
             content
                 .background(ShortcutHintPillBackground(emphasis: emphasis))

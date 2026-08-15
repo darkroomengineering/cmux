@@ -2338,7 +2338,6 @@ struct SettingsRootView: View {
             guard identifier.hasPrefix("cmux.") else { continue }
             window.removeTitlebarAccessoryViewController(at: index)
         }
-        AppDelegate.shared?.applyWindowDecorations(to: window)
     }
 
     private func applyCurrentSettingsWindowStyle(to window: NSWindow) {

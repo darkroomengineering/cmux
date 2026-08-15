@@ -231,8 +231,8 @@ struct VerticalTabsSidebar: View {
                 HiddenTitlebarSidebarControlsView(notificationStore: notificationStore)
             }
             .frame(height: trafficLightPadding)
-            // Flush sidebar (no panel inset): keep the header content on the
-            // 25pt traffic-light midline the decorations controller targets.
+            // Flush sidebar (no panel inset): keep the header aligned with
+            // AppKit's native titlebar controls.
             .padding(.top, usesBackdropSidebar ? WindowGlassEffect.sidebarPanelInset : 0)
             .contentShape(Rectangle())
             .background(

@@ -251,6 +251,98 @@ final class WindowGlassEffectTests: XCTestCase {
 }
 
 @MainActor
+final class NativeTrafficLightLifecycleTests: XCTestCase {
+    private func drainMainQueue() {
+        let drained = expectation(description: "main queue drained")
+        DispatchQueue.main.async {
+            DispatchQueue.main.async {
+                drained.fulfill()
+            }
+        }
+        wait(for: [drained], timeout: 5.0)
+    }
+
+    func testSettingsWindowLifecycleLeavesAppKitTrafficLightsUntouched() throws {
+        _ = NSApplication.shared
+        _ = try XCTUnwrap(AppDelegate.shared)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.identifier = NSUserInterfaceItemIdentifier("cmux.settings")
+        defer { window.orderOut(nil) }
+
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
+        drainMainQueue()
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
+
+        let buttonTypes: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+        let buttonNames = ["close", "miniaturize", "zoom"]
+        let nativeButtons = try buttonTypes.map { type in
+            try XCTUnwrap(
+                window.standardWindowButton(type),
+                "The settings window should have every native traffic-light button"
+            )
+        }
+        let nativeTargets = nativeButtons.map(\.target)
+        let nativeActions = nativeButtons.map(\.action)
+        let nativeEnabledStates = nativeButtons.map(\.isEnabled)
+        let nativeHiddenStates = nativeButtons.map(\.isHidden)
+        let nativeFrames = nativeButtons.map(\.frame)
+
+        for (index, button) in nativeButtons.enumerated() {
+            XCTAssertTrue(button.isEnabled, "The \(buttonNames[index]) button should be enabled")
+            XCTAssertFalse(button.isHidden, "The \(buttonNames[index]) button should be visible")
+            XCTAssertNotNil(button.action, "The \(buttonNames[index]) button should have its native action")
+        }
+        XCTAssertLessThan(nativeFrames[0].minX, nativeFrames[1].minX)
+        XCTAssertLessThan(nativeFrames[1].minX, nativeFrames[2].minX)
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeMainNotification, object: window)
+        drainMainQueue()
+
+        let currentButtons = buttonTypes.compactMap { window.standardWindowButton($0) }
+        XCTAssertEqual(currentButtons.count, nativeButtons.count, "The settings window should keep all three native buttons")
+        guard currentButtons.count == nativeButtons.count else { return }
+
+        for index in currentButtons.indices {
+            let current = currentButtons[index]
+            let baselineFrame = nativeFrames[index]
+            let originDelta = NSPoint(
+                x: current.frame.origin.x - baselineFrame.origin.x,
+                y: current.frame.origin.y - baselineFrame.origin.y
+            )
+
+            XCTAssertTrue(current === nativeButtons[index], "The \(buttonNames[index]) button identity should remain native")
+            XCTAssertTrue(current.target === nativeTargets[index], "The \(buttonNames[index]) button target should remain unchanged")
+            XCTAssertEqual(current.action, nativeActions[index], "The \(buttonNames[index]) button action should remain unchanged")
+            XCTAssertEqual(current.isEnabled, nativeEnabledStates[index], "The \(buttonNames[index]) button enabled state should remain unchanged")
+            XCTAssertEqual(current.isHidden, nativeHiddenStates[index], "The \(buttonNames[index]) button visibility should remain unchanged")
+            XCTAssertEqual(
+                current.frame.origin.x,
+                baselineFrame.origin.x,
+                accuracy: 0.01,
+                "The \(buttonNames[index]) button x origin changed by \(originDelta.x)"
+            )
+            XCTAssertEqual(
+                current.frame.origin.y,
+                baselineFrame.origin.y,
+                accuracy: 0.01,
+                "The \(buttonNames[index]) button y origin changed by \(originDelta.y)"
+            )
+            XCTAssertEqual(current.frame.size.width, baselineFrame.size.width, accuracy: 0.01)
+            XCTAssertEqual(current.frame.size.height, baselineFrame.size.height, accuracy: 0.01)
+        }
+
+        XCTAssertLessThan(currentButtons[0].frame.minX, currentButtons[1].frame.minX)
+        XCTAssertLessThan(currentButtons[1].frame.minX, currentButtons[2].frame.minX)
+    }
+}
+
+@MainActor
 final class AppDelegateWindowContextRoutingTests: XCTestCase {
     // Every test in this class constructs a throwaway `AppDelegate()`. `AppDelegate.init()`
     // unconditionally does `Self.shared = self`, so without saving/restoring here each test

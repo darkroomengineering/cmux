@@ -857,7 +857,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     private var browserAddressBarBlurObserver: NSObjectProtocol?
     private let updateController = UpdateController()
     private lazy var titlebarAccessoryController = UpdateTitlebarAccessoryController(viewModel: updateViewModel)
-    private let windowDecorationsController = WindowDecorationsController()
     private var menuBarExtraController: MenuBarExtraController?
     private static let serviceErrorNoPath = NSString(string: String(localized: "error.clipboardFolderPath", defaultValue: "Could not load any folder path from the clipboard."))
     private static let didInstallWindowKeyEquivalentSwizzle: Void = {
@@ -1170,10 +1169,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             updateController.startUpdaterIfNeeded()
         }
         titlebarAccessoryController.start()
-        windowDecorationsController.isMainTerminalWindow = { [weak self] window in
-            self?.isMainTerminalWindow(window) ?? false
-        }
-        windowDecorationsController.start()
         installMainWindowKeyObserver()
         refreshGhosttyGotoSplitShortcuts()
         installGhosttyConfigObserver()
@@ -4968,7 +4963,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
         // Apply shared window styling.
         attachUpdateAccessory(to: window)
-        applyWindowDecorations(to: window)
 
         // Keep a strong reference so the window isn't deallocated.
         let controller = MainWindowController(window: window)
@@ -5694,10 +5688,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     func attachUpdateAccessory(to window: NSWindow) {
         titlebarAccessoryController.start()
         titlebarAccessoryController.attach(to: window)
-    }
-
-    func applyWindowDecorations(to window: NSWindow) {
-        windowDecorationsController.apply(to: window)
     }
 
     func toggleNotificationsPopover(animated: Bool = true, anchorView: NSView? = nil) {
@@ -9291,7 +9281,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             WindowGlassEffect.remove(from: window)
         }
         AppDelegate.shared?.attachUpdateAccessory(to: window)
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         AppDelegate.shared?.registerMainWindow(
             window,
             windowId: windowId,

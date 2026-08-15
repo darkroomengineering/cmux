@@ -1410,7 +1410,6 @@ final class SettingsAboutTitlebarStyleStore: ObservableObject {
         window.contentMinSize = kind.minimumSize
         window.contentMaxSize = maxSize
         window.invalidateShadow()
-        AppDelegate.shared?.applyWindowDecorations(to: window)
     }
 
     private func ensureToolbar(on window: NSWindow, kind: SettingsAboutWindowKind) {
@@ -1452,7 +1451,6 @@ private final class AboutWindowController: NSWindowController, NSWindowDelegate 
         window.center()
         window.contentView = NSHostingView(rootView: AboutPanelView())
         SettingsAboutTitlebarStyleStore.shared.applyCurrentOptions(to: window, for: .about)
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
@@ -1552,7 +1550,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.center()
         window.contentView = NSHostingView(rootView: SettingsRootView())
         SettingsAboutTitlebarStyleStore.shared.applyCurrentOptions(to: window, for: .settings)
-        AppDelegate.shared?.applyWindowDecorations(to: window)
         super.init(window: window)
         window.delegate = self
     }
