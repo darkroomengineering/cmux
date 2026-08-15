@@ -1963,8 +1963,12 @@ class GhosttyApp {
                     .first(where: { $0.id == tabId }) else { return }
                 switch state {
                 case GHOSTTY_PROGRESS_STATE_REMOVE:
-                    workspace.progress = nil
-                    workspace.progressSourcePanelId = nil
+                    if workspace.progress != nil {
+                        workspace.progress = nil
+                    }
+                    if workspace.progressSourcePanelId != nil {
+                        workspace.progressSourcePanelId = nil
+                    }
                 case GHOSTTY_PROGRESS_STATE_SET where rawProgress >= 0:
                     let clamped = max(0, min(100, Int(rawProgress)))
                     let value = Double(clamped) / 100.0

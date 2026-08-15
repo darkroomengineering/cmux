@@ -640,7 +640,9 @@ extension TerminalController {
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { [weak self] _, tab in
             guard let self else { return }
-            _ = tab.statusEntries.removeValue(forKey: key)
+            if tab.statusEntries[key] != nil {
+                tab.statusEntries.removeValue(forKey: key)
+            }
             if tab.agentPIDs.removeValue(forKey: key) != nil {
                 self.refreshTrackedAgentPorts(for: tab)
             }
@@ -722,6 +724,7 @@ extension TerminalController {
         }
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { _, tab in
+            guard !tab.logEntries.isEmpty else { return }
             tab.logEntries.removeAll()
         }
 
@@ -796,6 +799,7 @@ extension TerminalController {
         }
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { _, tab in
+            guard tab.progress != nil else { return }
             tab.progress = nil
         }
 

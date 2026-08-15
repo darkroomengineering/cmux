@@ -1,6 +1,156 @@
 import AppKit
 import SwiftUI
 
+struct ReviewPanelComposerTopology: Equatable {
+    let filePath: String
+    let anchorLine: Int
+    let startLine: Int
+    let endLine: Int
+    let text: String
+}
+
+struct ReviewPanelFileKey: Hashable {
+    let path: String
+    let occurrence: Int
+}
+
+struct ReviewPanelAnnotatedLine: Equatable {
+    let line: ReviewDiffLine
+    /// The new-file line number a comment attached at this row would address: the line's
+    /// own `newLineNumber` when present, otherwise the nearest preceding new-file line.
+    let anchorLine: Int
+}
+
+enum ReviewPanelRowID: Hashable {
+    case fileHeader(ReviewPanelFileKey)
+    case notDiffable(ReviewPanelFileKey)
+    case hunkHeader(ReviewPanelFileKey, Int)
+    case line(ReviewPanelFileKey, Int, Int)
+    case composer(ReviewPanelFileKey, Int, Int)
+    case fileSpacing(ReviewPanelFileKey)
+}
+
+enum ReviewPanelRow: Identifiable, Equatable {
+    case fileHeader(key: ReviewPanelFileKey, file: ReviewFileDiff)
+    case notDiffable(key: ReviewPanelFileKey, reason: ReviewNotDiffableReason)
+    case hunkHeader(key: ReviewPanelFileKey, hunkIndex: Int, header: String)
+    case line(
+        key: ReviewPanelFileKey,
+        hunkIndex: Int,
+        lineIndex: Int,
+        row: ReviewPanelAnnotatedLine,
+        filePath: String
+    )
+    case composer(key: ReviewPanelFileKey, hunkIndex: Int, lineIndex: Int)
+    case fileSpacing(key: ReviewPanelFileKey)
+
+    var id: ReviewPanelRowID {
+        switch self {
+        case .fileHeader(let key, _):
+            return .fileHeader(key)
+        case .notDiffable(let key, _):
+            return .notDiffable(key)
+        case .hunkHeader(let key, let hunkIndex, _):
+            return .hunkHeader(key, hunkIndex)
+        case .line(let key, let hunkIndex, let lineIndex, _, _):
+            return .line(key, hunkIndex, lineIndex)
+        case .composer(let key, let hunkIndex, let lineIndex):
+            return .composer(key, hunkIndex, lineIndex)
+        case .fileSpacing(let key):
+            return .fileSpacing(key)
+        }
+    }
+}
+
+/// Computes the stable row topology consumed by the lazy review list. The revision is supplied
+/// by `ReviewPanel.apply(snapshot:)`; composer fields that do not move the composer are excluded
+/// from the cache key so editing text or extending a range upward does not rebuild every row.
+final class ReviewPanelRowPlanner {
+    private struct ComposerPlacement: Equatable {
+        let filePath: String
+        let endLine: Int
+    }
+
+    private struct CacheKey: Equatable {
+        let panelID: UUID
+        let filesRevision: UInt64
+        let collapsedFilePaths: Set<String>
+        let composerPlacement: ComposerPlacement?
+    }
+
+    private var key: CacheKey?
+    private var cachedRows: [ReviewPanelRow] = []
+    private(set) var rebuildCount = 0
+
+    func rows(
+        panelID: UUID,
+        filesRevision: UInt64,
+        collapsedFilePaths: Set<String>,
+        composer: ReviewPanelComposerTopology?,
+        files: [ReviewFileDiff]
+    ) -> [ReviewPanelRow] {
+        let nextKey = CacheKey(
+            panelID: panelID,
+            filesRevision: filesRevision,
+            collapsedFilePaths: collapsedFilePaths,
+            composerPlacement: composer.map {
+                ComposerPlacement(filePath: $0.filePath, endLine: $0.endLine)
+            }
+        )
+        guard key != nextKey else { return cachedRows }
+
+        var rows: [ReviewPanelRow] = []
+        var fileOccurrences: [String: Int] = [:]
+
+        for file in files {
+            let occurrence = fileOccurrences[file.id, default: 0]
+            fileOccurrences[file.id] = occurrence + 1
+            let fileKey = ReviewPanelFileKey(path: file.id, occurrence: occurrence)
+            rows.append(.fileHeader(key: fileKey, file: file))
+
+            if let reason = file.notDiffableReason {
+                rows.append(.notDiffable(key: fileKey, reason: reason))
+            } else if !collapsedFilePaths.contains(file.id) {
+                for (hunkIndex, hunk) in file.hunks.enumerated() {
+                    rows.append(.hunkHeader(key: fileKey, hunkIndex: hunkIndex, header: hunk.header))
+                    for (lineIndex, row) in annotatedRows(for: hunk).enumerated() {
+                        rows.append(
+                            .line(
+                                key: fileKey,
+                                hunkIndex: hunkIndex,
+                                lineIndex: lineIndex,
+                                row: row,
+                                filePath: file.id
+                            )
+                        )
+                        if nextKey.composerPlacement?.filePath == file.id,
+                           nextKey.composerPlacement?.endLine == row.anchorLine {
+                            rows.append(.composer(key: fileKey, hunkIndex: hunkIndex, lineIndex: lineIndex))
+                        }
+                    }
+                }
+            }
+
+            rows.append(.fileSpacing(key: fileKey))
+        }
+
+        key = nextKey
+        cachedRows = rows
+        rebuildCount += 1
+        return rows
+    }
+
+    private func annotatedRows(for hunk: ReviewHunk) -> [ReviewPanelAnnotatedLine] {
+        var anchor = hunk.lines.first(where: { $0.newLineNumber != nil })?.newLineNumber ?? 0
+        return hunk.lines.map { line in
+            if let newLineNumber = line.newLineNumber {
+                anchor = newLineNumber
+            }
+            return ReviewPanelAnnotatedLine(line: line, anchorLine: anchor)
+        }
+    }
+}
+
 /// SwiftUI view for a `ReviewPanel`: per-file collapsible diff sections, click-a-line (or
 /// shift-click a range) to attach a comment, and a "Send to agent" action. Modeled on
 /// `MarkdownPanelView.swift`'s structure (focus-flash overlay, read-only content). No syntax
@@ -15,6 +165,7 @@ struct ReviewPanelView: View {
 
     @State private var collapsedFilePaths: Set<String> = []
     @State private var composer: InlineComposerState?
+    @State private var rowPlanner = ReviewPanelRowPlanner()
 
     private struct InlineComposerState {
         let filePath: String
@@ -31,7 +182,7 @@ struct ReviewPanelView: View {
                 .padding(.vertical, 10)
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     if let lastError = panel.lastError {
                         errorBanner(for: lastError)
                             .padding(16)
@@ -39,8 +190,8 @@ struct ReviewPanelView: View {
                         emptyStateView
                             .padding(24)
                     } else {
-                        ForEach(panel.files) { file in
-                            fileSection(file)
+                        ForEach(reviewRows) { row in
+                            reviewRow(row)
                         }
                     }
 
@@ -151,23 +302,49 @@ struct ReviewPanelView: View {
         }
     }
 
-    // MARK: - Per-file sections
+    // MARK: - Flattened review rows
+
+    private var reviewRows: [ReviewPanelRow] {
+        let composerTopology = composer.map {
+            ReviewPanelComposerTopology(
+                filePath: $0.filePath,
+                anchorLine: $0.anchorLine,
+                startLine: $0.startLine,
+                endLine: $0.endLine,
+                text: $0.text
+            )
+        }
+        return rowPlanner.rows(
+            panelID: panel.id,
+            filesRevision: panel.filesRevision,
+            collapsedFilePaths: collapsedFilePaths,
+            composer: composerTopology,
+            files: panel.files
+        )
+    }
 
     @ViewBuilder
-    private func fileSection(_ file: ReviewFileDiff) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+    private func reviewRow(_ row: ReviewPanelRow) -> some View {
+        switch row {
+        case .fileHeader(_, let file):
             fileHeader(file)
-            if let reason = file.notDiffableReason {
-                notDiffableRow(reason)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-            } else if !collapsedFilePaths.contains(file.id) {
-                ForEach(Array(file.hunks.enumerated()), id: \.offset) { _, hunk in
-                    hunkView(hunk, file: file)
-                }
+        case .notDiffable(_, let reason):
+            notDiffableRow(reason)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+        case .hunkHeader(_, _, let header):
+            hunkHeader(header)
+        case .line(_, _, _, let row, let filePath):
+            lineRow(row, filePath: filePath)
+        case .composer:
+            if let composer {
+                inlineComposer(composer)
             }
+        case .fileSpacing(_):
+            Color.clear
+                .frame(height: 4)
+                .accessibilityHidden(true)
         }
-        .padding(.bottom, 4)
     }
 
     private func fileHeader(_ file: ReviewFileDiff) -> some View {
@@ -240,44 +417,17 @@ struct ReviewPanelView: View {
 
     // MARK: - Hunks / lines
 
-    private func hunkView(_ hunk: ReviewHunk, file: ReviewFileDiff) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(hunk.header)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.primary.opacity(0.02))
-
-            ForEach(Array(annotatedRows(for: hunk).enumerated()), id: \.offset) { _, row in
-                lineRow(row, file: file)
-                if let composer, composer.filePath == file.id, composer.endLine == row.anchorLine {
-                    inlineComposer(composer)
-                }
-            }
-        }
+    private func hunkHeader(_ header: String) -> some View {
+        Text(header)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.02))
     }
 
-    private struct AnnotatedLine {
-        let line: ReviewDiffLine
-        /// The new-file line number a comment attached at this row would address: the line's
-        /// own `newLineNumber` when present, otherwise the nearest preceding new-file line (for
-        /// pure-deletion rows). See docs/plans/diff-review-panel.md §4.
-        let anchorLine: Int
-    }
-
-    private func annotatedRows(for hunk: ReviewHunk) -> [AnnotatedLine] {
-        var anchor = hunk.lines.first(where: { $0.newLineNumber != nil })?.newLineNumber ?? 0
-        return hunk.lines.map { line in
-            if let newLineNumber = line.newLineNumber {
-                anchor = newLineNumber
-            }
-            return AnnotatedLine(line: line, anchorLine: anchor)
-        }
-    }
-
-    private func lineRow(_ row: AnnotatedLine, file: ReviewFileDiff) -> some View {
+    private func lineRow(_ row: ReviewPanelAnnotatedLine, filePath: String) -> some View {
         HStack(spacing: 0) {
             Text(row.line.oldLineNumber.map(String.init) ?? "")
                 .frame(width: 36, alignment: .trailing)
@@ -297,7 +447,7 @@ struct ReviewPanelView: View {
         .background(backgroundColor(for: row.line.kind))
         .contentShape(Rectangle())
         .onTapGesture {
-            handleLineTap(file: file, anchorLine: row.anchorLine)
+            handleLineTap(filePath: filePath, anchorLine: row.anchorLine)
         }
     }
 
@@ -312,16 +462,16 @@ struct ReviewPanelView: View {
         }
     }
 
-    private func handleLineTap(file: ReviewFileDiff, anchorLine: Int) {
+    private func handleLineTap(filePath: String, anchorLine: Int) {
         let isShiftHeld = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
         if isShiftHeld,
            var existing = composer,
-           existing.filePath == file.id {
+           existing.filePath == filePath {
             existing.startLine = min(existing.anchorLine, anchorLine)
             existing.endLine = max(existing.anchorLine, anchorLine)
             composer = existing
         } else {
-            composer = InlineComposerState(filePath: file.id, anchorLine: anchorLine, startLine: anchorLine, endLine: anchorLine)
+            composer = InlineComposerState(filePath: filePath, anchorLine: anchorLine, startLine: anchorLine, endLine: anchorLine)
         }
     }
 

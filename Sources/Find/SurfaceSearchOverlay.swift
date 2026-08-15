@@ -42,13 +42,21 @@ struct SurfaceSearchOverlay: View {
 
     private var searchControls: some View {
         HStack(spacing: 4) {
-            SearchTextFieldRepresentable(
+            SearchTextFieldHost(
                 text: $searchState.needle,
                 isFocused: $isSearchFieldFocused,
-                surfaceId: surfaceId,
+                accessibilityIdentifier: "TerminalFindSearchTextField",
+                focusNotificationName: .ghosttySearchFocus,
+                shouldApplyFocusNotification: { notification in
+                    guard let surface = notification.object as? TerminalSurface else { return false }
+                    return surface.id == surfaceId
+                },
                 canApplyFocusRequest: canApplyFocusRequest,
+                focusSelection: .preserve,
+                debugContext: "surface=\(surfaceId.uuidString.prefix(5))",
                 onFieldDidFocus: onFieldDidFocus,
-                onEscape: {
+                onEscape: { field in
+                    field.programaAncestor(of: GhosttySurfaceScrollView.self)?.beginFindEscapeSuppression()
                     #if DEBUG
                     dlog("find.nativeField.escape surface=\(surfaceId.uuidString.prefix(5)) needleEmpty=\(searchState.needle.isEmpty)")
                     #endif
@@ -227,210 +235,6 @@ struct SurfaceSearchOverlay: View {
             return point.y < midY ? .topLeft : .bottomLeft
         }
         return point.y < midY ? .topRight : .bottomRight
-    }
-}
-
-// MARK: - Native Search Text Field (AppKit)
-
-/// NSTextField subclass for the terminal find bar.
-/// Strips visual chrome so SwiftUI handles the background/border appearance.
-private final class SearchNativeTextField: NSTextField {
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        isBordered = false
-        isBezeled = false
-        drawsBackground = false
-        focusRingType = .none
-        usesSingleLineMode = true
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-/// NSViewRepresentable wrapping SearchNativeTextField.
-/// Handles Escape and Return at the AppKit delegate level, eliminating the
-/// SwiftUI @FocusState / AppKit first-responder mismatch that broke focus
-/// after window switching.
-private struct SearchTextFieldRepresentable: NSViewRepresentable {
-    @Binding var text: String
-    @Binding var isFocused: Bool
-    let surfaceId: UUID
-    let canApplyFocusRequest: () -> Bool
-    let onFieldDidFocus: () -> Void
-    let onEscape: () -> Void
-    let onReturn: (_ isShift: Bool) -> Void
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: SearchTextFieldRepresentable
-        var isProgrammaticMutation = false
-        weak var parentField: SearchNativeTextField?
-        var pendingFocusRequest: Bool?
-        var searchFocusObserver: NSObjectProtocol?
-
-        init(parent: SearchTextFieldRepresentable) {
-            self.parent = parent
-        }
-
-        deinit {
-            if let searchFocusObserver {
-                NotificationCenter.default.removeObserver(searchFocusObserver)
-            }
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            guard !isProgrammaticMutation else { return }
-            guard let field = obj.object as? NSTextField else { return }
-            parent.text = field.stringValue
-        }
-
-        func controlTextDidBeginEditing(_ obj: Notification) {
-            #if DEBUG
-            dlog("find.nativeField.beginEditing surface=\(parent.surfaceId.uuidString.prefix(5))")
-            #endif
-            parent.onFieldDidFocus()
-            if !parent.isFocused {
-                DispatchQueue.main.async {
-                    self.parent.isFocused = true
-                }
-            }
-        }
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            #if DEBUG
-            dlog("find.nativeField.endEditing surface=\(parent.surfaceId.uuidString.prefix(5))")
-            #endif
-            if parent.isFocused {
-                DispatchQueue.main.async {
-                    self.parent.isFocused = false
-                }
-            }
-        }
-
-        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            switch commandSelector {
-            case #selector(NSResponder.cancelOperation(_:)):
-                // Don't intercept Escape during CJK IME composition (issue #118)
-                if textView.hasMarkedText() { return false }
-                control.programaAncestor(of: GhosttySurfaceScrollView.self)?.beginFindEscapeSuppression()
-                parent.onEscape()
-                return true
-            case #selector(NSResponder.insertNewline(_:)):
-                if textView.hasMarkedText() { return false }
-                let isShift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
-                parent.onReturn(isShift)
-                return true
-            default:
-                return false
-            }
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    func makeNSView(context: Context) -> SearchNativeTextField {
-        let field = SearchNativeTextField(frame: .zero)
-        field.font = .systemFont(ofSize: NSFont.systemFontSize)
-        field.placeholderString = String(localized: "search.placeholder", defaultValue: "Search")
-        field.setAccessibilityIdentifier("TerminalFindSearchTextField")
-        field.delegate = context.coordinator
-        field.stringValue = text
-        context.coordinator.parentField = field
-
-        // Observe .ghosttySearchFocus to immediately focus from AppKit level.
-        // This is the primary mechanism for restoring focus after window switches.
-        context.coordinator.searchFocusObserver = NotificationCenter.default.addObserver(
-            forName: .ghosttySearchFocus,
-            object: nil,
-            queue: .main
-        ) { [weak field, weak coordinator = context.coordinator] notification in
-            guard let field, let coordinator else { return }
-            guard let surface = notification.object as? TerminalSurface,
-                  surface.id == coordinator.parent.surfaceId else { return }
-            guard coordinator.parent.canApplyFocusRequest() else { return }
-            guard let window = field.window else { return }
-            // Don't re-focus if already first responder. makeFirstResponder on an
-            // already-editing NSTextField ends the editing session and restarts it
-            // with all text selected, causing typed characters to replace each other.
-            let fr = window.firstResponder
-            let alreadyFocused = fr === field ||
-                field.currentEditor() != nil ||
-                ((fr as? NSTextView)?.delegate as? NSTextField) === field
-            #if DEBUG
-            dlog(
-                "find.nativeField.searchFocusNotification surface=\(coordinator.parent.surfaceId.uuidString.prefix(5)) " +
-                "alreadyFocused=\(alreadyFocused) firstResponder=\(String(describing: fr))"
-            )
-            #endif
-            guard !alreadyFocused else { return }
-            let result = window.makeFirstResponder(field)
-#if DEBUG
-            dlog(
-                "find.nativeField.searchFocusApply surface=\(coordinator.parent.surfaceId.uuidString.prefix(5)) " +
-                "result=\(result ? 1 : 0) firstResponder=\(String(describing: window.firstResponder))"
-            )
-#endif
-        }
-
-        return field
-    }
-
-    func updateNSView(_ nsView: SearchNativeTextField, context: Context) {
-        context.coordinator.parent = self
-        context.coordinator.parentField = nsView
-
-        // Sync text from binding to field (skip during active IME composition)
-        if let editor = nsView.currentEditor() as? NSTextView {
-            if editor.string != text, !editor.hasMarkedText() {
-                context.coordinator.isProgrammaticMutation = true
-                editor.string = text
-                nsView.stringValue = text
-                context.coordinator.isProgrammaticMutation = false
-            }
-        } else if nsView.stringValue != text {
-            nsView.stringValue = text
-        }
-
-        // Sync focus from binding to AppKit
-        if let window = nsView.window {
-            let fr = window.firstResponder
-            let isFirstResponder =
-                fr === nsView ||
-                nsView.currentEditor() != nil ||
-                ((fr as? NSTextView)?.delegate as? NSTextField) === nsView
-
-            if isFocused,
-               canApplyFocusRequest(),
-               !isFirstResponder,
-               context.coordinator.pendingFocusRequest != true {
-                context.coordinator.pendingFocusRequest = true
-                DispatchQueue.main.async { [weak nsView, weak coordinator = context.coordinator] in
-                    coordinator?.pendingFocusRequest = nil
-                    guard let coordinator,
-                          coordinator.parent.isFocused,
-                          coordinator.parent.canApplyFocusRequest() else { return }
-                    guard let nsView, let window = nsView.window else { return }
-                    let fr = window.firstResponder
-                    let alreadyFocused = fr === nsView ||
-                        nsView.currentEditor() != nil ||
-                        ((fr as? NSTextView)?.delegate as? NSTextField) === nsView
-                    guard !alreadyFocused else { return }
-                    window.makeFirstResponder(nsView)
-                }
-            }
-        }
-    }
-
-    static func dismantleNSView(_ nsView: SearchNativeTextField, coordinator: Coordinator) {
-        if let observer = coordinator.searchFocusObserver {
-            NotificationCenter.default.removeObserver(observer)
-            coordinator.searchFocusObserver = nil
-        }
-        nsView.delegate = nil
-        coordinator.parentField = nil
     }
 }
 

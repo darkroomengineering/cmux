@@ -26,6 +26,7 @@ final class ReviewPanel: Panel, ObservableObject {
     @Published private(set) var mode: ReviewDiffMode
     @Published private(set) var baseBranch: String
     @Published private(set) var files: [ReviewFileDiff] = []
+    private(set) var filesRevision: UInt64 = 0
     @Published private(set) var comments: [ReviewComment] = []
     @Published private(set) var isRefreshing: Bool = false
     @Published private(set) var lastError: ReviewDiffError?
@@ -118,6 +119,7 @@ final class ReviewPanel: Panel, ObservableObject {
     /// `TerminalController+Review.swift`).
     func apply(snapshot: ReviewDiffSnapshot) {
         files = snapshot.files
+        filesRevision &+= 1
         lastError = snapshot.error
         lastRefreshedAt = snapshot.generatedAt
         isRefreshing = false

@@ -71,7 +71,9 @@ extension ContentView {
     private func activateSidebarResizerCursor() {
         sidebarResizerCursorReleaseWorkItem?.cancel()
         sidebarResizerCursorReleaseWorkItem = nil
-        isSidebarResizerCursorActive = true
+        if !isSidebarResizerCursorActive {
+            isSidebarResizerCursorActive = true
+        }
         Self.fixedSidebarResizeCursor.set()
     }
 
