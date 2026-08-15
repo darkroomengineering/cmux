@@ -36,7 +36,7 @@ sleep 2
 if ! kill -0 "$APP_PID" 2>/dev/null; then
   echo "ERROR: App exited immediately after launch"
   echo "--- stdout/stderr ---"
-  cat /tmp/programa-smoke-stdout.log 2>/dev/null | tail -50 || true
+  tail -200 /tmp/programa-smoke-stdout.log 2>/dev/null || true
   echo "--- debug log ---"
   tail -50 /tmp/programa-debug.log 2>/dev/null || true
   echo "--- crash reports ---"
@@ -57,7 +57,7 @@ for i in $(seq 1 60); do
   if ! kill -0 "$APP_PID" 2>/dev/null; then
     echo "ERROR: App crashed while waiting for socket"
     echo "--- stdout/stderr ---"
-    cat /tmp/programa-smoke-stdout.log 2>/dev/null | tail -50 || true
+    tail -200 /tmp/programa-smoke-stdout.log 2>/dev/null || true
     echo "--- debug log ---"
     tail -50 /tmp/programa-debug.log 2>/dev/null || true
     exit 1
@@ -67,7 +67,7 @@ done
 if [ "$SOCKET_READY" != "true" ]; then
   echo "ERROR: Socket not ready after 30s"
   echo "--- stdout/stderr ---"
-  cat /tmp/programa-smoke-stdout.log 2>/dev/null | tail -30 || true
+  tail -200 /tmp/programa-smoke-stdout.log 2>/dev/null || true
   echo "--- debug log ---"
   tail -30 /tmp/programa-debug.log 2>/dev/null || true
   ls -la /tmp/programa-debug* 2>/dev/null || true
@@ -115,9 +115,11 @@ sleep "$STABILITY_WAIT"
 if ! kill -0 "$APP_PID" 2>/dev/null; then
   echo "ERROR: App crashed during ${STABILITY_WAIT}s stability check"
   echo "--- stdout/stderr ---"
-  cat /tmp/programa-smoke-stdout.log 2>/dev/null | tail -30 || true
+  tail -200 /tmp/programa-smoke-stdout.log 2>/dev/null || true
   echo "--- debug log ---"
-  tail -30 /tmp/programa-debug.log 2>/dev/null || true
+  tail -100 /tmp/programa-debug.log 2>/dev/null || true
+  echo "--- crash reports ---"
+  ls -lt ~/Library/Logs/DiagnosticReports/*Programa* 2>/dev/null | head -5 || echo "(none)"
   exit 1
 fi
 
