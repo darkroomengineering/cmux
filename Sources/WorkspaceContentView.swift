@@ -413,11 +413,13 @@ struct WorkspaceContentView: View {
         ))
         .background(
             WindowAccessor(dedupeByWindow: false) { window in
+                #if compiler(>=6.2)
                 if #available(macOS 26.0, *) {
                     workspace.bonsplitController.setPaneChromePortalBridge(
                         WindowPaneChromePortalRegistry.bridge(for: window)
                     )
                 }
+                #endif
             }
             .frame(width: 0, height: 0)
         )

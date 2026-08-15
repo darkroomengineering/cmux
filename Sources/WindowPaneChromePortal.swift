@@ -10,6 +10,7 @@ extension Notification.Name {
         Notification.Name("programaTerminalPortalDidMoveHostedContent")
 }
 
+#if compiler(>=6.2)
 @MainActor
 @available(macOS 26.0, *)
 final class WindowPaneChromePortalRegistry: NSObject, BonsplitPaneChromePortalBridge {
@@ -1018,3 +1019,4 @@ private final class ActionBox: NSObject {
     let action: TabContextAction
     init(_ action: TabContextAction) { self.action = action }
 }
+#endif
