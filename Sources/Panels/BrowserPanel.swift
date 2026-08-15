@@ -549,8 +549,10 @@ final class BrowserPanel: Panel, ObservableObject {
     var restoredForwardHistoryStack: [URL] = []
     var restoredHistoryCurrentURL: URL?
 
-    /// Published estimated progress (0.0 - 1.0)
-    @Published var estimatedProgress: Double = 0.0
+    /// Lifecycle-only estimated progress (0.0 - 1.0).
+    /// The browser chrome does not render this value, so WebKit progress ticks must not
+    /// invalidate every SwiftUI observer of the panel.
+    var estimatedProgress: Double = 0.0
 
     /// Increment to request a UI-only flash highlight (e.g. from a keyboard shortcut).
     @Published private(set) var focusFlashToken: Int = 0
