@@ -84,7 +84,10 @@ enum WindowGlassEffect {
     }
 
     /// Corner radius of the elevated content card (terminal/browser panes).
-    static let contentCardCornerRadius: CGFloat = 12
+    /// Concentric with the window corner at the card inset, same rule as
+    /// `sidebarPanelCornerRadius` -- a fixed smaller value makes the card's
+    /// curve visibly diverge from the window's inside the corner gap.
+    static var contentCardCornerRadius: CGFloat { windowCornerRadius - contentCardInset }
     /// Radius for floating glass controls: tab pills, icon capsule clusters.
     static let controlCornerRadius: CGFloat = 10
     /// Gap between the content card and the window edges / sidebar.

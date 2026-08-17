@@ -1334,8 +1334,15 @@ struct TitlebarLeadingInsetReader: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
             guard let window = nsView.window else { return }
-            // Start past the traffic lights
-            var leading: CGFloat = 78
+            // Start past the traffic lights. Prefer the real zoom-button frame --
+            // the unified-toolbar titlebar indents the buttons (zoom right edge
+            // measured 78.75pt), so a fixed 78 would graze it. The 9pt gap after
+            // the button matches the Tahoe traffic-light pitch rhythm.
+            var leading: CGFloat = 88
+            if let zoom = window.standardWindowButton(.zoomButton), zoom.superview != nil {
+                let frameInWindow = zoom.convert(zoom.bounds, to: nil)
+                leading = max(leading, frameInWindow.maxX + 9)
+            }
             // Add width of all left-aligned titlebar accessories
             for accessory in window.titlebarAccessoryViewControllers
                 where accessory.layoutAttribute == .leading || accessory.layoutAttribute == .left {

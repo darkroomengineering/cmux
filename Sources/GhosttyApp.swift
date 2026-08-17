@@ -639,6 +639,22 @@ class GhosttyApp {
     }
 
     private func loadDefaultConfigFilesWithLegacyFallback(_ config: ghostty_config_t) {
+        // The card layout rounds the terminal card to a corner concentric with
+        // the window (18pt); ghostty's stock window-padding (2) lets glyphs sit
+        // inside that curve at the card's bottom corners. Loaded BEFORE the
+        // user's config files so any user-set window-padding still wins.
+        // Matches the card layout's own gate: glass available AND Reduce
+        // Transparency off -- without the rounded card there is no curve to
+        // clear, so don't spend viewport on padding.
+        if WindowGlassEffect.isAvailable,
+           !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
+            loadInlineGhosttyConfig(
+                "window-padding-x = 8\nwindow-padding-y = 8",
+                into: config,
+                prefix: "programa-card-padding",
+                logLabel: "card layout padding default"
+            )
+        }
         ghostty_config_load_default_files(config)
         loadLegacyGhosttyConfigIfNeeded(config)
         ghostty_config_load_recursive_files(config)
