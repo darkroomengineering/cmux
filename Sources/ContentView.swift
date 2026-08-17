@@ -1776,11 +1776,26 @@ struct ContentView: View {
     }
 
     static func makeViewHierarchyTransparent(_ root: NSView) {
+        // This walk runs on every configureMainWindow call while glass/translucency
+        // is active, not just once, so it needs to be safe to re-run cheaply.
+        // Skip mutating a view whose layer already matches: repeated writes to
+        // wantsLayer/backgroundColor/isOpaque still fire AppKit's layer/KVO
+        // machinery even when the value doesn't change, and that repeated firing
+        // was part of the safe-area invalidation storm in issue #307. The walk
+        // still visits every subview so newly added views are always covered.
         var stack: [NSView] = [root]
         while let view = stack.popLast() {
-            view.wantsLayer = true
-            view.layer?.backgroundColor = NSColor.clear.cgColor
-            view.layer?.isOpaque = false
+            if !view.wantsLayer {
+                view.wantsLayer = true
+            }
+            if let layer = view.layer {
+                if layer.backgroundColor != NSColor.clear.cgColor {
+                    layer.backgroundColor = NSColor.clear.cgColor
+                }
+                if layer.isOpaque {
+                    layer.isOpaque = false
+                }
+            }
             stack.append(contentsOf: view.subviews)
         }
     }
