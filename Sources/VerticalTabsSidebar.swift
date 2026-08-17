@@ -236,8 +236,9 @@ struct VerticalTabsSidebar: View {
             .padding(.top, usesBackdropSidebar ? WindowGlassEffect.sidebarPanelInset : 0)
             .contentShape(Rectangle())
             .background(
-                WindowDragHandleView()
-                    .background(TitlebarDoubleClickMonitorView())
+                // onDoubleClick replaces the standard zoom/minimize titlebar
+                // action here — double-click on the header strip opens a tab.
+                WindowDragHandleView(onDoubleClick: { tabManager.addTab() })
             )
 
             GeometryReader { proxy in

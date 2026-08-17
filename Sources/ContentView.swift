@@ -787,7 +787,9 @@ struct ContentView: View {
         ZStack {
             // Enable window dragging from the titlebar strip without making the entire content
             // view draggable (which breaks drag gestures like tab reordering).
-            WindowDragHandleView()
+            // Double-click on the strip opens a tab instead of the standard
+            // zoom/minimize titlebar action.
+            WindowDragHandleView(onDoubleClick: { tabManager.addTab() })
 
             TitlebarLeadingInsetReader(inset: $titlebarLeadingInset)
                 .allowsHitTesting(false)
@@ -820,7 +822,6 @@ struct ContentView: View {
         .frame(height: titlebarPadding)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
-        .background(TitlebarDoubleClickMonitorView())
         .background({
             // The terminal background is provided by a single CALayer
             // (backgroundView in GhosttySurfaceScrollView), so the titlebar
@@ -952,7 +953,9 @@ struct ContentView: View {
                         // has no customTitlebar). Background sits behind the real
                         // terminal content, which only occupies the inset interior, so
                         // AppKit hit-testing falls through to this handle in the ring.
-                        .background(WindowDragHandleView())
+                        // Double-click on the chrome ring opens a tab instead of the
+                        // standard zoom/minimize titlebar action.
+                        .background(WindowDragHandleView(onDoubleClick: { tabManager.addTab() }))
                         .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
                     if sidebarState.isVisible {
                         sidebarView
@@ -969,7 +972,7 @@ struct ContentView: View {
                     terminalContentWithSidebarDropOverlay
                         .padding(cardInsetAmount)
                         // See comment in the useWithinWindow branch above.
-                        .background(WindowDragHandleView())
+                        .background(WindowDragHandleView(onDoubleClick: { tabManager.addTab() }))
                 }
             )
         }

@@ -287,9 +287,11 @@ extension NSWindow {
             )
             #endif
             if event.clickCount >= 2 {
-                let action = performStandardTitlebarDoubleClick(window: self)
+                // Match the WindowDragHandleView regions: titlebar-area
+                // double-click opens a tab, not the standard zoom/minimize.
+                _ = AppDelegate.shared?.tabManager?.addTab()
                 #if DEBUG
-                dlog("titlebar.chromeDrag doubleClick action=\(String(describing: action))")
+                dlog("titlebar.chromeDrag doubleClick action=addTab")
                 #endif
             } else {
                 withTemporaryWindowMovableEnabled(window: self) {
