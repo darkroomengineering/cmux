@@ -9269,15 +9269,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         bgGlassTintHex: String,
         bgGlassTintOpacity: Double
     ) -> CGFloat {
-        window.identifier = NSUserInterfaceItemIdentifier(windowIdentifier)
-        window.titlebarAppearsTransparent = true
+        // This function runs on every WindowAccessor update, not just once per window
+        // (see the toolbar guard below), so every write here is value-diffed against
+        // current state first. An unconditional set-to-same-value still fires AppKit's
+        // KVO/observer machinery on each call, and repeated firing of that machinery is
+        // part of what feeds the safe-area invalidation storm in issue #307 — diffing
+        // stops the re-entry without changing what gets configured on first apply.
+        let nextIdentifier = NSUserInterfaceItemIdentifier(windowIdentifier)
+        if window.identifier != nextIdentifier {
+            window.identifier = nextIdentifier
+        }
+        if !window.titlebarAppearsTransparent {
+            window.titlebarAppearsTransparent = true
+        }
         // Keep window immovable; the sidebar's WindowDragHandleView handles
         // drag-to-move via performDrag with temporary movable override.
         // isMovableByWindowBackground=true breaks tab reordering, and
         // isMovable=true blocks clicks on sidebar buttons in minimal mode.
-        window.isMovableByWindowBackground = false
-        window.isMovable = false
-        window.styleMask.insert(.fullSizeContentView)
+        if window.isMovableByWindowBackground {
+            window.isMovableByWindowBackground = false
+        }
+        if window.isMovable {
+            window.isMovable = false
+        }
+        if !window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.insert(.fullSizeContentView)
+        }
 
         if WindowGlassEffect.isAvailable, window.toolbar == nil {
             // A `.top`-attribute NSTitlebarAccessoryViewController and an empty
@@ -9328,19 +9345,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             shouldApplyWindowGlass || currentThemeBackground.alphaComponent < 0.999
 
         if shouldForceTransparentHosting {
-            window.isOpaque = false
+            if window.isOpaque {
+                window.isOpaque = false
+            }
             // Keep the window clear whenever translucency is active. Relying only on
             // terminal focus-driven updates can leave stale opaque window fills.
-            window.backgroundColor = NSColor.white.withAlphaComponent(0.001)
-            // Configure contentView hierarchy for transparency.
+            let clearBackground = NSColor.white.withAlphaComponent(0.001)
+            if window.backgroundColor != clearBackground {
+                window.backgroundColor = clearBackground
+            }
+            // Configure contentView hierarchy for transparency. The walk itself
+            // skips views whose layer state already matches, so re-running it here
+            // is cheap and still picks up any subviews added since the last call.
             if let contentView = window.contentView {
                 ContentView.makeViewHierarchyTransparent(contentView)
             }
         } else {
             // Browser-focused workspaces may not have an active terminal panel to refresh
             // the NSWindow background. Keep opaque theme changes applied here as well.
-            window.backgroundColor = currentThemeBackground
-            window.isOpaque = currentThemeBackground.alphaComponent >= 0.999
+            if window.backgroundColor != currentThemeBackground {
+                window.backgroundColor = currentThemeBackground
+            }
+            let nextIsOpaque = currentThemeBackground.alphaComponent >= 0.999
+            if window.isOpaque != nextIsOpaque {
+                window.isOpaque = nextIsOpaque
+            }
         }
 
         if shouldApplyWindowGlass {

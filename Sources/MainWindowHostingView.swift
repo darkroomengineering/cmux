@@ -17,6 +17,13 @@ final class MainWindowHostingView<Content: View>: NSHostingView<Content> {
 
     required init(rootView: Content) {
         super.init(rootView: rootView)
+        // Tell SwiftUI to ignore safe areas outright, rather than relying only on
+        // the constant overrides above. Without this, SwiftUI keeps observing and
+        // propagating safe-area changes even though the getters report zero, and
+        // that observation is what recurses through invalidateSafeAreaInsets ->
+        // didChangeValue(forKey:) -> setNeedsUpdateConstraints on ambient display
+        // events until AppKit's layout-loop guard trips the app (issue #307).
+        safeAreaRegions = []
         addLayoutGuide(zeroSafeAreaLayoutGuide)
         NSLayoutConstraint.activate([
             zeroSafeAreaLayoutGuide.leadingAnchor.constraint(equalTo: leadingAnchor),
