@@ -363,6 +363,11 @@ struct SplitContainerView<Content: View, EmptyContent: View>: NSViewRepresentabl
             // intrinsic-size constraints that force a minimum pane width.
             hostingController.sizingOptions = []
         }
+        // Split children live inside the pane area, not under the titlebar; the
+        // window's titlebar safe area must not inset their content (same rule as
+        // SinglePaneWrapper — without this, every pane of a split gains a blank
+        // strip the height of the titlebar above its tab bar).
+        hostingController.safeAreaRegions = []
 
         let hostedView = hostingController.view
         // NSSplitView lays out arranged subviews by setting frames. Leaving Auto Layout
