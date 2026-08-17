@@ -330,10 +330,19 @@ struct VerticalTabsSidebar: View {
                 .background(Color.clear)
                 .modifier(ClearScrollBackground())
             }
-            SidebarFooter(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            SidebarQuotaFooter()
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 0) {
+                SidebarFooter(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                SidebarQuotaFooter()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // Clearance from the window's bottom-left corner curve so the last
+            // footer row doesn't ride the radius.
+            .padding(.bottom, 6)
+            // Empty footer space (below/around the help button, feedback row, and
+            // quota meters) drags the window; the buttons/rows above keep their own
+            // clicks via the sibling hit-test walk in windowDragHandleShouldCaptureHit.
+            .background(WindowDragHandleView())
         }
         .accessibilityIdentifier("Sidebar")
 
