@@ -15,6 +15,48 @@ private enum ProgramaThemeNotifications {
     static let reloadConfig = Notification.Name("com.darkroom.programa.themes.reload-config")
 }
 
+/// Association key for retaining `MainWindowToolbarDelegate` on its window --
+/// `NSToolbar.delegate` is weak, so without this the delegate is deallocated
+/// immediately and the toolbar silently loses its item provider.
+private var mainWindowToolbarDelegateAssociationKey: UInt8 = 0
+
+/// Supplies a single invisible spacer item so the main window's otherwise-empty
+/// unified toolbar reports a non-zero height, growing the titlebar so AppKit
+/// re-centers the traffic lights on `WindowGlassEffect.sidebarHeaderCenterFromWindowTop`.
+/// See the call site in `configureMainWindow` for why this is a toolbar item and
+/// not an empty toolbar or a `.top` titlebar accessory (both measured as no-ops).
+private final class MainWindowToolbarDelegate: NSObject, NSToolbarDelegate {
+    static let spacerItemIdentifier = NSToolbarItem.Identifier("programa.titlebarSpacer")
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.spacerItemIdentifier]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.spacerItemIdentifier]
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        guard itemIdentifier == Self.spacerItemIdentifier else { return nil }
+        let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        spacer.heightAnchor.constraint(
+            equalToConstant: WindowGlassEffect.mainWindowTitlebarSpacerHeight
+        ).isActive = true
+        item.view = spacer
+        item.isEnabled = false
+        item.isBordered = false
+        item.visibilityPriority = .user
+        return item
+    }
+}
+
 func isCommandPaletteFocusStealingTerminalOrBrowserResponder(_ responder: NSResponder) -> Bool {
     if responder is GhosttyNSView || responder is WKWebView {
         return true
@@ -9236,6 +9278,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         window.isMovableByWindowBackground = false
         window.isMovable = false
         window.styleMask.insert(.fullSizeContentView)
+
+        if WindowGlassEffect.isAvailable, window.toolbar == nil {
+            // A `.top`-attribute NSTitlebarAccessoryViewController and an empty
+            // NSToolbar were both measured to have no effect on titlebar height
+            // (confirmed against the AppKit header: `.top` only replaces what's
+            // drawn within the existing titlebar area, it doesn't grow it; an
+            // empty toolbar reports zero height). Give the toolbar a single
+            // invisible spacer item -- the same mechanism sidebar apps (Mail,
+            // Notes, Finder) use -- so AppKit re-centers the traffic lights on
+            // WindowGlassEffect.sidebarHeaderCenterFromWindowTop. Guarded on
+            // `window.toolbar == nil` because this function runs on every
+            // WindowAccessor update, not just once per window.
+            let toolbar = NSToolbar(identifier: "programa.main.titlebar")
+            let toolbarDelegate = MainWindowToolbarDelegate()
+            objc_setAssociatedObject(
+                window,
+                &mainWindowToolbarDelegateAssociationKey,
+                toolbarDelegate,
+                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            )
+            toolbar.delegate = toolbarDelegate
+            toolbar.allowsUserCustomization = false
+            toolbar.autosavesConfiguration = false
+            toolbar.displayMode = .iconOnly
+            window.toolbar = toolbar
+            window.toolbarStyle = .unified
+            window.titlebarSeparatorStyle = .none
+        }
 
         // Keep content below the titlebar so drags on Bonsplit's tab bar don't
         // get interpreted as window drags.

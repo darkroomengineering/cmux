@@ -947,6 +947,12 @@ struct ContentView: View {
                 ZStack(alignment: .leading) {
                     terminalContentWithSidebarDropOverlay
                         .padding(cardInsetAmount)
+                        // Dead chrome surface: the gap ring around the content card
+                        // (window edges, and the top gap when card-layout+sidebar-visible
+                        // has no customTitlebar). Background sits behind the real
+                        // terminal content, which only occupies the inset interior, so
+                        // AppKit hit-testing falls through to this handle in the ring.
+                        .background(WindowDragHandleView())
                         .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
                     if sidebarState.isVisible {
                         sidebarView
@@ -962,6 +968,8 @@ struct ContentView: View {
                     }
                     terminalContentWithSidebarDropOverlay
                         .padding(cardInsetAmount)
+                        // See comment in the useWithinWindow branch above.
+                        .background(WindowDragHandleView())
                 }
             )
         }

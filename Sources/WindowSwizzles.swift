@@ -266,6 +266,42 @@ extension NSWindow {
             programaFirstResponderGuardContextWindowNumber = previousContextWindowNumber
         }
 
+        // The card's dead top-edge sliver (the padding-ring WindowDragHandleView
+        // mount in ContentView.swift doesn't fully cover it -- AppKit's hit-test
+        // bottoms out at the bare content host there) has no native drag:
+        // isMovable=false and isMovableByWindowBackground=false disable AppKit's
+        // own titlebar drag globally. Handle it here for genuine unclaimed
+        // background only -- real controls (traffic lights, titlebar accessory
+        // buttons) and real content (terminal surfaces, bonsplit's tab bar, which
+        // are portal-hosted outside contentView's subtree by design) keep their
+        // own gestures -- and folder-icon drag suppression keeps priority over
+        // this (checked first, matching the guard below).
+        if event.type == .leftMouseDown,
+           !shouldSuppressWindowMoveForFolderDrag(window: self, event: event),
+           let hitView = programaFirstResponderGuardHitViewContext,
+           Self.programaIsTitlebarBackgroundDragTarget(hitView, in: self) {
+            #if DEBUG
+            dlog(
+                "titlebar.chromeDrag start clickCount=\(event.clickCount) " +
+                "hit=\(type(of: hitView))"
+            )
+            #endif
+            if event.clickCount >= 2 {
+                let action = performStandardTitlebarDoubleClick(window: self)
+                #if DEBUG
+                dlog("titlebar.chromeDrag doubleClick action=\(String(describing: action))")
+                #endif
+            } else {
+                withTemporaryWindowMovableEnabled(window: self) {
+                    self.performDrag(with: event)
+                }
+                #if DEBUG
+                dlog("titlebar.chromeDrag dragComplete nowMovable=\(self.isMovable)")
+                #endif
+            }
+            return
+        }
+
         guard shouldSuppressWindowMoveForFolderDrag(window: self, event: event),
               let contentView = self.contentView else {
 #if DEBUG
@@ -651,6 +687,57 @@ extension NSWindow {
             return nil
         }
         return programaTopHitViewForEvent(in: window, event: event)
+    }
+
+    /// True when `hitView` is exactly `window.contentView` (its root SwiftUI host) --
+    /// what AppKit's hit-test falls back to when nothing more specific (no SwiftUI
+    /// view, no WindowDragHandleView mount) claims the point, observed for the top
+    /// gap ring where the padding-ring mount's own frame doesn't extend.
+    ///
+    /// Deliberately NOT "walk up and see if we ever pass through contentView":
+    /// portal-hosted content (GhosttyNSView terminal surfaces, browser WKWebViews)
+    /// is mounted as a theme-frame sibling outside contentView's subtree by design
+    /// (see WindowTerminalHostView / the terminal find layering contract in
+    /// CLAUDE.md), so that walk classified live terminal content as dead chrome --
+    /// caught by the card-center negative test, which must never regress.
+    private static func programaIsTitlebarChromeHit(_ hitView: NSView, contentView: NSView) -> Bool {
+        hitView === contentView
+    }
+
+    private static func programaIsControlOrControlDescendant(_ view: NSView) -> Bool {
+        var current: NSView? = view
+        while let candidate = current {
+            if candidate is NSControl {
+                return true
+            }
+            current = candidate.superview
+        }
+        return false
+    }
+
+    /// True when `hitView` is owned by a `TitlebarControlsAccessoryViewController`
+    /// (the help/notifications/new-tab cluster) installed on `window`, so its own
+    /// gestures (including non-`NSControl` hover chrome inside it) are preserved.
+    private static func programaIsWithinTitlebarControlsAccessory(_ hitView: NSView, in window: NSWindow) -> Bool {
+        for controller in window.titlebarAccessoryViewControllers {
+            guard controller is TitlebarControlsAccessoryViewController else { continue }
+            if hitView === controller.view || hitView.isDescendant(of: controller.view) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// True when a `leftMouseDown` hit on `hitView` should start a titlebar-style
+    /// window drag (or, on double-click, the standard zoom): unclaimed background
+    /// (see `programaIsTitlebarChromeHit`), and not a real control or the titlebar
+    /// controls accessory cluster.
+    private static func programaIsTitlebarBackgroundDragTarget(_ hitView: NSView, in window: NSWindow) -> Bool {
+        guard let contentView = window.contentView else { return false }
+        guard programaIsTitlebarChromeHit(hitView, contentView: contentView) else { return false }
+        if programaIsControlOrControlDescendant(hitView) { return false }
+        if programaIsWithinTitlebarControlsAccessory(hitView, in: window) { return false }
+        return true
     }
 
     private static func programaHitViewForCurrentEvent(in window: NSWindow, event: NSEvent) -> NSView? {
