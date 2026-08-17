@@ -139,6 +139,7 @@ Notifications:
 - set_app_focus -> `app.focus_override.set`
 - simulate_app_active -> `app.simulate_active`
 - reload_config -> `app.reload_config`
+- (no v1 equivalent) -> `app.browsers` (new in v2: lists known browsers with install/running status and the system default; see "Browser Availability" below)
 
 Browser:
 - open_browser -> `browser.open_split`
@@ -558,6 +559,35 @@ blank manifest over a working one.
 Result: `{"requested_agent", "recognized_via" ("explicit"|"screen_pattern"|null), "agent", "display_name", "bucket", "confidence", "matched_pattern", "workspace_id"?, "surface_id"?}` (all
 null when nothing was recognized/classified). Errors: `not_found` (unknown `agent`), plus
 whatever `surface.read_text` can return for the target surface.
+
+## Browser Availability (`app.browsers`, `PROGRAMA_DEFAULT_BROWSER*`)
+
+Two ways a terminal or agent can check which browsers are available, so scripts don't have
+to guess: the `app.browsers` socket command, and two env vars set on every spawned shell.
+
+### `app.browsers`
+
+`{}` -> `{"default": "chrome", "browsers": [{"key": "chrome", "name": "Google Chrome", "bundle_id": "com.google.Chrome", "path": "/Applications/Google Chrome.app", "installed": true, "running": false}, ...]}`.
+
+Read-only; no arguments. `browsers` covers the browsers `BrowserAvailability.knownBrowsers`
+tracks in `Sources/Panels/BrowserDataImport.swift` (Safari, Chrome, Firefox, Arc, Brave, Edge,
+Zen, Vivaldi, Opera, Opera GX, Orion, Dia, Perplexity Comet, Floorp, Waterfox, SigmaOS,
+Sidekick, Helium, Atlas, Ladybird, Chromium, Ungoogled Chromium, Aside). `installed` is true
+only when the app itself resolves (by bundle identifier via `NSWorkspace`, falling back to an
+`/Applications`-style path scan) -- separate from, and does not affect, the leftover-profile-data
+detection the browser data-import wizard uses to offer cookie/history import. `running` matches
+against `NSWorkspace.shared.runningApplications`. `default` is the short key of the system
+default browser (`nil` if Launch Services can't resolve one), same resolution as
+`PROGRAMA_DEFAULT_BROWSER` below.
+
+### `PROGRAMA_DEFAULT_BROWSER` / `PROGRAMA_DEFAULT_BROWSER_BUNDLE_ID`
+
+Set once per shell spawn in `Sources/TerminalSurface.swift`, alongside the other
+`PROGRAMA_*` startup env vars. `PROGRAMA_DEFAULT_BROWSER` is the short key (`chrome`, `safari`,
+`arc`, `aside`, ...; falls back to the raw bundle identifier for anything not in
+`BrowserAvailability.shortKeysByBundleIdentifier`) and `PROGRAMA_DEFAULT_BROWSER_BUNDLE_ID` is
+the raw bundle identifier, resolved via one `NSWorkspace.urlForApplication(toOpen:)` Launch
+Services call. Both are omitted if resolution fails.
 
 ## Tests
 

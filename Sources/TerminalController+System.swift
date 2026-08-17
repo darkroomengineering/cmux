@@ -402,4 +402,26 @@ extension TerminalController {
         }
         return .ok(["reloaded": true])
     }
+
+    /// Read-only `NSWorkspace`/filesystem queries, no arguments, no AppKit UI
+    /// mutation -- per the socket command threading policy this runs off-main
+    /// (no `v2MainSync`), same as other query commands.
+    func v2AppBrowsers() -> V2CallResult {
+        let statuses = BrowserAvailability.detectStatuses()
+        let defaultBrowser = BrowserAvailability.resolveDefaultBrowser()
+        let browsers: [[String: Any]] = statuses.map { status in
+            [
+                "key": status.key,
+                "name": status.name,
+                "bundle_id": status.bundleId,
+                "path": v2OrNull(status.path),
+                "installed": status.installed,
+                "running": status.running
+            ]
+        }
+        return .ok([
+            "default": v2OrNull(defaultBrowser?.shortKey),
+            "browsers": browsers
+        ])
+    }
 }

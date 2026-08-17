@@ -24,3 +24,4 @@ test_surface_wait.py
 test_agent_activity_state_socket.py
 test_agent_state_wait_and_prompt.py
 test_socket_event_subscriptions.py
+test_app_browsers.py

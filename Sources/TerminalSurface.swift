@@ -1259,6 +1259,21 @@ final class TerminalSurface: Identifiable, ObservableObject {
         if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
             setManagedEnvironmentValue("PROGRAMA_BUNDLE_ID", bundleId)
         }
+        // One Launch Services call per spawn, resolved and mapped through
+        // BrowserAvailability so the env var and the `app.browsers` socket
+        // command agree on short keys. Clear + protect both keys first so a
+        // stale value inherited from the base/initial environment can't
+        // survive a failed resolution -- these two are only populated on
+        // success, so the "absent on failure" contract needs an explicit
+        // clear, unlike the always-set managed keys above.
+        env.removeValue(forKey: "PROGRAMA_DEFAULT_BROWSER")
+        env.removeValue(forKey: "PROGRAMA_DEFAULT_BROWSER_BUNDLE_ID")
+        protectedStartupEnvironmentKeys.insert("PROGRAMA_DEFAULT_BROWSER")
+        protectedStartupEnvironmentKeys.insert("PROGRAMA_DEFAULT_BROWSER_BUNDLE_ID")
+        if let defaultBrowser = BrowserAvailability.resolveDefaultBrowser() {
+            setManagedEnvironmentValue("PROGRAMA_DEFAULT_BROWSER", defaultBrowser.shortKey)
+            setManagedEnvironmentValue("PROGRAMA_DEFAULT_BROWSER_BUNDLE_ID", defaultBrowser.bundleIdentifier)
+        }
 
         // Port range for this workspace (base/range snapshotted once per app session)
         do {

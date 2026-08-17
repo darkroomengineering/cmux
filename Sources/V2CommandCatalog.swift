@@ -111,6 +111,7 @@ enum V2CommandCatalog {
         "app.focus_override.set",
         "app.simulate_active",
         "app.reload_config",
+        "app.browsers",
         "markdown.open",
         "review.open",
         "review.refresh",

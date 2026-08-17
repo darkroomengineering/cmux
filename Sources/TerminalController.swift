@@ -1821,6 +1821,8 @@ class TerminalController {
             return v2Result(id: id, self.v2AppSimulateActive())
         case "app.reload_config":
             return v2Result(id: id, self.v2AppReloadConfig(params: params))
+        case "app.browsers":
+            return v2Result(id: id, self.v2AppBrowsers())
 
         // Browser
         case "browser.open_split":

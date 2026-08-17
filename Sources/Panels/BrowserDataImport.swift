@@ -131,6 +131,143 @@ struct InstalledBrowserCandidate: Identifiable, Hashable {
     var profileURLs: [URL] { profiles.map(\.rootURL) }
 }
 
+struct BrowserAvailabilityDescriptor {
+    let shortKey: String
+    let displayName: String
+    let bundleIdentifiers: [String]
+    let appNames: [String]
+}
+
+/// Availability info for `PROGRAMA_DEFAULT_BROWSER` (env var injected at shell
+/// spawn, see `TerminalSurface.swift`) and the `app.browsers` socket command
+/// (see `TerminalController+System.swift`). Deliberately independent of
+/// `InstalledBrowserDetector.allBrowserDescriptors`/`detectInstalledBrowsers`,
+/// which drive the browser data-import wizard: adding a browser here (Aside,
+/// for instance) must never change what the import wizard offers, and
+/// "installed" here means only "the app itself resolves" -- never the
+/// wizard's leftover-profile-data scoring in `detectData`.
+enum BrowserAvailability {
+    /// Bundle id -> short key used by both `PROGRAMA_DEFAULT_BROWSER` and the
+    /// `key` field of `app.browsers`. Falls back to the raw bundle id for
+    /// anything not listed here.
+    static let shortKeysByBundleIdentifier: [String: String] = [
+        "com.apple.Safari": "safari",
+        "com.google.Chrome": "chrome",
+        "org.mozilla.firefox": "firefox",
+        "company.thebrowser.Browser": "arc",
+        "company.thebrowser.arc": "arc",
+        "com.brave.Browser": "brave",
+        "com.microsoft.edgemac": "edge",
+        "com.microsoft.Edge": "edge",
+        "app.zen-browser.zen": "zen",
+        "app.zen-browser.Zen": "zen",
+        "com.vivaldi.Vivaldi": "vivaldi",
+        "com.operasoftware.Opera": "opera",
+        "com.operasoftware.OperaGX": "opera-gx",
+        "com.kagi.kagimacOS": "orion",
+        "com.kagi.kagimacos": "orion",
+        "com.kagi.orion": "orion",
+        "company.thebrowser.Dia": "dia",
+        "company.thebrowser.dia": "dia",
+        "ai.perplexity.comet": "comet",
+        "one.ablaze.floorp": "floorp",
+        "net.waterfox.waterfox": "waterfox",
+        "com.feralcat.sigmaos": "sigmaos",
+        "com.meetsidekick.Sidekick": "sidekick",
+        "com.pushplaylabs.sidekick": "sidekick",
+        "net.imput.helium": "helium",
+        "com.jadenGeller.Helium": "helium",
+        "com.jaden.geller.helium": "helium",
+        "com.atlas.browser": "atlas",
+        "org.ladybird.Browser": "ladybird",
+        "org.serenityos.ladybird": "ladybird",
+        "org.chromium.Chromium": "chromium",
+        "org.chromium.ungoogled": "ungoogled-chromium",
+        "at.studio.AsideBrowser": "aside",
+    ]
+
+    static func shortKey(forBundleIdentifier bundleIdentifier: String) -> String {
+        shortKeysByBundleIdentifier[bundleIdentifier] ?? bundleIdentifier
+    }
+
+    /// Browsers `app.browsers` reports on: mirrored from
+    /// `InstalledBrowserDetector.allBrowserDescriptors` (bundle ids and app
+    /// names only -- never that list's data-directory paths or scoring), plus
+    /// Aside, which the import wizard does not know about.
+    static let knownBrowsers: [BrowserAvailabilityDescriptor] = {
+        let mirrored = InstalledBrowserDetector.allBrowserDescriptors.map { descriptor in
+            BrowserAvailabilityDescriptor(
+                shortKey: shortKey(forBundleIdentifier: descriptor.bundleIdentifiers.first ?? descriptor.id),
+                displayName: descriptor.displayName,
+                bundleIdentifiers: descriptor.bundleIdentifiers,
+                appNames: descriptor.appNames
+            )
+        }
+        let aside = BrowserAvailabilityDescriptor(
+            shortKey: "aside",
+            displayName: "Aside",
+            bundleIdentifiers: ["at.studio.AsideBrowser"],
+            appNames: ["Aside.app"]
+        )
+        return mirrored + [aside]
+    }()
+
+    struct BrowserStatus {
+        let key: String
+        let name: String
+        let bundleId: String
+        let path: String?
+        let installed: Bool
+        let running: Bool
+    }
+
+    /// Resolves every known browser's install/running status. Read-only
+    /// (`NSWorkspace` + filesystem lookups); safe off-main.
+    static func detectStatuses(
+        runningApplications: [NSRunningApplication] = NSWorkspace.shared.runningApplications
+    ) -> [BrowserStatus] {
+        var runningByBundleId: [String: NSRunningApplication] = [:]
+        for app in runningApplications {
+            guard let bundleId = app.bundleIdentifier else { continue }
+            runningByBundleId[bundleId] = app
+        }
+        return knownBrowsers.map { descriptor in
+            let resolved = InstalledBrowserDetector.resolveApplicationPresence(
+                bundleIdentifiers: descriptor.bundleIdentifiers,
+                appNames: descriptor.appNames
+            )
+            let bundleId = resolved.bundleIdentifier ?? descriptor.bundleIdentifiers.first ?? descriptor.shortKey
+            let runningApp = descriptor.bundleIdentifiers.compactMap { runningByBundleId[$0] }.first
+                ?? runningByBundleId[bundleId]
+            // A running app is authoritative proof of install even when the LS/path
+            // lookup misses it (nonstandard install location, mounted DMG, not yet
+            // Spotlight-indexed) -- otherwise running=true, installed=false is
+            // possible, which contradicts what "installed" means to callers.
+            return BrowserStatus(
+                key: descriptor.shortKey,
+                name: descriptor.displayName,
+                bundleId: bundleId,
+                path: resolved.url?.path ?? runningApp?.bundleURL?.path,
+                installed: resolved.url != nil || runningApp != nil,
+                running: runningApp != nil
+            )
+        }
+    }
+
+    /// Short key of the system default browser, resolved the same way for
+    /// both `PROGRAMA_DEFAULT_BROWSER` and `app.browsers`' `default` field:
+    /// one Launch Services call via `NSWorkspace.urlForApplication(toOpen:)`,
+    /// mapped through `shortKeysByBundleIdentifier`.
+    static func resolveDefaultBrowser() -> (shortKey: String, bundleIdentifier: String)? {
+        guard let exampleURL = URL(string: "https://example.com"),
+              let appURL = NSWorkspace.shared.urlForApplication(toOpen: exampleURL),
+              let bundleIdentifier = Bundle(url: appURL)?.bundleIdentifier else {
+            return nil
+        }
+        return (shortKey(forBundleIdentifier: bundleIdentifier), bundleIdentifier)
+    }
+}
+
 enum InstalledBrowserDetector {
     typealias BundleLookup = (String) -> URL?
 
@@ -651,6 +788,38 @@ enum InstalledBrowserDetector {
 
     private static func bundleIdentifier(for appURL: URL) -> String? {
         Bundle(url: appURL)?.bundleIdentifier
+    }
+
+    /// App-presence half of `detectApplication` above, mirrored (not shared
+    /// via refactor) for `BrowserAvailability` -- deliberately excludes
+    /// `detectData`'s leftover-profile-data scoring below. "Installed" here
+    /// means only that the app itself resolves, by bundle identifier first
+    /// then by app name across the standard search directories.
+    static func resolveApplicationPresence(
+        bundleIdentifiers: [String],
+        appNames: [String],
+        homeDirectoryURL: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
+        bundleLookup: BundleLookup? = nil,
+        fileManager: FileManager = .default
+    ) -> (url: URL?, bundleIdentifier: String?) {
+        let lookup = bundleLookup ?? { bundleIdentifier in
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+        }
+        for knownBundleIdentifier in bundleIdentifiers {
+            if let appURL = lookup(knownBundleIdentifier) {
+                return (appURL, bundleIdentifier(for: appURL) ?? knownBundleIdentifier)
+            }
+        }
+        let searchDirectories = defaultApplicationSearchDirectories(homeDirectoryURL: homeDirectoryURL)
+        for appName in appNames {
+            for directory in searchDirectories {
+                let appURL = directory.appendingPathComponent(appName, isDirectory: true)
+                if fileManager.fileExists(atPath: appURL.path) {
+                    return (appURL, bundleIdentifier(for: appURL))
+                }
+            }
+        }
+        return (nil, nil)
     }
 
     private static func candidateDataRootRelativePaths(
