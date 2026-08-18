@@ -1758,3 +1758,81 @@ final class TmuxWorkspacePaneOverlayTests: XCTestCase {
     }
 }
 #endif
+
+@MainActor
+final class TitlebarChromeDragTargetTests: XCTestCase {
+    /// Regression: the update pill's NSPopover hosts pure-SwiftUI content via
+    /// NSHostingController, and AppKit installs that hosting view as the popover
+    /// window's own contentView. SwiftUI buttons are not NSViews, so every click
+    /// inside the popover hit-tests to exactly contentView — which the chrome-drag
+    /// fallback in programa_sendEvent classified as unclaimed titlebar background,
+    /// swallowing the click as a window drag. The "Install and Relaunch" button
+    /// was unclickable in every release carrying that fallback (0.4.249+).
+    func testPopoverHostedSwiftUIContentIsNotChromeDragTarget() throws {
+        _ = NSApplication.shared
+
+        let anchorWindow = NSWindow(
+            contentRect: NSRect(x: -10000, y: -10000, width: 200, height: 100),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let anchor = NSView(frame: NSRect(x: 50, y: 40, width: 20, height: 20))
+        anchorWindow.contentView?.addSubview(anchor)
+        anchorWindow.orderFront(nil)
+
+        let hosting = NSHostingController(rootView: AnyView(
+            VStack(spacing: 8) {
+                Text("Update Available")
+                Button("Install and Relaunch") {}
+            }
+            .padding(16)
+        ))
+        let popover = NSPopover()
+        popover.behavior = .semitransient
+        popover.animates = false
+        popover.contentViewController = hosting
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+        defer {
+            popover.performClose(nil)
+            anchorWindow.orderOut(nil)
+        }
+
+        let popoverWindow = try XCTUnwrap(hosting.view.window)
+        let contentView = try XCTUnwrap(popoverWindow.contentView)
+
+        // Precondition of the bug: a click in the middle of the popover content
+        // (where the button renders) bottoms out at the contentView itself.
+        let mid = NSPoint(x: contentView.bounds.midX, y: contentView.bounds.midY)
+        let hit = try XCTUnwrap(
+            contentView.hitTest(contentView.convert(mid, to: contentView.superview))
+        )
+        XCTAssertTrue(
+            hit === contentView,
+            "expected popover-hosted SwiftUI content to hit-test to the hosting contentView"
+        )
+
+        XCTAssertFalse(
+            NSWindow.programaIsTitlebarBackgroundDragTarget(hit, in: popoverWindow),
+            "clicks inside popover-hosted SwiftUI content must reach its buttons, not start a chrome drag"
+        )
+    }
+
+    /// The fallback must keep serving the main window's dead chrome sliver.
+    func testMainWindowContentViewRemainsChromeDragTarget() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: -10000, y: -10000, width: 400, height: 300),
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+        let hosting = MainWindowHostingView(rootView: AnyView(EmptyView()))
+        window.contentView = hosting
+
+        XCTAssertTrue(
+            NSWindow.programaIsTitlebarBackgroundDragTarget(hosting, in: window),
+            "main-window dead chrome must still qualify for the drag fallback"
+        )
+    }
+}

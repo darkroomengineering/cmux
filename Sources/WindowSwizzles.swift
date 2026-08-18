@@ -733,8 +733,9 @@ extension NSWindow {
     /// True when a `leftMouseDown` hit on `hitView` should start a titlebar-style
     /// window drag (or, on double-click, the standard zoom): unclaimed background
     /// (see `programaIsTitlebarChromeHit`), and not a real control or the titlebar
-    /// controls accessory cluster.
-    private static func programaIsTitlebarBackgroundDragTarget(_ hitView: NSView, in window: NSWindow) -> Bool {
+    /// controls accessory cluster. Internal (not private) as the unit-test seam
+    /// for the popover-click regression in WindowAndDragTests.
+    static func programaIsTitlebarBackgroundDragTarget(_ hitView: NSView, in window: NSWindow) -> Bool {
         guard let contentView = window.contentView else { return false }
         guard programaIsTitlebarChromeHit(hitView, contentView: contentView) else { return false }
         if programaIsControlOrControlDescendant(hitView) { return false }
