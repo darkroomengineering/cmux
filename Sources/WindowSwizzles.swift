@@ -702,8 +702,14 @@ extension NSWindow {
     /// (see WindowTerminalHostView / the terminal find layering contract in
     /// CLAUDE.md), so that walk classified live terminal content as dead chrome --
     /// caught by the card-center negative test, which must never regress.
+    /// Scoped to the main window's hosting view: in any window whose contentView
+    /// is a plain NSHostingView (NSPopover content, About/Settings panels), pure
+    /// SwiftUI controls are not NSViews, so EVERY click bottoms out at
+    /// contentView — treating that as dead chrome swallowed the update popover's
+    /// Install button (0.4.249 regression), and the accessory check downstream
+    /// even throws on popover-style windows.
     private static func programaIsTitlebarChromeHit(_ hitView: NSView, contentView: NSView) -> Bool {
-        hitView === contentView
+        hitView === contentView && contentView is MainWindowHostingViewMarker
     }
 
     private static func programaIsControlOrControlDescendant(_ view: NSView) -> Bool {

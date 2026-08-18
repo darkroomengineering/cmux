@@ -8,7 +8,12 @@ import Combine
 import ObjectiveC.runtime
 import Darwin
 
-final class MainWindowHostingView<Content: View>: NSHostingView<Content> {
+/// Non-generic marker so callers can test "is this the main window's hosting
+/// view" without naming the generic parameter (used by the chrome-drag
+/// fallback in WindowSwizzles to scope itself to main windows).
+protocol MainWindowHostingViewMarker: AnyObject {}
+
+final class MainWindowHostingView<Content: View>: NSHostingView<Content>, MainWindowHostingViewMarker {
     private let zeroSafeAreaLayoutGuide = NSLayoutGuide()
 
     override var safeAreaInsets: NSEdgeInsets { NSEdgeInsetsZero }
