@@ -107,7 +107,13 @@ func debugCommandPaletteResponderSummary(_ responder: NSResponder?) -> String {
 final class WindowCommandPaletteOverlayController: NSObject {
     private weak var window: NSWindow?
     private let containerView = CommandPaletteOverlayContainerView(frame: .zero)
-    private let hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+    private let hostingView: NSHostingView<AnyView> = {
+        let view = NSHostingView(rootView: AnyView(EmptyView()))
+        // Window-level overlay; safe-area observation left on feeds the
+        // layout-loop guard on ambient display events (issue #307).
+        view.safeAreaRegions = []
+        return view
+    }()
     private var installConstraints: [NSLayoutConstraint] = []
     private weak var installedThemeFrame: NSView?
     private var focusLockTimer: DispatchSourceTimer?
@@ -597,6 +603,9 @@ final class WindowTmuxWorkspacePaneOverlayController: NSObject {
             )
         )
         super.init()
+        // Window-level overlay; safe-area observation left on feeds the
+        // layout-loop guard on ambient display events (issue #307).
+        hostingView.safeAreaRegions = []
         containerView.translatesAutoresizingMaskIntoConstraints = false
         containerView.wantsLayer = true
         containerView.layer?.backgroundColor = NSColor.clear.cgColor

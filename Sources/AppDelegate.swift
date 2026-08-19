@@ -1746,6 +1746,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         guard let primaryContext = contextForMainTerminalWindow(primaryWindow) else { return }
 
         let startupSnapshot = startupSessionSnapshot
+        if startupSnapshot?.cleanShutdown == false {
+            // The previous run's last snapshot was a periodic autosave, meaning the
+            // process died without walking applicationWillTerminate — a crash or a
+            // force kill. Until 2026-08-19 this flag was write-only: crashes were
+            // invisible unless the user noticed on their own, and escrow revived
+            // sessions silently. Say what happened.
+            notifyUncleanShutdownRecovery()
+        }
         let primaryWindowSnapshot = startupSnapshot?.windows.first
         if let primaryWindowSnapshot {
             isApplyingStartupSessionRestore = true
@@ -1801,6 +1809,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 completeStartupSessionRestore()
             }
         }
+    }
+
+    /// Posts the crash-recovery notice (system notification + a Release
+    /// diagnostics line). Called once per launch, only when the loaded startup
+    /// snapshot's `cleanShutdown` is explicitly false — nil means an
+    /// older-schema snapshot where the answer is unknown, so we stay quiet.
+    private func notifyUncleanShutdownRecovery() {
+        dilog("session.restore", "uncleanShutdown detected=1")
+        TerminalNotificationStore.shared.postAppNotification(
+            title: String(
+                localized: "crash_recovery.notification.title",
+                defaultValue: "Restored after an unexpected exit"
+            ),
+            body: String(
+                localized: "crash_recovery.notification.body",
+                defaultValue: "Programa quit unexpectedly last time. Your sessions and running processes were restored."
+            )
+        )
     }
 
     private func completeStartupSessionRestore() {

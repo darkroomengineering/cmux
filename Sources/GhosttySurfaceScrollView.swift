@@ -1462,6 +1462,9 @@ final class GhosttySurfaceScrollView: NSView {
 
         searchFocusTarget = .searchField
         let overlay = NSHostingView(rootView: rootView)
+        // No safe area inside a pane; observation left on feeds the layout-loop
+        // guard on ambient display events (issue #307).
+        overlay.safeAreaRegions = []
         overlay.frame = bounds
         overlay.autoresizingMask = [.width, .height]
         searchOverlayHostingView = overlay

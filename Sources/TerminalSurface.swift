@@ -1848,7 +1848,14 @@ final class TerminalSurface: Identifiable, ObservableObject {
             )
             // Kept in memory so a genuine close can authenticate the release
             // frame without going back to the WAL for the token.
-            DispatchQueue.main.async { self?.escrowTokenHex = result.tokenHex }
+            DispatchQueue.main.async {
+                self?.escrowTokenHex = result.tokenHex
+                // Escrowed must imply snapshotted: the periodic autosave leaves an
+                // 8-60s gap where this session is held by the escrow holder but
+                // missing from the persisted snapshot, so a crash in that gap
+                // strands the live process invisibly until the unclaimed TTL.
+                AppDelegate.shared?.sessionAutosave.requestPromptSave(source: "escrowRegistered")
+            }
         }
     }
 

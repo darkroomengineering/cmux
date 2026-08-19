@@ -1784,6 +1784,14 @@ class GhosttyApp {
         }
 
         switch action.tag {
+        // INVARIANT (stability sweep 2026-08-19): the split/focus actions below run
+        // synchronously via performOnMain and end in makeFirstResponder ->
+        // ghostty_surface_set_focus — the same re-entry shape as the OPEN_URL
+        // recursive-lock crash fixed in b6d97fd741. They are safe ONLY because
+        // ghostty dispatches these actions from performBindingAction call sites
+        // that do not hold renderer_state.mutex. Nothing on the ghostty side
+        // enforces that. When syncing the ghostty fork, re-verify the dispatch
+        // stays unlocked, or defer these handlers like the other action cases.
         case GHOSTTY_ACTION_NEW_SPLIT:
             guard let tabId = callbackTabId,
                   let surfaceId = callbackSurfaceId,

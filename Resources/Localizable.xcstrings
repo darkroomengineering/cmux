@@ -13609,6 +13609,40 @@
           }
         }
       }
+    },
+    "crash_recovery.notification.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Restored after an unexpected exit"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "予期しない終了から復元しました"
+          }
+        }
+      }
+    },
+    "crash_recovery.notification.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programa quit unexpectedly last time. Your sessions and running processes were restored."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前回、Programa は予期せず終了しました。セッションと実行中のプロセスは復元されています。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

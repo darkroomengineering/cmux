@@ -220,6 +220,9 @@ final class WindowBrowserSlotView: NSView {
         }
 
         let overlay = NSHostingView(rootView: rootView)
+        // No safe area inside a pane; observation left on feeds the layout-loop
+        // guard on ambient display events (issue #307).
+        overlay.safeAreaRegions = []
         overlay.translatesAutoresizingMaskIntoConstraints = false
         objc_setAssociatedObject(
             overlay,

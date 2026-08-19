@@ -119,7 +119,13 @@ private struct UpdatePillPopoverAnchor: NSViewRepresentable {
         @Binding var isPresented: Bool
 
         weak var anchorView: NSView?
-        private let hostingController = NSHostingController(rootView: AnyView(EmptyView()))
+        private let hostingController: NSHostingController<AnyView> = {
+            let controller = NSHostingController(rootView: AnyView(EmptyView()))
+            // Popover content has no safe area; observation left on feeds the
+            // layout-loop guard on ambient display events (issue #307).
+            controller.safeAreaRegions = []
+            return controller
+        }()
         private var popover: NSPopover?
 
         init(isPresented: Binding<Bool>) {

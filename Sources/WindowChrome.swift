@@ -219,6 +219,10 @@ struct ProgramaNativeGlassContentHost<Content: View>: NSViewRepresentable {
 
         init(content: Content) {
             hostingView = NSHostingView(rootView: content)
+            // Glass overlays live inside pane/window chrome, never under a safe
+            // area; leaving safe-area observation on recurses into the layout-loop
+            // guard on ambient display events (issue #307, fix shape from #308).
+            hostingView.safeAreaRegions = []
             hostingView.sizingOptions = [.intrinsicContentSize]
             hostingView.autoresizingMask = [.width, .height]
             hostingView.wantsLayer = true

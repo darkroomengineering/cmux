@@ -5,6 +5,19 @@ import SwiftUI
 
 final class NonDraggableHostingView<Content: View>: NSHostingView<Content> {
     override var mouseDownCanMoveWindow: Bool { false }
+
+    required init(rootView: Content) {
+        super.init(rootView: rootView)
+        // Titlebar accessory content must not observe safe-area changes: SwiftUI's
+        // observation recurses through invalidateSafeAreaInsets on ambient display
+        // events until AppKit's layout-loop guard kills the app (issue #307; same
+        // fix as MainWindowHostingView, #308 — it does not cascade to sibling hosts).
+        safeAreaRegions = []
+    }
+
+    @MainActor required dynamic init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 }
 
 /// macOS traffic lights are 12pt circles laid out on a 20pt pitch — an 8pt visual gap

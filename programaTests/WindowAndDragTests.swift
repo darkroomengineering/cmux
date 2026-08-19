@@ -1836,3 +1836,28 @@ final class TitlebarChromeDragTargetTests: XCTestCase {
         )
     }
 }
+
+// #307 regression: SwiftUI's safe-area observation in any NSHostingView recurses
+// through invalidateSafeAreaInsets -> setNeedsUpdateConstraints on ambient display
+// events until AppKit's layout-loop guard kills the app. #308 fixed
+// MainWindowHostingView, and the bonsplit pane hosts needed the same explicit fix
+// (51b2545d2e) — the opt-out does not cascade between hosting views. These assert
+// the sibling hosts that live in the same window's safe-area chain stay opted out.
+@MainActor
+final class HostingViewSafeAreaRegionsTests: XCTestCase {
+    func testTitlebarAccessoryHostingViewOptsOutOfSafeAreaObservation() {
+        let view = NonDraggableHostingView(rootView: Text("titlebar controls"))
+        XCTAssertTrue(
+            view.safeAreaRegions.isEmpty,
+            "the titlebar accessory hosting view sits in the titlebar itself and must not observe safe-area changes (#307)"
+        )
+    }
+
+    func testNativeGlassContentHostOptsOutOfSafeAreaObservation() {
+        let coordinator = ProgramaNativeGlassContentHost<Text>.Coordinator(content: Text("glass"))
+        XCTAssertTrue(
+            coordinator.hostingView.safeAreaRegions.isEmpty,
+            "glass overlay hosts (search overlays, omnibar, browser toolbar) must not observe safe-area changes (#307)"
+        )
+    }
+}
