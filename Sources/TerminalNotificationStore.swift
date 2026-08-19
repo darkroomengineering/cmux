@@ -582,6 +582,30 @@ final class TerminalNotificationStore: ObservableObject {
         center.removePendingNotificationRequestsOffMain(withIdentifiers: idsToClear)
     }
 
+    /// App-level (not tab-scoped) system notification — crash-recovery notice and
+    /// similar app-lifecycle events. Uses the same authorization flow as terminal
+    /// notifications but carries no tab routing: the response handler's tabId guard
+    /// makes activation a plain app-activate, never a tab jump.
+    func postAppNotification(title: String, body: String) {
+        ensureAuthorization(origin: .notificationDelivery) { [weak self] authorized in
+            guard let self, authorized else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = NotificationSoundSettings.sound()
+            let request = UNNotificationRequest(
+                identifier: UUID().uuidString,
+                content: content,
+                trigger: nil
+            )
+            self.center.add(request) { error in
+                if let error {
+                    NSLog("Failed to schedule app notification: \(error)")
+                }
+            }
+        }
+    }
+
     private func resolvedNotificationTitle(for notification: TerminalNotification) -> String {
         let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
             ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String

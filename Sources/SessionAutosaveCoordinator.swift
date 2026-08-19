@@ -16,6 +16,7 @@ final class SessionAutosaveCoordinator {
 
     private var sessionAutosaveTimer: DispatchSourceTimer?
     private var sessionAutosaveTickInFlight = false
+    private var promptSaveScheduled = false
     private var sessionAutosaveDeferredRetryPending = false
     private var lastSessionAutosaveFingerprint: Data?
     private var lastSessionAutosavePersistedAt: Date = .distantPast
@@ -197,6 +198,23 @@ final class SessionAutosaveCoordinator {
             persistedAt: now,
             fingerprint: autosaveFingerprint
         )
+    }
+
+    /// Coalesced "save soon" for structural changes — a new panel finishing escrow
+    /// registration, most importantly. The periodic timer leaves an 8-60s gap in
+    /// which a session can be escrowed at the holder but absent from the persisted
+    /// snapshot; a crash in that gap strands the process invisibly ("shadow"
+    /// session) until the holder's unclaimed TTL fires, because restore never
+    /// learns the panel existed. One pending request at a time: bursts (multi-pane
+    /// restore, N tabs opened together) fold into a single snapshot build.
+    func requestPromptSave(source: String, after delay: TimeInterval = 1.0) {
+        guard !promptSaveScheduled else { return }
+        promptSaveScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.promptSaveScheduled = false
+            self.runSessionAutosaveTick(source: source)
+        }
     }
 
     // Widened from `fileprivate` to `internal`: NSWindow.programa_sendEvent(_:) (in

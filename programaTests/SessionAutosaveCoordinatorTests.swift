@@ -132,4 +132,38 @@ final class SessionAutosaveCoordinatorTests: XCTestCase {
         XCTAssertEqual(snapshotCallCount, 0, "a tick while terminating should bail before building a snapshot")
         XCTAssertEqual(saveCallCount, 0, "a tick while terminating should never save")
     }
+
+    @MainActor
+    func testRequestPromptSaveCoalescesBurstIntoSingleSave() {
+        var saveCallCount = 0
+        let saved = expectation(description: "prompt save ran")
+        let coordinator = SessionAutosaveCoordinator(
+            sessionPersistenceQueue: DispatchQueue(label: "test.session-autosave.prompt-save"),
+            snapshotProvider: { _ in Self.fakeSnapshot },
+            saveSnapshot: { _, _ in
+                saveCallCount += 1
+                saved.fulfill()
+                return true
+            },
+            isTerminating: { false },
+            isRunningUnderXCTest: { true }
+        )
+
+        // A burst — one request per pane finishing escrow registration during a
+        // multi-pane restore — must fold into a single scheduled snapshot build.
+        for _ in 0..<5 {
+            coordinator.requestPromptSave(source: "test", after: 0.05)
+        }
+
+        wait(for: [saved], timeout: 2.0)
+        // Let any erroneously-scheduled extra ticks fire before counting.
+        let settle = expectation(description: "settle")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { settle.fulfill() }
+        wait(for: [settle], timeout: 2.0)
+        XCTAssertEqual(
+            saveCallCount,
+            1,
+            "a burst of prompt-save requests must coalesce into exactly one save"
+        )
+    }
 }
