@@ -49,6 +49,17 @@ final class MobileBridgeListener: @unchecked Sendable {
     private var isStarting = false
     private var generation: UInt64 = 0
 
+    /// Live connections per admitted `endpointId`, so `revoke(endpointId:)`
+    /// can reach an in-progress relay rather than only blocking future
+    /// reconnects. Keyed by `ObjectIdentifier` (not a `Set`, since
+    /// `Connection` isn't `Hashable`) to tolerate more than one concurrent
+    /// connection from the same device. Guarded by `stateLock`, the same
+    /// lock as every other mutable field on this type. Registered in
+    /// `handleIncoming` right after `admit()` succeeds; unregistered via
+    /// `defer` so every relay exit path (normal completion, thrown error)
+    /// clears its entry.
+    private var liveConnections: [String: [ObjectIdentifier: Connection]] = [:]
+
     private init() {}
 
     /// Starts the endpoint if it is not already running or starting.
@@ -121,9 +132,42 @@ final class MobileBridgeListener: @unchecked Sendable {
         return MobileBridgePairingInfo(ticket: ticket.description, token: tokenString, expiresAt: expiresAt)
     }
 
-    /// Revokes a previously paired device immediately.
+    /// Revokes a previously paired device immediately: removes it from the
+    /// trusted store (so a reconnect is rejected at `admit()`, unchanged)
+    /// and closes every connection currently registered for it, so a
+    /// long-lived relay session doesn't keep running on borrowed trust
+    /// until the phone disconnects on its own.
     func revoke(endpointId: String) async {
         await MobileBridgeTrustedDeviceStore.shared.remove(endpointId: endpointId)
+
+        stateLock.lock()
+        let connections = liveConnections[endpointId]
+        stateLock.unlock()
+
+        guard let connections else { return }
+        for connection in connections.values {
+            try? connection.close(errorCode: 0, reason: Data("revoked".utf8))
+        }
+    }
+
+    /// Registers a live, admitted connection so `revoke(endpointId:)` can
+    /// close it later. Must be paired with `unregisterLiveConnection` on
+    /// every exit path (see call site in `handleIncoming`).
+    private func registerLiveConnection(_ connection: Connection, endpointId: String) {
+        let key = ObjectIdentifier(connection)
+        stateLock.lock()
+        liveConnections[endpointId, default: [:]][key] = connection
+        stateLock.unlock()
+    }
+
+    private func unregisterLiveConnection(_ connection: Connection, endpointId: String) {
+        let key = ObjectIdentifier(connection)
+        stateLock.lock()
+        liveConnections[endpointId]?[key] = nil
+        if liveConnections[endpointId]?.isEmpty == true {
+            liveConnections[endpointId] = nil
+        }
+        stateLock.unlock()
     }
 
     private func bindAndAccept(generation: UInt64) async {
@@ -247,6 +291,14 @@ final class MobileBridgeListener: @unchecked Sendable {
                 _ = await connection.closed()
                 return
             }
+
+            // Registered only once admitted -- `revoke()` must never be
+            // able to reach a connection that hasn't passed `admit()` yet.
+            // Unregistered via `defer` so this fires whether `relay()`
+            // returns normally, this scope exits early, or an error is
+            // thrown while unwinding out of the enclosing `do` block.
+            registerLiveConnection(connection, endpointId: idString)
+            defer { unregisterLiveConnection(connection, endpointId: idString) }
 
 #if DEBUG
             dlog("mobileBridge.connected id=\(idString)")
