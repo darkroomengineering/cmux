@@ -198,6 +198,7 @@ Before declaring browser proxying complete:
 
 1. Proxy auth policy for local broker (`none` vs optional credentials).
 2. Reconnect backoff profile and max retry budget.
+3. `DONE` version-scoped `programad-remote` installs under `$HOME/.programa/bin/programad-remote/` are pruned on every fresh install (audit M12): retention is the current version plus the most-recently-used other version, decided by directory mtime rather than version-string comparison.
 
 ## 10. Socket API Contract Notes
 

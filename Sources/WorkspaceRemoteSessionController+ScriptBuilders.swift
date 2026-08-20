@@ -208,6 +208,62 @@ extension WorkspaceRemoteSessionController {
         ".programa/bin/programad-remote/\(version)/\(goOS)-\(goArch)/programad-remote"
     }
 
+    /// Prunes stale `programad-remote` version install directories under
+    /// `$HOME/.programa/bin/programad-remote/`, keeping the current version
+    /// (just confirmed present by the caller, after a successful install)
+    /// plus the most-recently-used other version directory (audit finding
+    /// M12: version-scoped installs otherwise accumulate forever on remote
+    /// hosts, since each app version only probes/uploads its own directory
+    /// and never touches others).
+    ///
+    /// Version strings are `major.minor.patch` where `patch` is a CI run
+    /// number (e.g. "0.4.9" vs "0.4.100"), so a lexical sort of version
+    /// directory names would misorder them. There is no existing
+    /// version-compare helper among this file's POSIX sh script builders,
+    /// so retention is decided by directory mtime (newest = most recently
+    /// installed/used) instead of parsing/comparing version strings in
+    /// shell -- simpler and correct without a numeric-segment parser.
+    static func remoteDaemonPruneStaleVersionsScript(currentVersion: String) -> String {
+        let trimmedVersion = currentVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        let quotedVersion = RemoteSSHConnectionPolicy.shellSingleQuoted(trimmedVersion)
+        return """
+        programa_daemon_base="$HOME/.programa/bin/programad-remote"
+        programa_current_version=\(quotedVersion)
+        if [ -n "$programa_daemon_base" ] && [ -d "$programa_daemon_base" ]; then
+          programa_keep_other=""
+          programa_keep_other_mtime=0
+          for programa_version_dir in "$programa_daemon_base"/*/; do
+            [ -d "$programa_version_dir" ] || continue
+            [ -L "${programa_version_dir%/}" ] && continue
+            programa_version_name="$(basename "$programa_version_dir")"
+            [ "$programa_version_name" = "$programa_current_version" ] && continue
+            programa_dir_mtime="$(stat -f '%m' "$programa_version_dir" 2>/dev/null || stat -c '%Y' "$programa_version_dir" 2>/dev/null || echo 0)"
+            case "$programa_dir_mtime" in
+              ''|*[!0-9]*) programa_dir_mtime=0 ;;
+            esac
+            if [ "$programa_dir_mtime" -gt "$programa_keep_other_mtime" ]; then
+              programa_keep_other_mtime="$programa_dir_mtime"
+              programa_keep_other="$programa_version_name"
+            fi
+          done
+          for programa_version_dir in "$programa_daemon_base"/*/; do
+            [ -d "$programa_version_dir" ] || continue
+            [ -L "${programa_version_dir%/}" ] && continue
+            programa_version_name="$(basename "$programa_version_dir")"
+            [ "$programa_version_name" = "$programa_current_version" ] && continue
+            if [ -n "$programa_keep_other" ] && [ "$programa_version_name" = "$programa_keep_other" ]; then
+              continue
+            fi
+            case "$programa_version_dir" in
+              "$programa_daemon_base"/*)
+                rm -rf -- "$programa_version_dir" || true
+                ;;
+            esac
+          done
+        fi
+        """
+    }
+
     static func orphanedCMUXRemoteSSHPIDs(
         psOutput: String,
         destination: String,

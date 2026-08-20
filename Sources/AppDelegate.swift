@@ -1659,7 +1659,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         SessionPersistenceStore.rotateIntoHistory()
         guard SessionRestorePolicy.shouldAttemptRestore() else { return }
         Self.removeLegacyPersistedWindowGeometry()
-        startupSessionSnapshot = SessionPersistenceStore.load()
+        startupSessionSnapshot = SessionPersistenceStore.loadWithHistoryFallback()
     }
 
     private func persistedWindowGeometry(

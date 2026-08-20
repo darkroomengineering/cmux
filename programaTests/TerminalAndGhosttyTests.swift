@@ -4350,3 +4350,93 @@ final class TerminalControllerSocketListenerHealthTests: XCTestCase {
         )
     }
 }
+
+// MARK: - V2 Browser Automation Ref Invariants (audit M6a / M8)
+
+@MainActor
+final class TerminalControllerV2RefInvariantTests: XCTestCase {
+    /// M6a: an element ref (@eN) allocated before a navigation must not silently re-resolve
+    /// against the new page's DOM after the surface navigates — it should report a structured
+    /// `stale_element` error instead.
+    func testElementRefResolvesUntilSurfaceNavigatesThenReportsStale() {
+        let surfaceId = UUID()
+        let ref = TerminalController.shared.v2BrowserAllocateElementRef(surfaceId: surfaceId, selector: "#foo")
+
+        // Before any navigation, the ref resolves normally.
+        XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: surfaceId), "#foo")
+
+        // Simulate a committed main-frame navigation on that surface (BrowserPanel's
+        // navigationDelegate.didCommit calls this in production).
+        TerminalController.shared.v2BrowserBumpNavigationGeneration(forSurface: surfaceId)
+
+        // The pre-navigation ref must no longer resolve...
+        XCTAssertNil(TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: surfaceId))
+
+        // ...and the error surfaced must specifically be stale_element, not a generic not_found,
+        // so callers can distinguish "this ref is dead" from "this ref never existed".
+        switch TerminalController.shared.v2BrowserSelectorResolutionError(ref, surfaceId: surfaceId) {
+        case .err(let code, _, let data):
+            XCTAssertEqual(code, "stale_element")
+            XCTAssertEqual(data as? [String: String], ["ref": ref])
+        case .ok:
+            XCTFail("expected an error result for a stale ref")
+        }
+
+        // A ref allocated *after* the navigation on the same surface resolves normally again.
+        let freshRef = TerminalController.shared.v2BrowserAllocateElementRef(surfaceId: surfaceId, selector: "#bar")
+        XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(freshRef, surfaceId: surfaceId), "#bar")
+    }
+
+    /// M6a: a ref allocated on one surface must never resolve against a different surface, with
+    /// or without a navigation — unrelated to staleness, but exercised on the same shared helper.
+    func testElementRefDoesNotResolveAgainstAnotherSurface() {
+        let surfaceA = UUID()
+        let surfaceB = UUID()
+        let ref = TerminalController.shared.v2BrowserAllocateElementRef(surfaceId: surfaceA, selector: "#foo")
+
+        XCTAssertNil(TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: surfaceB))
+        switch TerminalController.shared.v2BrowserSelectorResolutionError(ref, surfaceId: surfaceB) {
+        case .err(let code, _, _):
+            XCTAssertEqual(code, "not_found")
+        case .ok:
+            XCTFail("expected an error result")
+        }
+    }
+
+    /// M8: pruning dead handle-ref map entries must never let a ref string get reissued for a
+    /// different UUID. The per-kind ordinal counter is untouched by pruning — a
+    /// pruned-then-reappearing UUID gets a brand-new ref, not its old one back, and no other
+    /// UUID can ever receive a ref that used to point at it.
+    func testPruningDeadHandleRefsNeverReissuesARefForADifferentUUID() {
+        let uuidA = UUID()
+        let uuidB = UUID()
+
+        guard let refA1 = TerminalController.shared.v2Ref(kind: .surface, uuid: uuidA) as? String else {
+            return XCTFail("expected a ref string")
+        }
+
+        // Simulate uuidA no longer being part of the live object graph (window/workspace/pane/
+        // surface all empty) — the sweep v2RefreshKnownRefs performs after enumerating the live
+        // windows/workspaces/panes/surfaces.
+        TerminalController.shared.v2PruneDeadHandleRefs(
+            liveWindowIds: [],
+            liveWorkspaceIds: [],
+            livePaneIds: [],
+            liveSurfaceIds: []
+        )
+
+        // A different UUID allocated after the prune must never land on uuidA's old ref.
+        guard let refB = TerminalController.shared.v2Ref(kind: .surface, uuid: uuidB) as? String else {
+            return XCTFail("expected a ref string")
+        }
+        XCTAssertNotEqual(refB, refA1)
+
+        // uuidA reappearing gets a brand-new ref (the ordinal counter is never rewound by
+        // pruning) — not its old ref, and not uuidB's ref either.
+        guard let refA2 = TerminalController.shared.v2Ref(kind: .surface, uuid: uuidA) as? String else {
+            return XCTFail("expected a ref string")
+        }
+        XCTAssertNotEqual(refA2, refA1)
+        XCTAssertNotEqual(refA2, refB)
+    }
+}

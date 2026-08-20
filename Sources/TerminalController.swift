@@ -169,6 +169,11 @@ class TerminalController {
     struct V2BrowserElementRefEntry {
         let surfaceId: UUID
         let selector: String
+        /// The surface's navigation generation (see `v2BrowserNavigationGenerationBySurface`)
+        /// at the moment this ref was allocated. Resolving the ref against a surface whose
+        /// generation has since advanced (i.e. it navigated) is a stale-ref error rather than
+        /// silently re-resolving the selector against the new page's DOM.
+        let navigationGeneration: UInt64
     }
 
     final class V2BrowserUndefinedSentinel {}
@@ -181,6 +186,11 @@ class TerminalController {
     var v2BrowserNextElementOrdinal: Int = 1
     var v2BrowserElementRefs: [String: V2BrowserElementRefEntry] = [:]
     var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
+    /// Bumped on every committed main-frame navigation of a browser surface. Element refs
+    /// (`v2BrowserElementRefs`) capture the generation at allocation time so a ref from a
+    /// previous page can be rejected instead of silently re-resolving against the new DOM
+    /// (M6a). Main-thread only, same discipline as the other v2Browser state above.
+    var v2BrowserNavigationGenerationBySurface: [UUID: UInt64] = [:]
     var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
     var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
     var v2BrowserDownloadEventsBySurface: [UUID: [[String: Any]]] = [:]
@@ -2262,20 +2272,74 @@ class TerminalController {
     private func v2RefreshKnownRefs() {
         guard let app = AppDelegate.shared else { return }
 
+        var liveWindowIds = Set<UUID>()
+        var liveWorkspaceIds = Set<UUID>()
+        var livePaneIds = Set<UUID>()
+        var liveSurfaceIds = Set<UUID>()
+
         let windows = app.listMainWindowSummaries()
         for item in windows {
+            liveWindowIds.insert(item.windowId)
             _ = v2EnsureHandleRef(kind: .window, uuid: item.windowId)
             if let tm = app.tabManagerFor(windowId: item.windowId) {
                 for ws in tm.tabs {
+                    liveWorkspaceIds.insert(ws.id)
                     _ = v2EnsureHandleRef(kind: .workspace, uuid: ws.id)
                     for paneId in ws.bonsplitController.allPaneIds {
+                        livePaneIds.insert(paneId.id)
                         _ = v2EnsureHandleRef(kind: .pane, uuid: paneId.id)
                     }
                     for panelId in ws.panels.keys {
+                        liveSurfaceIds.insert(panelId)
                         _ = v2EnsureHandleRef(kind: .surface, uuid: panelId)
                     }
                 }
             }
+        }
+
+        v2PruneDeadHandleRefs(
+            liveWindowIds: liveWindowIds,
+            liveWorkspaceIds: liveWorkspaceIds,
+            livePaneIds: livePaneIds,
+            liveSurfaceIds: liveSurfaceIds
+        )
+    }
+
+    /// Drops `v2RefByUUID`/`v2UUIDByRef` entries for UUIDs no longer present in the live
+    /// object graph (M8). Runs as a sweep at refresh time rather than adding teardown hooks
+    /// at every window/workspace/pane/surface destruction site.
+    ///
+    /// Never touches `v2NextHandleOrdinal`: the per-kind ordinal counter stays monotonic, so a
+    /// pruned-then-reappearing UUID gets a brand-new ref rather than reusing a number that
+    /// might still be cached by a client as pointing at the old object. Only the map entries
+    /// (the thing that actually grows unbounded) are dropped.
+    /// Internal (not private) so the unit-test target can exercise the never-reissue invariant
+    /// directly, bypassing the AppDelegate-dependent enumeration in `v2RefreshKnownRefs`.
+    func v2PruneDeadHandleRefs(
+        liveWindowIds: Set<UUID>,
+        liveWorkspaceIds: Set<UUID>,
+        livePaneIds: Set<UUID>,
+        liveSurfaceIds: Set<UUID>
+    ) {
+        let liveByKind: [V2HandleKind: Set<UUID>] = [
+            .window: liveWindowIds,
+            .workspace: liveWorkspaceIds,
+            .pane: livePaneIds,
+            .surface: liveSurfaceIds,
+        ]
+
+        v2HandleRefStateLock.lock()
+        defer { v2HandleRefStateLock.unlock() }
+
+        for kind in V2HandleKind.allCases {
+            guard let live = liveByKind[kind], var byUUID = v2RefByUUID[kind] else { continue }
+            var byRef = v2UUIDByRef[kind] ?? [:]
+            for (uuid, ref) in byUUID where !live.contains(uuid) {
+                byUUID.removeValue(forKey: uuid)
+                byRef.removeValue(forKey: ref)
+            }
+            v2RefByUUID[kind] = byUUID
+            v2UUIDByRef[kind] = byRef
         }
     }
 

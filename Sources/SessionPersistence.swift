@@ -395,6 +395,63 @@ enum SessionPersistenceStore {
         return snapshot
     }
 
+    /// Like `load(fileURL:)`, but when the primary snapshot exists and fails to decode or is on
+    /// an unrecognized schema version, falls back to the newest usable archive in
+    /// `session-history/` (see `rotateIntoHistory`, which -- run just before this at startup --
+    /// already guarantees the previous launch's intact snapshot lives there) instead of dropping
+    /// the whole session. Deliberately does NOT migrate an old-version history entry forward: a
+    /// history entry that also fails the version check is treated the same as no history at all,
+    /// and this returns nil exactly like `load(fileURL:)` would. Every outcome -- a used fallback
+    /// or an exhausted one -- is reported to the release diagnostics log so a version-bump-after-
+    /// update drop is distinguishable from real data loss (a silent primary-file-missing case,
+    /// e.g. first launch, is neither -- no diagnostics line, matching `load(fileURL:)`).
+    static func loadWithHistoryFallback(fileURL: URL? = nil, historyLookupLimit: Int = 5) -> AppSessionSnapshot? {
+        guard let fileURL = fileURL ?? defaultSnapshotFileURL() else { return nil }
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+
+        guard let snapshot = try? JSONDecoder().decode(AppSessionSnapshot.self, from: data) else {
+            return fallbackAfterPrimarySnapshotFailure(reason: "decode", fileURL: fileURL, limit: historyLookupLimit)
+        }
+        guard snapshot.version == SessionSnapshotSchema.currentVersion else {
+            return fallbackAfterPrimarySnapshotFailure(reason: "version", fileURL: fileURL, limit: historyLookupLimit)
+        }
+        guard !snapshot.windows.isEmpty else { return nil }
+        return snapshot
+    }
+
+    private static func fallbackAfterPrimarySnapshotFailure(
+        reason: String,
+        fileURL: URL,
+        limit: Int
+    ) -> AppSessionSnapshot? {
+        guard let fallback = newestRestorableHistorySnapshot(fileURL: fileURL, limit: limit) else {
+            dilog("session.restore", "primary snapshot unusable reason=\(reason) fallback=none")
+            return nil
+        }
+        dilog("session.restore", "primary snapshot unusable reason=\(reason) fallback=\(fallback.filename)")
+        return fallback.snapshot
+    }
+
+    /// Scans the newest `limit` archives (newest-first, per `historyFileURLs`) for the first one
+    /// that decodes at the current schema version with at least one window. Capped rather than
+    /// unbounded: a long-neglected `session-history/` directory should not turn a startup restore
+    /// into an unbounded disk scan.
+    private static func newestRestorableHistorySnapshot(
+        fileURL: URL,
+        limit: Int
+    ) -> (snapshot: AppSessionSnapshot, filename: String)? {
+        let candidates = historyFileURLs(fileURL: fileURL).prefix(max(0, limit))
+        for entry in candidates {
+            guard let data = try? Data(contentsOf: entry),
+                  let snapshot = decodeSnapshot(from: data),
+                  snapshot.version == SessionSnapshotSchema.currentVersion,
+                  !snapshot.windows.isEmpty
+            else { continue }
+            return (snapshot, entry.lastPathComponent)
+        }
+        return nil
+    }
+
     @discardableResult
     static func save(_ snapshot: AppSessionSnapshot, fileURL: URL? = nil) -> Bool {
         guard let fileURL = fileURL ?? defaultSnapshotFileURL() else { return false }

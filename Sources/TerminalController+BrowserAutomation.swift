@@ -322,16 +322,44 @@ extension TerminalController {
         .err(code: "not_supported", message: "\(method) is not supported on WKWebView", data: ["details": details])
     }
 
+    /// Current navigation generation for a surface. Bumped by `v2BrowserBumpNavigationGeneration`
+    /// on every committed main-frame navigation (see `BrowserPanel.configureNavigationDelegateCallbacks`).
+    func v2BrowserNavigationGeneration(forSurface surfaceId: UUID) -> UInt64 {
+        v2BrowserNavigationGenerationBySurface[surfaceId] ?? 0
+    }
+
+    /// Invalidates every element ref allocated on the surface's previous page by advancing its
+    /// navigation generation (M6a). Call from the single main-frame-commit choke point only —
+    /// do not call per-subframe or per-provisional-navigation event.
+    func v2BrowserBumpNavigationGeneration(forSurface surfaceId: UUID) {
+        v2BrowserNavigationGenerationBySurface[surfaceId, default: 0] += 1
+    }
+
     func v2BrowserAllocateElementRef(surfaceId: UUID, selector: String) -> String {
         let ref = "@e\(v2BrowserNextElementOrdinal)"
         v2BrowserNextElementOrdinal += 1
-        v2BrowserElementRefs[ref] = V2BrowserElementRefEntry(surfaceId: surfaceId, selector: selector)
+        v2BrowserElementRefs[ref] = V2BrowserElementRefEntry(
+            surfaceId: surfaceId,
+            selector: selector,
+            navigationGeneration: v2BrowserNavigationGeneration(forSurface: surfaceId)
+        )
         return ref
     }
 
-    func v2BrowserResolveSelector(_ rawSelector: String, surfaceId: UUID) -> String? {
+    private enum V2BrowserSelectorLookup {
+        case literal(String)
+        case notFound
+        case stale
+    }
+
+    /// Single shared resolve helper backing both `v2BrowserResolveSelector` (used by every
+    /// click/type/query consumer) and `v2BrowserSelectorResolutionError` (the structured error
+    /// to surface when resolution fails). Distinguishes a ref that once resolved but whose
+    /// surface has since navigated (`.stale`) from any other miss (`.notFound`) so callers can
+    /// report `stale_element` instead of a generic `not_found` (M6a).
+    private func v2BrowserLookupSelector(_ rawSelector: String, surfaceId: UUID) -> V2BrowserSelectorLookup {
         let trimmed = rawSelector.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        guard !trimmed.isEmpty else { return .notFound }
 
         let refKey: String? = {
             if trimmed.hasPrefix("@e") { return trimmed }
@@ -339,11 +367,39 @@ extension TerminalController {
             return nil
         }()
 
-        if let refKey {
-            guard let entry = v2BrowserElementRefs[refKey], entry.surfaceId == surfaceId else { return nil }
-            return entry.selector
+        guard let refKey else { return .literal(trimmed) }
+
+        guard let entry = v2BrowserElementRefs[refKey], entry.surfaceId == surfaceId else {
+            return .notFound
         }
-        return trimmed
+        guard entry.navigationGeneration == v2BrowserNavigationGeneration(forSurface: surfaceId) else {
+            return .stale
+        }
+        return .literal(entry.selector)
+    }
+
+    func v2BrowserResolveSelector(_ rawSelector: String, surfaceId: UUID) -> String? {
+        if case .literal(let selector) = v2BrowserLookupSelector(rawSelector, surfaceId: surfaceId) {
+            return selector
+        }
+        return nil
+    }
+
+    /// Error to return when `v2BrowserResolveSelector` returns nil for `rawSelector` against
+    /// `surfaceId`. Every consumer of the element-ref maps (resolve/click/type/query paths)
+    /// should surface this instead of hand-rolling a generic not_found, so a stale ref reports
+    /// `stale_element` rather than being indistinguishable from "never allocated".
+    func v2BrowserSelectorResolutionError(_ rawSelector: String, surfaceId: UUID) -> V2CallResult {
+        switch v2BrowserLookupSelector(rawSelector, surfaceId: surfaceId) {
+        case .stale:
+            return .err(
+                code: "stale_element",
+                message: "element ref was captured on a previous page",
+                data: ["ref": rawSelector]
+            )
+        case .notFound, .literal:
+            return .err(code: "not_found", message: "Element reference not found", data: ["selector": rawSelector])
+        }
     }
 
     func v2BrowserCurrentFrameSelector(surfaceId: UUID) -> String? {
@@ -912,7 +968,7 @@ extension TerminalController {
 
         return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
             guard let selector = v2BrowserResolveSelector(selectorRaw, surfaceId: surfaceId) else {
-                return .err(code: "not_found", message: "Element reference not found", data: ["selector": selectorRaw])
+                return v2BrowserSelectorResolutionError(selectorRaw, surfaceId: surfaceId)
             }
             let script = scriptBuilder(v2JSONLiteral(selector))
             let retryAttempts = max(1, v2Int(params, "retry_attempts") ?? 3)
@@ -1355,7 +1411,7 @@ extension TerminalController {
         let conditionScript: String
         if let selectorRaw {
             guard let selector = v2BrowserResolveSelector(selectorRaw, surfaceId: surfaceIdOut) else {
-                return .err(code: "not_found", message: "Element reference not found", data: ["selector": selectorRaw])
+                return v2BrowserSelectorResolutionError(selectorRaw, surfaceId: surfaceIdOut)
             }
             let literal = v2JSONLiteral(selector)
             conditionScript = "document.querySelector(\(literal)) !== null"
@@ -1655,8 +1711,8 @@ extension TerminalController {
 
         return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
             let selector = selectorRaw.flatMap { v2BrowserResolveSelector($0, surfaceId: surfaceId) }
-            if selectorRaw != nil && selector == nil {
-                return .err(code: "not_found", message: "Element reference not found", data: ["selector": selectorRaw ?? ""])
+            if let selectorRaw, selector == nil {
+                return v2BrowserSelectorResolutionError(selectorRaw, surfaceId: surfaceId)
             }
 
             let script: String
@@ -1838,7 +1894,7 @@ extension TerminalController {
         }
         return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
             guard let selector = v2BrowserResolveSelector(selectorRaw, surfaceId: surfaceId) else {
-                return .err(code: "not_found", message: "Element reference not found", data: ["selector": selectorRaw])
+                return v2BrowserSelectorResolutionError(selectorRaw, surfaceId: surfaceId)
             }
             let selectorLiteral = v2JSONLiteral(selector)
             let script = "document.querySelectorAll(\(selectorLiteral)).length"
@@ -2423,7 +2479,7 @@ extension TerminalController {
         }
         return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
             guard let selector = v2BrowserResolveSelector(selectorRaw, surfaceId: surfaceId) else {
-                return .err(code: "not_found", message: "Element reference not found", data: ["selector": selectorRaw])
+                return v2BrowserSelectorResolutionError(selectorRaw, surfaceId: surfaceId)
             }
             let selectorLiteral = v2JSONLiteral(selector)
             let script = """
@@ -2463,7 +2519,7 @@ extension TerminalController {
         }
         return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
             guard let selector = v2BrowserResolveSelector(selectorRaw, surfaceId: surfaceId) else {
-                return .err(code: "not_found", message: "Element reference not found", data: ["selector": selectorRaw])
+                return v2BrowserSelectorResolutionError(selectorRaw, surfaceId: surfaceId)
             }
             let selectorLiteral = v2JSONLiteral(selector)
             let script = """
@@ -2512,7 +2568,7 @@ extension TerminalController {
 
         return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
             guard let selector = v2BrowserResolveSelector(selectorRaw, surfaceId: surfaceId) else {
-                return .err(code: "not_found", message: "Element reference not found", data: ["selector": selectorRaw])
+                return v2BrowserSelectorResolutionError(selectorRaw, surfaceId: surfaceId)
             }
             let selectorLiteral = v2JSONLiteral(selector)
             let script = """
@@ -2562,7 +2618,7 @@ extension TerminalController {
 
         return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
             guard let selector = v2BrowserResolveSelector(selectorRaw, surfaceId: surfaceId) else {
-                return .err(code: "not_found", message: "Element reference not found", data: ["selector": selectorRaw])
+                return v2BrowserSelectorResolutionError(selectorRaw, surfaceId: surfaceId)
             }
             let selectorLiteral = v2JSONLiteral(selector)
             let script = """

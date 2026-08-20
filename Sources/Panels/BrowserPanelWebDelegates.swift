@@ -66,6 +66,10 @@ func browserNavigationShouldFallbackNilTargetToNewTab(
 
 class BrowserNavigationDelegate: NSObject, WKNavigationDelegate {
     var didStartProvisionalNavigation: ((WKWebView) -> Void)?
+    /// Fires once a main-frame navigation commits and the web view begins showing new content
+    /// (WKNavigationDelegate contract — this is the single choke point for "the page changed").
+    /// Wired to invalidate stale browser-automation element refs (M6a).
+    var didCommit: ((WKWebView) -> Void)?
     var didFinish: ((WKWebView) -> Void)?
     var didFailNavigation: ((WKWebView, String) -> Void)?
     var didTerminateWebContentProcess: ((WKWebView) -> Void)?
@@ -81,6 +85,10 @@ class BrowserNavigationDelegate: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         lastAttemptedURL = webView.url
         didStartProvisionalNavigation?(webView)
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        didCommit?(webView)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

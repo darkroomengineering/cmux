@@ -1077,9 +1077,31 @@ final class UpdateSettingsTests: XCTestCase {
 
         XCTAssertTrue(defaults.bool(forKey: UpdateSettings.automaticChecksKey))
         XCTAssertEqual(defaults.double(forKey: UpdateSettings.scheduledCheckIntervalKey), UpdateSettings.scheduledCheckInterval)
-        XCTAssertFalse(defaults.bool(forKey: UpdateSettings.automaticallyUpdateKey))
+        // Silent auto-install became the default 2026-08-20 (audit follow-up).
+        XCTAssertTrue(defaults.bool(forKey: UpdateSettings.automaticallyUpdateKey))
         XCTAssertFalse(defaults.bool(forKey: UpdateSettings.sendProfileInfoKey))
         XCTAssertTrue(defaults.bool(forKey: UpdateSettings.migrationKey))
+    }
+
+    func testAutoInstallMigrationFlipsStoredFalseOnceAndRespectsLaterUserChoice() {
+        let defaults = makeDefaults()
+        // The v2 migration wrote a concrete false into existing installs.
+        defaults.set(false, forKey: UpdateSettings.automaticallyUpdateKey)
+
+        UpdateSettings.apply(to: defaults)
+        XCTAssertTrue(
+            defaults.bool(forKey: UpdateSettings.automaticallyUpdateKey),
+            "the v3 migration must clear the v2-era stored false so the new registered default applies"
+        )
+        XCTAssertTrue(defaults.bool(forKey: UpdateSettings.autoInstallMigrationKey))
+
+        // A user turning it off AFTER the migration is a real choice and must survive.
+        defaults.set(false, forKey: UpdateSettings.automaticallyUpdateKey)
+        UpdateSettings.apply(to: defaults)
+        XCTAssertFalse(
+            defaults.bool(forKey: UpdateSettings.automaticallyUpdateKey),
+            "the migration must run once — a post-migration user choice wins"
+        )
     }
 
     func testApplyRepairsLegacyDisabledAutomaticChecksOnce() {

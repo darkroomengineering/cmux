@@ -990,6 +990,12 @@ final class BrowserPanel: Panel, ObservableObject {
             guard let self, self.isCurrentWebView(webView, instanceID: boundWebViewInstanceID) else { return }
             self.hasPromptedPasskeyHandoffForCurrentNavigation = false
         }
+        navigationDelegate.didCommit = { [weak self] webView in
+            guard let self, self.isCurrentWebView(webView, instanceID: boundWebViewInstanceID) else { return }
+            // Invalidate element refs (@eN) allocated on the previous page (M6a) — this is the
+            // single choke point for a committed main-frame navigation.
+            TerminalController.shared.v2BrowserBumpNavigationGeneration(forSurface: self.id)
+        }
         navigationDelegate.didFinish = { [weak self] webView in
             Task { @MainActor [weak self] in
                 guard let self, self.isCurrentWebView(webView, instanceID: boundWebViewInstanceID) else { return }
@@ -2163,12 +2169,23 @@ final class BrowserPanel: Panel, ObservableObject {
         )
     }
 
+    /// BY DESIGN (audit 2026-08-20, M4 — decided 2026-08-20): callers of this
+    /// bypass fall into two classes, both deliberate. Back/forward/reload skip
+    /// the insecure-HTTP prompt because the user already accepted the page.
+    /// Session/profile restore and content-process-crash replacement ALSO skip
+    /// it — prompting N times at launch for tabs the user left open was judged
+    /// hostile UX. The trade: a plaintext http:// tab left open reloads over
+    /// plaintext on relaunch with no prompt. Restore-class bypasses are logged
+    /// to the release diagnostics channel below so the behavior is auditable.
     func navigateWithoutInsecureHTTPPrompt(
         request: URLRequest,
         recordTypedNavigation: Bool,
         preserveRestoredSessionHistory: Bool = false
     ) {
         guard let url = request.url else { return }
+        if preserveRestoredSessionHistory, browserShouldBlockInsecureHTTPURL(url) {
+            dilog("browser.restore", "insecure_http_reload_without_prompt host=\(url.host ?? "-")")
+        }
         if usesRemoteWorkspaceProxy, remoteProxyEndpoint == nil {
             pendingRemoteNavigation = PendingRemoteNavigation(
                 request: request,

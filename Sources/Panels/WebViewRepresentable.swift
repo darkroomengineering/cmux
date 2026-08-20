@@ -1606,106 +1606,6 @@ struct WebViewRepresentable: NSViewRepresentable {
         return last ?? webView.superview
     }
 
-    private static func directTransferChild(of container: NSView, containing descendant: NSView) -> NSView? {
-        var current: NSView? = descendant
-        var directChild: NSView?
-        while let view = current, view !== container {
-            directChild = view
-            current = view.superview
-        }
-        guard current === container else { return nil }
-        return directChild
-    }
-
-    private static func relatedWebKitTransferSubviews(
-        from sourceSuperview: NSView,
-        primaryWebView: WKWebView
-    ) -> [NSView] {
-        var relatedSubviews: [NSView] = []
-        var seen = Set<ObjectIdentifier>()
-
-        func append(_ candidate: NSView?) {
-            guard let candidate, candidate !== sourceSuperview else { return }
-            let id = ObjectIdentifier(candidate)
-            guard seen.insert(id).inserted else { return }
-            relatedSubviews.append(candidate)
-        }
-
-        append(directTransferChild(of: sourceSuperview, containing: primaryWebView) ?? primaryWebView)
-
-        if let inspectorFrontend = primaryWebView.programaInspectorFrontendWebView() {
-            append(directTransferChild(of: sourceSuperview, containing: inspectorFrontend) ?? inspectorFrontend)
-        }
-
-        for view in sourceSuperview.subviews {
-            if view === primaryWebView { continue }
-            let className = String(describing: type(of: view))
-            guard className.contains("WK") else { continue }
-            if InspectorDock.isInspectorView(view) && !InspectorDock.isVisibleCandidate(view) {
-                continue
-            }
-            append(view)
-        }
-
-        return relatedSubviews
-    }
-
-    private static func moveWebKitRelatedSubviewsIntoHostIfNeeded(
-        from sourceSuperview: NSView,
-        to container: WindowBrowserSlotView,
-        primaryWebView: WKWebView,
-        reason: String
-    ) {
-        let relatedSubviews = relatedWebKitTransferSubviews(
-            from: sourceSuperview,
-            primaryWebView: primaryWebView
-        )
-        guard !relatedSubviews.isEmpty else { return }
-        let preserveSlotLocalFrames = sourceSuperview is WindowBrowserSlotView
-        let sourceSlotBoundsSize = sourceSuperview.bounds.size
-        var movedSubviewCount = 0
-        var reusedSourceLocalFrames = false
-#if DEBUG
-        dlog(
-            "browser.localHost.reparent.batch reason=\(reason) source=\(Self.objectID(sourceSuperview)) " +
-            "container=\(Self.objectID(container)) count=\(relatedSubviews.count) " +
-            "sourceType=\(String(describing: type(of: sourceSuperview))) targetType=\(String(describing: type(of: container)))"
-        )
-#endif
-        for view in relatedSubviews {
-            if view === container || view.isDescendant(of: container) {
-                continue
-            }
-            let className = String(describing: type(of: view))
-            let targetFrame: NSRect
-            let currentSuperview = view.superview
-            if preserveSlotLocalFrames && currentSuperview === sourceSuperview {
-                targetFrame = view.frame
-                reusedSourceLocalFrames = true
-            } else {
-                let frameInWindow = currentSuperview?.convert(view.frame, to: nil)
-                    ?? sourceSuperview.convert(view.frame, to: nil)
-                targetFrame = container.convert(frameInWindow, from: nil)
-            }
-            view.removeFromSuperview()
-            container.addSubview(view, positioned: .above, relativeTo: nil)
-            view.frame = targetFrame
-            movedSubviewCount += 1
-#if DEBUG
-            dlog(
-                "browser.localHost.reparent.batch.item reason=\(reason) class=\(className) " +
-                "view=\(Self.objectID(view))"
-            )
-#endif
-        }
-        guard movedSubviewCount > 0 else { return }
-        if reusedSourceLocalFrames, sourceSlotBoundsSize != container.bounds.size {
-            container.resizeSubviews(withOldSize: sourceSlotBoundsSize)
-            container.needsLayout = true
-            container.layoutSubtreeIfNeeded()
-        }
-    }
-
     private static func installPortalAnchorView(_ anchorView: NSView, in host: NSView) {
         // SwiftUI can keep transient replacement hosts alive off-window during split
         // reparenting. Never let those hosts steal the shared portal anchor, or the
@@ -1819,12 +1719,18 @@ struct WebViewRepresentable: NSViewRepresentable {
 
         if didAttachWebViewToLocalHost {
             if let sourceSuperview = Self.localInlineTransferRoot(for: webView) {
-                Self.moveWebKitRelatedSubviewsIntoHostIfNeeded(
+                // See WebKitSubviewTransfer's doc comment for the unified
+                // slot-local-frame-fast-path / window-relative-conversion contract.
+                WebKitSubviewTransfer.move(
                     from: sourceSuperview,
                     to: slotView,
                     primaryWebView: webView,
                     reason: "attachLocalHost"
-                )
+                ) { message in
+#if DEBUG
+                    dlog(message)
+#endif
+                }
             } else {
                 slotView.addSubview(webView, positioned: .above, relativeTo: nil)
             }
@@ -1852,14 +1758,18 @@ struct WebViewRepresentable: NSViewRepresentable {
             panel.restoreDeveloperToolsAfterAttachIfNeeded()
             if let sourceSuperview = Self.localInlineTransferRoot(for: webView),
                didAttachWebViewToLocalHost || sourceSuperview === slotView {
-                Self.moveWebKitRelatedSubviewsIntoHostIfNeeded(
+                WebKitSubviewTransfer.move(
                     from: sourceSuperview,
                     to: slotView,
                     primaryWebView: webView,
                     reason: didAttachWebViewToLocalHost
                         ? "localInline.reconcile.immediate"
                         : "localInline.reconcile.existingHost"
-                )
+                ) { message in
+#if DEBUG
+                    dlog(message)
+#endif
+                }
             }
             host.setHostedInspectorFrontendWebView(webView.programaInspectorFrontendWebView())
             let didRevealDeveloperToolsAfterAttach =
@@ -1888,12 +1798,16 @@ struct WebViewRepresentable: NSViewRepresentable {
                 guard let host, let webView else { return }
                 if let sourceSuperview = Self.localInlineTransferRoot(for: webView),
                    sourceSuperview === slotView {
-                    Self.moveWebKitRelatedSubviewsIntoHostIfNeeded(
+                    WebKitSubviewTransfer.move(
                         from: sourceSuperview,
                         to: slotView,
                         primaryWebView: webView,
                         reason: "localInline.reconcile.async"
-                    )
+                    ) { message in
+#if DEBUG
+                        dlog(message)
+#endif
+                    }
                 }
                 host.setHostedInspectorFrontendWebView(webView.programaInspectorFrontendWebView())
                 host.refreshHostedWebKitPresentation(

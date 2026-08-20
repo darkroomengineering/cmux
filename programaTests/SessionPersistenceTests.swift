@@ -425,6 +425,69 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNil(SessionPersistenceStore.load(fileURL: snapshotURL))
     }
 
+    func testLoadWithHistoryFallbackReturnsHistoryCopyWhenPrimaryIsCorrupt() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        var snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        snapshot.windows[0].tabManager.workspaces[0].customTitle = "Intact History Copy"
+        XCTAssertTrue(SessionPersistenceStore.save(snapshot, fileURL: snapshotURL))
+
+        // Archives the just-saved (intact) snapshot into session-history/ via the store's own
+        // rotation seam, exactly like startup does before overwriting the primary file.
+        XCTAssertTrue(SessionPersistenceStore.rotateIntoHistory(fileURL: snapshotURL))
+        XCTAssertEqual(SessionPersistenceStore.historyFileURLs(fileURL: snapshotURL).count, 1)
+
+        // Simulate a crash mid-write / disk corruption: truncate the primary file so it no
+        // longer decodes.
+        try Data("{\"version\":".utf8).write(to: snapshotURL)
+        XCTAssertNil(SessionPersistenceStore.load(fileURL: snapshotURL), "Strict load must stay nil on corrupt primary data")
+
+        let restored = SessionPersistenceStore.loadWithHistoryFallback(fileURL: snapshotURL)
+        XCTAssertEqual(
+            restored?.windows.first?.tabManager.workspaces.first?.customTitle,
+            "Intact History Copy",
+            "A corrupt primary snapshot should fall back to the archived history copy"
+        )
+    }
+
+    func testLoadWithHistoryFallbackReturnsHistoryCopyWhenPrimaryVersionMismatches() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        let snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        XCTAssertTrue(SessionPersistenceStore.save(snapshot, fileURL: snapshotURL))
+        XCTAssertTrue(SessionPersistenceStore.rotateIntoHistory(fileURL: snapshotURL))
+
+        // A future schema-bumped primary must not shadow the still-current-version archive.
+        XCTAssertTrue(
+            SessionPersistenceStore.save(makeSnapshot(version: SessionSnapshotSchema.currentVersion + 1), fileURL: snapshotURL)
+        )
+
+        let restored = SessionPersistenceStore.loadWithHistoryFallback(fileURL: snapshotURL)
+        XCTAssertEqual(restored?.version, SessionSnapshotSchema.currentVersion)
+        XCTAssertEqual(restored?.windows.count, 1)
+    }
+
+    func testLoadWithHistoryFallbackReturnsNilWhenHistoryIsAlsoUnusable() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        // No history/ directory has ever been created for this snapshot path.
+        try Data("not json".utf8).write(to: snapshotURL)
+
+        XCTAssertNil(SessionPersistenceStore.loadWithHistoryFallback(fileURL: snapshotURL))
+    }
+
     func testDefaultSnapshotPathSanitizesBundleIdentifier() {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-session-tests-\(UUID().uuidString)", isDirectory: true)
