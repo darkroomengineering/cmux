@@ -349,3 +349,39 @@ final class SessionWALCoreTests: XCTestCase {
         }
     }
 }
+
+// Deferred-revive escrow stamp (2026-08-20 update-reset fix): a revived panel in
+// a hidden tab escrows its fd at construction, before the WAL writer's full
+// registration. The stamp must create the session's meta.json on its own and
+// record every field the next launch's reattach guard requires
+// (escrowed/socketPath/token/childPID) — a missing one degrades to
+// "not_escrowed" and the agent dies at the next update.
+final class SessionWALDeferredReviveEscrowTests: XCTestCase {
+    func testStampWritesRetrievableEscrowMetaWithoutFullRegistration() {
+        let store = SessionWALStore.shared
+        let sessionId = UUID().uuidString
+        defer { store.unregister(surface: nil, surfaceId: sessionId, deleteDirectory: true) }
+
+        store.stampDeferredReviveEscrow(
+            surfaceId: sessionId,
+            socketPath: "/tmp/test-escrow.sock",
+            token: "deadbeefcafe",
+            childPID: 4242,
+            workingDirectory: "/tmp"
+        )
+
+        // Writes land asynchronously on the store's write queue; poll briefly.
+        let deadline = Date().addingTimeInterval(3)
+        var meta: SessionWALMeta?
+        while Date() < deadline {
+            meta = store.readMeta(sessionId: sessionId)
+            if meta?.escrowed == true { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        XCTAssertEqual(meta?.escrowed, true, "stamp must persist escrowed=true without a prior register()")
+        XCTAssertEqual(meta?.escrowSocketPath, "/tmp/test-escrow.sock")
+        XCTAssertEqual(meta?.escrowToken, "deadbeefcafe")
+        XCTAssertEqual(meta?.childPID, 4242, "reattach's guard requires childPID; the stamp must record it")
+    }
+}

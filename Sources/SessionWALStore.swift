@@ -903,6 +903,42 @@ final class SessionWALStore {
         }
     }
 
+    /// Records escrow facts for a revived session whose runtime surface has not
+    /// been created yet (a hidden tab at restore — its ghostty surface, and with
+    /// it the normal `register`/`markEscrowed` flow, only exists once the tab is
+    /// first shown). Creates the writer (and the session directory + meta.json)
+    /// if needed so the facts are durable NOW; the eventual full `register()`
+    /// replaces the writer but re-hydrates these fields from disk (see
+    /// `startWriter`), so nothing is lost at realization.
+    func stampDeferredReviveEscrow(
+        surfaceId: String,
+        socketPath: String,
+        token: String,
+        childPID: Int32?,
+        workingDirectory: String?
+    ) {
+        writeQueue.async { [weak self] in
+            guard let self else { return }
+            if self.writersBySurfaceId[surfaceId] == nil {
+                self.startWriter(
+                    surfaceId: surfaceId,
+                    context: Context(surfaceId: surfaceId),
+                    workingDirectory: workingDirectory
+                )
+            }
+            guard let writer = self.writersBySurfaceId[surfaceId] else { return }
+            writer.escrowed = true
+            writer.escrowSocketPath = socketPath
+            writer.escrowToken = token
+            if writer.childPID == nil, let childPID {
+                writer.childPID = childPID
+            }
+            let now = Date()
+            self.writeMeta(writer: writer, at: now)
+            writer.lastMetaWriteAt = now
+        }
+    }
+
     /// Wires the main-thread/AppKit-bound VT screen export in
     /// (`TerminalController.captureSessionWALFrameText(forSurfaceId:)`).
     /// Safe to call once at app startup, before or after any surface
@@ -1095,6 +1131,19 @@ final class SessionWALStore {
             return FileManager.default.homeDirectoryForCurrentUser.path
         }()
         let writer = SessionWALWriter(context: context, paths: paths, workingDirectory: resolvedWorkingDirectory)
+        // Durable-fact hydration: a re-registration for a surfaceId that already
+        // has a meta.json on disk (deferred-revive escrow stamp before the runtime
+        // surface exists, or a runtime-surface recreation) must not clobber facts
+        // recorded earlier — escrow state and child identity are written once and
+        // the NEXT launch's reattach depends on reading them back.
+        if let data = try? Data(contentsOf: paths.metaURL),
+           let existing = try? Self.metaDecoder.decode(SessionWALMeta.self, from: data) {
+            writer.escrowed = existing.escrowed ?? false
+            writer.escrowSocketPath = existing.escrowSocketPath
+            writer.escrowToken = existing.escrowToken
+            writer.childPID = existing.childPID
+            writer.ptyPath = existing.ptyPath
+        }
         writersBySurfaceId[surfaceId] = writer
         let now = Date()
         writeMeta(writer: writer, at: now)
