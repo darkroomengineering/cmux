@@ -321,8 +321,37 @@ extension ProgramaCLI {
             token = String(token[..<dot])
         }
         if let colon = token.lastIndex(of: ":") {
-            let suffix = token[token.index(after: colon)...]
-            token = suffix.isEmpty ? String(token[..<colon]) : String(suffix)
+            let prefix = String(token[..<colon])
+            let suffix = String(token[token.index(after: colon)...])
+            if !prefix.isEmpty {
+                // Session-qualified target (tmux "session:window"). Programa has
+                // no session concept — a tmux "session" created via new-session
+                // becomes a single workspace titled with the session name — so
+                // try increasingly narrow interpretations before giving up.
+                let original = token
+                let items = try tmuxWorkspaceItems(client: client)
+
+                // 1. The full original token might legitimately be a workspace
+                //    title containing a colon.
+                if let match = items.first(where: {
+                    (($0["title"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) == original
+                }), let id = match["id"] as? String {
+                    return id
+                }
+
+                // 2. The session component alone matches a workspace title, and
+                //    the window component is tmux's base-index for "the
+                //    session's first window" (0 or 1).
+                if (suffix == "0" || suffix == "1"),
+                   let match = items.first(where: {
+                       (($0["title"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines) == prefix
+                   }), let id = match["id"] as? String {
+                    return id
+                }
+
+                throw CLIError(message: "Workspace target not found: '\(original)'. Programa has no tmux sessions; a session-qualified target like 'name:2' cannot be resolved — target the window by its own name or index.")
+            }
+            token = suffix
         }
         if token.hasPrefix("@") {
             token = String(token.dropFirst())
