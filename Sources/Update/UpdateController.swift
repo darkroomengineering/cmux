@@ -19,16 +19,19 @@ enum UpdateSettings {
     static let scheduledCheckIntervalKey = "SUScheduledCheckInterval"
     static let sendProfileInfoKey = "SUSendProfileInfo"
     static let migrationKey = "programa.sparkle.automaticChecksMigration.v2"
+    static let autoInstallMigrationKey = "programa.sparkle.autoInstallMigration.v3"
     static let previousDefaultScheduledCheckInterval: TimeInterval = 60 * 60 * 24
     static let scheduledCheckInterval: TimeInterval = 60 * 60
 
     static func apply(to defaults: UserDefaults) {
         defaults.register(defaults: [
             automaticChecksKey: true,
-            automaticallyUpdateKey: false,
+            automaticallyUpdateKey: true,
             scheduledCheckIntervalKey: scheduledCheckInterval,
             sendProfileInfoKey: false,
         ])
+
+        applyAutoInstallMigration(to: defaults)
 
         guard !defaults.bool(forKey: migrationKey) else { return }
 
@@ -46,14 +49,29 @@ enum UpdateSettings {
             defaults.set(scheduledCheckInterval, forKey: scheduledCheckIntervalKey)
         }
 
-        if defaults.object(forKey: automaticallyUpdateKey) == nil {
-            defaults.set(false, forKey: automaticallyUpdateKey)
-        }
+        // automaticallyUpdateKey is deliberately NOT written here anymore: the
+        // registered default (true, since the 2026-08-20 auto-install flip)
+        // covers the nil case, and writing a concrete value would defeat the
+        // v3 migration below for installs that reach v2 first.
         if defaults.object(forKey: sendProfileInfoKey) == nil {
             defaults.set(false, forKey: sendProfileInfoKey)
         }
 
         defaults.set(true, forKey: migrationKey)
+    }
+
+    /// 2026-08-20 default flip (audit follow-up): silent auto-install is now
+    /// the default — the single-lane, fix-forward release model only works if
+    /// fixes actually reach users, and a crash-looping user never clicks the
+    /// pill. The v2 migration wrote a concrete `false` into every existing
+    /// install's defaults, so flipping the registered default alone would
+    /// never reach them: this one-time migration clears that stored value so
+    /// the registered default (true) takes effect. The Settings toggle writes
+    /// a concrete value afterwards and wins permanently — this runs once.
+    private static func applyAutoInstallMigration(to defaults: UserDefaults) {
+        guard !defaults.bool(forKey: autoInstallMigrationKey) else { return }
+        defaults.removeObject(forKey: automaticallyUpdateKey)
+        defaults.set(true, forKey: autoInstallMigrationKey)
     }
 }
 
@@ -121,6 +139,7 @@ class UpdateController {
             defaults.removeObject(forKey: UpdateSettings.scheduledCheckIntervalKey)
             defaults.removeObject(forKey: UpdateSettings.sendProfileInfoKey)
             defaults.removeObject(forKey: UpdateSettings.migrationKey)
+            defaults.removeObject(forKey: UpdateSettings.autoInstallMigrationKey)
             defaults.synchronize()
             UpdateLogStore.shared.append("reset sparkle permission defaults (ui test)")
         }
