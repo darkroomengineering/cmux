@@ -68,7 +68,14 @@ struct TabItemView: View, Equatable {
         lhs.allRemoteContextMenuTargetsConnecting == rhs.allRemoteContextMenuTargetsConnecting &&
         lhs.allRemoteContextMenuTargetsDisconnected == rhs.allRemoteContextMenuTargetsDisconnected &&
         lhs.settings == rhs.settings &&
-        lhs.showsWorktreeBadge == rhs.showsWorktreeBadge
+        lhs.showsWorktreeBadge == rhs.showsWorktreeBadge &&
+        // Bindings are normally excluded (recreated per parent eval, don't
+        // affect rendering) — but body READS these two values (isBeingDragged
+        // opacity dim, showsCenteredTopDropIndicator), so excluding them froze
+        // drag visuals mid-drag (audit 2026-08-20, H2). Compare wrapped values;
+        // only drag interactions churn them, never typing.
+        lhs.draggedTabId == rhs.draggedTabId &&
+        lhs.dropIndicator == rhs.dropIndicator
     }
 
     // Use plain references instead of @EnvironmentObject to avoid subscribing
