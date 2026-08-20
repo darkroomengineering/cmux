@@ -28,6 +28,9 @@ final class ProgramaSettingsFileStore {
     fileprivate static let trustedDirectoriesBackupIdentifier = "customCommands.trustedDirectories"
     fileprivate static let socketPasswordBackupIdentifier = "automation.socketPassword"
     fileprivate static let terminalThemeBackupIdentifier = "app.terminalTheme"
+    fileprivate static let terminalOpacityBackupIdentifier = "app.terminalOpacity"
+    fileprivate static let terminalBlurBackupIdentifier = "app.terminalBlur"
+    fileprivate static let terminalFontBackupIdentifier = "app.terminalFont"
 
     static var defaultPrimaryPath: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -171,6 +174,18 @@ final class ProgramaSettingsFileStore {
 
     func isTerminalThemeManagedByFile() -> Bool {
         synchronized { activeManagedCustomSettings.terminalTheme != nil }
+    }
+
+    func isTerminalOpacityManagedByFile() -> Bool {
+        synchronized { activeManagedCustomSettings.terminalOpacity != nil }
+    }
+
+    func isTerminalBlurManagedByFile() -> Bool {
+        synchronized { activeManagedCustomSettings.terminalBlur != nil }
+    }
+
+    func isTerminalFontManagedByFile() -> Bool {
+        synchronized { activeManagedCustomSettings.terminalFont != nil }
     }
 
     func settingsFileURLForEditing() -> URL {
@@ -389,6 +404,39 @@ final class ProgramaSettingsFileStore {
                 }
             } else {
                 logInvalid("app.terminalTheme", sourcePath: sourcePath)
+            }
+        }
+        if let rawTerminalOpacity = section["terminalOpacity"] {
+            if rawTerminalOpacity is NSNull {
+                snapshot.managedCustomSettings.terminalOpacity = ManagedTerminalOpacity(value: nil)
+            } else if let opacity = jsonDouble(rawTerminalOpacity), opacity >= 0, opacity <= 1 {
+                snapshot.managedCustomSettings.terminalOpacity = ManagedTerminalOpacity(value: opacity)
+            } else {
+                logInvalid("app.terminalOpacity", sourcePath: sourcePath)
+            }
+        }
+        if let rawTerminalBlur = section["terminalBlur"] {
+            if rawTerminalBlur is NSNull {
+                snapshot.managedCustomSettings.terminalBlur = ManagedTerminalBlur(value: nil)
+            } else if let blur = jsonBool(rawTerminalBlur) {
+                snapshot.managedCustomSettings.terminalBlur = ManagedTerminalBlur(value: blur)
+            } else {
+                logInvalid("app.terminalBlur", sourcePath: sourcePath)
+            }
+        }
+        if let rawTerminalFont = section["terminalFont"] {
+            if rawTerminalFont is NSNull {
+                snapshot.managedCustomSettings.terminalFont = ManagedTerminalFont(family: nil, size: nil)
+            } else if let terminalFont = rawTerminalFont as? [String: Any] {
+                let family = jsonString(terminalFont["family"])?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let size = jsonDouble(terminalFont["size"])
+                if let family, !family.isEmpty, let size, size > 0 {
+                    snapshot.managedCustomSettings.terminalFont = ManagedTerminalFont(family: family, size: size)
+                } else {
+                    logInvalid("app.terminalFont", sourcePath: sourcePath)
+                }
+            } else {
+                logInvalid("app.terminalFont", sourcePath: sourcePath)
             }
         }
     }
@@ -961,6 +1009,18 @@ final class ProgramaSettingsFileStore {
                backups[Self.terminalThemeBackupIdentifier] == nil {
                 backups[Self.terminalThemeBackupIdentifier] = currentTerminalThemeBackupValue()
             }
+            if snapshot.managedCustomSettings.terminalOpacity != nil,
+               backups[Self.terminalOpacityBackupIdentifier] == nil {
+                backups[Self.terminalOpacityBackupIdentifier] = currentTerminalOpacityBackupValue()
+            }
+            if snapshot.managedCustomSettings.terminalBlur != nil,
+               backups[Self.terminalBlurBackupIdentifier] == nil {
+                backups[Self.terminalBlurBackupIdentifier] = currentTerminalBlurBackupValue()
+            }
+            if snapshot.managedCustomSettings.terminalFont != nil,
+               backups[Self.terminalFontBackupIdentifier] == nil {
+                backups[Self.terminalFontBackupIdentifier] = currentTerminalFontBackupValue()
+            }
         }
 
         for identifier in currentManagedIdentifiers.subtracting(nextManagedIdentifiers) {
@@ -1003,6 +1063,15 @@ final class ProgramaSettingsFileStore {
         if let terminalTheme = settings.terminalTheme {
             applyTerminalTheme(light: terminalTheme.light, dark: terminalTheme.dark)
         }
+        if let terminalOpacity = settings.terminalOpacity {
+            applyTerminalOpacity(terminalOpacity.value)
+        }
+        if let terminalBlur = settings.terminalBlur {
+            applyTerminalBlur(terminalBlur.value)
+        }
+        if let terminalFont = settings.terminalFont {
+            applyTerminalFont(family: terminalFont.family, size: terminalFont.size)
+        }
     }
 
     private func restoreBackup(_ backup: BackupValue, for identifier: String) {
@@ -1039,6 +1108,72 @@ final class ProgramaSettingsFileStore {
             } catch {
                 NSLog(
                     "[ProgramaSettingsFileStore] failed to restore terminal theme: %@",
+                    String(describing: error)
+                )
+            }
+        case Self.terminalOpacityBackupIdentifier:
+            do {
+                let mutation: TerminalThemeMutation
+                switch backup {
+                case .double(let value):
+                    mutation = try terminalThemeStore.set(rawAppearanceValue: String(value), forKey: "background-opacity")
+                case .absent:
+                    mutation = try terminalThemeStore.set(rawAppearanceValue: "", forKey: "background-opacity")
+                default:
+                    return
+                }
+                if mutation.didChange {
+                    terminalThemeReloadHandler()
+                }
+            } catch {
+                NSLog(
+                    "[ProgramaSettingsFileStore] failed to restore terminal opacity: %@",
+                    String(describing: error)
+                )
+            }
+        case Self.terminalBlurBackupIdentifier:
+            do {
+                let mutation: TerminalThemeMutation
+                switch backup {
+                case .bool(let value):
+                    mutation = try terminalThemeStore.set(rawAppearanceValue: value ? "true" : "false", forKey: "background-blur")
+                case .absent:
+                    mutation = try terminalThemeStore.set(rawAppearanceValue: "", forKey: "background-blur")
+                default:
+                    return
+                }
+                if mutation.didChange {
+                    terminalThemeReloadHandler()
+                }
+            } catch {
+                NSLog(
+                    "[ProgramaSettingsFileStore] failed to restore terminal blur: %@",
+                    String(describing: error)
+                )
+            }
+        case Self.terminalFontBackupIdentifier:
+            do {
+                let mutation: TerminalThemeMutation
+                switch backup {
+                case .stringDictionary(let values):
+                    mutation = try terminalThemeStore.set(rawAppearanceValues: [
+                        "font-family": values["family"],
+                        "font-size": values["size"],
+                    ])
+                case .absent:
+                    mutation = try terminalThemeStore.set(rawAppearanceValues: [
+                        "font-family": nil,
+                        "font-size": nil,
+                    ])
+                default:
+                    return
+                }
+                if mutation.didChange {
+                    terminalThemeReloadHandler()
+                }
+            } catch {
+                NSLog(
+                    "[ProgramaSettingsFileStore] failed to restore terminal font: %@",
                     String(describing: error)
                 )
             }
@@ -1093,15 +1228,92 @@ final class ProgramaSettingsFileStore {
         return .string(rawValue)
     }
 
+    private func currentTerminalOpacityBackupValue() -> BackupValue {
+        guard let opacity = terminalThemeStore.managedRawAppearance().backgroundOpacity else {
+            return .absent
+        }
+        return .double(opacity)
+    }
+
+    private func currentTerminalBlurBackupValue() -> BackupValue {
+        guard let blur = terminalThemeStore.managedRawAppearance().backgroundBlur else {
+            return .absent
+        }
+        return .bool(blur)
+    }
+
+    private func currentTerminalFontBackupValue() -> BackupValue {
+        let appearance = terminalThemeStore.managedRawAppearance()
+        guard let family = appearance.fontFamily, let size = appearance.fontSize else {
+            return .absent
+        }
+        return .stringDictionary(["family": family, "size": String(size)])
+    }
+
     private func applyTerminalTheme(light: String?, dark: String?) {
         do {
-            let mutation = try terminalThemeStore.set(light: light, dark: dark)
+            // Surgical single-key write: preserves any independently-managed opacity/blur/font
+            // directives already present in the block.
+            let rawValue = TerminalThemeStore.encodedThemeValue(light: light, dark: dark) ?? ""
+            let mutation = try terminalThemeStore.set(rawAppearanceValue: rawValue, forKey: "theme")
             if mutation.didChange {
                 terminalThemeReloadHandler()
             }
         } catch {
             NSLog(
                 "[ProgramaSettingsFileStore] failed to apply terminal theme: %@",
+                String(describing: error)
+            )
+        }
+    }
+
+    private func applyTerminalOpacity(_ value: Double?) {
+        do {
+            let rawValue = value.map { String($0) } ?? ""
+            let mutation = try terminalThemeStore.set(rawAppearanceValue: rawValue, forKey: "background-opacity")
+            if mutation.didChange {
+                terminalThemeReloadHandler()
+            }
+        } catch {
+            NSLog(
+                "[ProgramaSettingsFileStore] failed to apply terminal opacity: %@",
+                String(describing: error)
+            )
+        }
+    }
+
+    private func applyTerminalBlur(_ value: Bool?) {
+        do {
+            let rawValue: String
+            switch value {
+            case .some(true): rawValue = "true"
+            case .some(false): rawValue = "false"
+            case .none: rawValue = ""
+            }
+            let mutation = try terminalThemeStore.set(rawAppearanceValue: rawValue, forKey: "background-blur")
+            if mutation.didChange {
+                terminalThemeReloadHandler()
+            }
+        } catch {
+            NSLog(
+                "[ProgramaSettingsFileStore] failed to apply terminal blur: %@",
+                String(describing: error)
+            )
+        }
+    }
+
+    private func applyTerminalFont(family: String?, size: Double?) {
+        do {
+            let mutation = try terminalThemeStore.set(rawAppearanceValues: [
+                "font-family": family,
+                "font-size": size.map { String($0) },
+            ])
+            if mutation.didChange {
+                terminalThemeReloadHandler()
+            }
+        } catch {
+            NSLog(
+                "[ProgramaSettingsFileStore] failed to apply terminal font: %@",
                 String(describing: error)
             )
         }
@@ -1311,6 +1523,9 @@ final class ProgramaSettingsFileStore {
                         "light": NSNull(),
                         "dark": NSNull(),
                     ],
+                    "terminalOpacity": NSNull(),
+                    "terminalBlur": NSNull(),
+                    "terminalFont": NSNull(),
                     "newWorkspacePlacement": WorkspacePlacementSettings.defaultPlacement.rawValue,
                     "minimalMode": WorkspacePresentationModeSettings.defaultMode == .minimal,
                     "preferredEditor": "",
@@ -1443,13 +1658,30 @@ private struct ManagedTerminalTheme: Equatable {
     let dark: String?
 }
 
+private struct ManagedTerminalOpacity: Equatable {
+    let value: Double?
+}
+
+private struct ManagedTerminalBlur: Equatable {
+    let value: Bool?
+}
+
+private struct ManagedTerminalFont: Equatable {
+    let family: String?
+    let size: Double?
+}
+
 private struct ManagedCustomSettings: Equatable {
     var trustedDirectories: [String]?
     var socketPassword: ManagedStringOverride?
     var terminalTheme: ManagedTerminalTheme?
+    var terminalOpacity: ManagedTerminalOpacity?
+    var terminalBlur: ManagedTerminalBlur?
+    var terminalFont: ManagedTerminalFont?
 
     var isEmpty: Bool {
         trustedDirectories == nil && socketPassword == nil && terminalTheme == nil
+            && terminalOpacity == nil && terminalBlur == nil && terminalFont == nil
     }
 
     var managedIdentifiers: Set<String> {
@@ -1462,6 +1694,15 @@ private struct ManagedCustomSettings: Equatable {
         }
         if terminalTheme != nil {
             identifiers.insert(ProgramaSettingsFileStore.terminalThemeBackupIdentifier)
+        }
+        if terminalOpacity != nil {
+            identifiers.insert(ProgramaSettingsFileStore.terminalOpacityBackupIdentifier)
+        }
+        if terminalBlur != nil {
+            identifiers.insert(ProgramaSettingsFileStore.terminalBlurBackupIdentifier)
+        }
+        if terminalFont != nil {
+            identifiers.insert(ProgramaSettingsFileStore.terminalFontBackupIdentifier)
         }
         return identifiers
     }

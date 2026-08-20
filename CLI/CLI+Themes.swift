@@ -213,6 +213,7 @@ extension ProgramaCLI {
         let themes = availableThemeNames()
         let themeStore = TerminalThemeStore.live()
         let current = themeStore.currentSelection()
+        let appearance = themeStore.currentAppearance()
         let configPath = themeStore.managedConfigURL.path
 
         if jsonOutput {
@@ -220,7 +221,11 @@ extension ProgramaCLI {
                 "raw_value": current.rawValue ?? NSNull(),
                 "light": current.light ?? NSNull(),
                 "dark": current.dark ?? NSNull(),
-                "source_path": current.sourcePath ?? NSNull()
+                "source_path": current.sourcePath ?? NSNull(),
+                "opacity": appearance.backgroundOpacity ?? NSNull(),
+                "blur": appearance.backgroundBlur ?? NSNull(),
+                "font_family": appearance.fontFamily ?? NSNull(),
+                "font_size": appearance.fontSize ?? NSNull()
             ]
             let payload: [String: Any] = [
                 "themes": themes.map { theme in
@@ -239,6 +244,9 @@ extension ProgramaCLI {
 
         print("Current light: \(current.light ?? "inherit")")
         print("Current dark: \(current.dark ?? "inherit")")
+        print("Opacity: \(appearance.backgroundOpacity.map { String($0) } ?? "inherit")")
+        print("Blur: \(appearance.backgroundBlur.map { $0 ? "on" : "off" } ?? "inherit")")
+        print("Font: \(appearance.fontFamily ?? "inherit") \(appearance.fontSize.map { String($0) } ?? "")")
         print("Config: \(configPath)")
         if let sourcePath = current.sourcePath {
             print("Source: \(sourcePath)")
@@ -263,41 +271,102 @@ extension ProgramaCLI {
         }
     }
 
+    private func extractFlag(_ args: [String], name: String) -> (Bool, [String]) {
+        var found = false
+        var remaining: [String] = []
+        for arg in args {
+            if arg == name {
+                found = true
+            } else {
+                remaining.append(arg)
+            }
+        }
+        return (found, remaining)
+    }
+
     private func runThemesSet(args: [String], jsonOutput: Bool) throws {
         let (lightOpt, rem0) = parseOption(args, name: "--light")
         let (darkOpt, rem1) = parseOption(rem0, name: "--dark")
+        let (opacityOpt, rem2) = parseOption(rem1, name: "--opacity")
+        let (fontOpt, rem3) = parseOption(rem2, name: "--font")
+        let (fontSizeOpt, rem4) = parseOption(rem3, name: "--font-size")
+        let (blurFlag, rem5) = extractFlag(rem4, name: "--blur")
+        let (noBlurFlag, remaining) = extractFlag(rem5, name: "--no-blur")
 
-        if let unknown = rem1.first(where: { $0.hasPrefix("--") }) {
-            throw CLIError(message: "themes set: unknown flag '\(unknown)'. Known flags: --light <theme>, --dark <theme>")
+        if let unknown = remaining.first(where: { $0.hasPrefix("--") }) {
+            throw CLIError(message: "themes set: unknown flag '\(unknown)'. Known flags: --light <theme>, --dark <theme>, --opacity <0-1>, --blur, --no-blur, --font <name>, --font-size <n>")
+        }
+        if blurFlag && noBlurFlag {
+            throw CLIError(message: "themes set: cannot pass both --blur and --no-blur")
         }
 
         let availableThemes = availableThemeNames()
-        let current = currentThemeSelection()
+        // Base partial updates on the managed block only (not currentAppearance()'s full
+        // search-chain resolution) so setting one field never copies a value the user only
+        // ever set in their own raw Ghostty config into Programa's managed block.
+        let current = TerminalThemeStore.live().managedRawAppearance()
 
         let lightTheme: String?
         let darkTheme: String?
+        var didSpecifyField = false
 
-        if lightOpt == nil && darkOpt == nil {
-            let joinedTheme = rem1.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !joinedTheme.isEmpty else {
-                throw CLIError(message: "themes set requires a theme name or --light/--dark flags")
-            }
+        if lightOpt == nil && darkOpt == nil && !remaining.isEmpty {
+            let joinedTheme = remaining.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
             let resolved = try validatedThemeName(joinedTheme, availableThemes: availableThemes)
             lightTheme = resolved
             darkTheme = resolved
+            didSpecifyField = true
         } else {
-            if !rem1.isEmpty {
-                throw CLIError(message: "themes set: unexpected argument '\(rem1.joined(separator: " "))'")
+            if !remaining.isEmpty {
+                throw CLIError(message: "themes set: unexpected argument '\(remaining.joined(separator: " "))'")
             }
-            lightTheme = try lightOpt.map { try validatedThemeName($0, availableThemes: availableThemes) } ?? current.light
-            darkTheme = try darkOpt.map { try validatedThemeName($0, availableThemes: availableThemes) } ?? current.dark
+            lightTheme = try lightOpt.map { try validatedThemeName($0, availableThemes: availableThemes) } ?? current.themeLight
+            darkTheme = try darkOpt.map { try validatedThemeName($0, availableThemes: availableThemes) } ?? current.themeDark
+            didSpecifyField = lightOpt != nil || darkOpt != nil
         }
 
-        guard let rawThemeValue = TerminalThemeStore.encodedThemeValue(light: lightTheme, dark: darkTheme) else {
-            throw CLIError(message: "themes set requires at least one theme")
+        var overrides = TerminalAppearanceOverrides(
+            themeLight: lightTheme,
+            themeDark: darkTheme,
+            backgroundOpacity: current.backgroundOpacity,
+            backgroundBlur: current.backgroundBlur,
+            fontFamily: current.fontFamily,
+            fontSize: current.fontSize
+        )
+
+        if let opacityOpt {
+            guard let opacityValue = Double(opacityOpt), opacityValue >= 0, opacityValue <= 1 else {
+                throw CLIError(message: "themes set: --opacity must be a number between 0 and 1")
+            }
+            overrides.backgroundOpacity = opacityValue
+            didSpecifyField = true
+        }
+        if blurFlag {
+            overrides.backgroundBlur = true
+            didSpecifyField = true
+        }
+        if noBlurFlag {
+            overrides.backgroundBlur = false
+            didSpecifyField = true
+        }
+        if let fontOpt {
+            let trimmed = fontOpt.trimmingCharacters(in: .whitespacesAndNewlines)
+            overrides.fontFamily = trimmed.isEmpty ? nil : trimmed
+            didSpecifyField = true
+        }
+        if let fontSizeOpt {
+            guard let sizeValue = Double(fontSizeOpt), sizeValue > 0 else {
+                throw CLIError(message: "themes set: --font-size must be a positive number")
+            }
+            overrides.fontSize = sizeValue
+            didSpecifyField = true
         }
 
-        let configURL = try TerminalThemeStore.live().set(rawThemeValue: rawThemeValue).configURL
+        guard didSpecifyField else {
+            throw CLIError(message: "themes set requires a theme name or at least one flag: --light, --dark, --opacity, --blur/--no-blur, --font, --font-size")
+        }
+
+        let configURL = try TerminalThemeStore.live().set(overrides).configURL
         let reloadStatus = reloadThemesIfPossible()
 
         if jsonOutput {
@@ -305,7 +374,10 @@ extension ProgramaCLI {
                 "ok": true,
                 "light": lightTheme ?? NSNull(),
                 "dark": darkTheme ?? NSNull(),
-                "raw_value": rawThemeValue,
+                "opacity": overrides.backgroundOpacity ?? NSNull(),
+                "blur": overrides.backgroundBlur ?? NSNull(),
+                "font_family": overrides.fontFamily ?? NSNull(),
+                "font_size": overrides.fontSize ?? NSNull(),
                 "config_path": configURL.path,
                 "reload_requested": reloadStatus.requested,
                 "reload_target_bundle_id": reloadStatus.targetBundleIdentifier
@@ -336,10 +408,6 @@ extension ProgramaCLI {
         }
 
         print("OK cleared config=\(configURL.path) reload=requested")
-    }
-
-    private func currentThemeSelection() -> TerminalThemeSelection {
-        TerminalThemeStore.live().currentSelection()
     }
 
     private func availableThemeNames() -> [String] {
@@ -526,6 +594,7 @@ extension ProgramaCLI {
                    programa themes set <theme>
                    programa themes set --light <theme> [--dark <theme>]
                    programa themes set --dark <theme> [--light <theme>]
+                   programa themes set --opacity <0-1> [--blur|--no-blur] [--font <name>] [--font-size <n>]
                    programa themes clear
 
             When run in a TTY, `programa themes` opens an interactive theme picker with
@@ -535,17 +604,23 @@ extension ProgramaCLI {
             lets you apply it to the light theme, dark theme, or both defaults.
 
             Commands:
-              list                      List available themes and mark the current light/dark defaults
+              list                      List available themes and mark the current light/dark defaults and appearance
               set <theme>               Set the same theme for both light and dark appearance
               set --light <theme>       Set the light appearance theme
               set --dark <theme>        Set the dark appearance theme
-              clear                     Remove the programa theme override and fall back to other config
+              set --opacity <0-1>       Set the terminal background opacity
+              set --blur                Enable background blur
+              set --no-blur             Disable background blur
+              set --font <name>         Set the terminal font family
+              set --font-size <n>       Set the terminal font size
+              clear                     Remove the programa managed overrides and fall back to other config
 
             Examples:
               programa themes
               programa themes list
               programa themes set "Catppuccin Mocha"
               programa themes set --light "Catppuccin Latte" --dark "Catppuccin Mocha"
+              programa themes set --opacity 0.85 --blur --font "JetBrains Mono" --font-size 13
               programa themes clear
             """
         default:

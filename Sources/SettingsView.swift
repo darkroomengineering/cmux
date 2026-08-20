@@ -982,6 +982,90 @@ struct SettingsView: View {
             }
             .disabled(terminalThemeSettings.isManagedBySettingsFile)
 
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.terminalOpacity.title", defaultValue: "Opacity"),
+                subtitle: terminalThemeSettings.isOpacityManagedBySettingsFile
+                    ? String(localized: "settings.terminalTheme.managedByFile", defaultValue: "Managed in settings.json")
+                    : String(
+                        localized: "settings.terminalOpacity.subtitle",
+                        defaultValue: "Terminal background transparency."
+                    ),
+                controlWidth: pickerColumnWidth
+            ) {
+                Slider(
+                    value: Binding(
+                        get: { terminalThemeSettings.opacity },
+                        set: { terminalThemeSettings.setOpacity($0) }
+                    ),
+                    in: 0...1
+                )
+            }
+            .disabled(terminalThemeSettings.isOpacityManagedBySettingsFile)
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.terminalBlur.title", defaultValue: "Background Blur"),
+                subtitle: terminalThemeSettings.isBlurManagedBySettingsFile
+                    ? String(localized: "settings.terminalTheme.managedByFile", defaultValue: "Managed in settings.json")
+                    : String(
+                        localized: "settings.terminalBlur.subtitle",
+                        defaultValue: "Blur the desktop behind a transparent terminal background."
+                    )
+            ) {
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { terminalThemeSettings.blurEnabled },
+                        set: { terminalThemeSettings.setBlurEnabled($0) }
+                    )
+                )
+                .labelsHidden()
+                .controlSize(.small)
+            }
+            .disabled(terminalThemeSettings.isBlurManagedBySettingsFile)
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.terminalFont.title", defaultValue: "Font"),
+                subtitle: terminalThemeSettings.isFontManagedBySettingsFile
+                    ? String(localized: "settings.terminalTheme.managedByFile", defaultValue: "Managed in settings.json")
+                    : String(
+                        localized: "settings.terminalFont.subtitle",
+                        defaultValue: "Font family and size used in the terminal."
+                    )
+            ) {
+                HStack(spacing: 6) {
+                    TextField(
+                        String(localized: "settings.terminalFont.familyPlaceholder", defaultValue: "System Default"),
+                        text: Binding(
+                            get: { terminalThemeSettings.fontFamily },
+                            set: { terminalThemeSettings.setFontFamily($0) }
+                        )
+                    )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 140)
+                    TextField(
+                        "",
+                        value: Binding(
+                            get: { terminalThemeSettings.fontSize },
+                            set: { terminalThemeSettings.setFontSize($0) }
+                        ),
+                        format: .number
+                    )
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 44)
+                        .accessibilityLabel(
+                            String(localized: "settings.terminalFont.title", defaultValue: "Font")
+                        )
+                }
+            }
+            .disabled(terminalThemeSettings.isFontManagedBySettingsFile)
+
             if let errorMessage = terminalThemeSettings.errorMessage {
                 SettingsCardDivider()
                 SettingsCardNote(errorMessage)
@@ -1853,7 +1937,14 @@ private final class TerminalThemeSettingsModel: ObservableObject {
     @Published private(set) var themeNames: [String] = []
     @Published private(set) var lightTheme = ""
     @Published private(set) var darkTheme = ""
+    @Published private(set) var opacity: Double = 1.0
+    @Published private(set) var blurEnabled = false
+    @Published private(set) var fontFamily = ""
+    @Published private(set) var fontSize: Double = 0
     @Published private(set) var isManagedBySettingsFile = false
+    @Published private(set) var isOpacityManagedBySettingsFile = false
+    @Published private(set) var isBlurManagedBySettingsFile = false
+    @Published private(set) var isFontManagedBySettingsFile = false
     @Published private(set) var errorMessage: String?
 
     private let store: TerminalThemeStore
@@ -1889,12 +1980,9 @@ private final class TerminalThemeSettingsModel: ObservableObject {
             refresh()
             return
         }
-        if themeName.isEmpty {
-            clearManagedOverride()
-            return
+        applyAppearance { overrides in
+            overrides.themeLight = themeName.isEmpty ? nil : themeName
         }
-        let current = store.currentSelection()
-        apply(light: themeName, dark: current.dark)
     }
 
     func selectDarkTheme(_ themeName: String) {
@@ -1902,61 +1990,136 @@ private final class TerminalThemeSettingsModel: ObservableObject {
             refresh()
             return
         }
-        if themeName.isEmpty {
-            clearManagedOverride()
+        applyAppearance { overrides in
+            overrides.themeDark = themeName.isEmpty ? nil : themeName
+        }
+    }
+
+    func setOpacity(_ value: Double) {
+        guard !isOpacityManagedBySettingsFile else {
+            refresh()
             return
         }
-        let current = store.currentSelection()
-        apply(light: current.light, dark: themeName)
+        applyAppearance { overrides in
+            overrides.backgroundOpacity = value
+        }
+    }
+
+    func setBlurEnabled(_ value: Bool) {
+        guard !isBlurManagedBySettingsFile else {
+            refresh()
+            return
+        }
+        applyAppearance { overrides in
+            overrides.backgroundBlur = value
+        }
+    }
+
+    func setFontFamily(_ value: String) {
+        guard !isFontManagedBySettingsFile else {
+            refresh()
+            return
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        applyAppearance { overrides in
+            overrides.fontFamily = trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    func setFontSize(_ value: Double) {
+        guard !isFontManagedBySettingsFile else {
+            refresh()
+            return
+        }
+        applyAppearance { overrides in
+            overrides.fontSize = value > 0 ? value : nil
+        }
     }
 
     func clearManagedOverride() {
-        guard !isManagedBySettingsFile else { return }
-        apply(light: nil, dark: nil)
-    }
-
-    private func apply(light: String?, dark: String?) {
+        guard !isManagedBySettingsFile,
+              !isOpacityManagedBySettingsFile,
+              !isBlurManagedBySettingsFile,
+              !isFontManagedBySettingsFile else {
+            return
+        }
         do {
-            let mutation = try store.set(light: light, dark: dark)
+            let mutation = try store.clear()
             errorMessage = nil
             refresh()
             if mutation.didChange {
-                TerminalThemeStore.requestReload(
-                    targetBundleIdentifier: Bundle.main.bundleIdentifier
-                        ?? TerminalThemeStore.overrideBundleIdentifier
-                )
+                requestReload()
             }
         } catch {
-            let prefix = String(
-                localized: "settings.terminalTheme.changeFailed",
-                defaultValue: "Couldn’t change the terminal theme."
-            )
-            errorMessage = "\(prefix) \(error.localizedDescription)"
-            refreshSelectionAndOwnership()
+            reportError(error)
         }
     }
 
+    private func applyAppearance(_ mutate: (inout TerminalAppearanceOverrides) -> Void) {
+        // Base partial updates on the managed block only, not the full search-chain resolution
+        // `currentAppearance()` returns — otherwise a value the user only ever set in their own
+        // raw Ghostty config would get silently copied into Programa's managed block the moment
+        // any sibling field changes.
+        var overrides = store.managedRawAppearance()
+        mutate(&overrides)
+        do {
+            let mutation = try store.set(overrides)
+            errorMessage = nil
+            refresh()
+            if mutation.didChange {
+                requestReload()
+            }
+        } catch {
+            reportError(error)
+        }
+    }
+
+    private func requestReload() {
+        TerminalThemeStore.requestReload(
+            targetBundleIdentifier: Bundle.main.bundleIdentifier
+                ?? TerminalThemeStore.overrideBundleIdentifier
+        )
+    }
+
+    private func reportError(_ error: Error) {
+        let prefix = String(
+            localized: "settings.terminalTheme.changeFailed",
+            defaultValue: "Couldn’t change the terminal theme."
+        )
+        errorMessage = "\(prefix) \(error.localizedDescription)"
+        refreshSelectionAndOwnership()
+    }
+
     private func refresh() {
-        let current = store.currentSelection()
+        let current = store.currentAppearance()
         var names = GhosttyConfig.availableThemeNames()
-        for selectedName in [current.light, current.dark].compactMap({ $0 }) {
+        for selectedName in [current.themeLight, current.themeDark].compactMap({ $0 }) {
             if !names.contains(where: { $0.caseInsensitiveCompare(selectedName) == .orderedSame }) {
                 names.append(selectedName)
             }
         }
         themeNames = names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        opacity = current.backgroundOpacity ?? 1.0
+        blurEnabled = current.backgroundBlur ?? false
+        fontFamily = current.fontFamily ?? ""
+        fontSize = current.fontSize ?? 0
         refreshSelectionAndOwnership(current: current)
     }
 
     private func refreshSelectionAndOwnership(
-        current: TerminalThemeSelection? = nil
+        current: TerminalAppearanceOverrides? = nil
     ) {
-        let current = current ?? store.currentSelection()
-        let hasManagedOverride = store.managedRawThemeValue() != nil
-        lightTheme = hasManagedOverride ? current.light ?? "" : ""
-        darkTheme = hasManagedOverride ? current.dark ?? "" : ""
-        isManagedBySettingsFile = KeyboardShortcutSettings.settingsFileStore
-            .isTerminalThemeManagedByFile()
+        let current = current ?? store.currentAppearance()
+        let managedOverride = store.managedRawAppearance()
+        let hasManagedThemeOverride = managedOverride.themeLight != nil || managedOverride.themeDark != nil
+        lightTheme = hasManagedThemeOverride ? current.themeLight ?? "" : ""
+        darkTheme = hasManagedThemeOverride ? current.themeDark ?? "" : ""
+
+        let fileStore = KeyboardShortcutSettings.settingsFileStore
+        isManagedBySettingsFile = fileStore.isTerminalThemeManagedByFile()
+        isOpacityManagedBySettingsFile = fileStore.isTerminalOpacityManagedByFile()
+        isBlurManagedBySettingsFile = fileStore.isTerminalBlurManagedByFile()
+        isFontManagedBySettingsFile = fileStore.isTerminalFontManagedByFile()
     }
 }
 

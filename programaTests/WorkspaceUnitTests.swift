@@ -1302,6 +1302,171 @@ final class TerminalThemeSettingsTests: XCTestCase {
         XCTAssertEqual(reloadRequestCount, 2)
     }
 
+    func testAppearanceOverridesRoundTripAllFourDirectives() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configURL = directoryURL.appendingPathComponent("config.ghostty", isDirectory: false)
+        let store = TerminalThemeStore(
+            fileManager: .default,
+            managedConfigURL: configURL,
+            configSearchURLs: [configURL]
+        )
+
+        let overrides = TerminalAppearanceOverrides(
+            themeLight: "Cloud Light",
+            themeDark: "Midnight Dark",
+            backgroundOpacity: 0.85,
+            backgroundBlur: true,
+            fontFamily: "JetBrains Mono",
+            fontSize: 13
+        )
+        let mutation = try store.set(overrides)
+        XCTAssertTrue(mutation.didChange)
+
+        let readBack = store.currentAppearance()
+        XCTAssertEqual(readBack.themeLight, "Cloud Light")
+        XCTAssertEqual(readBack.themeDark, "Midnight Dark")
+        XCTAssertEqual(readBack.backgroundOpacity, 0.85)
+        XCTAssertEqual(readBack.backgroundBlur, true)
+        XCTAssertEqual(readBack.fontFamily, "JetBrains Mono")
+        XCTAssertEqual(readBack.fontSize, 13)
+
+        let managedContents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertTrue(managedContents.contains("theme = light:Cloud Light,dark:Midnight Dark"))
+        XCTAssertTrue(managedContents.contains("background-opacity = 0.85"))
+        XCTAssertTrue(managedContents.contains("background-blur = true"))
+        XCTAssertTrue(managedContents.contains("font-family = JetBrains Mono"))
+        XCTAssertTrue(managedContents.contains("font-size = 13.0"))
+    }
+
+    func testSurgicalSingleKeyWritePreservesOtherDirectives() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configURL = directoryURL.appendingPathComponent("config.ghostty", isDirectory: false)
+        let store = TerminalThemeStore(
+            fileManager: .default,
+            managedConfigURL: configURL,
+            configSearchURLs: [configURL]
+        )
+
+        _ = try store.set(TerminalAppearanceOverrides(themeLight: "Cloud Light", themeDark: "Midnight Dark"))
+        _ = try store.set(rawAppearanceValue: "0.7", forKey: "background-opacity")
+
+        let afterOpacity = store.currentAppearance()
+        XCTAssertEqual(afterOpacity.themeLight, "Cloud Light")
+        XCTAssertEqual(afterOpacity.themeDark, "Midnight Dark")
+        XCTAssertEqual(afterOpacity.backgroundOpacity, 0.7)
+
+        _ = try store.set(rawAppearanceValues: ["font-family": "Menlo", "font-size": "14"])
+
+        let afterFont = store.currentAppearance()
+        XCTAssertEqual(afterFont.themeLight, "Cloud Light", "setting font must not clobber theme")
+        XCTAssertEqual(afterFont.backgroundOpacity, 0.7, "setting font must not clobber opacity")
+        XCTAssertEqual(afterFont.fontFamily, "Menlo")
+        XCTAssertEqual(afterFont.fontSize, 14)
+
+        _ = try store.set(rawAppearanceValue: "", forKey: "background-opacity")
+        let afterClearingOpacity = store.currentAppearance()
+        XCTAssertNil(afterClearingOpacity.backgroundOpacity, "clearing one key must not clear the block")
+        XCTAssertEqual(afterClearingOpacity.themeLight, "Cloud Light")
+        XCTAssertEqual(afterClearingOpacity.fontFamily, "Menlo")
+    }
+
+    func testAllNilOverridesClearsTheManagedBlock() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let configURL = directoryURL.appendingPathComponent("config.ghostty", isDirectory: false)
+        try "font-size = 15\n".write(to: configURL, atomically: true, encoding: .utf8)
+        let store = TerminalThemeStore(
+            fileManager: .default,
+            managedConfigURL: configURL,
+            configSearchURLs: [configURL]
+        )
+
+        _ = try store.set(TerminalAppearanceOverrides(backgroundOpacity: 0.5, backgroundBlur: true))
+        XCTAssertNotNil(store.managedRawAppearance().backgroundOpacity)
+
+        let clearMutation = try store.set(TerminalAppearanceOverrides())
+        XCTAssertTrue(clearMutation.didChange)
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), "font-size = 15\n")
+        XCTAssertEqual(store.managedRawAppearance(), TerminalAppearanceOverrides())
+    }
+
+    func testPartialWriteBasedOnManagedBlockDoesNotCaptureValuesFromAnUnmanagedConfigFile() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        // A separate, user-owned config file earlier in the search chain — never written to by
+        // Programa — with its own theme and font that Programa doesn't manage.
+        let userConfigURL = directoryURL.appendingPathComponent("config", isDirectory: false)
+        try """
+        theme = light:UserTheme,dark:UserThemeDark
+        font-family = User Mono
+        """.write(to: userConfigURL, atomically: true, encoding: .utf8)
+
+        let managedConfigURL = directoryURL.appendingPathComponent("config.ghostty", isDirectory: false)
+        let store = TerminalThemeStore(
+            fileManager: .default,
+            managedConfigURL: managedConfigURL,
+            configSearchURLs: [userConfigURL, managedConfigURL]
+        )
+
+        // The effective, resolved state includes the user's own config...
+        let effective = store.currentAppearance()
+        XCTAssertEqual(effective.themeLight, "UserTheme")
+        XCTAssertEqual(effective.fontFamily, "User Mono")
+        // ...but nothing is Programa-managed yet.
+        XCTAssertEqual(store.managedRawAppearance(), TerminalAppearanceOverrides())
+
+        // Simulate the caller contract used by Settings/CLI: build the write from
+        // managedRawAppearance() (not currentAppearance()), touching only the one field.
+        var overrides = store.managedRawAppearance()
+        overrides.backgroundOpacity = 0.6
+        _ = try store.set(overrides)
+
+        let managedContents = try String(contentsOf: managedConfigURL, encoding: .utf8)
+        XCTAssertTrue(managedContents.contains("background-opacity = 0.6"))
+        XCTAssertFalse(managedContents.contains("theme ="), "the user's theme must not be captured into the managed block")
+        XCTAssertFalse(managedContents.contains("font-family ="), "the user's font must not be captured into the managed block")
+
+        // The user's own config is untouched and still resolves as before.
+        let effectiveAfter = store.currentAppearance()
+        XCTAssertEqual(effectiveAfter.themeLight, "UserTheme")
+        XCTAssertEqual(effectiveAfter.fontFamily, "User Mono")
+        XCTAssertEqual(effectiveAfter.backgroundOpacity, 0.6)
+        XCTAssertEqual(try String(contentsOf: userConfigURL, encoding: .utf8).contains("User Mono"), true)
+    }
+
+    func testExplicitBlurFalseIsDistinctFromInherit() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        // A raw Ghostty config earlier in the chain turns blur on.
+        let userConfigURL = directoryURL.appendingPathComponent("config", isDirectory: false)
+        try "background-blur = true\n".write(to: userConfigURL, atomically: true, encoding: .utf8)
+
+        let managedConfigURL = directoryURL.appendingPathComponent("config.ghostty", isDirectory: false)
+        let store = TerminalThemeStore(
+            fileManager: .default,
+            managedConfigURL: managedConfigURL,
+            configSearchURLs: [userConfigURL, managedConfigURL]
+        )
+
+        XCTAssertEqual(store.currentAppearance().backgroundBlur, true)
+
+        // Explicitly turning it off via Programa must write a real `false`, not omit the key —
+        // an omitted key would fall through to the user's `background-blur = true` above.
+        _ = try store.set(TerminalAppearanceOverrides(backgroundBlur: false))
+
+        let managedContents = try String(contentsOf: managedConfigURL, encoding: .utf8)
+        XCTAssertTrue(managedContents.contains("background-blur = false"))
+        XCTAssertEqual(store.managedRawAppearance().backgroundBlur, false)
+        XCTAssertEqual(store.currentAppearance().backgroundBlur, false)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

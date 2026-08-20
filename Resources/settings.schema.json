@@ -59,6 +59,46 @@
           "default": null,
           "description": "Terminal themes from Settings > Appearance. Use null, or null for both variants, to remove Programa's managed theme override and inherit Ghostty configuration."
         },
+        "terminalOpacity": {
+          "oneOf": [
+            { "type": "number", "minimum": 0, "maximum": 1 },
+            { "type": "null" }
+          ],
+          "default": null,
+          "description": "Terminal background opacity from Settings > Appearance. Use null to remove Programa's managed override and inherit Ghostty configuration."
+        },
+        "terminalBlur": {
+          "oneOf": [
+            { "type": "boolean" },
+            { "type": "null" }
+          ],
+          "default": null,
+          "description": "Terminal background blur from Settings > Appearance. Use null to remove Programa's managed override and inherit Ghostty configuration."
+        },
+        "terminalFont": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["family", "size"],
+              "properties": {
+                "family": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Terminal font family."
+                },
+                "size": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "description": "Terminal font size."
+                }
+              }
+            },
+            { "type": "null" }
+          ],
+          "default": null,
+          "description": "Terminal font from Settings > Appearance. Use null to remove Programa's managed override and inherit Ghostty configuration."
+        },
         "newWorkspacePlacement": {
           "type": "string",
           "enum": ["top", "afterCurrent", "end"],
