@@ -235,47 +235,57 @@ extension ProgramaCLI {
 
         switch subcommand {
         case "session-start", "active":
-            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
-                preferred: nil,
-                fallback: workspaceArg,
-                client: client
-            )
-            let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
-                preferred: nil,
-                fallback: surfaceArg,
-                workspaceId: workspaceId,
-                client: client
-            )
-            let claudePid: Int? = {
-                guard let raw = ProcessInfo.processInfo.environment["PROGRAMA_CLAUDE_PID"]?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                    let pid = Int(raw),
-                    pid > 0 else {
-                    return nil
-                }
-                return pid
-            }()
-            if let sessionId = parsedInput.sessionId {
-                try? sessionStore.upsert(
-                    sessionId: sessionId,
-                    workspaceId: workspaceId,
-                    surfaceId: surfaceId,
-                    cwd: parsedInput.cwd,
-                    pid: claudePid
+            // Wrapped in do/catch like "stop"/"idle": a Programa quit mid-session
+            // must not block the agent's next hook invocation on a dead socket.
+            do {
+                let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                    preferred: nil,
+                    fallback: workspaceArg,
+                    client: client
                 )
+                let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: nil,
+                    fallback: surfaceArg,
+                    workspaceId: workspaceId,
+                    client: client
+                )
+                let claudePid: Int? = {
+                    guard let raw = ProcessInfo.processInfo.environment["PROGRAMA_CLAUDE_PID"]?
+                        .trimmingCharacters(in: .whitespacesAndNewlines),
+                        let pid = Int(raw),
+                        pid > 0 else {
+                        return nil
+                    }
+                    return pid
+                }()
+                if let sessionId = parsedInput.sessionId {
+                    try? sessionStore.upsert(
+                        sessionId: sessionId,
+                        workspaceId: workspaceId,
+                        surfaceId: surfaceId,
+                        cwd: parsedInput.cwd,
+                        pid: claudePid
+                    )
+                }
+                // Register PID for stale-session detection and OSC suppression,
+                // but don't set a visible status. "Running" only appears when the
+                // user submits a prompt (UserPromptSubmit) or Claude starts working
+                // (PreToolUse).
+                if let claudePid {
+                    _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
+                        "workspace_id": workspaceId,
+                        "key": "claude_code",
+                        "pid": claudePid,
+                    ])
+                }
+                print("OK")
+            } catch {
+                if shouldIgnoreClaudeHookTeardownError(error) {
+                    print("OK")
+                    return
+                }
+                throw error
             }
-            // Register PID for stale-session detection and OSC suppression,
-            // but don't set a visible status. "Running" only appears when the
-            // user submits a prompt (UserPromptSubmit) or Claude starts working
-            // (PreToolUse).
-            if let claudePid {
-                _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
-                    "workspace_id": workspaceId,
-                    "key": "claude_code",
-                    "pid": claudePid,
-                ])
-            }
-            print("OK")
 
         case "stop", "idle":
             do {
@@ -338,28 +348,38 @@ extension ProgramaCLI {
             }
 
         case "prompt-submit":
-            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
-            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
-                preferred: mappedSession?.workspaceId,
-                fallback: workspaceArg,
-                client: client
-            )
-            let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
-                preferred: mappedSession?.surfaceId,
-                fallback: surfaceArg,
-                workspaceId: workspaceId,
-                client: client
-            )
-            _ = try client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
-            try setClaudeStatus(
-                client: client,
-                workspaceId: workspaceId,
-                value: "Running",
-                icon: "bolt.fill",
-                color: "#4C8DFF"
-            )
-            reportAgentState(client: client, workspaceId: workspaceId, surfaceId: surfaceId, state: .working)
-            print("OK")
+            // Wrapped in do/catch like "stop"/"idle": a Programa quit mid-session
+            // must not block the agent's next prompt on a dead socket.
+            do {
+                let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+                let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                    preferred: mappedSession?.workspaceId,
+                    fallback: workspaceArg,
+                    client: client
+                )
+                let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: mappedSession?.surfaceId,
+                    fallback: surfaceArg,
+                    workspaceId: workspaceId,
+                    client: client
+                )
+                _ = try client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
+                try setClaudeStatus(
+                    client: client,
+                    workspaceId: workspaceId,
+                    value: "Running",
+                    icon: "bolt.fill",
+                    color: "#4C8DFF"
+                )
+                reportAgentState(client: client, workspaceId: workspaceId, surfaceId: surfaceId, state: .working)
+                print("OK")
+            } catch {
+                if shouldIgnoreClaudeHookTeardownError(error) {
+                    print("OK")
+                    return
+                }
+                throw error
+            }
 
         case "notification", "notify":
             var summary = summarizeClaudeHookNotification(parsedInput: parsedInput)
@@ -701,6 +721,10 @@ extension ProgramaCLI {
         return trimmed
     }
 
+    // NOTE: despite the "Teardown" name, this is also reused by session-start/active
+    // and prompt-submit across all three agent hooks (claude/codex/opencode) to fail
+    // open on the same transport-failure fragments — a Programa quit mid-session must
+    // not block an agent's next hook invocation. Kept as-is (no rename) per scope.
     private func shouldIgnoreClaudeHookTeardownError(_ error: Error) -> Bool {
         let message = String(describing: error).lowercased()
         let benignFragments = [
@@ -2338,78 +2362,98 @@ extension ProgramaCLI {
 
         switch subcommand {
         case "session-start":
-            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
-                preferred: nil,
-                fallback: workspaceArg,
-                client: client
-            )
-            let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
-                preferred: nil,
-                fallback: surfaceArg,
-                workspaceId: workspaceId,
-                client: client
-            )
-            let agentPIDKey = codexAgentPIDKey(sessionId: parsedInput.sessionId)
-            let codexPid = inferredCodexAgentPID()
-            if let sessionId = parsedInput.sessionId {
-                try? sessionStore.upsert(
-                    sessionId: sessionId,
-                    workspaceId: workspaceId,
-                    surfaceId: surfaceId,
-                    cwd: parsedInput.cwd,
-                    pid: codexPid
+            // Wrapped in do/catch like "stop": a Programa quit mid-session must
+            // not block the agent's next hook invocation on a dead socket.
+            do {
+                let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                    preferred: nil,
+                    fallback: workspaceArg,
+                    client: client
                 )
+                let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: nil,
+                    fallback: surfaceArg,
+                    workspaceId: workspaceId,
+                    client: client
+                )
+                let agentPIDKey = codexAgentPIDKey(sessionId: parsedInput.sessionId)
+                let codexPid = inferredCodexAgentPID()
+                if let sessionId = parsedInput.sessionId {
+                    try? sessionStore.upsert(
+                        sessionId: sessionId,
+                        workspaceId: workspaceId,
+                        surfaceId: surfaceId,
+                        cwd: parsedInput.cwd,
+                        pid: codexPid
+                    )
+                }
+                if let codexPid {
+                    _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
+                        "workspace_id": workspaceId,
+                        "key": agentPIDKey,
+                        "pid": codexPid,
+                    ])
+                }
+                print("{}")
+            } catch {
+                if shouldIgnoreClaudeHookTeardownError(error) {
+                    print("{}")
+                    return
+                }
+                throw error
             }
-            if let codexPid {
-                _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
-                    "workspace_id": workspaceId,
-                    "key": agentPIDKey,
-                    "pid": codexPid,
-                ])
-            }
-            print("{}")
 
         case "prompt-submit":
-            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
-            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
-                preferred: mappedSession?.workspaceId,
-                fallback: workspaceArg,
-                client: client
-            )
-            let agentPIDKey = codexAgentPIDKey(sessionId: parsedInput.sessionId ?? mappedSession?.sessionId)
-            let codexPid = mappedSession?.pid ?? inferredCodexAgentPID()
-            if let sessionId = parsedInput.sessionId, let mappedSession {
-                try? sessionStore.upsert(
-                    sessionId: sessionId,
-                    workspaceId: workspaceId,
-                    surfaceId: mappedSession.surfaceId,
-                    cwd: parsedInput.cwd ?? mappedSession.cwd,
-                    pid: codexPid
+            // Wrapped in do/catch like "stop": a Programa quit mid-session must
+            // not block the agent's next prompt on a dead socket.
+            do {
+                let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+                let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                    preferred: mappedSession?.workspaceId,
+                    fallback: workspaceArg,
+                    client: client
                 )
+                let agentPIDKey = codexAgentPIDKey(sessionId: parsedInput.sessionId ?? mappedSession?.sessionId)
+                let codexPid = mappedSession?.pid ?? inferredCodexAgentPID()
+                if let sessionId = parsedInput.sessionId, let mappedSession {
+                    try? sessionStore.upsert(
+                        sessionId: sessionId,
+                        workspaceId: workspaceId,
+                        surfaceId: mappedSession.surfaceId,
+                        cwd: parsedInput.cwd ?? mappedSession.cwd,
+                        pid: codexPid
+                    )
+                }
+                if let codexPid {
+                    _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
+                        "workspace_id": workspaceId,
+                        "key": agentPIDKey,
+                        "pid": codexPid,
+                    ])
+                }
+                _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
+                try setCodexStatus(
+                    client: client,
+                    workspaceId: workspaceId,
+                    value: "Running",
+                    icon: "bolt.fill",
+                    color: "#4C8DFF"
+                )
+                let promptSubmitSurfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: mappedSession?.surfaceId,
+                    fallback: surfaceArg,
+                    workspaceId: workspaceId,
+                    client: client
+                )
+                reportAgentState(client: client, workspaceId: workspaceId, surfaceId: promptSubmitSurfaceId, state: .working)
+                print("{}")
+            } catch {
+                if shouldIgnoreClaudeHookTeardownError(error) {
+                    print("{}")
+                    return
+                }
+                throw error
             }
-            if let codexPid {
-                _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
-                    "workspace_id": workspaceId,
-                    "key": agentPIDKey,
-                    "pid": codexPid,
-                ])
-            }
-            _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
-            try setCodexStatus(
-                client: client,
-                workspaceId: workspaceId,
-                value: "Running",
-                icon: "bolt.fill",
-                color: "#4C8DFF"
-            )
-            let promptSubmitSurfaceId = try resolvePreferredSurfaceIdForClaudeHook(
-                preferred: mappedSession?.surfaceId,
-                fallback: surfaceArg,
-                workspaceId: workspaceId,
-                client: client
-            )
-            reportAgentState(client: client, workspaceId: workspaceId, surfaceId: promptSubmitSurfaceId, state: .working)
-            print("{}")
 
         case "stop":
             do {
@@ -2795,78 +2839,98 @@ extension ProgramaCLI {
 
         switch subcommand {
         case "session-start":
-            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
-                preferred: nil,
-                fallback: workspaceArg,
-                client: client
-            )
-            let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
-                preferred: nil,
-                fallback: surfaceArg,
-                workspaceId: workspaceId,
-                client: client
-            )
-            let agentPIDKey = opencodeAgentPIDKey(sessionId: parsedInput.sessionId)
-            let opencodePid = inferredCodexAgentPID()
-            if let sessionId = parsedInput.sessionId {
-                try? sessionStore.upsert(
-                    sessionId: sessionId,
-                    workspaceId: workspaceId,
-                    surfaceId: surfaceId,
-                    cwd: parsedInput.cwd,
-                    pid: opencodePid
+            // Wrapped in do/catch like "stop": a Programa quit mid-session must
+            // not block the agent's next hook invocation on a dead socket.
+            do {
+                let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                    preferred: nil,
+                    fallback: workspaceArg,
+                    client: client
                 )
+                let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: nil,
+                    fallback: surfaceArg,
+                    workspaceId: workspaceId,
+                    client: client
+                )
+                let agentPIDKey = opencodeAgentPIDKey(sessionId: parsedInput.sessionId)
+                let opencodePid = inferredCodexAgentPID()
+                if let sessionId = parsedInput.sessionId {
+                    try? sessionStore.upsert(
+                        sessionId: sessionId,
+                        workspaceId: workspaceId,
+                        surfaceId: surfaceId,
+                        cwd: parsedInput.cwd,
+                        pid: opencodePid
+                    )
+                }
+                if let opencodePid {
+                    _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
+                        "workspace_id": workspaceId,
+                        "key": agentPIDKey,
+                        "pid": opencodePid,
+                    ])
+                }
+                print("{}")
+            } catch {
+                if shouldIgnoreClaudeHookTeardownError(error) {
+                    print("{}")
+                    return
+                }
+                throw error
             }
-            if let opencodePid {
-                _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
-                    "workspace_id": workspaceId,
-                    "key": agentPIDKey,
-                    "pid": opencodePid,
-                ])
-            }
-            print("{}")
 
         case "prompt-submit":
-            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
-            let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
-                preferred: mappedSession?.workspaceId,
-                fallback: workspaceArg,
-                client: client
-            )
-            let agentPIDKey = opencodeAgentPIDKey(sessionId: parsedInput.sessionId ?? mappedSession?.sessionId)
-            let opencodePid = mappedSession?.pid ?? inferredCodexAgentPID()
-            if let sessionId = parsedInput.sessionId, let mappedSession {
-                try? sessionStore.upsert(
-                    sessionId: sessionId,
-                    workspaceId: workspaceId,
-                    surfaceId: mappedSession.surfaceId,
-                    cwd: parsedInput.cwd ?? mappedSession.cwd,
-                    pid: opencodePid
+            // Wrapped in do/catch like "stop": a Programa quit mid-session must
+            // not block the agent's next prompt on a dead socket.
+            do {
+                let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+                let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(
+                    preferred: mappedSession?.workspaceId,
+                    fallback: workspaceArg,
+                    client: client
                 )
+                let agentPIDKey = opencodeAgentPIDKey(sessionId: parsedInput.sessionId ?? mappedSession?.sessionId)
+                let opencodePid = mappedSession?.pid ?? inferredCodexAgentPID()
+                if let sessionId = parsedInput.sessionId, let mappedSession {
+                    try? sessionStore.upsert(
+                        sessionId: sessionId,
+                        workspaceId: workspaceId,
+                        surfaceId: mappedSession.surfaceId,
+                        cwd: parsedInput.cwd ?? mappedSession.cwd,
+                        pid: opencodePid
+                    )
+                }
+                if let opencodePid {
+                    _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
+                        "workspace_id": workspaceId,
+                        "key": agentPIDKey,
+                        "pid": opencodePid,
+                    ])
+                }
+                _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
+                try setOpenCodeStatus(
+                    client: client,
+                    workspaceId: workspaceId,
+                    value: "Running",
+                    icon: "bolt.fill",
+                    color: "#4C8DFF"
+                )
+                let promptSubmitSurfaceId = try resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: mappedSession?.surfaceId,
+                    fallback: surfaceArg,
+                    workspaceId: workspaceId,
+                    client: client
+                )
+                reportAgentState(client: client, workspaceId: workspaceId, surfaceId: promptSubmitSurfaceId, state: .working)
+                print("{}")
+            } catch {
+                if shouldIgnoreClaudeHookTeardownError(error) {
+                    print("{}")
+                    return
+                }
+                throw error
             }
-            if let opencodePid {
-                _ = try? client.sendV2(method: "workspace.set_agent_pid", params: [
-                    "workspace_id": workspaceId,
-                    "key": agentPIDKey,
-                    "pid": opencodePid,
-                ])
-            }
-            _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
-            try setOpenCodeStatus(
-                client: client,
-                workspaceId: workspaceId,
-                value: "Running",
-                icon: "bolt.fill",
-                color: "#4C8DFF"
-            )
-            let promptSubmitSurfaceId = try resolvePreferredSurfaceIdForClaudeHook(
-                preferred: mappedSession?.surfaceId,
-                fallback: surfaceArg,
-                workspaceId: workspaceId,
-                client: client
-            )
-            reportAgentState(client: client, workspaceId: workspaceId, surfaceId: promptSubmitSurfaceId, state: .working)
-            print("{}")
 
         case "stop":
             do {

@@ -1827,7 +1827,7 @@ struct ProgramaCLI {
                     do {
                         _ = try ctx.client.sendV2(method: "window.focus", params: ["window_id": target])
                         print("OK")
-                    } catch {
+                    } catch let error as CLIError where error.message.hasPrefix("not_found:") {
                         throw CLIError(message: "ERROR: Window not found")
                     }
                 }
@@ -1858,7 +1858,7 @@ struct ProgramaCLI {
                     do {
                         _ = try ctx.client.sendV2(method: "window.close", params: ["window_id": target])
                         print("OK")
-                    } catch {
+                    } catch let error as CLIError where error.message.hasPrefix("not_found:") {
                         throw CLIError(message: "ERROR: Window not found")
                     }
                 }
@@ -6090,7 +6090,10 @@ struct ProgramaCLI {
             }
             params["workspace_id"] = workspaceId
         }
-        if let cwdOpt { params["cwd"] = cwdOpt }
+        // Help text promises "cwd = --cwd (or the current directory)"; without an
+        // explicit fallback here, an omitted --cwd sent nothing and the app fell
+        // back to its own new-tab heuristic instead.
+        params["cwd"] = cwdOpt ?? FileManager.default.currentDirectoryPath
 
         let payload = try client.sendV2(method: "layout.apply", params: params)
         let workspaceHandle = formatHandle(payload, kind: "workspace", idFormat: idFormat) ?? "unknown"

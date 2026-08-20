@@ -17,6 +17,8 @@ final class SessionAutosaveCoordinator {
     private var sessionAutosaveTimer: DispatchSourceTimer?
     private var sessionAutosaveTickInFlight = false
     private var promptSaveScheduled = false
+    private var consecutiveDeclinedSaveRetries = 0
+    private static let maxConsecutiveDeclinedSaveRetries = 5
     private var sessionAutosaveDeferredRetryPending = false
     private var lastSessionAutosaveFingerprint: Data?
     private var lastSessionAutosavePersistedAt: Date = .distantPast
@@ -189,10 +191,26 @@ final class SessionAutosaveCoordinator {
 #if DEBUG
         let saveStart = ProcessInfo.processInfo.systemUptime
 #endif
-        _ = saveSnapshot(false, autosaveSnapshot)
+        let saved = saveSnapshot(false, autosaveSnapshot)
 #if DEBUG
         saveMs = (ProcessInfo.processInfo.systemUptime - saveStart) * 1000.0
 #endif
+        guard saved else {
+            // The save layer can decline (startup restore still in flight, empty
+            // snapshot). Recording the fingerprint anyway would suppress up to
+            // 60s of identical-content saves after a save that never happened,
+            // and a declined prompt save reopened the escrow shadow gap it was
+            // built to close (audit 2026-08-20, M3). Retry, bounded: the
+            // restore-in-flight decline clears within a few seconds, while a
+            // windowless app declines indefinitely and must not become a 1s
+            // polling loop — the periodic timer remains the steady cadence.
+            if consecutiveDeclinedSaveRetries < Self.maxConsecutiveDeclinedSaveRetries {
+                consecutiveDeclinedSaveRetries += 1
+                scheduleDeferredSessionAutosaveRetry(after: 1.0)
+            }
+            return
+        }
+        consecutiveDeclinedSaveRetries = 0
         updateSessionAutosaveSaveState(
             includeScrollback: false,
             persistedAt: now,

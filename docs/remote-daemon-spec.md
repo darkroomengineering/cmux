@@ -133,7 +133,7 @@ Recompute effective size on:
 | M-006 | Transport-scoped local proxy broker (SOCKS5 + CONNECT) | DONE | Identical SSH transports now reuse one local proxy endpoint |
 | M-007 | Remote proxy stream RPC in `programad-remote` | DONE | `proxy.open/close/write/proxy.stream.subscribe` plus pushed stream events implemented |
 | M-008 | WebView proxy auto-wiring for remote workspaces | DONE | Workspace-scoped `WKWebsiteDataStore.proxyConfigurations` wiring is active |
-| M-009 | PTY resize coordinator (`smallest screen wins`) | DONE | Daemon session RPC now tracks attachments and applies min cols/rows semantics with unit tests |
+| M-009 | PTY resize coordinator (`smallest screen wins`) | DAEMON-ONLY | Daemon session RPC tracks attachments and applies min cols/rows semantics with unit tests — but the app never calls `session.*` yet (audit 2026-08-20, M10); integration is deferred to the detached-sessions plan (`docs/plans/detached-sessions.md`) |
 | M-010 | Resize + proxy reconnect e2e test suites | DONE | `tests_v2/test_ssh_remote_docker_forwarding.py` validates HTTP/websocket egress plus SOCKS pipelined-payload handling; `tests_v2/test_ssh_remote_docker_reconnect.py` verifies reconnect recovery and repeats SOCKS pipelined-payload checks after host restart; `tests_v2/test_ssh_remote_proxy_bind_conflict.py` validates structured `proxy_unavailable` bind-conflict surfacing and `local_proxy_port` status retention under bind conflict; `tests_v2/test_ssh_remote_daemon_resize_stdio.py` validates session resize semantics over real stdio RPC process boundaries; `tests_v2/test_ssh_remote_cli_metadata.py` validates `workspace.remote.configure` numeric-string compatibility, explicit `null` clear semantics (including `workspace.remote.status` reflection), strict `port`/`local_proxy_port` validation (bounds/type), case-insensitive SSH option override precedence for StrictHostKeyChecking/control-socket keys, and `local_proxy_port` payload echo for deterministic bind-conflict test hook behavior |
 
 ## 7. Acceptance Test Matrix (With Status)
@@ -174,13 +174,17 @@ Recompute effective size on:
 
 ### 7.4 Resize
 
+Daemon-side semantics only: these scenarios are proven by daemon unit tests and the stdio RPC
+test, but no app code calls `session.*` yet — real `programa ssh` terminals do NOT get this
+behavior today (audit 2026-08-20, M10). App integration lands with the detached-sessions plan.
+
 | ID | Scenario | Status |
 |---|---|---|
-| RZ-001 | two attachments, smallest wins | DONE |
-| RZ-002 | grow one attachment, PTY stays bounded by smallest | DONE |
-| RZ-003 | detach smallest, PTY expands to next smallest | DONE |
-| RZ-004 | reconnect preserves session + applies recomputed size | DONE |
-| RZ-005 | daemon stdio RPC round-trip enforces resize semantics end-to-end | DONE |
+| RZ-001 | two attachments, smallest wins | DAEMON-ONLY |
+| RZ-002 | grow one attachment, PTY stays bounded by smallest | DAEMON-ONLY |
+| RZ-003 | detach smallest, PTY expands to next smallest | DAEMON-ONLY |
+| RZ-004 | reconnect preserves session + applies recomputed size | DAEMON-ONLY |
+| RZ-005 | daemon stdio RPC round-trip enforces resize semantics end-to-end | DAEMON-ONLY |
 
 ## 8. Removal Checklist (Port Mirroring)
 

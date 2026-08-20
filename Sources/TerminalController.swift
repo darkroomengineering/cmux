@@ -1485,6 +1485,10 @@ class TerminalController {
             }
         }
 
+        // Caps the unterminated (no-newline-yet) line buffer so a client that never sends a
+        // newline can't grow `pending` without bound.
+        let maxPendingLineBytes = 8 * 1024 * 1024
+
         var buffer = [UInt8](repeating: 0, count: 4096)
         var pending = ""
         var authenticated = false
@@ -1502,6 +1506,13 @@ class TerminalController {
 
             let chunk = String(bytes: buffer[0..<bytesRead], encoding: .utf8) ?? ""
             pending.append(chunk)
+
+            if pending.utf8.count > maxPendingLineBytes {
+                dilog("socket.conn", "pending line buffer exceeded \(maxPendingLineBytes) bytes; closing")
+                connection.writeLine("{\"ok\":false,\"error\":{\"code\":\"payload_too_large\"}}")
+                closeReason = "payload_too_large"
+                break
+            }
 
             while let newlineIndex = pending.firstIndex(of: "\n") {
                 let line = String(pending[..<newlineIndex])
@@ -2454,7 +2465,7 @@ class TerminalController {
                 return tm
             }
         }
-        return tabManager
+        return v2MainSync { self.tabManager }
     }
 
     func v2ResolveWindowId(tabManager: TabManager?) -> UUID? {
