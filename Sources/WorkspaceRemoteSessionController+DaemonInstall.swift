@@ -34,7 +34,7 @@ extension WorkspaceRemoteSessionController {
         debugLog("remote.bootstrap.binaryExists remotePath=\(remotePath) exists=\(hadExistingBinary ? 1 : 0)")
         if forceExplicitOverrideInstall || !hadExistingBinary {
             let localBinary = try buildLocalDaemonBinary(goOS: platform.goOS, goArch: platform.goArch, version: version)
-            try uploadRemoteDaemonBinaryLocked(localBinary: localBinary, remotePath: remotePath)
+            try uploadRemoteDaemonBinaryLocked(localBinary: localBinary, remotePath: remotePath, currentVersion: version)
         }
 
         var hello: DaemonHello
@@ -49,13 +49,13 @@ extension WorkspaceRemoteSessionController {
                 "detail=\(error.localizedDescription)"
             )
             let localBinary = try buildLocalDaemonBinary(goOS: platform.goOS, goArch: platform.goArch, version: version)
-            try uploadRemoteDaemonBinaryLocked(localBinary: localBinary, remotePath: remotePath)
+            try uploadRemoteDaemonBinaryLocked(localBinary: localBinary, remotePath: remotePath, currentVersion: version)
             hello = try helloRemoteDaemonLocked(remotePath: remotePath)
         }
         if hadExistingBinary, !hello.capabilities.contains(WorkspaceRemoteDaemonRPCClient.requiredProxyStreamCapability) {
             debugLog("remote.bootstrap.capabilityMissing remotePath=\(remotePath) capabilities=\(hello.capabilities.joined(separator: ","))")
             let localBinary = try buildLocalDaemonBinary(goOS: platform.goOS, goArch: platform.goArch, version: version)
-            try uploadRemoteDaemonBinaryLocked(localBinary: localBinary, remotePath: remotePath)
+            try uploadRemoteDaemonBinaryLocked(localBinary: localBinary, remotePath: remotePath, currentVersion: version)
             hello = try helloRemoteDaemonLocked(remotePath: remotePath)
         }
 
@@ -454,7 +454,7 @@ extension WorkspaceRemoteSessionController {
         return output
     }
 
-    func uploadRemoteDaemonBinaryLocked(localBinary: URL, remotePath: String) throws {
+    func uploadRemoteDaemonBinaryLocked(localBinary: URL, remotePath: String, currentVersion: String) throws {
         let remoteDirectory = (remotePath as NSString).deletingLastPathComponent
         let remoteTempPath = "\(remotePath).tmp-\(UUID().uuidString.prefix(8))"
         debugLog(
@@ -484,9 +484,22 @@ extension WorkspaceRemoteSessionController {
             ])
         }
 
+        // Prune runs only once chmod+mv have confirmed the current version's
+        // binary is in place, and its own failure must never fail the install:
+        // it is wrapped in a subshell with `|| true`, which is also the last
+        // command in the `then` branch, so a successful install always exits 0
+        // regardless of what pruning does. A failed chmod/mv skips pruning
+        // entirely and exits 1 via the `else` branch, so a prune bug can never
+        // be mistaken for (or mask) an install failure.
         let finalizeScript = """
-        chmod 755 \(RemoteSSHConnectionPolicy.shellSingleQuoted(remoteTempPath)) && \
-        mv \(RemoteSSHConnectionPolicy.shellSingleQuoted(remoteTempPath)) \(RemoteSSHConnectionPolicy.shellSingleQuoted(remotePath))
+        if chmod 755 \(RemoteSSHConnectionPolicy.shellSingleQuoted(remoteTempPath)) && \
+        mv \(RemoteSSHConnectionPolicy.shellSingleQuoted(remoteTempPath)) \(RemoteSSHConnectionPolicy.shellSingleQuoted(remotePath)); then
+          (
+        \(Self.remoteDaemonPruneStaleVersionsScript(currentVersion: currentVersion))
+          ) || true
+        else
+          exit 1
+        fi
         """
         let finalizeCommand = "sh -c \(RemoteSSHConnectionPolicy.shellSingleQuoted(finalizeScript))"
         let finalizeResult = try sshExec(arguments: sshCommonArguments(batchMode: true) + [configuration.destination, finalizeCommand], timeout: 12)

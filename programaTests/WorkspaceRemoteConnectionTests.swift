@@ -203,6 +203,90 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         XCTAssertFalse(fileManager.fileExists(atPath: ttyURL.path))
     }
 
+    func testRemoteDaemonPruneStaleVersionsScriptKeepsCurrentAndNewestOtherByMtime() throws {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory.appendingPathComponent("cmux-daemon-prune-\(UUID().uuidString)")
+        let daemonBase = home.appendingPathComponent(".programa/bin/programad-remote")
+        defer { try? fileManager.removeItem(at: home) }
+
+        let currentVersion = "0.4.213"
+        // "0.4.100" is deliberately the most-recently-used "other" version by mtime
+        // while being lexically *smaller* than "0.4.99" -- this proves retention is
+        // decided by directory mtime, not by comparing version strings, since patch
+        // is a CI run number (0.4.9 vs 0.4.100 sorts backwards lexically).
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let mtimeOffsetByVersion: [String: TimeInterval] = [
+            "0.4.9": 100,
+            "0.4.99": 200,
+            "0.4.100": 300,
+            currentVersion: 400,
+        ]
+
+        var versionDirectories: [String: URL] = [:]
+        for (version, offset) in mtimeOffsetByVersion {
+            let platformDir = daemonBase.appendingPathComponent(version).appendingPathComponent("darwin-arm64")
+            try fileManager.createDirectory(at: platformDir, withIntermediateDirectories: true)
+            try "binary".write(to: platformDir.appendingPathComponent("programad-remote"), atomically: true, encoding: .utf8)
+            let versionDir = daemonBase.appendingPathComponent(version)
+            try fileManager.setAttributes(
+                [.modificationDate: baseDate.addingTimeInterval(offset)],
+                ofItemAtPath: versionDir.path
+            )
+            versionDirectories[version] = versionDir
+        }
+
+        // Sibling outside programad-remote/ that must never be touched, even though
+        // it shares the parent "bin" directory the prune script also lives under.
+        let decoySibling = home.appendingPathComponent(".programa/bin/decoy-outside-programad-remote")
+        try fileManager.createDirectory(at: decoySibling, withIntermediateDirectories: true)
+
+        let script = WorkspaceRemoteSessionController.remoteDaemonPruneStaleVersionsScript(currentVersion: currentVersion)
+
+        // Generated-artifact assertion: the script is the runtime behavior here, so
+        // assert the deletion is anchored to the literal expanded base directory and
+        // that no unanchored `rm -rf` on the base (or anything broader) exists.
+        XCTAssertTrue(script.contains(#"case "$programa_version_dir" in"#))
+        XCTAssertTrue(script.contains(#""$programa_daemon_base"/*)"#))
+        XCTAssertFalse(script.contains("rm -rf \"$programa_daemon_base\""))
+        XCTAssertFalse(script.contains("rm -rf -- \"$programa_daemon_base\"\n"))
+
+        let result = runProcess(
+            executablePath: "/usr/bin/env",
+            arguments: [
+                "HOME=\(home.path)",
+                "/bin/sh",
+                "-c",
+                script,
+            ],
+            // See timeout comment in runRelayZshHistfile above.
+            timeout: 90
+        )
+
+        XCTAssertFalse(result.timedOut, result.stderr)
+        XCTAssertEqual(result.status, 0, result.stderr)
+
+        XCTAssertTrue(
+            fileManager.fileExists(atPath: try XCTUnwrap(versionDirectories[currentVersion]).path),
+            "current version directory must survive"
+        )
+        XCTAssertTrue(
+            fileManager.fileExists(atPath: try XCTUnwrap(versionDirectories["0.4.100"]).path),
+            "most-recently-used other version directory must survive"
+        )
+        XCTAssertFalse(
+            fileManager.fileExists(atPath: try XCTUnwrap(versionDirectories["0.4.99"]).path),
+            "stale version directory must be pruned"
+        )
+        XCTAssertFalse(
+            fileManager.fileExists(atPath: try XCTUnwrap(versionDirectories["0.4.9"]).path),
+            "stale version directory must be pruned"
+        )
+        XCTAssertTrue(
+            fileManager.fileExists(atPath: decoySibling.path),
+            "prune must never touch anything outside programad-remote/"
+        )
+    }
+
     func testRelayZshBootstrapUsesRealHomeHistoryByDefault() throws {
         let histfile = try runRelayZshHistfile { home in
             try ":\n".write(to: home.appendingPathComponent(".zshenv"), atomically: true, encoding: .utf8)
