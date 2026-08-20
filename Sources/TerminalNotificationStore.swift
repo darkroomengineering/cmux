@@ -584,8 +584,8 @@ final class TerminalNotificationStore: ObservableObject {
 
     /// App-level (not tab-scoped) system notification — crash-recovery notice and
     /// similar app-lifecycle events. Uses the same authorization flow as terminal
-    /// notifications but carries no tab routing: the response handler's tabId guard
-    /// makes activation a plain app-activate, never a tab jump.
+    /// notifications but carries no tab routing: the response handler's no-tabId
+    /// branch activates the app explicitly and never jumps to a tab.
     func postAppNotification(title: String, body: String) {
         ensureAuthorization(origin: .notificationDelivery) { [weak self] authorized in
             guard let self, authorized else { return }

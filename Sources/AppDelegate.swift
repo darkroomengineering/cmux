@@ -1602,6 +1602,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
     func persistSessionForUpdateRelaunch() {
         isTerminatingApp = true
+        // The user already consented to this termination by choosing to install
+        // the update — without this, applicationShouldTerminate shows the modal
+        // "Quit Programa?" warning in the middle of the update relaunch for
+        // default-config users, and if Sparkle force-kills past its timeout the
+        // stale cleanShutdown=false snapshot fires the crash-recovery notice as
+        // a false positive on the next launch (audit 2026-08-20, H4).
+        isQuitWarningConfirmed = true
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
     }
 
@@ -8683,6 +8690,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     private func handleNotificationResponse(_ response: UNNotificationResponse) {
         guard let tabIdString = response.notification.request.content.userInfo["tabId"] as? String,
               let tabId = UUID(uuidString: tabIdString) else {
+            // App-level notification (crash-recovery notice, no tab routing):
+            // bring the app forward explicitly. macOS activates on a default
+            // click, but a bare return here left action-button clicks and
+            // already-active-but-windowless states doing nothing (audit
+            // 2026-08-20, M1).
+            NSApp.activate(ignoringOtherApps: true)
             return
         }
         let surfaceId: UUID? = {
