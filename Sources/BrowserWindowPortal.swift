@@ -514,50 +514,6 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
         }) ?? reference
     }
 
-    private func directTransferChild(of container: NSView, containing descendant: NSView) -> NSView? {
-        var current: NSView? = descendant
-        var directChild: NSView?
-        while let view = current, view !== container {
-            directChild = view
-            current = view.superview
-        }
-        guard current === container else { return nil }
-        return directChild
-    }
-
-    private func relatedWebKitTransferSubviews(
-        from sourceSuperview: NSView,
-        primaryWebView: WKWebView
-    ) -> [NSView] {
-        var relatedSubviews: [NSView] = []
-        var seen = Set<ObjectIdentifier>()
-
-        func append(_ candidate: NSView?) {
-            guard let candidate, candidate !== sourceSuperview else { return }
-            let id = ObjectIdentifier(candidate)
-            guard seen.insert(id).inserted else { return }
-            relatedSubviews.append(candidate)
-        }
-
-        append(directTransferChild(of: sourceSuperview, containing: primaryWebView) ?? primaryWebView)
-
-        if let inspectorFrontend = primaryWebView.programaInspectorFrontendWebView() {
-            append(directTransferChild(of: sourceSuperview, containing: inspectorFrontend) ?? inspectorFrontend)
-        }
-
-        for view in sourceSuperview.subviews {
-            if view === primaryWebView { continue }
-            let className = String(describing: type(of: view))
-            guard className.contains("WK") else { continue }
-            if InspectorDock.isInspectorView(view) && !InspectorDock.isVisibleCandidate(view) {
-                continue
-            }
-            append(view)
-        }
-
-        return relatedSubviews
-    }
-
     private func appendHostedWebKitSubviews(
         in root: NSView,
         to result: inout [WKWebView],
@@ -826,46 +782,6 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
         }
     }
 
-    private func moveWebKitRelatedSubviewsIfNeeded(
-        from sourceSuperview: NSView,
-        to containerView: WindowBrowserSlotView,
-        primaryWebView: WKWebView,
-        reason: String
-    ) {
-        guard sourceSuperview !== containerView else { return }
-        // When Web Inspector is docked, WebKit can inject companion WK* subviews
-        // next to the primary WKWebView. Move those with the web view so inspector
-        // UI state does not get orphaned in the old host during split churn.
-        let relatedSubviews = relatedWebKitTransferSubviews(
-            from: sourceSuperview,
-            primaryWebView: primaryWebView
-        )
-        guard !relatedSubviews.isEmpty else { return }
-#if DEBUG
-        dlog(
-            "browser.portal.reparent.batch reason=\(reason) source=\(browserPortalDebugToken(sourceSuperview)) " +
-            "container=\(browserPortalDebugToken(containerView)) count=\(relatedSubviews.count) " +
-            "sourceType=\(String(describing: type(of: sourceSuperview))) targetType=\(String(describing: type(of: containerView))) " +
-            "sourceFlipped=\(sourceSuperview.isFlipped ? 1 : 0) targetFlipped=\(containerView.isFlipped ? 1 : 0) " +
-            "sourceBounds=\(browserPortalDebugFrame(sourceSuperview.bounds)) targetBounds=\(browserPortalDebugFrame(containerView.bounds))"
-        )
-#endif
-        for view in relatedSubviews {
-            let frameInWindow = sourceSuperview.convert(view.frame, to: nil)
-            let className = String(describing: type(of: view))
-            view.removeFromSuperview()
-            containerView.addSubview(view, positioned: .above, relativeTo: nil)
-            let convertedFrame = containerView.convert(frameInWindow, from: nil)
-            view.frame = convertedFrame
-#if DEBUG
-            dlog(
-                "browser.portal.reparent.batch.item reason=\(reason) class=\(className) " +
-                "view=\(browserPortalDebugToken(view)) frameInWindow=\(browserPortalDebugFrame(frameInWindow)) " +
-                "converted=\(browserPortalDebugFrame(convertedFrame))"
-            )
-#endif
-        }
-    }
 
     func detachWebView(withId webViewId: ObjectIdentifier) {
         cancelPendingHostedWebViewRefreshes(for: webViewId)
@@ -1138,12 +1054,22 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
             )
 #endif
             if let sourceSuperview = webView.superview {
-                moveWebKitRelatedSubviewsIfNeeded(
+                // When Web Inspector is docked, WebKit can inject companion WK*
+                // subviews next to the primary WKWebView. Move those with the web
+                // view so inspector UI state does not get orphaned in the old
+                // host during split churn. Shared with WebViewRepresentable's
+                // local-inline reparenting; see WebKitSubviewTransfer's doc
+                // comment for the unified fast-path/window-relative contract.
+                WebKitSubviewTransfer.move(
                     from: sourceSuperview,
                     to: containerView,
                     primaryWebView: webView,
                     reason: "bind.attachContainer"
-                )
+                ) { message in
+#if DEBUG
+                    dlog(message)
+#endif
+                }
             } else {
                 containerView.addSubview(webView, positioned: .above, relativeTo: nil)
             }
@@ -1459,12 +1385,18 @@ final class WindowBrowserPortal: HostedViewPortalRegistry {
             )
 #endif
             if let sourceSuperview = webView.superview {
-                moveWebKitRelatedSubviewsIfNeeded(
+                // See WebKitSubviewTransfer's doc comment for the unified
+                // fast-path/window-relative reparenting contract.
+                WebKitSubviewTransfer.move(
                     from: sourceSuperview,
                     to: containerView,
                     primaryWebView: webView,
                     reason: "sync.attachContainer"
-                )
+                ) { message in
+#if DEBUG
+                    dlog(message)
+#endif
+                }
             } else {
                 containerView.addSubview(webView, positioned: .above, relativeTo: nil)
             }
