@@ -28,6 +28,7 @@ Every shortcut is editable in `Settings → Keyboard Shortcuts` and in `~/.confi
 | ⌃ ⇧ Tab | Previous surface |
 | ⌃ 1–8 | Jump to surface 1–8 |
 | ⌃ 9 | Jump to last surface |
+| ⌘ ⇧ T | Reopen closed panel |
 | ⌘ W | Close surface |
 
 ## Split panes
