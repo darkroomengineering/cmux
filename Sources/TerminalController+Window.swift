@@ -26,16 +26,27 @@ extension TerminalController {
     }
 
     func v2WindowCurrent(params _: [String: Any]) -> V2CallResult {
-        guard let tabManager else {
+        enum Resolution {
+            case unavailable
+            case notFound
+            case found(UUID)
+        }
+        let resolution: Resolution = v2MainSync {
+            guard let tabManager = self.tabManager else { return .unavailable }
+            guard let windowId = self.v2ResolveWindowId(tabManager: tabManager) else { return .notFound }
+            return .found(windowId)
+        }
+        switch resolution {
+        case .unavailable:
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-        guard let windowId = v2ResolveWindowId(tabManager: tabManager) else {
+        case .notFound:
             return .err(code: "not_found", message: "Current window not found", data: nil)
+        case .found(let windowId):
+            return .ok([
+                "window_id": windowId.uuidString,
+                "window_ref": v2Ref(kind: .window, uuid: windowId)
+            ])
         }
-        return .ok([
-            "window_id": windowId.uuidString,
-            "window_ref": v2Ref(kind: .window, uuid: windowId)
-        ])
     }
 
     func v2WindowFocus(params: [String: Any]) -> V2CallResult {
@@ -59,8 +70,10 @@ extension TerminalController {
             return .err(code: "internal_error", message: "Failed to create window", data: nil)
         }
         // The new window should become key, but setActiveTabManager defensively.
-        if let tm = v2MainSync({ AppDelegate.shared?.tabManagerFor(windowId: windowId) }) {
-            setActiveTabManager(tm)
+        v2MainSync {
+            if let tm = AppDelegate.shared?.tabManagerFor(windowId: windowId) {
+                self.setActiveTabManager(tm)
+            }
         }
         return .ok([
             "window_id": windowId.uuidString,

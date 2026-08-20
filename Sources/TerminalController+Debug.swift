@@ -669,7 +669,7 @@ extension TerminalController {
     }
 
     private func readTerminalTextBase64(surfaceArg: String, includeScrollback: Bool = false, lineLimit: Int? = nil) -> String {
-        guard let tabManager = tabManager else { return "ERROR: TabManager not available" }
+        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
 
         let trimmedSurfaceArg = surfaceArg.trimmingCharacters(in: .whitespacesAndNewlines)
         var result = "ERROR: No tab selected"
@@ -984,7 +984,7 @@ extension TerminalController {
     }
 
     private func isTerminalFocused(_ args: String) -> String {
-        guard let tabManager = tabManager else { return "ERROR: TabManager not available" }
+        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
 
         let panelArg = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !panelArg.isEmpty else { return "ERROR: Usage: is_terminal_focused <panel_id|idx>" }
@@ -1031,7 +1031,7 @@ extension TerminalController {
     }
 
     private func renderStats(_ args: String) -> String {
-        guard let tabManager = tabManager else { return "ERROR: TabManager not available" }
+        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
 
         let panelArg = args.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -1253,7 +1253,7 @@ extension TerminalController {
 
 #if DEBUG
     private func focusFromNotification(_ args: String) -> String {
-        guard let tabManager else { return "ERROR: TabManager not available" }
+        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
         let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = trimmed.split(separator: " ", maxSplits: 1).map(String.init)
         let tabArg = parts.first ?? ""
@@ -1278,7 +1278,7 @@ extension TerminalController {
     }
 
     private func flashCount(_ args: String) -> String {
-        guard let tabManager else { return "ERROR: TabManager not available" }
+        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
         let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "ERROR: Missing surface id or index" }
 
@@ -1320,7 +1320,7 @@ extension TerminalController {
     private static var panelSnapshots: [UUID: PanelSnapshotState] = [:]
 
     private func panelSnapshotReset(_ args: String) -> String {
-        guard let tabManager else { return "ERROR: TabManager not available" }
+        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
         let panelArg = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !panelArg.isEmpty else { return "ERROR: Usage: panel_snapshot_reset <panel_id|idx>" }
 
@@ -1410,7 +1410,7 @@ extension TerminalController {
     }
 
     private func panelSnapshot(_ args: String) -> String {
-        guard let tabManager = tabManager else { return "ERROR: TabManager not available" }
+        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
         let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "ERROR: Usage: panel_snapshot <panel_id|idx> [label]" }
 
@@ -1520,7 +1520,7 @@ extension TerminalController {
     }
 
     private func layoutDebug() -> String {
-        guard let tabManager else { return "ERROR: TabManager not available" }
+        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
 
         var result = "ERROR: No tab selected"
         DispatchQueue.main.sync {

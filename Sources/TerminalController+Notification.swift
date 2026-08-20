@@ -153,12 +153,12 @@ extension TerminalController {
     /// to that workspace's notifications only; without one, clears all notifications globally.
     func v2NotificationClear(params: [String: Any]) -> V2CallResult {
         if let workspaceId = v2UUID(params, "workspace_id") {
-            DispatchQueue.main.async {
+            v2MainSync {
                 TerminalNotificationStore.shared.clearNotifications(forTabId: workspaceId)
             }
             return .ok(["workspace_id": workspaceId.uuidString, "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId)])
         }
-        DispatchQueue.main.async {
+        v2MainSync {
             TerminalNotificationStore.shared.clearAll()
         }
         return .ok([:])
