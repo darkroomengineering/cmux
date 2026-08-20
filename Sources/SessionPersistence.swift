@@ -699,7 +699,16 @@ enum SessionFreshSpawnScrollbackSeed {
     static func preparedText(for scrollback: String?) -> String? {
         guard let scrollback else { return nil }
         guard scrollback.contains(where: { !$0.isWhitespace }) else { return nil }
-        guard let truncated = SessionPersistencePolicy.truncatedScrollback(scrollback) else { return nil }
+        // The WAL byte stream can begin mid-escape-sequence: log rotation and
+        // ring overruns cut at byte boundaries, not sequence boundaries. When
+        // the surviving tail lost its ESC[ prefix, the parameter remainder
+        // ("38;5;114m") is plain text to every sanitizer below and renders
+        // literally at the head of the replay (2026-08-20 update-reset report).
+        // `truncatedScrollback`'s ANSI-safe start only guards its OWN cut, and
+        // only runs at all when the text exceeds the length cap — so the head
+        // must be repaired before anything else.
+        let headRepaired = strippedOrphanedSequenceHead(scrollback)
+        guard let truncated = SessionPersistencePolicy.truncatedScrollback(headRepaired) else { return nil }
         let sanitized = positioningSanitizedText(truncated)
         // Captured on the PRE-sanitization text, not the sanitized result:
         // `positioningSanitizedText` strips every DEC private mode sequence
@@ -709,6 +718,36 @@ enum SessionFreshSpawnScrollbackSeed {
         // doc comment for why the mode reset must fire independently of
         // what survives sanitization.
         return ansiSafeReplayText(sanitized, forceModeReset: truncated.contains(ansiEscape))
+    }
+
+    /// Drops an orphaned CSI parameter tail from the very start of replay
+    /// text: CSI parameter/intermediate bytes (0x30-0x3F) followed by a final
+    /// byte (0x40-0x7E), with no preceding ESC. To keep false positives out of
+    /// legitimate prose ("1m 30s", "42x42 grid"), the fragment must contain at
+    /// least one `;` or `?` — real-world orphans are multi-parameter SGR/mode
+    /// sequences. A surviving single-parameter orphan renders as a couple of
+    /// literal characters, which is tolerable; a stripped legitimate line is
+    /// not. Bounded scan: parameter fragments are short.
+    static func strippedOrphanedSequenceHead(_ text: String) -> String {
+        var index = text.startIndex
+        var sawSeparator = false
+        var sawParameterByte = false
+        var steps = 0
+        while index < text.endIndex, steps < 64 {
+            guard let scalar = text[index].unicodeScalars.first?.value else { break }
+            if (0x30...0x3F).contains(scalar) {
+                sawParameterByte = true
+                if scalar == 0x3B || scalar == 0x3F { sawSeparator = true }
+                index = text.index(after: index)
+                steps += 1
+                continue
+            }
+            if (0x40...0x7E).contains(scalar), sawParameterByte, sawSeparator {
+                return String(text[text.index(after: index)...])
+            }
+            break
+        }
+        return text
     }
 
     /// Neutralizes width-dependent cursor-positioning escapes before replay.

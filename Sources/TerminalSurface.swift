@@ -408,6 +408,18 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // Surface is created when attached to a view
         hostedView.attachSurface(self)
         TerminalSurfaceRegistry.shared.register(self)
+
+        // Deferred-realization revival fix (2026-08-20): a revived panel restored
+        // into a hidden tab may never create its runtime surface this launch, so
+        // the normal re-escrow trigger (resolveSessionWALIdentity, run from
+        // createSurface) may never fire. Until it does, the retrieved master fd
+        // exists ONLY in this process — the next quit or crash closes it and
+        // SIGHUPs the child, which is the "every tab except the active one gets
+        // reset on update" report. Hand the fd to the escrow holder immediately
+        // instead of waiting for the tab to be shown.
+        if let descriptor = reviveDescriptor, !SessionMachineryGate.isUnitTesting {
+            escrowRevivedDescriptorImmediately(descriptor)
+        }
     }
 
 
@@ -1826,6 +1838,43 @@ final class TerminalSurface: Identifiable, ObservableObject {
         guard let tokenHex = escrowTokenHex else { return }
         escrowTokenHex = nil
         SessionEscrowClient.shared.release(surfaceId: id.uuidString, tokenHex: tokenHex)
+    }
+
+    /// Escrows a revive descriptor's master fd at panel construction, before any
+    /// runtime surface exists. Sets `hasAttemptedSessionEscrow` first so the
+    /// identity retry loop (`resolveSessionWALIdentity`, run at realization)
+    /// keeps its one-shot discipline and never double-escrows the same surface.
+    /// The escrow facts land via `SessionWALStore.stampDeferredReviveEscrow`,
+    /// which is safe to call before the WAL writer's full registration.
+    private func escrowRevivedDescriptorImmediately(_ descriptor: TerminalSurfaceReviveDescriptor) {
+        guard !hasAttemptedSessionEscrow else { return }
+        hasAttemptedSessionEscrow = true
+        guard let childPID = Int32(exactly: descriptor.childPID) else { return }
+        let dupedFD = dup(descriptor.masterFD)
+        guard dupedFD >= 0 else { return }
+        let surfaceId = id.uuidString
+        let walWorkingDirectory = workingDirectory
+        SessionEscrowClient.shared.escrow(
+            surfaceId: surfaceId,
+            dupedMasterFD: dupedFD,
+            childPID: childPID
+        ) { [weak self] result in
+            guard let result else {
+                dilog("escrow.reattach", "early_reescrow session=\(surfaceId.prefix(8)) outcome=failed")
+                return
+            }
+            dilog("escrow.reattach", "early_reescrow session=\(surfaceId.prefix(8)) outcome=ok")
+            SessionWALStore.shared.stampDeferredReviveEscrow(
+                surfaceId: surfaceId,
+                socketPath: result.socketPath,
+                token: result.tokenHex,
+                childPID: childPID,
+                workingDirectory: walWorkingDirectory
+            )
+            // Kept in memory so a genuine close can authenticate the release
+            // frame — same contract as the realization-path escrow below.
+            DispatchQueue.main.async { self?.escrowTokenHex = result.tokenHex }
+        }
     }
 
     private func attemptSessionEscrow(surface: ghostty_surface_t, surfaceId: String, childPID: Int32) {

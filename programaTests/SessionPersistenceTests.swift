@@ -2316,3 +2316,45 @@ final class ReviveReplayMainThreadRegressionTests: XCTestCase {
         )
     }
 }
+
+// 2026-08-20 update-reset report: WAL rotation and ring overruns cut the byte
+// stream mid-escape-sequence, leaving an orphaned parameter tail ("38;114m")
+// with no ESC byte at the head of the replay — plain text to every sanitizer,
+// rendered literally. The head repair must strip it without eating legitimate
+// prose that merely looks parameter-ish.
+final class ScrollbackSeedOrphanedHeadTests: XCTestCase {
+    func testOrphanedSGRTailAtHeadIsStripped() {
+        let corrupt = "38;114mreturn }\nnext line"
+        XCTAssertEqual(
+            SessionFreshSpawnScrollbackSeed.strippedOrphanedSequenceHead(corrupt),
+            "return }\nnext line"
+        )
+    }
+
+    func testOrphanedPrivateModeTailAtHeadIsStripped() {
+        let corrupt = "?1003hprompt$ "
+        XCTAssertEqual(
+            SessionFreshSpawnScrollbackSeed.strippedOrphanedSequenceHead(corrupt),
+            "prompt$ "
+        )
+    }
+
+    func testLegitimateProseHeadsAreUntouched() {
+        for text in ["1m 30s elapsed\n", "42x42 grid\n", "2026-08-20 log line\n", "500 OK\n", "plain text"] {
+            XCTAssertEqual(
+                SessionFreshSpawnScrollbackSeed.strippedOrphanedSequenceHead(text),
+                text,
+                "must not strip: \(text)"
+            )
+        }
+    }
+
+    func testPreparedTextRepairsCorruptHeadEndToEnd() {
+        let prepared = SessionFreshSpawnScrollbackSeed.preparedText(for: "38;114mreturn }\nnext line\n")
+        XCTAssertNotNil(prepared)
+        XCTAssertFalse(
+            prepared?.contains("38;114m") ?? true,
+            "the orphaned fragment must not survive into the seeded replay"
+        )
+    }
+}
