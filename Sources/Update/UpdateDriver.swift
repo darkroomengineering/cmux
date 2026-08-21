@@ -104,7 +104,6 @@ class UpdateDriver: NSObject, SPUUserDriver {
     }
 
     func showDownloadDidReceiveData(ofLength length: UInt64) {
-        UpdateLogStore.shared.append("download received data: \(length)")
         guard case let .downloading(downloading) = viewModel.state else {
             return
         }
@@ -112,7 +111,7 @@ class UpdateDriver: NSObject, SPUUserDriver {
         setState(.downloading(.init(
             cancel: downloading.cancel,
             expectedLength: downloading.expectedLength,
-            progress: downloading.progress + length)))
+            progress: downloading.progress + length)), logTransition: false)
     }
 
     func showDownloadDidStartExtractingUpdate() {
@@ -121,8 +120,7 @@ class UpdateDriver: NSObject, SPUUserDriver {
     }
 
     func showExtractionReceivedProgress(_ progress: Double) {
-        UpdateLogStore.shared.append(String(format: "show extraction progress: %.2f", progress))
-        setState(.extracting(.init(progress: progress)))
+        setState(.extracting(.init(progress: progress)), logTransition: false)
     }
 
     func showReady(toInstallAndRelaunch reply: @escaping @Sendable (SPUUserUpdateChoice) -> Void) {
@@ -214,7 +212,7 @@ class UpdateDriver: NSObject, SPUUserDriver {
         }
     }
 
-    private func setState(_ newState: UpdateState) {
+    private func setState(_ newState: UpdateState, logTransition: Bool = true) {
         runOnMain { [weak self] in
             guard let self else { return }
             pendingCheckTransition?.cancel()
@@ -222,7 +220,7 @@ class UpdateDriver: NSObject, SPUUserDriver {
             checkTimeoutWorkItem?.cancel()
             checkTimeoutWorkItem = nil
             lastCheckStart = nil
-            applyState(newState)
+            applyState(newState, logTransition: logTransition)
         }
     }
 
@@ -236,9 +234,11 @@ class UpdateDriver: NSObject, SPUUserDriver {
         DispatchQueue.main.asyncAfter(deadline: .now() + UpdateTiming.checkTimeoutDuration, execute: workItem)
     }
 
-    private func applyState(_ newState: UpdateState) {
+    private func applyState(_ newState: UpdateState, logTransition: Bool = true) {
         viewModel.state = newState
-        UpdateLogStore.shared.append("state -> \(describe(newState))")
+        if logTransition {
+            UpdateLogStore.shared.append("state -> \(describe(newState))")
+        }
     }
 
     func resolvedFeedURLString() -> String? {

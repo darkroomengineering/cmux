@@ -7,6 +7,7 @@ final class UpdateLogStore {
     private let queue = DispatchQueue(label: "programa.update.log")
     private var entries: [String] = []
     private let maxEntries = 200
+    private let maxLogFileSize: UInt64 = 1024 * 1024
     private let logURL: URL
     private let formatter: ISO8601DateFormatter
 
@@ -54,12 +55,31 @@ final class UpdateLogStore {
 
     private func appendToFile(line: String) {
         let data = Data((line + "\n").utf8)
+        rotateLogIfNeeded(appendingByteCount: data.count)
         if let handle = try? FileHandle(forWritingTo: logURL) {
             _ = try? handle.seekToEnd()
             try? handle.write(contentsOf: data)
             try? handle.close()
         } else {
             try? data.write(to: logURL, options: .atomic)
+        }
+    }
+
+    private func rotateLogIfNeeded(appendingByteCount: Int) {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: logURL.path)
+        let currentSize = (attributes?[.size] as? NSNumber)?.uint64Value ?? 0
+        guard currentSize > 0,
+              currentSize + UInt64(appendingByteCount) > maxLogFileSize else {
+            return
+        }
+
+        let backupURL = logURL.appendingPathExtension("1")
+        try? FileManager.default.removeItem(at: backupURL)
+        do {
+            try FileManager.default.moveItem(at: logURL, to: backupURL)
+            ensureLogFile()
+        } catch {
+            // Best-effort logging must not interfere with the updater.
         }
     }
 }

@@ -40,6 +40,30 @@ struct ReviewDiffProber {
         let executionError: String?
     }
 
+    private final class CommandOutputCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stdoutData = Data()
+        private var stderrData = Data()
+
+        func storeStdout(_ data: Data) {
+            lock.lock()
+            stdoutData = data
+            lock.unlock()
+        }
+
+        func storeStderr(_ data: Data) {
+            lock.lock()
+            stderrData = data
+            lock.unlock()
+        }
+
+        func snapshot() -> (stdout: Data, stderr: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (stdoutData, stderrData)
+        }
+    }
+
     /// Files whose diff hunk text exceeds this many bytes are treated as "not diffable -- too
     /// large" rather than rendered in full, to keep the SwiftUI diff view responsive.
     static let maxDiffBytesPerFile: Int64 = 400_000
@@ -239,6 +263,19 @@ struct ReviewDiffProber {
             return CommandResult(stdout: nil, stderr: nil, exitStatus: nil, timedOut: false, executionError: String(describing: error))
         }
 
+        let outputCollector = CommandOutputCollector()
+        let outputReaders = DispatchGroup()
+        outputReaders.enter()
+        DispatchQueue.global(qos: .utility).async {
+            outputCollector.storeStdout(stdout.fileHandleForReading.readDataToEndOfFile())
+            outputReaders.leave()
+        }
+        outputReaders.enter()
+        DispatchQueue.global(qos: .utility).async {
+            outputCollector.storeStderr(stderr.fileHandleForReading.readDataToEndOfFile())
+            outputReaders.leave()
+        }
+
         if let timeout, completion.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
             if completion.wait(timeout: .now() + 0.2) == .timedOut {
@@ -250,11 +287,11 @@ struct ReviewDiffProber {
             completion.wait()
         }
 
-        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+        outputReaders.wait()
+        let output = outputCollector.snapshot()
         return CommandResult(
-            stdout: String(data: stdoutData, encoding: .utf8),
-            stderr: String(data: stderrData, encoding: .utf8),
+            stdout: String(data: output.stdout, encoding: .utf8),
+            stderr: String(data: output.stderr, encoding: .utf8),
             exitStatus: process.terminationStatus,
             timedOut: false,
             executionError: nil

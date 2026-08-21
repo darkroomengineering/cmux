@@ -506,6 +506,604 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         XCTAssertTrue(manager.tabs.contains(where: { $0.id == pinnedWorkspace.id }))
     }
 
+    func testSocketPreservesRequestIDWhenUTF8ScalarSpansReads() throws {
+        let socketPath = makeSocketPath("split-utf8")
+        TerminalController.shared.start(
+            tabManager: TabManager(),
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let fd = try connect(to: socketPath)
+        defer { Darwin.close(fd) }
+
+        let requestID = "request-🐈"
+        let request = #"{"jsonrpc":"2.0","id":"request-🐈","method":"system.ping","params":{}}"#
+        let bytes = Array((request + "\n").utf8)
+        let emojiBytes = Array("🐈".utf8)
+        let emojiStart = try XCTUnwrap(
+            bytes.indices.first { index in
+                index + emojiBytes.count <= bytes.count &&
+                    Array(bytes[index..<(index + emojiBytes.count)]) == emojiBytes
+            }
+        )
+        let splitIndex = emojiStart + 2
+
+        let firstWrite = bytes.withUnsafeBytes { raw in
+            Darwin.write(fd, raw.baseAddress, splitIndex)
+        }
+        XCTAssertEqual(firstWrite, splitIndex)
+        // Give the listener time to consume the first syscall before completing the scalar.
+        // Without this gap, the kernel may coalesce both writes into one read and stop the test
+        // from exercising the framing boundary that caused the regression.
+        usleep(50_000)
+        let secondWrite = bytes.withUnsafeBytes { raw in
+            Darwin.write(fd, raw.baseAddress!.advanced(by: splitIndex), bytes.count - splitIndex)
+        }
+        XCTAssertEqual(secondWrite, bytes.count - splitIndex)
+
+        let responseData = Data(try readLine(from: fd).utf8)
+        let response = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+        )
+        XCTAssertEqual(response["ok"] as? Bool, true, "Unexpected JSON-RPC response: \(response)")
+        XCTAssertEqual(
+            response["id"] as? String,
+            requestID,
+            "A valid request identifier must survive when the kernel splits a UTF-8 scalar across reads"
+        )
+    }
+
+    func testSocketRejectsInvalidUTF8AndClosesConnection() throws {
+        let socketPath = makeSocketPath("invalid-utf8")
+        TerminalController.shared.start(
+            tabManager: TabManager(),
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let fd = try connect(to: socketPath)
+        defer { Darwin.close(fd) }
+
+        let invalidFrame = Array(#"{"jsonrpc":"2.0","id":""#.utf8) +
+            [0xF0, 0x28, 0x8C, 0x28] +
+            Array(#"","method":"system.ping","params":{}}"#.utf8) + [0x0A]
+        let wrote = invalidFrame.withUnsafeBytes { raw in
+            Darwin.write(fd, raw.baseAddress, invalidFrame.count)
+        }
+        XCTAssertEqual(wrote, invalidFrame.count)
+
+        let responseData = Data(try readLine(from: fd).utf8)
+        let response = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+        )
+        XCTAssertEqual(response["ok"] as? Bool, false, "Unexpected JSON-RPC response: \(response)")
+        let error = try XCTUnwrap(response["error"] as? [String: Any])
+        XCTAssertEqual(error["code"] as? String, "invalid_utf8")
+
+        var byte: UInt8 = 0
+        try waitForReadable(
+            from: fd,
+            until: .now() + 5.0,
+            operation: "waiting for the invalid-UTF-8 connection to close"
+        )
+        let closeRead = Darwin.read(fd, &byte, 1)
+        guard closeRead >= 0 else { throw posixError("read after invalid UTF-8") }
+        XCTAssertEqual(
+            closeRead,
+            0,
+            "Invalid UTF-8 is a framing error, so the server must close instead of parsing later bytes on the connection"
+        )
+    }
+
+    func testWorkspaceTelemetryEnforcesPayloadAndCollectionBoundsThroughSocket() async throws {
+        let socketPath = makeSocketPath("telemetry-limits")
+        let manager = TabManager()
+        let workspace = manager.addWorkspace(select: true, eagerLoadTerminal: false)
+        TerminalController.shared.start(
+            tabManager: manager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let acceptedPayloads: [(method: String, field: String, limit: Int)] = [
+            ("workspace.set_status", "value", SidebarTelemetryLimits.maxStatusValueBytes),
+            ("workspace.log", "message", SidebarTelemetryLimits.maxLogMessageBytes),
+            ("workspace.report_meta_block", "markdown", SidebarTelemetryLimits.maxMetadataMarkdownBytes),
+        ]
+        for target in acceptedPayloads {
+            let payload = String(repeating: "x", count: target.limit)
+            var params: [String: Any] = [
+                "workspace_id": workspace.id.uuidString,
+                target.field: payload,
+            ]
+            if target.method != "workspace.log" {
+                params["key"] = "boundary-\(target.field)"
+            }
+            let response = try await sendV2RequestAsync(method: target.method, params: params, to: socketPath)
+            XCTAssertEqual(
+                response["ok"] as? Bool,
+                true,
+                "The documented maximum UTF-8 payload must remain accepted for \(target.method): \(response)"
+            )
+
+            params[target.field] = payload + "x"
+            let oversized = try await sendV2RequestAsync(method: target.method, params: params, to: socketPath)
+            XCTAssertEqual(oversized["ok"] as? Bool, false, "Unexpected JSON-RPC response: \(oversized)")
+            let error = try XCTUnwrap(oversized["error"] as? [String: Any])
+            XCTAssertEqual(error["code"] as? String, "invalid_params")
+        }
+
+        let oversizedURLPrefix = "https://example.com/"
+        let oversizedAuxiliaryFields: [(method: String, field: String, value: String)] = [
+            ("workspace.set_status", "key", String(repeating: "k", count: SidebarTelemetryLimits.maxKeyBytes + 1)),
+            ("workspace.set_status", "icon", String(repeating: "i", count: SidebarTelemetryLimits.maxStatusIconBytes + 1)),
+            ("workspace.set_status", "color", String(repeating: "c", count: SidebarTelemetryLimits.maxStatusColorBytes + 1)),
+            (
+                "workspace.set_status",
+                "url",
+                oversizedURLPrefix + String(
+                    repeating: "u",
+                    count: SidebarTelemetryLimits.maxStatusURLBytes - oversizedURLPrefix.utf8.count + 1
+                )
+            ),
+            ("workspace.log", "source", String(repeating: "s", count: SidebarTelemetryLimits.maxLogSourceBytes + 1)),
+            ("workspace.report_meta_block", "key", String(repeating: "k", count: SidebarTelemetryLimits.maxKeyBytes + 1)),
+        ]
+        for target in oversizedAuxiliaryFields {
+            var params: [String: Any] = ["workspace_id": workspace.id.uuidString]
+            switch target.method {
+            case "workspace.set_status":
+                params["key"] = "aux-status"
+                params["value"] = "ok"
+            case "workspace.log":
+                params["message"] = "ok"
+            default:
+                params["key"] = "aux-metadata"
+                params["markdown"] = "ok"
+            }
+            params[target.field] = target.value
+
+            let response = try await sendV2RequestAsync(method: target.method, params: params, to: socketPath)
+            XCTAssertEqual(response["ok"] as? Bool, false, "Unexpected JSON-RPC response: \(response)")
+            let error = try XCTUnwrap(response["error"] as? [String: Any])
+            XCTAssertEqual(error["code"] as? String, "invalid_params")
+            XCTAssertTrue(
+                (error["message"] as? String)?.contains(target.field) == true,
+                "The validation error must identify the oversized \(target.field): \(response)"
+            )
+        }
+
+        let surfaceId = UUID()
+        let exactTTYName = String(repeating: "t", count: SidebarTelemetryLimits.maxTTYNameBytes)
+        let acceptedTTY = try await sendV2RequestAsync(
+            method: "surface.report_tty",
+            params: [
+                "workspace_id": workspace.id.uuidString,
+                "surface_id": surfaceId.uuidString,
+                "tty_name": exactTTYName,
+            ],
+            to: socketPath
+        )
+        XCTAssertEqual(acceptedTTY["ok"] as? Bool, true, "The maximum TTY name must remain accepted: \(acceptedTTY)")
+
+        let pullRequestURL = "https://example.com/pull/1"
+        let oversizedPullRequestURL = oversizedURLPrefix + String(
+            repeating: "u",
+            count: SidebarTelemetryLimits.maxPullRequestURLBytes - oversizedURLPrefix.utf8.count + 1
+        )
+        let oversizedRetainedFields: [(method: String, field: String, limit: Int, params: [String: Any])] = [
+            (
+                "surface.report_pwd",
+                "path",
+                SidebarTelemetryLimits.maxDirectoryBytes,
+                [
+                    "workspace_id": workspace.id.uuidString,
+                    "surface_id": surfaceId.uuidString,
+                    "path": String(repeating: "p", count: SidebarTelemetryLimits.maxDirectoryBytes + 1),
+                ]
+            ),
+            (
+                "surface.report_git_branch",
+                "branch",
+                SidebarTelemetryLimits.maxGitBranchBytes,
+                [
+                    "workspace_id": workspace.id.uuidString,
+                    "surface_id": surfaceId.uuidString,
+                    "branch": String(repeating: "b", count: SidebarTelemetryLimits.maxGitBranchBytes + 1),
+                ]
+            ),
+            (
+                "surface.report_pr",
+                "url",
+                SidebarTelemetryLimits.maxPullRequestURLBytes,
+                [
+                    "workspace_id": workspace.id.uuidString,
+                    "surface_id": surfaceId.uuidString,
+                    "number": 1,
+                    "url": oversizedPullRequestURL,
+                ]
+            ),
+            (
+                "surface.report_pr",
+                "branch",
+                SidebarTelemetryLimits.maxGitBranchBytes,
+                [
+                    "workspace_id": workspace.id.uuidString,
+                    "surface_id": surfaceId.uuidString,
+                    "number": 1,
+                    "url": pullRequestURL,
+                    "branch": String(repeating: "b", count: SidebarTelemetryLimits.maxGitBranchBytes + 1),
+                ]
+            ),
+            (
+                "surface.report_pr",
+                "label",
+                SidebarTelemetryLimits.maxPullRequestLabelBytes,
+                [
+                    "workspace_id": workspace.id.uuidString,
+                    "surface_id": surfaceId.uuidString,
+                    "number": 1,
+                    "url": pullRequestURL,
+                    // Sixteen grapheme clusters pass the UI character truncation but exceed 64 UTF-8 bytes.
+                    "label": String(repeating: "👨‍👩‍👧‍👦", count: 16),
+                ]
+            ),
+            (
+                "workspace.set_progress",
+                "label",
+                SidebarTelemetryLimits.maxProgressLabelBytes,
+                [
+                    "workspace_id": workspace.id.uuidString,
+                    "value": 0.5,
+                    "label": String(repeating: "l", count: SidebarTelemetryLimits.maxProgressLabelBytes + 1),
+                ]
+            ),
+            (
+                "surface.report_tty",
+                "tty_name",
+                SidebarTelemetryLimits.maxTTYNameBytes,
+                [
+                    "workspace_id": workspace.id.uuidString,
+                    "surface_id": surfaceId.uuidString,
+                    "tty_name": exactTTYName + "t",
+                ]
+            ),
+        ]
+        for target in oversizedRetainedFields {
+            let response = try await sendV2RequestAsync(method: target.method, params: target.params, to: socketPath)
+            XCTAssertEqual(response["ok"] as? Bool, false, "Unexpected JSON-RPC response: \(response)")
+            let error = try XCTUnwrap(response["error"] as? [String: Any])
+            XCTAssertEqual(error["code"] as? String, "invalid_params")
+            let message = try XCTUnwrap(error["message"] as? String)
+            XCTAssertTrue(message.contains(target.field), "The validation error must identify \(target.field): \(response)")
+            XCTAssertTrue(message.contains(String(target.limit)), "The validation error must identify the byte limit: \(response)")
+        }
+
+        let hostlessPullRequest = try await sendV2RequestAsync(
+            method: "surface.report_pr",
+            params: [
+                "workspace_id": workspace.id.uuidString,
+                "surface_id": surfaceId.uuidString,
+                "number": 1,
+                "url": "https:///missing-host",
+            ],
+            to: socketPath
+        )
+        XCTAssertEqual(hostlessPullRequest["ok"] as? Bool, false, "Unexpected JSON-RPC response: \(hostlessPullRequest)")
+        let hostlessError = try XCTUnwrap(hostlessPullRequest["error"] as? [String: Any])
+        XCTAssertEqual(hostlessError["code"] as? String, "invalid_params")
+
+        workspace.statusEntries.removeAll()
+        workspace.metadataBlocks.removeAll()
+        workspace.agentPIDs.removeAll()
+        let oldTimestamp = Date(timeIntervalSince1970: 1)
+        for index in 0..<SidebarTelemetryLimits.maxStatusEntries {
+            workspace.statusEntries["old-status-\(index)"] = SidebarStatusEntry(
+                key: "old-status-\(index)",
+                value: "old",
+                timestamp: oldTimestamp.addingTimeInterval(TimeInterval(index))
+            )
+        }
+        workspace.agentPIDs["old-status-0"] = 101
+        workspace.agentPIDs["old-status-1"] = 102
+        let newestStatusKey = "new-status"
+        let statusResponse = try await sendV2RequestAsync(
+            method: "workspace.set_status",
+            params: [
+                "workspace_id": workspace.id.uuidString,
+                "key": newestStatusKey,
+                "value": "new",
+                "pid": 303,
+            ],
+            to: socketPath
+        )
+        XCTAssertEqual(statusResponse["ok"] as? Bool, true)
+        XCTAssertTrue(waitUntil {
+            workspace.statusEntries.count == SidebarTelemetryLimits.maxStatusEntries &&
+                workspace.statusEntries[newestStatusKey] != nil &&
+                workspace.agentPIDs["old-status-0"] == nil &&
+                workspace.agentPIDs[newestStatusKey] == 303
+        })
+        XCTAssertNil(workspace.statusEntries["old-status-0"], "The oldest status must be evicted at the collection bound")
+        XCTAssertEqual(workspace.agentPIDs["old-status-1"], 102, "Eviction must preserve PID state for retained statuses")
+
+        for index in 0..<SidebarTelemetryLimits.maxMetadataBlocks {
+            workspace.metadataBlocks["old-meta-\(index)"] = SidebarMetadataBlock(
+                key: "old-meta-\(index)",
+                markdown: "old",
+                priority: 0,
+                timestamp: oldTimestamp.addingTimeInterval(TimeInterval(index))
+            )
+        }
+        let newestMetadataKey = "new-meta"
+        let metadataResponse = try await sendV2RequestAsync(
+            method: "workspace.report_meta_block",
+            params: [
+                "workspace_id": workspace.id.uuidString,
+                "key": newestMetadataKey,
+                "markdown": "new",
+            ],
+            to: socketPath
+        )
+        XCTAssertEqual(metadataResponse["ok"] as? Bool, true)
+        XCTAssertTrue(waitUntil {
+            workspace.metadataBlocks.count == SidebarTelemetryLimits.maxMetadataBlocks &&
+                workspace.metadataBlocks[newestMetadataKey] != nil
+        })
+        XCTAssertNil(workspace.metadataBlocks["old-meta-0"], "The oldest metadata block must be evicted at the collection bound")
+    }
+
+    func testWorkspaceAgentPIDCommandsEnforceIntegerAndKeyBounds() async throws {
+        let socketPath = makeSocketPath("agent-pid-limits")
+        let manager = TabManager()
+        let workspace = manager.addWorkspace(select: true, eagerLoadTerminal: false)
+        TerminalController.shared.start(
+            tabManager: manager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let oversizedPID = Int(pid_t.max) + 1
+        let oversizedKey = String(repeating: "k", count: SidebarTelemetryLimits.maxKeyBytes + 1)
+        let rejectedRequests: [(method: String, params: [String: Any])] = [
+            (
+                "workspace.set_agent_pid",
+                ["workspace_id": workspace.id.uuidString, "key": "zero", "pid": 0]
+            ),
+            (
+                "workspace.set_agent_pid",
+                ["workspace_id": workspace.id.uuidString, "key": "overflow", "pid": oversizedPID]
+            ),
+            (
+                "workspace.set_agent_pid",
+                ["workspace_id": workspace.id.uuidString, "key": oversizedKey, "pid": 1]
+            ),
+            (
+                "workspace.clear_agent_pid",
+                ["workspace_id": workspace.id.uuidString, "key": oversizedKey]
+            ),
+            (
+                "workspace.set_status",
+                ["workspace_id": workspace.id.uuidString, "key": "status-zero", "value": "ok", "pid": 0]
+            ),
+            (
+                "workspace.set_status",
+                ["workspace_id": workspace.id.uuidString, "key": "status-invalid", "value": "ok", "pid": "invalid"]
+            ),
+            (
+                "workspace.set_status",
+                ["workspace_id": workspace.id.uuidString, "key": "status-overflow", "value": "ok", "pid": oversizedPID]
+            ),
+        ]
+        for request in rejectedRequests {
+            let response = try await sendV2RequestAsync(
+                method: request.method,
+                params: request.params,
+                to: socketPath
+            )
+            XCTAssertEqual(response["ok"] as? Bool, false, "Unexpected JSON-RPC response: \(response)")
+            let error = try XCTUnwrap(response["error"] as? [String: Any])
+            XCTAssertEqual(error["code"] as? String, "invalid_params")
+        }
+
+        let accepted = try await sendV2RequestAsync(
+            method: "workspace.set_agent_pid",
+            params: [
+                "workspace_id": workspace.id.uuidString,
+                "key": "maximum",
+                "pid": Int(pid_t.max),
+            ],
+            to: socketPath
+        )
+        XCTAssertEqual(accepted["ok"] as? Bool, true, "The maximum pid_t value must remain accepted: \(accepted)")
+        XCTAssertTrue(waitUntil { workspace.agentPIDs["maximum"] == pid_t.max })
+    }
+
+    func testWorkspaceTelemetryModelRejectsOversizedAuxiliaryFields() throws {
+        let manager = TabManager()
+        let workspace = manager.addWorkspace(select: true, eagerLoadTerminal: false)
+        let oversizedURLPrefix = "https://example.com/"
+        let oversizedURL = try XCTUnwrap(URL(string:
+            oversizedURLPrefix + String(
+                repeating: "u",
+                count: SidebarTelemetryLimits.maxStatusURLBytes - oversizedURLPrefix.utf8.count + 1
+            )
+        ))
+        let oversizedStatusEntries = [
+            SidebarStatusEntry(
+                key: String(repeating: "k", count: SidebarTelemetryLimits.maxKeyBytes + 1),
+                value: "ok"
+            ),
+            SidebarStatusEntry(
+                key: "oversized-icon",
+                value: "ok",
+                icon: String(repeating: "i", count: SidebarTelemetryLimits.maxStatusIconBytes + 1)
+            ),
+            SidebarStatusEntry(
+                key: "oversized-color",
+                value: "ok",
+                color: String(repeating: "c", count: SidebarTelemetryLimits.maxStatusColorBytes + 1)
+            ),
+            SidebarStatusEntry(key: "oversized-url", value: "ok", url: oversizedURL),
+        ]
+        for entry in oversizedStatusEntries {
+            XCTAssertFalse(workspace.setSidebarStatusEntry(entry).inserted)
+        }
+        XCTAssertTrue(workspace.statusEntries.isEmpty)
+
+        XCTAssertFalse(workspace.setSidebarMetadataBlock(SidebarMetadataBlock(
+            key: String(repeating: "k", count: SidebarTelemetryLimits.maxKeyBytes + 1),
+            markdown: "ok",
+            priority: 0,
+            timestamp: Date()
+        )))
+        XCTAssertTrue(workspace.metadataBlocks.isEmpty)
+
+        XCTAssertFalse(workspace.appendSidebarLogEntry(SidebarLogEntry(
+            message: "ok",
+            level: .info,
+            source: String(repeating: "s", count: SidebarTelemetryLimits.maxLogSourceBytes + 1),
+            timestamp: Date()
+        )))
+        XCTAssertTrue(workspace.logEntries.isEmpty)
+
+        let panelId = UUID()
+        let exactDirectory = String(repeating: "d", count: SidebarTelemetryLimits.maxDirectoryBytes)
+        workspace.updatePanelDirectory(panelId: panelId, directory: exactDirectory)
+        XCTAssertEqual(workspace.panelDirectories[panelId], exactDirectory)
+        workspace.updatePanelDirectory(
+            panelId: panelId,
+            directory: String(repeating: "d", count: SidebarTelemetryLimits.maxDirectoryBytes + 1)
+        )
+        workspace.updatePanelDirectory(panelId: panelId, directory: "   ")
+        XCTAssertEqual(workspace.panelDirectories[panelId], exactDirectory)
+
+        let exactBranch = String(repeating: "b", count: SidebarTelemetryLimits.maxGitBranchBytes)
+        workspace.updatePanelGitBranch(panelId: panelId, branch: exactBranch, isDirty: false)
+        XCTAssertEqual(workspace.panelGitBranches[panelId]?.branch, exactBranch)
+        workspace.updatePanelGitBranch(
+            panelId: panelId,
+            branch: String(repeating: "b", count: SidebarTelemetryLimits.maxGitBranchBytes + 1),
+            isDirty: true
+        )
+        workspace.updatePanelGitBranch(panelId: panelId, branch: "   ", isDirty: true)
+        XCTAssertEqual(workspace.panelGitBranches[panelId], SidebarGitBranchState(branch: exactBranch, isDirty: false))
+
+        let pullRequestURLPrefix = "https://example.com/"
+        let exactPullRequestURL = try XCTUnwrap(URL(string:
+            pullRequestURLPrefix + String(
+                repeating: "u",
+                count: SidebarTelemetryLimits.maxPullRequestURLBytes - pullRequestURLPrefix.utf8.count
+            )
+        ))
+        XCTAssertEqual(exactPullRequestURL.absoluteString.utf8.count, SidebarTelemetryLimits.maxPullRequestURLBytes)
+        let exactLabel = String(repeating: "l", count: SidebarTelemetryLimits.maxPullRequestLabelBytes)
+        workspace.updatePanelPullRequest(
+            panelId: panelId,
+            number: 1,
+            label: exactLabel,
+            url: exactPullRequestURL,
+            status: .open,
+            branch: exactBranch
+        )
+        XCTAssertEqual(workspace.panelPullRequests[panelId]?.label, exactLabel)
+        XCTAssertEqual(workspace.panelPullRequests[panelId]?.url, exactPullRequestURL)
+        XCTAssertEqual(workspace.panelPullRequests[panelId]?.branch, exactBranch)
+
+        let retainedPullRequest = workspace.panelPullRequests[panelId]
+        let oversizedPullRequestURL = try XCTUnwrap(URL(string:
+            pullRequestURLPrefix + String(
+                repeating: "u",
+                count: SidebarTelemetryLimits.maxPullRequestURLBytes - pullRequestURLPrefix.utf8.count + 1
+            )
+        ))
+        workspace.updatePanelPullRequest(
+            panelId: panelId,
+            number: 2,
+            label: String(repeating: "l", count: SidebarTelemetryLimits.maxPullRequestLabelBytes + 1),
+            url: exactPullRequestURL,
+            status: .open,
+            branch: exactBranch
+        )
+        workspace.updatePanelPullRequest(
+            panelId: panelId,
+            number: 2,
+            label: "PR",
+            url: oversizedPullRequestURL,
+            status: .open,
+            branch: exactBranch
+        )
+        workspace.updatePanelPullRequest(
+            panelId: panelId,
+            number: 2,
+            label: "PR",
+            url: exactPullRequestURL,
+            status: .open,
+            branch: String(repeating: "b", count: SidebarTelemetryLimits.maxGitBranchBytes + 1)
+        )
+        workspace.updatePanelPullRequest(
+            panelId: panelId,
+            number: 2,
+            label: "PR",
+            url: try XCTUnwrap(URL(string: "https:///missing-host")),
+            status: .open,
+            branch: exactBranch
+        )
+        XCTAssertEqual(workspace.panelPullRequests[panelId], retainedPullRequest)
+
+        let exactProgressLabel = String(repeating: "p", count: SidebarTelemetryLimits.maxProgressLabelBytes)
+        XCTAssertTrue(workspace.setSidebarProgress(value: 1.0, label: exactProgressLabel))
+        XCTAssertEqual(workspace.progress, SidebarProgressState(value: 1.0, label: exactProgressLabel))
+        XCTAssertFalse(workspace.setSidebarProgress(
+            value: 0.5,
+            label: String(repeating: "p", count: SidebarTelemetryLimits.maxProgressLabelBytes + 1)
+        ))
+        XCTAssertFalse(workspace.setSidebarProgress(value: -.infinity, label: nil))
+        XCTAssertFalse(workspace.setSidebarProgress(value: 1.01, label: nil))
+        XCTAssertEqual(workspace.progress, SidebarProgressState(value: 1.0, label: exactProgressLabel))
+
+        let exactTTYName = String(repeating: "t", count: SidebarTelemetryLimits.maxTTYNameBytes)
+        XCTAssertTrue(workspace.setSidebarTTYName(panelId: panelId, ttyName: exactTTYName))
+        XCTAssertEqual(workspace.surfaceTTYNames[panelId], exactTTYName)
+        XCTAssertFalse(workspace.setSidebarTTYName(panelId: panelId, ttyName: exactTTYName + "t"))
+        XCTAssertEqual(workspace.surfaceTTYNames[panelId], exactTTYName)
+
+        let exactPIDKey = String(repeating: "k", count: SidebarTelemetryLimits.maxKeyBytes)
+        XCTAssertTrue(workspace.setSidebarAgentPID(key: exactPIDKey, pid: pid_t.max))
+        XCTAssertEqual(workspace.agentPIDs.removeValue(forKey: exactPIDKey), pid_t.max)
+        XCTAssertFalse(workspace.setSidebarAgentPID(
+            key: String(repeating: "k", count: SidebarTelemetryLimits.maxKeyBytes + 1),
+            pid: 1
+        ))
+        XCTAssertFalse(workspace.setSidebarAgentPID(key: "zero", pid: 0))
+
+        for index in 0..<SidebarTelemetryLimits.maxAgentPIDs {
+            XCTAssertTrue(workspace.setSidebarAgentPID(key: "agent-\(index)", pid: pid_t(index + 1)))
+        }
+        XCTAssertEqual(workspace.agentPIDs.count, SidebarTelemetryLimits.maxAgentPIDs)
+        XCTAssertFalse(workspace.setSidebarAgentPID(key: "overflow", pid: 1))
+        XCTAssertTrue(workspace.setSidebarAgentPID(key: "agent-0", pid: pid_t.max))
+        XCTAssertEqual(workspace.agentPIDs["agent-0"], pid_t.max)
+        XCTAssertEqual(workspace.agentPIDs.count, SidebarTelemetryLimits.maxAgentPIDs)
+
+        let exactDiagnostic = String(repeating: "e", count: SidebarTelemetryLimits.maxLogMessageBytes)
+        workspace.applyRemoteConnectionStateUpdate(.connecting, detail: exactDiagnostic, target: "example")
+        XCTAssertEqual(workspace.remoteConnectionDetail, exactDiagnostic)
+        workspace.applyRemoteConnectionStateUpdate(.connecting, detail: exactDiagnostic + "e", target: "example")
+        XCTAssertEqual(workspace.remoteConnectionDetail, exactDiagnostic)
+
+        workspace.applyRemoteDaemonStatusUpdate(
+            WorkspaceRemoteDaemonStatus(state: .ready, detail: exactDiagnostic + "e"),
+            target: "example"
+        )
+        XCTAssertEqual(workspace.remoteDaemonStatus.detail, exactDiagnostic)
+    }
+
     private func waitForSocket(at path: String, timeout: TimeInterval = 5.0) throws {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in
@@ -686,11 +1284,13 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         }
     }
 
-    private nonisolated func readLine(from fd: Int32) throws -> String {
+    private nonisolated func readLine(from fd: Int32, timeout: TimeInterval = 5.0) throws -> String {
         var buffer = [UInt8](repeating: 0, count: 1)
         var data = Data()
+        let deadline = DispatchTime.now() + timeout
 
         while true {
+            try waitForReadable(from: fd, until: deadline, operation: "waiting for a socket response line")
             let count = Darwin.read(fd, &buffer, 1)
             guard count >= 0 else {
                 throw posixError("read")
@@ -706,6 +1306,32 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
             ])
         }
         return line
+    }
+
+    private nonisolated func waitForReadable(
+        from fd: Int32,
+        until deadline: DispatchTime,
+        operation: String
+    ) throws {
+        while true {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline.uptimeNanoseconds else {
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(ETIMEDOUT),
+                    userInfo: [NSLocalizedDescriptionKey: "Timed out \(operation)"]
+                )
+            }
+            let remainingNanoseconds = deadline.uptimeNanoseconds - now
+            let remainingMilliseconds = max(1, (remainingNanoseconds + 999_999) / 1_000_000)
+            let pollTimeout = Int32(min(UInt64(Int32.max), remainingMilliseconds))
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let result = Darwin.poll(&descriptor, 1, pollTimeout)
+            if result > 0 { return }
+            if result == 0 { continue }
+            if errno == EINTR { continue }
+            throw posixError("poll while \(operation)")
+        }
     }
 
     private nonisolated func posixError(_ operation: String) -> NSError {

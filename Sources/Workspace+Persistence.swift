@@ -106,8 +106,7 @@ extension Workspace {
         // comment for the full race this closes.
         let restoreGeneration = TerminalSurface.beginSessionRestorePass()
 
-        let normalizedCurrentDirectory = snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !normalizedCurrentDirectory.isEmpty {
+        if let normalizedCurrentDirectory = normalizedSidebarDirectory(snapshot.currentDirectory) {
             currentDirectory = normalizedCurrentDirectory
         }
 
@@ -171,16 +170,23 @@ extension Workspace {
         statusEntries.removeAll()
         agentPIDs.removeAll()
         agentListeningPorts.removeAll()
-        logEntries = snapshot.logEntries.map { entry in
+        restoreSidebarLogEntries(snapshot.logEntries.map { entry in
             SidebarLogEntry(
                 message: entry.message,
                 level: SidebarLogLevel(rawValue: entry.level) ?? .info,
                 source: entry.source,
                 timestamp: Date(timeIntervalSince1970: entry.timestamp)
             )
+        })
+        progress = nil
+        if let restoredProgress = snapshot.progress {
+            _ = setSidebarProgress(value: restoredProgress.value, label: restoredProgress.label)
         }
-        progress = snapshot.progress.map { SidebarProgressState(value: $0.value, label: $0.label) }
-        gitBranch = snapshot.gitBranch.map { SidebarGitBranchState(branch: $0.branch, isDirty: $0.isDirty) }
+        gitBranch = snapshot.gitBranch.flatMap { restoredBranch in
+            normalizedBoundedSidebarBranchName(restoredBranch.branch).map {
+                SidebarGitBranchState(branch: $0, isDirty: restoredBranch.isDirty)
+            }
+        }
 
         recomputeListeningPorts()
 
@@ -503,7 +509,9 @@ extension Workspace {
     private func createPanel(from snapshot: SessionPanelSnapshot, inPane paneId: PaneID) -> UUID? {
         switch snapshot.type {
         case .terminal:
-            let workingDirectory = snapshot.terminal?.workingDirectory ?? snapshot.directory ?? currentDirectory
+            let workingDirectory = normalizedSidebarDirectory(snapshot.terminal?.workingDirectory)
+                ?? normalizedSidebarDirectory(snapshot.directory)
+                ?? currentDirectory
 
             // Issue #182 slice 2: try to reattach to a still-alive escrowed
             // child before falling back to the spawn-fresh + WAL-tail
@@ -586,17 +594,18 @@ extension Workspace {
                   let mode = ReviewDiffMode(rawValue: reviewSnapshot.mode) else {
                 return nil
             }
-            let directory = snapshot.directory ?? currentDirectory
+            let directory = normalizedSidebarDirectory(snapshot.directory) ?? currentDirectory
+            let baseBranch = normalizedBoundedSidebarBranchName(reviewSnapshot.baseBranch) ?? "origin/main"
             let reviewPanel = ReviewPanel(
                 workspaceId: id,
                 sourceSurfaceId: reviewSnapshot.sourceSurfaceId,
                 directory: directory,
                 mode: mode,
-                baseBranch: reviewSnapshot.baseBranch
+                baseBranch: baseBranch
             )
             panels[reviewPanel.id] = reviewPanel
             panelTitles[reviewPanel.id] = reviewPanel.displayTitle
-            panelDirectories[reviewPanel.id] = directory
+            updatePanelDirectory(panelId: reviewPanel.id, directory: directory)
 
             guard let newTabId = bonsplitController.createTab(
                 title: reviewPanel.displayTitle,
@@ -752,20 +761,21 @@ extension Workspace {
             clearManualUnread(panelId: panelId)
         }
 
-        if let directory = snapshot.directory?.trimmingCharacters(in: .whitespacesAndNewlines), !directory.isEmpty {
+        if let directory = normalizedSidebarDirectory(snapshot.directory) {
             updatePanelDirectory(panelId: panelId, directory: directory)
         }
 
-        if let branch = snapshot.gitBranch {
-            panelGitBranches[panelId] = SidebarGitBranchState(branch: branch.branch, isDirty: branch.isDirty)
+        if let branch = snapshot.gitBranch,
+           let normalizedBranch = normalizedBoundedSidebarBranchName(branch.branch) {
+            updatePanelGitBranch(panelId: panelId, branch: normalizedBranch, isDirty: branch.isDirty)
         } else {
             panelGitBranches.removeValue(forKey: panelId)
         }
 
         surfaceListeningPorts[panelId] = Array(Set(snapshot.listeningPorts)).sorted()
 
-        if let ttyName = snapshot.ttyName?.trimmingCharacters(in: .whitespacesAndNewlines), !ttyName.isEmpty {
-            surfaceTTYNames[panelId] = ttyName
+        if let ttyName = normalizedSidebarTTYName(snapshot.ttyName) {
+            _ = setSidebarTTYName(panelId: panelId, ttyName: ttyName)
         } else {
             surfaceTTYNames.removeValue(forKey: panelId)
         }

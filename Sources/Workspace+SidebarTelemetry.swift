@@ -11,16 +11,64 @@ import Darwin
 import Network
 import CoreText
 
+enum SidebarTelemetryLimits {
+    static let maxKeyBytes = 512
+    static let maxDirectoryBytes = 4 * 1024
+    static let maxGitBranchBytes = 1024
+    static let maxPullRequestURLBytes = 4 * 1024
+    static let maxPullRequestLabelBytes = 64
+    static let maxProgressLabelBytes = 512
+    static let maxTTYNameBytes = 1024
+    static let maxStatusIconBytes = 256
+    static let maxStatusColorBytes = 128
+    static let maxStatusURLBytes = 4 * 1024
+    static let maxLogSourceBytes = 512
+    static let maxLogMessageBytes = 64 * 1024
+    static let maxStatusValueBytes = 16 * 1024
+    static let maxMetadataMarkdownBytes = 256 * 1024
+    static let maxStatusEntries = 128
+    static let maxMetadataBlocks = 128
+    static let maxAgentPIDs = 128
+
+    static func utf8ByteCount(_ value: String) -> Int {
+        value.utf8.count
+    }
+
+    static func isWithinUTF8Limit(_ value: String?, maxBytes: Int) -> Bool {
+        value.map { utf8ByteCount($0) <= maxBytes } ?? true
+    }
+
+    static func truncatedToUTF8Limit(_ value: String, maxBytes: Int) -> String {
+        guard utf8ByteCount(value) > maxBytes else { return value }
+        guard maxBytes > 0 else { return "" }
+
+        var result = ""
+        result.reserveCapacity(maxBytes)
+        var byteCount = 0
+        for character in value {
+            let characterBytes = String(character).utf8.count
+            guard characterBytes <= maxBytes - byteCount else { break }
+            result.append(character)
+            byteCount += characterBytes
+        }
+        return result
+    }
+
+    static func configuredMaxLogEntries() -> Int {
+        let configured = UserDefaults.standard.object(forKey: "sidebarMaxLogEntries") as? Int ?? 50
+        return max(1, min(500, configured))
+    }
+}
+
 extension Workspace {
     func updatePanelDirectory(panelId: UUID, directory: String) {
-        let trimmed = directory.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        if panelDirectories[panelId] != trimmed {
-            panelDirectories[panelId] = trimmed
+        guard let normalized = normalizedSidebarDirectory(directory) else { return }
+        if panelDirectories[panelId] != normalized {
+            panelDirectories[panelId] = normalized
         }
         // Update current directory if this is the focused panel
-        if panelId == focusedPanelId, currentDirectory != trimmed {
-            currentDirectory = trimmed
+        if panelId == focusedPanelId, currentDirectory != normalized {
+            currentDirectory = normalized
         }
     }
 
@@ -55,10 +103,11 @@ extension Workspace {
     }
 
     func updatePanelGitBranch(panelId: UUID, branch: String, isDirty: Bool) {
-        let state = SidebarGitBranchState(branch: branch, isDirty: isDirty)
+        guard let normalizedBranch = normalizedBoundedSidebarBranchName(branch) else { return }
+        let state = SidebarGitBranchState(branch: normalizedBranch, isDirty: isDirty)
         let existing = panelGitBranches[panelId]
-        let branchChanged = existing?.branch != nil && existing?.branch != branch
-        if existing?.branch != branch || existing?.isDirty != isDirty {
+        let branchChanged = existing?.branch != nil && existing?.branch != normalizedBranch
+        if existing?.branch != normalizedBranch || existing?.isDirty != isDirty {
             panelGitBranches[panelId] = state
         }
         if branchChanged {
@@ -100,9 +149,23 @@ extension Workspace {
         branch: String? = nil,
         checks: SidebarPullRequestChecksStatus? = nil
     ) {
+        let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedLabel.isEmpty,
+              SidebarTelemetryLimits.utf8ByteCount(normalizedLabel) <= SidebarTelemetryLimits.maxPullRequestLabelBytes,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.host?.isEmpty == false,
+              SidebarTelemetryLimits.utf8ByteCount(url.absoluteString) <= SidebarTelemetryLimits.maxPullRequestURLBytes else {
+            return
+        }
         let existing = panelPullRequests[panelId]
         let normalizedBranch = normalizedSidebarBranchName(branch)
-        let currentPanelBranch = normalizedSidebarBranchName(panelGitBranches[panelId]?.branch)
+        guard normalizedBranch.map({
+            SidebarTelemetryLimits.utf8ByteCount($0) <= SidebarTelemetryLimits.maxGitBranchBytes
+        }) ?? true else {
+            return
+        }
+        let currentPanelBranch = normalizedBoundedSidebarBranchName(panelGitBranches[panelId]?.branch)
         let resolvedBranch: String? = {
             if let normalizedBranch {
                 return normalizedBranch
@@ -112,12 +175,12 @@ extension Workspace {
             }
             guard let existing,
                   existing.number == number,
-                  existing.label == label,
+                  existing.label == normalizedLabel,
                   existing.url == url,
                   existing.status == status else {
                 return nil
             }
-            return existing.branch
+            return normalizedBoundedSidebarBranchName(existing.branch)
         }()
         let resolvedChecks: SidebarPullRequestChecksStatus? = {
             if let checks {
@@ -125,7 +188,7 @@ extension Workspace {
             }
             guard let existing,
                   existing.number == number,
-                  existing.label == label,
+                  existing.label == normalizedLabel,
                   existing.url == url,
                   existing.status == status else {
                 return nil
@@ -134,7 +197,7 @@ extension Workspace {
         }()
         let state = SidebarPullRequestState(
             number: number,
-            label: label,
+            label: normalizedLabel,
             url: url,
             status: status,
             branch: resolvedBranch,
@@ -385,7 +448,29 @@ extension Workspace {
     func normalizedSidebarDirectory(_ directory: String?) -> String? {
         guard let directory else { return nil }
         let trimmed = directory.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        guard !trimmed.isEmpty,
+              SidebarTelemetryLimits.utf8ByteCount(trimmed) <= SidebarTelemetryLimits.maxDirectoryBytes else {
+            return nil
+        }
+        return trimmed
+    }
+
+    func normalizedBoundedSidebarBranchName(_ branch: String?) -> String? {
+        guard let normalized = normalizedSidebarBranchName(branch),
+              SidebarTelemetryLimits.utf8ByteCount(normalized) <= SidebarTelemetryLimits.maxGitBranchBytes else {
+            return nil
+        }
+        return normalized
+    }
+
+    func normalizedSidebarTTYName(_ ttyName: String?) -> String? {
+        guard let ttyName else { return nil }
+        let trimmed = ttyName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              SidebarTelemetryLimits.utf8ByteCount(trimmed) <= SidebarTelemetryLimits.maxTTYNameBytes else {
+            return nil
+        }
+        return trimmed
     }
 
     func sidebarHomeDirectoryForCanonicalization(
@@ -521,14 +606,118 @@ extension Workspace {
         }
     }
 
+    @discardableResult
+    func setSidebarStatusEntry(_ entry: SidebarStatusEntry) -> (inserted: Bool, evictedAgentPID: Bool) {
+        guard SidebarTelemetryLimits.utf8ByteCount(entry.key) <= SidebarTelemetryLimits.maxKeyBytes,
+              SidebarTelemetryLimits.utf8ByteCount(entry.value) <= SidebarTelemetryLimits.maxStatusValueBytes,
+              SidebarTelemetryLimits.isWithinUTF8Limit(entry.icon, maxBytes: SidebarTelemetryLimits.maxStatusIconBytes),
+              SidebarTelemetryLimits.isWithinUTF8Limit(entry.color, maxBytes: SidebarTelemetryLimits.maxStatusColorBytes),
+              SidebarTelemetryLimits.isWithinUTF8Limit(
+                  entry.url?.absoluteString,
+                  maxBytes: SidebarTelemetryLimits.maxStatusURLBytes
+              ) else {
+            return (false, false)
+        }
+        var evictedAgentPID = false
+        while statusEntries[entry.key] == nil,
+              statusEntries.count >= SidebarTelemetryLimits.maxStatusEntries,
+              let oldestKey = statusEntries.min(by: { lhs, rhs in
+                  if lhs.value.timestamp != rhs.value.timestamp {
+                      return lhs.value.timestamp < rhs.value.timestamp
+                  }
+                  return lhs.key < rhs.key
+              })?.key {
+            statusEntries.removeValue(forKey: oldestKey)
+            if agentPIDs.removeValue(forKey: oldestKey) != nil {
+                evictedAgentPID = true
+            }
+        }
+        statusEntries[entry.key] = entry
+        return (true, evictedAgentPID)
+    }
+
+    @discardableResult
+    func setSidebarProgress(value: Double, label: String?) -> Bool {
+        guard value.isFinite,
+              (0.0...1.0).contains(value),
+              SidebarTelemetryLimits.isWithinUTF8Limit(
+                  label,
+                  maxBytes: SidebarTelemetryLimits.maxProgressLabelBytes
+              ) else {
+            return false
+        }
+        progress = SidebarProgressState(value: value, label: label)
+        return true
+    }
+
+    @discardableResult
+    func setSidebarAgentPID(key: String, pid: pid_t) -> Bool {
+        guard SidebarTelemetryLimits.utf8ByteCount(key) <= SidebarTelemetryLimits.maxKeyBytes,
+              pid > 0,
+              agentPIDs[key] != nil || agentPIDs.count < SidebarTelemetryLimits.maxAgentPIDs else {
+            return false
+        }
+        agentPIDs[key] = pid
+        return true
+    }
+
+    @discardableResult
+    func setSidebarTTYName(panelId: UUID, ttyName: String) -> Bool {
+        guard let normalized = normalizedSidebarTTYName(ttyName) else { return false }
+        surfaceTTYNames[panelId] = normalized
+        return true
+    }
+
+    @discardableResult
+    func setSidebarMetadataBlock(_ block: SidebarMetadataBlock) -> Bool {
+        guard SidebarTelemetryLimits.utf8ByteCount(block.key) <= SidebarTelemetryLimits.maxKeyBytes,
+              SidebarTelemetryLimits.utf8ByteCount(block.markdown) <= SidebarTelemetryLimits.maxMetadataMarkdownBytes else {
+            return false
+        }
+        while metadataBlocks[block.key] == nil,
+              metadataBlocks.count >= SidebarTelemetryLimits.maxMetadataBlocks,
+              let oldestKey = metadataBlocks.min(by: { lhs, rhs in
+                  if lhs.value.timestamp != rhs.value.timestamp {
+                      return lhs.value.timestamp < rhs.value.timestamp
+                  }
+                  return lhs.key < rhs.key
+              })?.key {
+            metadataBlocks.removeValue(forKey: oldestKey)
+        }
+        metadataBlocks[block.key] = block
+        return true
+    }
+
+    @discardableResult
+    func appendSidebarLogEntry(_ entry: SidebarLogEntry) -> Bool {
+        guard !entry.message.isEmpty,
+              SidebarTelemetryLimits.utf8ByteCount(entry.message) <= SidebarTelemetryLimits.maxLogMessageBytes,
+              SidebarTelemetryLimits.isWithinUTF8Limit(
+                  entry.source,
+                  maxBytes: SidebarTelemetryLimits.maxLogSourceBytes
+              ) else {
+            return false
+        }
+        logEntries.append(entry)
+        let limit = SidebarTelemetryLimits.configuredMaxLogEntries()
+        if logEntries.count > limit {
+            logEntries.removeFirst(logEntries.count - limit)
+        }
+        return true
+    }
+
     func appendSidebarLog(message: String, level: SidebarLogLevel, source: String?) {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        logEntries.append(SidebarLogEntry(message: trimmed, level: level, source: source, timestamp: Date()))
-        let configuredLimit = UserDefaults.standard.object(forKey: "sidebarMaxLogEntries") as? Int ?? 50
-        let limit = max(1, min(500, configuredLimit))
-        if logEntries.count > limit {
-            logEntries.removeFirst(logEntries.count - limit)
+        _ = appendSidebarLogEntry(
+            SidebarLogEntry(message: trimmed, level: level, source: source, timestamp: Date())
+        )
+    }
+
+    func restoreSidebarLogEntries(_ entries: [SidebarLogEntry]) {
+        logEntries.removeAll(keepingCapacity: true)
+        for entry in entries {
+            _ = appendSidebarLogEntry(entry)
         }
     }
 }

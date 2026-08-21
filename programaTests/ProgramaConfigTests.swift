@@ -996,6 +996,49 @@ final class ProgramaConfigTrustGateTests: XCTestCase {
 /// in isolation.
 @MainActor
 final class ProgramaConfigSourceTrackingTests: XCTestCase {
+    func testConfigRevisionChangesOnlyWhenEffectiveConfigOrOwnershipChanges() throws {
+        let fm = FileManager.default
+        let tempRoot = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tempRoot) }
+
+        let firstURL = tempRoot.appendingPathComponent("first.json")
+        let secondURL = tempRoot.appendingPathComponent("second.json")
+        let initialConfig = #"{"commands":[{"name":"Build","command":"echo one"}]}"#
+        try initialConfig.write(to: firstURL, atomically: true, encoding: .utf8)
+        try initialConfig.write(to: secondURL, atomically: true, encoding: .utf8)
+
+        let store = ProgramaConfigStore()
+        store.localConfigPath = firstURL.path
+        store.globalConfigPath = tempRoot.appendingPathComponent("missing.json").path
+        store.loadAll()
+        let initialRevision = store.configRevision
+
+        store.loadAll()
+        store.loadAll()
+        XCTAssertEqual(
+            store.configRevision,
+            initialRevision,
+            "Unchanged watcher reloads must not invalidate every command-palette observer"
+        )
+
+        try #"{"commands":[{"name":"Build","command":"echo two"}]}"#
+            .write(to: firstURL, atomically: true, encoding: .utf8)
+        store.loadAll()
+        XCTAssertEqual(store.configRevision, initialRevision + 1, "A command change must invalidate config consumers")
+
+        try #"{"commands":[{"name":"Build","command":"echo two"}]}"#
+            .write(to: secondURL, atomically: true, encoding: .utf8)
+        store.localConfigPath = secondURL.path
+        store.loadAll()
+        XCTAssertEqual(
+            store.configRevision,
+            initialRevision + 2,
+            "Moving the effective command to another source must invalidate its trust ownership"
+        )
+        XCTAssertEqual(store.commandSourcePaths.values.first, secondURL.path)
+    }
+
     func testEveryLoadedCommandHasATraceableSourcePath() throws {
         let fm = FileManager.default
         let tempRoot = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)

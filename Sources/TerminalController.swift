@@ -1500,10 +1500,10 @@ class TerminalController {
         let maxPendingLineBytes = 8 * 1024 * 1024
 
         var buffer = [UInt8](repeating: 0, count: 4096)
-        var pending = ""
+        var pending = Data()
         var authenticated = false
 
-        while ignoresListenerState || withListenerState({ isRunning }) {
+        connectionLoop: while ignoresListenerState || withListenerState({ isRunning }) {
             let bytesRead = read(socket, &buffer, buffer.count - 1)
             if bytesRead <= 0 {
                 if bytesRead == 0 {
@@ -1514,19 +1514,24 @@ class TerminalController {
                 break
             }
 
-            let chunk = String(bytes: buffer[0..<bytesRead], encoding: .utf8) ?? ""
-            pending.append(chunk)
+            pending.append(contentsOf: buffer[0..<bytesRead])
 
-            if pending.utf8.count > maxPendingLineBytes {
-                dilog("socket.conn", "pending line buffer exceeded \(maxPendingLineBytes) bytes; closing")
-                connection.writeLine("{\"ok\":false,\"error\":{\"code\":\"payload_too_large\"}}")
-                closeReason = "payload_too_large"
-                break
-            }
+            while let newlineIndex = pending.firstIndex(of: 0x0A) {
+                let lineData = Data(pending[..<newlineIndex])
+                pending.removeSubrange(...newlineIndex)
 
-            while let newlineIndex = pending.firstIndex(of: "\n") {
-                let line = String(pending[..<newlineIndex])
-                pending = String(pending[pending.index(after: newlineIndex)...])
+                guard lineData.count <= maxPendingLineBytes else {
+                    dilog("socket.conn", "request frame exceeded \(maxPendingLineBytes) bytes; closing")
+                    connection.writeLine("{\"ok\":false,\"error\":{\"code\":\"payload_too_large\"}}")
+                    closeReason = "payload_too_large"
+                    break connectionLoop
+                }
+                guard let line = String(data: lineData, encoding: .utf8) else {
+                    dilog("socket.conn", "request frame contained invalid UTF-8; closing")
+                    connection.writeLine(v2Error(id: nil, code: "invalid_utf8", message: "Invalid UTF-8"))
+                    closeReason = "invalid_utf8"
+                    break connectionLoop
+                }
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
 
@@ -1537,6 +1542,13 @@ class TerminalController {
 
                 let response = processCommand(trimmed, connection: connection)
                 connection.writeLine(response)
+            }
+
+            if pending.count > maxPendingLineBytes {
+                dilog("socket.conn", "pending line buffer exceeded \(maxPendingLineBytes) bytes; closing")
+                connection.writeLine("{\"ok\":false,\"error\":{\"code\":\"payload_too_large\"}}")
+                closeReason = "payload_too_large"
+                break
             }
         }
         if closeReason == "unknown" {

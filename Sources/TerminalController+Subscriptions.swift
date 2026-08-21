@@ -52,14 +52,14 @@ final class SocketConnection: @unchecked Sendable {
     /// the connection as dead (the read loop will observe this on its next `read()` regardless).
     @discardableResult
     func writeLine(_ line: String) -> Bool {
+        let bytes = Array((line + "\n").utf8)
+        writeLock.lock()
+        defer { writeLock.unlock() }
         stateLock.lock()
         let alreadyClosed = closed
         stateLock.unlock()
         guard !alreadyClosed else { return false }
 
-        let bytes = Array((line + "\n").utf8)
-        writeLock.lock()
-        defer { writeLock.unlock() }
         var offset = 0
         while offset < bytes.count {
             let written = bytes.withUnsafeBufferPointer { buffer -> Int in
@@ -94,11 +94,13 @@ final class SocketConnection: @unchecked Sendable {
 
     /// Called from `handleClient`'s `defer`, in addition to (and before) closing the raw fd.
     func teardown() {
+        writeLock.lock()
         stateLock.lock()
         closed = true
         let previous = subscription
         subscription = nil
         stateLock.unlock()
+        writeLock.unlock()
         if previous != nil {
             dilog("socket.conn", "teardown hadSubscription=true")
         }
@@ -126,6 +128,7 @@ final class EventSubscription: @unchecked Sendable {
     private weak var connection: SocketConnection?
     private let drainQueue: DispatchQueue
     private let lock = NSLock()
+    private let deliveryLock = NSLock()
     private var pending: [[String: Any]] = []
     private var droppedCount = 0
     private var isDraining = false
@@ -188,6 +191,12 @@ final class EventSubscription: @unchecked Sendable {
 
     private func writeFrame(_ frame: [String: Any]) -> Bool {
         guard let line = SocketEventBroadcaster.encodeFrame(frame) else { return true }
+        deliveryLock.lock()
+        defer { deliveryLock.unlock() }
+        lock.lock()
+        let shouldDeliver = !isTornDown
+        lock.unlock()
+        guard shouldDeliver else { return true }
         guard let connection else { return false }
         return connection.writeLine(line)
     }
@@ -196,10 +205,17 @@ final class EventSubscription: @unchecked Sendable {
     /// `SocketConnection.teardown()` when the connection itself is closing.
     func teardown(reason: String = "unknown") {
         lock.lock()
-        guard !isTornDown else { lock.unlock(); return }
-        isTornDown = true
-        pending.removeAll()
+        let wasActive = !isTornDown
+        if wasActive {
+            isTornDown = true
+            pending.removeAll()
+        }
         lock.unlock()
+        // A frame may already have left `pending`. Wait for that delivery to finish before
+        // returning so an unsubscribe response is a barrier: no old event can follow its ack.
+        deliveryLock.lock()
+        deliveryLock.unlock()
+        guard wasActive else { return }
         dilog("socket.subscription", "teardown reason=\(reason) classes=\(classes.map(\.rawValue).sorted().joined(separator: ","))")
         SocketEventBroadcaster.shared.unregister(self)
     }
@@ -403,31 +419,48 @@ extension TerminalController {
 
     private static let outputPollInterval: TimeInterval = 0.1
     private static let outputPollLock = NSLock()
-    private nonisolated(unsafe) static var outputPollStarted = false
+    private nonisolated(unsafe) static var outputPollTimer: DispatchSourceTimer?
+    private nonisolated(unsafe) static var outputPollGeneration: UInt64 = 0
 
-    /// Lazily starts (once, process-lifetime) the shared thread that drives `output` events:
+    /// Lazily starts the shared timer that drives `output` events:
     /// every ~100ms it reads each currently-watched surface's text and publishes only the newly
     /// appended tail (see `SocketEventBroadcaster.publishOutputIfChanged`) -- coalesced, not
-    /// per-byte, and self-throttling (a no-op tick whenever nothing is watched). One thread
-    /// total regardless of subscriber/surface count, matching the pattern-wait poll's approach
+    /// per-byte, and self-throttling. One timer serves every subscriber and surface, matching
+    /// the pattern-wait poll's approach
     /// of reusing a single point-in-time text read rather than a push-based content-changed
-    /// callback (Ghostty doesn't expose one at the app layer).
+    /// callback (Ghostty doesn't expose one at the app layer). The timer cancels itself when
+    /// the final output subscriber disconnects and restarts on a later subscription.
     func v2StartOutputPollLoopIfNeeded() {
         Self.outputPollLock.lock()
         defer { Self.outputPollLock.unlock() }
-        guard !Self.outputPollStarted else { return }
-        Self.outputPollStarted = true
-        Thread.detachNewThread { [weak self] in
-            while true {
-                Thread.sleep(forTimeInterval: TerminalController.outputPollInterval)
-                self?.v2PollSubscribedOutputOnce()
-            }
+        guard Self.outputPollTimer == nil else { return }
+
+        Self.outputPollGeneration &+= 1
+        let generation = Self.outputPollGeneration
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(
+            deadline: .now() + Self.outputPollInterval,
+            repeating: Self.outputPollInterval,
+            leeway: .milliseconds(20)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.v2PollSubscribedOutputOnce(generation: generation)
         }
+        Self.outputPollTimer = timer
+        timer.resume()
     }
 
-    private func v2PollSubscribedOutputOnce() {
+    private func v2PollSubscribedOutputOnce(generation: UInt64) {
+        Self.outputPollLock.lock()
+        let isCurrentPoll = Self.outputPollGeneration == generation && Self.outputPollTimer != nil
+        Self.outputPollLock.unlock()
+        guard isCurrentPoll else { return }
+
         let surfaceIds = SocketEventBroadcaster.shared.watchedOutputSurfaceIds()
-        guard !surfaceIds.isEmpty else { return }
+        guard !surfaceIds.isEmpty else {
+            v2StopOutputPollIfIdle(generation: generation)
+            return
+        }
 
         let snapshots: [(workspaceId: UUID, surfaceId: UUID, text: String)] = v2MainSync {
             surfaceIds.compactMap { surfaceId in
@@ -449,5 +482,17 @@ extension TerminalController {
                 fullText: snapshot.text
             )
         }
+    }
+
+    private func v2StopOutputPollIfIdle(generation: UInt64) {
+        Self.outputPollLock.lock()
+        defer { Self.outputPollLock.unlock() }
+        guard Self.outputPollGeneration == generation,
+              let timer = Self.outputPollTimer,
+              SocketEventBroadcaster.shared.watchedOutputSurfaceIds().isEmpty else {
+            return
+        }
+        Self.outputPollTimer = nil
+        timer.cancel()
     }
 }

@@ -644,7 +644,9 @@ extension Workspace {
 
         guard let paneId = sourcePaneId else { return nil }
 
-        let directory = panelDirectories[panelId] ?? currentDirectory
+        guard let directory = normalizedSidebarDirectory(panelDirectories[panelId] ?? currentDirectory) else {
+            return nil
+        }
         let reviewPanel = ReviewPanel(
             workspaceId: id,
             sourceSurfaceId: panelId,
@@ -658,7 +660,7 @@ extension Workspace {
         }
         panels[reviewPanel.id] = reviewPanel
         panelTitles[reviewPanel.id] = reviewPanel.displayTitle
-        panelDirectories[reviewPanel.id] = directory
+        updatePanelDirectory(panelId: reviewPanel.id, directory: directory)
 
         let newTab = Bonsplit.Tab(
             title: reviewPanel.displayTitle,

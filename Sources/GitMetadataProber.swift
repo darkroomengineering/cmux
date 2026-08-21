@@ -31,6 +31,30 @@ struct GitMetadataProber {
         let executionError: String?
     }
 
+    private final class CommandOutputCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stdoutData = Data()
+        private var stderrData = Data()
+
+        func storeStdout(_ data: Data) {
+            lock.lock()
+            stdoutData = data
+            lock.unlock()
+        }
+
+        func storeStderr(_ data: Data) {
+            lock.lock()
+            stderrData = data
+            lock.unlock()
+        }
+
+        func snapshot() -> (stdout: Data, stderr: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (stdoutData, stderrData)
+        }
+    }
+
     struct GitHubPullRequestProbeItem: Decodable, Equatable {
         let number: Int
         let state: String
@@ -68,7 +92,8 @@ struct GitMetadataProber {
         runCommand(
             directory: directory,
             executable: "git",
-            arguments: arguments
+            arguments: arguments,
+            timeout: workspacePullRequestProbeTimeout
         )
     }
 
@@ -504,6 +529,19 @@ struct GitMetadataProber {
             )
         }
 
+        let outputCollector = CommandOutputCollector()
+        let outputReaders = DispatchGroup()
+        outputReaders.enter()
+        DispatchQueue.global(qos: .utility).async {
+            outputCollector.storeStdout(stdout.fileHandleForReading.readDataToEndOfFile())
+            outputReaders.leave()
+        }
+        outputReaders.enter()
+        DispatchQueue.global(qos: .utility).async {
+            outputCollector.storeStderr(stderr.fileHandleForReading.readDataToEndOfFile())
+            outputReaders.leave()
+        }
+
         if let timeout,
            completion.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
@@ -522,11 +560,11 @@ struct GitMetadataProber {
             completion.wait()
         }
 
-        let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+        outputReaders.wait()
+        let output = outputCollector.snapshot()
         return CommandResult(
-            stdout: String(data: stdoutData, encoding: .utf8),
-            stderr: String(data: stderrData, encoding: .utf8),
+            stdout: String(data: output.stdout, encoding: .utf8),
+            stderr: String(data: output.stderr, encoding: .utf8),
             exitStatus: process.terminationStatus,
             timedOut: false,
             executionError: nil

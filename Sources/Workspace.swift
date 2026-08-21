@@ -1705,10 +1705,10 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         if let directory = detached.directory {
-            panelDirectories[detached.panelId] = directory
+            updatePanelDirectory(panelId: detached.panelId, directory: directory)
         }
-        if let ttyName = detached.ttyName?.trimmingCharacters(in: .whitespacesAndNewlines), !ttyName.isEmpty {
-            surfaceTTYNames[detached.panelId] = ttyName
+        if let ttyName = normalizedSidebarTTYName(detached.ttyName) {
+            _ = setSidebarTTYName(panelId: detached.panelId, ttyName: ttyName)
         } else {
             surfaceTTYNames.removeValue(forKey: detached.panelId)
         }

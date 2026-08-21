@@ -7,6 +7,8 @@ import Network
 import CFNetwork
 import SQLite3
 import CryptoKit
+import ImageIO
+import UniformTypeIdentifiers
 #if canImport(CommonCrypto)
 import CommonCrypto
 #endif
@@ -14,6 +16,9 @@ import CommonCrypto
 import Security
 #endif
 
+private enum BrowserFaviconPolicy {
+    static let maxResponseBytes = 1024 * 1024
+}
 
 @MainActor
 final class BrowserPanel: Panel, ObservableObject {
@@ -1942,7 +1947,10 @@ final class BrowserPanel: Panel, ObservableObject {
                         "url=\(effectiveRequest.url?.absoluteString ?? "<nil>")"
                     )
 #endif
-                    (data, response) = try await remoteSession.data(for: effectiveRequest)
+                    (data, response) = try await Self.loadBoundedFaviconData(
+                        for: effectiveRequest,
+                        session: remoteSession
+                    )
                 } else {
 #if DEBUG
                     dlog(
@@ -1952,7 +1960,10 @@ final class BrowserPanel: Panel, ObservableObject {
                         "url=\(effectiveRequest.url?.absoluteString ?? "<nil>")"
                     )
 #endif
-                    (data, response) = try await URLSession.shared.data(for: effectiveRequest)
+                    (data, response) = try await Self.loadBoundedFaviconData(
+                        for: effectiveRequest,
+                        session: .shared
+                    )
                 }
             } catch {
 #if DEBUG
@@ -1968,7 +1979,8 @@ final class BrowserPanel: Panel, ObservableObject {
             guard self.isCurrentFaviconRefresh(generation: refreshGeneration) else { return }
 
             guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else {
+                  (200..<300).contains(http.statusCode),
+                  Self.isSupportedFaviconContentType(http.value(forHTTPHeaderField: "Content-Type")) else {
 #if DEBUG
                 let status = (response as? HTTPURLResponse)?.statusCode ?? -1
                 dlog(
@@ -1989,7 +2001,12 @@ final class BrowserPanel: Panel, ObservableObject {
 #endif
 
             // Use >= 2x the rendered point size so we don't upscale (blurry) on Retina.
-            guard let png = Self.makeFaviconPNGData(from: data, targetPx: 32) else {
+            let png = await Task.detached(priority: .utility) {
+                Self.makeFaviconPNGData(from: data, targetPx: 32)
+            }.value
+            guard self.isCurrentWebView(webView, instanceID: refreshWebViewInstanceID) else { return }
+            guard self.isCurrentFaviconRefresh(generation: refreshGeneration) else { return }
+            guard let png else {
 #if DEBUG
                 dlog(
                     "browser.favicon.decodeFailed " +
@@ -2045,60 +2062,87 @@ final class BrowserPanel: Panel, ObservableObject {
         }
     }
 
-    @MainActor
-    private static func makeFaviconPNGData(from raw: Data, targetPx: Int) -> Data? {
-        guard let image = NSImage(data: raw) else { return nil }
-
-        let px = max(16, min(128, targetPx))
-        let size = NSSize(width: px, height: px)
-        guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil,
-            pixelsWide: px,
-            pixelsHigh: px,
-            bitsPerSample: 8,
-            samplesPerPixel: 4,
-            hasAlpha: true,
-            isPlanar: false,
-            colorSpaceName: .deviceRGB,
-            bytesPerRow: 0,
-            bitsPerPixel: 0
-        ) else {
-            return nil
+    private nonisolated static func loadBoundedFaviconData(
+        for request: URLRequest,
+        session: URLSession
+    ) async throws -> (Data, URLResponse) {
+        let (bytes, response) = try await session.bytes(for: request)
+        if response.expectedContentLength > Int64(BrowserFaviconPolicy.maxResponseBytes) {
+            throw URLError(.dataLengthExceedsMaximum)
         }
 
-        NSGraphicsContext.saveGraphicsState()
-        defer { NSGraphicsContext.restoreGraphicsState() }
-        let ctx = NSGraphicsContext(bitmapImageRep: rep)
-        ctx?.imageInterpolation = .high
-        ctx?.shouldAntialias = true
-        NSGraphicsContext.current = ctx
+        var data = Data()
+        if response.expectedContentLength > 0 {
+            data.reserveCapacity(min(Int(response.expectedContentLength), BrowserFaviconPolicy.maxResponseBytes))
+        }
+        for try await byte in bytes {
+            guard data.count < BrowserFaviconPolicy.maxResponseBytes else {
+                throw URLError(.dataLengthExceedsMaximum)
+            }
+            data.append(byte)
+        }
+        return (data, response)
+    }
 
-        NSColor.clear.setFill()
-        NSRect(origin: .zero, size: size).fill()
+    private nonisolated static func isSupportedFaviconContentType(_ rawContentType: String?) -> Bool {
+        guard let rawContentType else { return true }
+        let contentType = rawContentType
+            .split(separator: ";", maxSplits: 1)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        return contentType.hasPrefix("image/") || contentType == "application/octet-stream"
+    }
 
-        // Aspect-fit into the target square.
-        let srcSize = image.size
-        let scale = min(size.width / max(1, srcSize.width), size.height / max(1, srcSize.height))
-        let drawSize = NSSize(width: srcSize.width * scale, height: srcSize.height * scale)
-        let drawOrigin = NSPoint(x: (size.width - drawSize.width) / 2.0, y: (size.height - drawSize.height) / 2.0)
-        // Align to integral pixels to avoid soft edges at small sizes.
-        let drawRect = NSRect(
-            x: round(drawOrigin.x),
-            y: round(drawOrigin.y),
-            width: round(drawSize.width),
-            height: round(drawSize.height)
+    private nonisolated static func makeFaviconPNGData(from raw: Data, targetPx: Int) -> Data? {
+        guard raw.count <= BrowserFaviconPolicy.maxResponseBytes,
+              let source = CGImageSourceCreateWithData(raw as CFData, nil) else {
+            return nil
+        }
+        let px = max(16, min(128, targetPx))
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: px,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary),
+              let context = CGContext(
+                data: nil,
+                width: px,
+                height: px,
+                bitsPerComponent: 8,
+                bytesPerRow: px * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return nil
+        }
+        context.interpolationQuality = .high
+        context.clear(CGRect(x: 0, y: 0, width: px, height: px))
+        let scale = min(CGFloat(px) / CGFloat(image.width), CGFloat(px) / CGFloat(image.height))
+        let width = round(CGFloat(image.width) * scale)
+        let height = round(CGFloat(image.height) * scale)
+        let rect = CGRect(
+            x: round((CGFloat(px) - width) / 2),
+            y: round((CGFloat(px) - height) / 2),
+            width: width,
+            height: height
         )
-
-        image.draw(
-            in: drawRect,
-            from: NSRect(origin: .zero, size: srcSize),
-            operation: .sourceOver,
-            fraction: 1.0,
-            respectFlipped: true,
-            hints: [.interpolation: NSImageInterpolation.high]
-        )
-
-        return rep.representation(using: .png, properties: [:])
+        context.draw(image, in: rect)
+        guard let renderedImage = context.makeImage(),
+              let output = CFDataCreateMutable(nil, 0),
+              let destination = CGImageDestinationCreateWithData(
+                output,
+                UTType.png.identifier as CFString,
+                1,
+                nil
+              ) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, renderedImage, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 
     private func handleWebViewLoadingChanged(_ newValue: Bool) {

@@ -44,6 +44,35 @@ def _must(cond: bool, msg: str) -> None:
         raise cmuxError(msg)
 
 
+def _wait_for(pred, timeout_s: float = 10.0, step_s: float = 0.05) -> None:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if pred():
+            return
+        time.sleep(step_s)
+    raise cmuxError("Timed out waiting for condition")
+
+
+def _call_while_events_may_be_pending(client: cmux, method: str, params: dict | None = None) -> dict:
+    """Send an ordinary RPC on a subscribed connection while ignoring interleaved events."""
+    if client._socket is None:
+        raise cmuxError("Not connected")
+    request_id = client._next_id
+    client._next_id += 1
+    payload = {"id": request_id, "method": method, "params": params or {}}
+    client._socket.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
+
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        frame = json.loads(client._recv_line(timeout_s=max(0.5, deadline - time.time())))
+        if not isinstance(frame, dict) or frame.get("id") != request_id:
+            continue
+        if frame.get("ok") is not True:
+            raise cmuxError(f"{method} failed: {frame}")
+        return dict(frame.get("result") or {})
+    raise cmuxError(f"Timed out waiting for {method} response")
+
+
 def _report_agent_state(socket_path: str, workspace_id: str, surface_id: str, state: str) -> None:
     with cmux(socket_path) as bg_client:
         bg_client._call(
@@ -60,6 +89,14 @@ def _read_event(client: cmux, timeout_s: float = 10.0) -> dict:
         raise cmuxError(f"Invalid JSON event frame: {exc}: {line[:200]}")
     _must(isinstance(frame, dict), f"expected a JSON object event frame, got: {line[:200]}")
     return frame
+
+
+def _surface_has(client: cmux, workspace_id: str, surface_id: str, token: str) -> bool:
+    payload = client._call(
+        "surface.read_text",
+        {"workspace_id": workspace_id, "surface_id": surface_id, "scrollback": True},
+    ) or {}
+    return token in str(payload.get("text") or "")
 
 
 def _test_agent_state_events_without_polling(socket_path: str, workspace_id: str, surface_id: str) -> None:
@@ -126,6 +163,77 @@ def _test_workspace_lifecycle_rename_event(socket_path: str, workspace_id: str) 
         _must(seen_rename, "expected a workspace_lifecycle 'renamed' event within 10s")
 
 
+def _wait_for_output_event(client: cmux, surface_id: str, token: str) -> dict:
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        frame = _read_event(client, timeout_s=max(0.5, deadline - time.time()))
+        if frame.get("event") != "output" or frame.get("surface_id") != surface_id:
+            continue
+        if token in str(frame.get("text") or ""):
+            return frame
+    raise cmuxError(f"expected output event containing {token!r} within 10s")
+
+
+def _test_output_subscription_can_stop_and_restart(socket_path: str, workspace_id: str, surface_id: str) -> None:
+    """An output consumer can unsubscribe while the surface keeps running, then resubscribe
+    without receiving output produced while it was detached."""
+    first_token = f"OUTPUT_SUB_FIRST_{time.time_ns()}"
+    detached_token = f"OUTPUT_SUB_DETACHED_{time.time_ns()}"
+    restarted_token = f"OUTPUT_SUB_RESTARTED_{time.time_ns()}"
+
+    with cmux(socket_path) as sub_client:
+        ack = sub_client._call(
+            "subscribe",
+            {"classes": ["output"], "surface_ids": [surface_id]},
+            timeout_s=10.0,
+        ) or {}
+        _must(ack.get("classes") == ["output"], f"expected output subscription ack, got {ack}")
+        time.sleep(0.25)  # Let the 100ms output poll establish its initial non-emitting baseline.
+
+        with cmux(socket_path) as driver:
+            driver.send_surface(surface_id, f"echo {first_token}\n")
+        _wait_for_output_event(sub_client, surface_id, first_token)
+
+        unsubscribed = _call_while_events_may_be_pending(sub_client, "unsubscribe")
+        _must(unsubscribed.get("unsubscribed") is True, f"expected unsubscribe ack, got {unsubscribed}")
+
+        with cmux(socket_path) as driver:
+            driver.send_surface(surface_id, f"echo {detached_token}\n")
+            _wait_for(
+                lambda: _surface_has(driver, workspace_id, surface_id, detached_token),
+                timeout_s=10.0,
+            )
+
+        try:
+            unexpected = _read_event(sub_client, timeout_s=0.35)
+        except cmuxError as exc:
+            _must(
+                "Timed out waiting for response" in str(exc),
+                f"subscriber failed after unsubscribe ack: {exc}",
+            )
+        else:
+            raise cmuxError(
+                f"unsubscribe ack was not a delivery barrier; received stale frame: {unexpected}"
+            )
+
+        ack = sub_client._call(
+            "subscribe",
+            {"classes": ["output"], "surface_ids": [surface_id]},
+            timeout_s=10.0,
+        ) or {}
+        _must(ack.get("classes") == ["output"], f"expected restarted output subscription ack, got {ack}")
+        time.sleep(0.25)  # A restarted subscription establishes a fresh baseline.
+        with cmux(socket_path) as driver:
+            driver.send_surface(surface_id, f"echo {restarted_token}\n")
+        restarted = _wait_for_output_event(sub_client, surface_id, restarted_token)
+        _must(
+            detached_token not in str(restarted.get("text") or ""),
+            f"restarted subscription replayed output produced while detached: {restarted}",
+        )
+
+        _call_while_events_may_be_pending(sub_client, "unsubscribe")
+
+
 def _run_once(socket_path: str) -> int:
     workspace_id = ""
     try:
@@ -144,11 +252,12 @@ def _run_once(socket_path: str) -> int:
             _test_agent_state_events_without_polling(socket_path, workspace_id, surface_id)
             _test_subscription_scoped_to_requested_surface(socket_path, workspace_id, surface_id, other_surface_id)
             _test_workspace_lifecycle_rename_event(socket_path, workspace_id)
+            _test_output_subscription_can_stop_and_restart(socket_path, workspace_id, surface_id)
 
             client.close_workspace(workspace_id)
             workspace_id = ""
 
-        print("PASS: subscribe pushes agent_state and workspace_lifecycle events without polling")
+        print("PASS: subscribe pushes events and output subscriptions stop and restart cleanly")
         return 0
     finally:
         if workspace_id:

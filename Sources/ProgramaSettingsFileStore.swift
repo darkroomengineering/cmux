@@ -1803,10 +1803,14 @@ private enum BackupValue: Codable, Equatable {
 // queue. That immediate-reattach behavior is preserved as-is; only the raw DispatchSource
 // open/create/resume/cancel plumbing is shared via `FileWatcher`.
 private final class ShortcutSettingsFileWatcher {
+    private static let reloadCoalescingDelay: TimeInterval = 0.15
+
     private let path: String
     private let fileManager: FileManager
     private let onChange: () -> Void
     private let watcher: FileWatcher
+    private let pendingReloadLock = NSLock()
+    private var pendingReloadWorkItem: DispatchWorkItem?
 
     init(path: String, fileManager: FileManager = .default, onChange: @escaping () -> Void) {
         self.path = path
@@ -1816,8 +1820,20 @@ private final class ShortcutSettingsFileWatcher {
         start()
     }
 
+    deinit {
+        cancelPendingReload()
+    }
+
     func stop() {
         watcher.stop()
+        cancelPendingReload()
+    }
+
+    private func cancelPendingReload() {
+        pendingReloadLock.lock()
+        pendingReloadWorkItem?.cancel()
+        pendingReloadWorkItem = nil
+        pendingReloadLock.unlock()
     }
 
     private func start() {
@@ -1837,7 +1853,7 @@ private final class ShortcutSettingsFileWatcher {
             if flags.contains(.delete) || flags.contains(.rename) {
                 self.start()
             }
-            self.onChange()
+            self.scheduleReload()
         }
         if !started {
             startDirectoryWatcher()
@@ -1853,9 +1869,22 @@ private final class ShortcutSettingsFileWatcher {
             guard let self else { return }
             if self.fileManager.fileExists(atPath: self.path) {
                 self.start()
-            } else {
-                self.onChange()
             }
+            self.scheduleReload()
         }
+    }
+
+    private func scheduleReload() {
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.onChange()
+        }
+        pendingReloadLock.lock()
+        pendingReloadWorkItem?.cancel()
+        pendingReloadWorkItem = workItem
+        pendingReloadLock.unlock()
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.reloadCoalescingDelay,
+            execute: workItem
+        )
     }
 }

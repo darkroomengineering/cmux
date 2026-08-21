@@ -921,6 +921,30 @@ struct CLIProcessResult {
 }
 
 enum CLIProcessRunner {
+    private final class OutputCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stdoutData = Data()
+        private var stderrData = Data()
+
+        func storeStdout(_ data: Data) {
+            lock.lock()
+            stdoutData = data
+            lock.unlock()
+        }
+
+        func storeStderr(_ data: Data) {
+            lock.lock()
+            stderrData = data
+            lock.unlock()
+        }
+
+        func snapshot() -> (stdout: Data, stderr: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (stdoutData, stderrData)
+        }
+    }
+
     static func runProcess(
         executablePath: String,
         arguments: [String],
@@ -956,11 +980,29 @@ enum CLIProcessRunner {
             return CLIProcessResult(status: 1, stdout: "", stderr: String(describing: error), timedOut: false)
         }
 
+        let outputCollector = OutputCollector()
+        let outputReaders = DispatchGroup()
+        outputReaders.enter()
+        DispatchQueue.global(qos: .utility).async {
+            outputCollector.storeStdout(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+            outputReaders.leave()
+        }
+        outputReaders.enter()
+        DispatchQueue.global(qos: .utility).async {
+            outputCollector.storeStderr(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+            outputReaders.leave()
+        }
+
+        let inputWriter = DispatchGroup()
         if let stdinText, let stdinPipe {
-            if let data = stdinText.data(using: .utf8) {
-                stdinPipe.fileHandleForWriting.write(data)
+            inputWriter.enter()
+            DispatchQueue.global(qos: .utility).async {
+                if let data = stdinText.data(using: .utf8) {
+                    try? stdinPipe.fileHandleForWriting.write(contentsOf: data)
+                }
+                try? stdinPipe.fileHandleForWriting.close()
+                inputWriter.leave()
             }
-            stdinPipe.fileHandleForWriting.closeFile()
         }
 
         let timedOut: Bool
@@ -977,8 +1019,11 @@ enum CLIProcessRunner {
             timedOut = false
         }
 
-        let stdout = String(data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        var stderr = String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        inputWriter.wait()
+        outputReaders.wait()
+        let output = outputCollector.snapshot()
+        let stdout = String(data: output.stdout, encoding: .utf8) ?? ""
+        var stderr = String(data: output.stderr, encoding: .utf8) ?? ""
         if timedOut {
             let timeoutMessage = "process timed out"
             if stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

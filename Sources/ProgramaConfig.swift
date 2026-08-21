@@ -2,7 +2,7 @@ import Bonsplit
 import Combine
 import Foundation
 
-struct ProgramaConfigFile: Codable, Sendable {
+struct ProgramaConfigFile: Codable, Sendable, Equatable {
     var commands: [ProgramaCommandDefinition]
     var recipes: [ProgramaRecipeDefinition]?
 }
@@ -10,7 +10,7 @@ struct ProgramaConfigFile: Codable, Sendable {
 /// A named, reusable input to a `command` template or a recipe `prompt`, referenced as
 /// `{{name}}`. `prompt` is the label shown when asking the user for a value (defaults to
 /// `name` when absent); `default` pre-fills the text field.
-struct ProgramaParameterDefinition: Codable, Sendable {
+struct ProgramaParameterDefinition: Codable, Sendable, Equatable {
     var name: String
     var prompt: String?
     var `default`: String?
@@ -22,7 +22,7 @@ struct ProgramaParameterDefinition: Codable, Sendable {
     }
 }
 
-struct ProgramaCommandDefinition: Codable, Sendable, Identifiable {
+struct ProgramaCommandDefinition: Codable, Sendable, Identifiable, Equatable {
     var name: String
     var description: String?
     var keywords: [String]?
@@ -109,7 +109,7 @@ struct ProgramaCommandDefinition: Codable, Sendable, Identifiable {
 /// same trust gate every config entry goes through, the substituted `prompt` is typed into the
 /// focused terminal WITHOUT a trailing newline, so the user reviews it and presses Return
 /// themselves. See `ProgramaConfigExecutor.executeRecipe`.
-struct ProgramaRecipeDefinition: Codable, Sendable, Identifiable {
+struct ProgramaRecipeDefinition: Codable, Sendable, Identifiable, Equatable {
     var name: String
     var description: String?
     var keywords: [String]?
@@ -161,13 +161,13 @@ struct ProgramaRecipeDefinition: Codable, Sendable, Identifiable {
     }
 }
 
-enum ProgramaRestartBehavior: String, Codable, Sendable {
+enum ProgramaRestartBehavior: String, Codable, Sendable, Equatable {
     case recreate
     case ignore
     case confirm
 }
 
-struct ProgramaWorkspaceDefinition: Codable, Sendable {
+struct ProgramaWorkspaceDefinition: Codable, Sendable, Equatable {
     var name: String?
     var cwd: String?
     var color: String?
@@ -201,7 +201,7 @@ struct ProgramaWorkspaceDefinition: Codable, Sendable {
     }
 }
 
-indirect enum ProgramaLayoutNode: Codable, Sendable {
+indirect enum ProgramaLayoutNode: Codable, Sendable, Equatable {
     case pane(ProgramaPaneDefinition)
     case split(ProgramaSplitDefinition)
 
@@ -253,7 +253,7 @@ indirect enum ProgramaLayoutNode: Codable, Sendable {
     }
 }
 
-struct ProgramaSplitDefinition: Codable, Sendable {
+struct ProgramaSplitDefinition: Codable, Sendable, Equatable {
     var direction: ProgramaSplitDirection
     var split: Double?
     var children: [ProgramaLayoutNode]
@@ -292,12 +292,12 @@ struct ProgramaSplitDefinition: Codable, Sendable {
     }
 }
 
-enum ProgramaSplitDirection: String, Codable, Sendable {
+enum ProgramaSplitDirection: String, Codable, Sendable, Equatable {
     case horizontal
     case vertical
 }
 
-struct ProgramaPaneDefinition: Codable, Sendable {
+struct ProgramaPaneDefinition: Codable, Sendable, Equatable {
     var surfaces: [ProgramaSurfaceDefinition]
 
     init(surfaces: [ProgramaSurfaceDefinition]) {
@@ -318,7 +318,7 @@ struct ProgramaPaneDefinition: Codable, Sendable {
     }
 }
 
-struct ProgramaSurfaceDefinition: Codable, Sendable {
+struct ProgramaSurfaceDefinition: Codable, Sendable, Equatable {
     var type: ProgramaSurfaceType
     var name: String?
     var command: String?
@@ -328,7 +328,7 @@ struct ProgramaSurfaceDefinition: Codable, Sendable {
     var focus: Bool?
 }
 
-enum ProgramaSurfaceType: String, Codable, Sendable {
+enum ProgramaSurfaceType: String, Codable, Sendable, Equatable {
     case terminal
     case browser
 }
@@ -491,6 +491,13 @@ final class ProgramaConfigStore: ObservableObject {
                     recipeSources[recipe.id] = globalConfigPath
                 }
             }
+        }
+
+        guard commands != loadedCommands ||
+                sourcePaths != commandSourcePaths ||
+                recipes != loadedRecipes ||
+                recipeSources != recipeSourcePaths else {
+            return
         }
 
         loadedCommands = commands

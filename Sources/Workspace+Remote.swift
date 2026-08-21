@@ -324,9 +324,8 @@ extension Workspace {
 
     @MainActor
     func rememberPendingRemoteSurfaceTTY(_ ttyName: String, requestedSurfaceId: UUID?) {
-        let trimmedTTY = ttyName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTTY.isEmpty else { return }
-        pendingRemoteSurfaceTTYName = trimmedTTY
+        guard let normalizedTTY = normalizedSidebarTTYName(ttyName) else { return }
+        pendingRemoteSurfaceTTYName = normalizedTTY
         pendingRemoteSurfaceTTYSurfaceId = requestedSurfaceId
     }
 
@@ -341,14 +340,15 @@ extension Workspace {
 
     @MainActor
     func applyPendingRemoteSurfaceTTYIfNeeded(to panelId: UUID) {
-        guard let ttyName = pendingRemoteSurfaceTTYName?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !ttyName.isEmpty else {
-            return
-        }
+        guard let pendingTTYName = pendingRemoteSurfaceTTYName else { return }
         if let requestedSurfaceId = pendingRemoteSurfaceTTYSurfaceId, requestedSurfaceId != panelId {
             return
         }
-        surfaceTTYNames[panelId] = ttyName
+        guard setSidebarTTYName(panelId: panelId, ttyName: pendingTTYName) else {
+            pendingRemoteSurfaceTTYName = nil
+            pendingRemoteSurfaceTTYSurfaceId = nil
+            return
+        }
         pendingRemoteSurfaceTTYName = nil
         pendingRemoteSurfaceTTYSurfaceId = nil
         syncRemotePortScanTTYs()
@@ -380,8 +380,7 @@ extension Workspace {
 
     @MainActor
     func applyBootstrapRemoteTTY(_ ttyName: String) {
-        let trimmedTTY = ttyName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTTY.isEmpty else { return }
+        guard let normalizedTTY = normalizedSidebarTTYName(ttyName) else { return }
 
         let candidateSurfaceId: UUID? = {
             if let focusedPanelId, activeRemoteTerminalSurfaceIds.contains(focusedPanelId) {
@@ -394,11 +393,11 @@ extension Workspace {
         }()
 
         guard let candidateSurfaceId else {
-            rememberPendingRemoteSurfaceTTY(trimmedTTY, requestedSurfaceId: nil)
+            rememberPendingRemoteSurfaceTTY(normalizedTTY, requestedSurfaceId: nil)
             return
         }
 
-        surfaceTTYNames[candidateSurfaceId] = trimmedTTY
+        guard setSidebarTTYName(panelId: candidateSurfaceId, ttyName: normalizedTTY) else { return }
         syncRemotePortScanTTYs()
         if !applyPendingRemoteSurfacePortKickIfNeeded(to: candidateSurfaceId) {
             kickRemotePortScan(panelId: candidateSurfaceId, reason: .command)
@@ -512,7 +511,13 @@ extension Workspace {
         detail: String?,
         target: String
     ) {
-        let trimmedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let boundedDetail = detail.map {
+            SidebarTelemetryLimits.truncatedToUTF8Limit(
+                $0,
+                maxBytes: SidebarTelemetryLimits.maxLogMessageBytes
+            )
+        }
+        let trimmedDetail = boundedDetail?.trimmingCharacters(in: .whitespacesAndNewlines)
         let proxyOnlyError = trimmedDetail.map(Self.isProxyOnlyRemoteError) ?? false
         let preserveConnectedStateForRetry =
             state == .connecting && preservesSSHTerminalConnection && hasProxyOnlyRemoteSidebarError
@@ -526,7 +531,7 @@ extension Workspace {
         }
 
         remoteConnectionState = effectiveState
-        remoteConnectionDetail = detail
+        remoteConnectionDetail = boundedDetail
         applyBrowserRemoteWorkspaceStatusToPanels()
 
         if let trimmedDetail, !trimmedDetail.isEmpty, (state == .error || proxyOnlyError) {
@@ -534,19 +539,29 @@ extension Workspace {
             let statusIcon = proxyOnlyError ? "exclamationmark.triangle.fill" : "network.slash"
             let notificationTitle = proxyOnlyError ? "Remote Proxy Unavailable" : "Remote SSH Error"
             let logSource = proxyOnlyError ? "remote-proxy" : "remote"
-            statusEntries[Self.remoteErrorStatusKey] = SidebarStatusEntry(
+            let diagnosticMessage = "\(statusPrefix) (\(target)): \(trimmedDetail)"
+            _ = setSidebarStatusEntry(SidebarStatusEntry(
                 key: Self.remoteErrorStatusKey,
-                value: "\(statusPrefix) (\(target)): \(trimmedDetail)",
+                value: SidebarTelemetryLimits.truncatedToUTF8Limit(
+                    diagnosticMessage,
+                    maxBytes: SidebarTelemetryLimits.maxStatusValueBytes
+                ),
                 icon: statusIcon,
                 color: nil,
                 timestamp: Date()
-            )
+            ))
 
-            let fingerprint = "connection:\(trimmedDetail)"
+            let fingerprint = SidebarTelemetryLimits.truncatedToUTF8Limit(
+                "connection:\(trimmedDetail)",
+                maxBytes: SidebarTelemetryLimits.maxLogMessageBytes
+            )
             if remoteLastErrorFingerprint != fingerprint {
                 remoteLastErrorFingerprint = fingerprint
                 appendSidebarLog(
-                    message: "\(statusPrefix) (\(target)): \(trimmedDetail)",
+                    message: SidebarTelemetryLimits.truncatedToUTF8Limit(
+                        diagnosticMessage,
+                        maxBytes: SidebarTelemetryLimits.maxLogMessageBytes
+                    ),
                     level: .error,
                     source: logSource
                 )
@@ -570,18 +585,37 @@ extension Workspace {
     }
 
     func applyRemoteDaemonStatusUpdate(_ status: WorkspaceRemoteDaemonStatus, target: String) {
-        remoteDaemonStatus = status
+        var boundedStatus = status
+        boundedStatus.detail = status.detail.map {
+            SidebarTelemetryLimits.truncatedToUTF8Limit(
+                $0,
+                maxBytes: SidebarTelemetryLimits.maxLogMessageBytes
+            )
+        }
+        remoteDaemonStatus = boundedStatus
         applyBrowserRemoteWorkspaceStatusToPanels()
-        guard status.state == .error else {
+        guard boundedStatus.state == .error else {
             remoteLastDaemonErrorFingerprint = nil
             return
         }
-        let trimmedDetail = status.detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "remote daemon error"
-        let fingerprint = "daemon:\(trimmedDetail)"
+        let trimmedDetail = boundedStatus.detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveDetail: String
+        if let trimmedDetail, !trimmedDetail.isEmpty {
+            effectiveDetail = trimmedDetail
+        } else {
+            effectiveDetail = "remote daemon error"
+        }
+        let fingerprint = SidebarTelemetryLimits.truncatedToUTF8Limit(
+            "daemon:\(effectiveDetail)",
+            maxBytes: SidebarTelemetryLimits.maxLogMessageBytes
+        )
         guard remoteLastDaemonErrorFingerprint != fingerprint else { return }
         remoteLastDaemonErrorFingerprint = fingerprint
         appendSidebarLog(
-            message: "Remote daemon error (\(target)): \(trimmedDetail)",
+            message: SidebarTelemetryLimits.truncatedToUTF8Limit(
+                "Remote daemon error (\(target)): \(effectiveDetail)",
+                maxBytes: SidebarTelemetryLimits.maxLogMessageBytes
+            ),
             level: .error,
             source: "remote-daemon"
         )
@@ -635,19 +669,29 @@ extension Workspace {
         }
 
         let conflictsList = conflicts.map { ":\($0)" }.joined(separator: ", ")
-        statusEntries[Self.remotePortConflictStatusKey] = SidebarStatusEntry(
+        let statusMessage = "SSH port conflicts (\(target)): \(conflictsList)"
+        _ = setSidebarStatusEntry(SidebarStatusEntry(
             key: Self.remotePortConflictStatusKey,
-            value: "SSH port conflicts (\(target)): \(conflictsList)",
+            value: SidebarTelemetryLimits.truncatedToUTF8Limit(
+                statusMessage,
+                maxBytes: SidebarTelemetryLimits.maxStatusValueBytes
+            ),
             icon: "exclamationmark.triangle.fill",
             color: nil,
             timestamp: Date()
-        )
+        ))
 
-        let fingerprint = conflicts.map(String.init).joined(separator: ",")
+        let fingerprint = SidebarTelemetryLimits.truncatedToUTF8Limit(
+            conflicts.map(String.init).joined(separator: ","),
+            maxBytes: SidebarTelemetryLimits.maxLogMessageBytes
+        )
         guard remoteLastPortConflictFingerprint != fingerprint else { return }
         remoteLastPortConflictFingerprint = fingerprint
         appendSidebarLog(
-            message: "Port conflicts while forwarding \(target): \(conflictsList)",
+            message: SidebarTelemetryLimits.truncatedToUTF8Limit(
+                "Port conflicts while forwarding \(target): \(conflictsList)",
+                maxBytes: SidebarTelemetryLimits.maxLogMessageBytes
+            ),
             level: .warning,
             source: "remote-forward"
         )

@@ -50,12 +50,21 @@ def _find_cli_binary() -> str:
     return candidates[0]
 
 
-def _run_cli(cli: str, args: List[str], *, expect_ok: bool = True) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    cli: str,
+    args: List[str],
+    *,
+    expect_ok: bool = True,
+    timeout_s: float | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env.pop("PROGRAMA_WORKSPACE_ID", None)
     env.pop("PROGRAMA_SURFACE_ID", None)
     cmd = [cli, "--socket", SOCKET_PATH] + args
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env, timeout=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        raise cmuxError(f"CLI timed out after {timeout_s}s ({' '.join(cmd)})") from exc
     if expect_ok and proc.returncode != 0:
         merged = f"{proc.stdout}\n{proc.stderr}".strip()
         raise cmuxError(f"CLI failed ({' '.join(cmd)}): {merged}")
@@ -164,6 +173,34 @@ def main() -> int:
         _run_cli(cli, ["pipe-pane", "--workspace", ws, "--surface", s1, "--command", f"cat > {pipe_file}"])
         piped = pipe_file.read_text() if pipe_file.exists() else ""
         _must(capture_token in piped, f"pipe-pane output missing token: {piped!r}")
+
+        large_pipe_command = (
+            "python3 -c 'import sys; data=sys.stdin.buffer.read(); "
+            "sys.stdout.write(\"O\"*131072); sys.stderr.write(\"E\"*131072); "
+            "sys.stdout.write(\"\\nSTDIN_BYTES=\"+str(len(data))+\"\\n\")'"
+        )
+        large_pipe = _run_cli(
+            cli,
+            [
+                "--json",
+                "pipe-pane",
+                "--workspace",
+                ws,
+                "--surface",
+                s1,
+                "--command",
+                large_pipe_command,
+            ],
+            timeout_s=20.0,
+        )
+        large_pipe_payload = json.loads(large_pipe.stdout or "{}")
+        large_stdout = str(large_pipe_payload.get("stdout") or "")
+        large_stderr = str(large_pipe_payload.get("stderr") or "")
+        _must(large_pipe_payload.get("status") == 0, f"pipe-pane command failed: {large_pipe_payload}")
+        _must(len(large_stdout) >= 131072, "pipe-pane lost stdout beyond normal pipe capacity")
+        _must(len(large_stderr) == 131072, "pipe-pane lost stderr beyond normal pipe capacity")
+        stdin_marker = next((line for line in large_stdout.splitlines() if line.startswith("STDIN_BYTES=")), "")
+        _must(stdin_marker and int(stdin_marker.split("=", 1)[1]) > 0, "pipe-pane command did not consume captured stdin")
 
         wait_name = f"tmux_wait_{stamp}"
         waiter = _run_cli(cli, ["wait-for", wait_name, "--timeout", "5"], expect_ok=False)

@@ -58,6 +58,13 @@ extension TerminalController {
               !ttyName.isEmpty else {
             return .err(code: "invalid_params", message: "Missing tty_name", data: nil)
         }
+        guard SidebarTelemetryLimits.utf8ByteCount(ttyName) <= SidebarTelemetryLimits.maxTTYNameBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "tty_name exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxTTYNameBytes) bytes",
+                data: nil
+            )
+        }
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { [weak self] _, tab in
             guard let self else { return }
@@ -79,7 +86,7 @@ extension TerminalController {
                 return
             }
 
-            tab.surfaceTTYNames[surfaceId] = ttyName
+            guard tab.setSidebarTTYName(panelId: surfaceId, ttyName: ttyName) else { return }
             if tab.isLiveRemoteWorkspace {
                 tab.syncRemotePortScanTTYs()
                 _ = tab.applyPendingRemoteSurfacePortKickIfNeeded(to: surfaceId)
@@ -179,6 +186,13 @@ extension TerminalController {
               !path.isEmpty else {
             return .err(code: "invalid_params", message: "Missing path", data: nil)
         }
+        guard SidebarTelemetryLimits.utf8ByteCount(path) <= SidebarTelemetryLimits.maxDirectoryBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "path exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxDirectoryBytes) bytes",
+                data: nil
+            )
+        }
 
         v2ScheduleSurfaceTelemetryMutation(workspaceId: workspaceId, surfaceId: surfaceId) { tabManager, _, sid in
             tabManager.updateSurfaceDirectory(tabId: workspaceId, surfaceId: sid, directory: path)
@@ -249,6 +263,13 @@ extension TerminalController {
         guard let branch = v2RawString(params, "branch")?.trimmingCharacters(in: .whitespacesAndNewlines),
               !branch.isEmpty else {
             return .err(code: "invalid_params", message: "Missing branch", data: nil)
+        }
+        guard SidebarTelemetryLimits.utf8ByteCount(branch) <= SidebarTelemetryLimits.maxGitBranchBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "branch exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxGitBranchBytes) bytes",
+                data: nil
+            )
         }
         let isDirty = v2Bool(params, "dirty") ?? false
 
@@ -362,14 +383,32 @@ extension TerminalController {
         guard let rawURL = v2RawString(params, "url")?.trimmingCharacters(in: .whitespacesAndNewlines),
               let url = URL(string: rawURL),
               let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
+              scheme == "http" || scheme == "https",
+              url.host?.isEmpty == false else {
             return v2InvalidParam("url")
+        }
+        guard SidebarTelemetryLimits.utf8ByteCount(url.absoluteString) <= SidebarTelemetryLimits.maxPullRequestURLBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "url exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxPullRequestURLBytes) bytes",
+                data: nil
+            )
         }
         let statusRaw = (v2String(params, "state") ?? "open").lowercased()
         guard let status = SidebarPullRequestStatus(rawValue: statusRaw) else {
             return .err(code: "invalid_params", message: "Invalid state — use: open, merged, closed", data: nil)
         }
         let branch = v2String(params, "branch")
+        guard SidebarTelemetryLimits.isWithinUTF8Limit(
+            branch,
+            maxBytes: SidebarTelemetryLimits.maxGitBranchBytes
+        ) else {
+            return .err(
+                code: "invalid_params",
+                message: "branch exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxGitBranchBytes) bytes",
+                data: nil
+            )
+        }
 
         var checks: SidebarPullRequestChecksStatus?
         if let rawChecks = v2String(params, "checks") {
@@ -384,6 +423,13 @@ extension TerminalController {
             return .err(code: "invalid_params", message: "Invalid label", data: nil)
         }
         let label = String(labelRaw.prefix(16))
+        guard SidebarTelemetryLimits.utf8ByteCount(label) <= SidebarTelemetryLimits.maxPullRequestLabelBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "label exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxPullRequestLabelBytes) bytes",
+                data: nil
+            )
+        }
 
         v2ScheduleSurfaceTelemetryMutation(workspaceId: workspaceId, surfaceId: surfaceId) { _, tab, sid in
             guard Self.shouldReplacePullRequest(
@@ -554,11 +600,45 @@ extension TerminalController {
         guard let key = v2String(params, "key") else {
             return .err(code: "invalid_params", message: "Missing key", data: nil)
         }
+        guard SidebarTelemetryLimits.utf8ByteCount(key) <= SidebarTelemetryLimits.maxKeyBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "key exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxKeyBytes) bytes",
+                data: nil
+            )
+        }
         guard let value = v2RawString(params, "value") else {
             return .err(code: "invalid_params", message: "Missing value", data: nil)
         }
+        guard SidebarTelemetryLimits.utf8ByteCount(value) <= SidebarTelemetryLimits.maxStatusValueBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "value exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxStatusValueBytes) bytes",
+                data: nil
+            )
+        }
         let icon = v2String(params, "icon")
+        guard SidebarTelemetryLimits.isWithinUTF8Limit(
+            icon,
+            maxBytes: SidebarTelemetryLimits.maxStatusIconBytes
+        ) else {
+            return .err(
+                code: "invalid_params",
+                message: "icon exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxStatusIconBytes) bytes",
+                data: nil
+            )
+        }
         let color = v2String(params, "color")
+        guard SidebarTelemetryLimits.isWithinUTF8Limit(
+            color,
+            maxBytes: SidebarTelemetryLimits.maxStatusColorBytes
+        ) else {
+            return .err(
+                code: "invalid_params",
+                message: "color exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxStatusColorBytes) bytes",
+                data: nil
+            )
+        }
 
         let formatRaw = v2String(params, "format") ?? SidebarMetadataFormat.plain.rawValue
         guard let format = parseSidebarMetadataFormat(formatRaw) else {
@@ -580,11 +660,26 @@ extension TerminalController {
                   scheme == "http" || scheme == "https" else {
                 return .err(code: "invalid_params", message: "Invalid url — expected http(s) URL", data: nil)
             }
+            guard SidebarTelemetryLimits.utf8ByteCount(candidate.absoluteString) <= SidebarTelemetryLimits.maxStatusURLBytes else {
+                return .err(
+                    code: "invalid_params",
+                    message: "url exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxStatusURLBytes) bytes",
+                    data: nil
+                )
+            }
             url = candidate
         }
 
         var pidValue: pid_t?
-        if let rawPid = v2Int(params, "pid"), rawPid > 0 {
+        if v2HasNonNullParam(params, "pid") {
+            guard let rawPid = v2Int(params, "pid"),
+                  (1...Int(pid_t.max)).contains(rawPid) else {
+                return .err(
+                    code: "invalid_params",
+                    message: "pid must be an integer from 1 through \(Int(pid_t.max))",
+                    data: nil
+                )
+            }
             pidValue = pid_t(rawPid)
         }
 
@@ -601,12 +696,13 @@ extension TerminalController {
                 format: format
             ) else {
                 if let pidValue {
-                    tab.agentPIDs[key] = pidValue
-                    self.refreshTrackedAgentPorts(for: tab)
+                    if tab.setSidebarAgentPID(key: key, pid: pidValue) {
+                        self.refreshTrackedAgentPorts(for: tab)
+                    }
                 }
                 return
             }
-            tab.statusEntries[key] = SidebarStatusEntry(
+            let insertion = tab.setSidebarStatusEntry(SidebarStatusEntry(
                 key: key,
                 value: value,
                 icon: icon,
@@ -615,9 +711,10 @@ extension TerminalController {
                 priority: priority,
                 format: format,
                 timestamp: Date()
-            )
-            if let pidValue {
-                tab.agentPIDs[key] = pidValue
+            ))
+            guard insertion.inserted else { return }
+            let agentPIDUpdated = pidValue.map { tab.setSidebarAgentPID(key: key, pid: $0) } ?? false
+            if insertion.evictedAgentPID || agentPIDUpdated {
                 self.refreshTrackedAgentPorts(for: tab)
             }
         }
@@ -690,6 +787,13 @@ extension TerminalController {
         guard let message = v2RawString(params, "message"), !message.isEmpty else {
             return .err(code: "invalid_params", message: "Missing message", data: nil)
         }
+        guard SidebarTelemetryLimits.utf8ByteCount(message) <= SidebarTelemetryLimits.maxLogMessageBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "message exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxLogMessageBytes) bytes",
+                data: nil
+            )
+        }
         let levelRaw = v2String(params, "level") ?? SidebarLogLevel.info.rawValue
         guard let level = SidebarLogLevel(rawValue: levelRaw) else {
             return .err(
@@ -699,14 +803,21 @@ extension TerminalController {
             )
         }
         let source = v2String(params, "source")
+        guard SidebarTelemetryLimits.isWithinUTF8Limit(
+            source,
+            maxBytes: SidebarTelemetryLimits.maxLogSourceBytes
+        ) else {
+            return .err(
+                code: "invalid_params",
+                message: "source exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxLogSourceBytes) bytes",
+                data: nil
+            )
+        }
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { _, tab in
-            tab.logEntries.append(SidebarLogEntry(message: message, level: level, source: source, timestamp: Date()))
-            let configuredLimit = UserDefaults.standard.object(forKey: "sidebarMaxLogEntries") as? Int ?? 50
-            let limit = max(1, min(500, configuredLimit))
-            if tab.logEntries.count > limit {
-                tab.logEntries.removeFirst(tab.logEntries.count - limit)
-            }
+            _ = tab.appendSidebarLogEntry(
+                SidebarLogEntry(message: message, level: level, source: source, timestamp: Date())
+            )
         }
 
         return .ok([
@@ -777,12 +888,22 @@ extension TerminalController {
         }
         let clamped = min(1.0, max(0.0, rawValue))
         let label = v2String(params, "label")
+        guard SidebarTelemetryLimits.isWithinUTF8Limit(
+            label,
+            maxBytes: SidebarTelemetryLimits.maxProgressLabelBytes
+        ) else {
+            return .err(
+                code: "invalid_params",
+                message: "label exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxProgressLabelBytes) bytes",
+                data: nil
+            )
+        }
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { _, tab in
             guard Self.shouldReplaceProgress(current: tab.progress, value: clamped, label: label) else {
                 return
             }
-            tab.progress = SidebarProgressState(value: clamped, label: label)
+            _ = tab.setSidebarProgress(value: clamped, label: label)
         }
 
         return .ok([
@@ -893,6 +1014,13 @@ extension TerminalController {
         guard let key = v2String(params, "key") else {
             return .err(code: "invalid_params", message: "Missing key", data: nil)
         }
+        guard SidebarTelemetryLimits.utf8ByteCount(key) <= SidebarTelemetryLimits.maxKeyBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "key exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxKeyBytes) bytes",
+                data: nil
+            )
+        }
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { [weak self] _, tab in
             guard let self else { return }
@@ -917,15 +1045,28 @@ extension TerminalController {
         guard let key = v2String(params, "key") else {
             return .err(code: "invalid_params", message: "Missing key", data: nil)
         }
-        guard let rawPid = v2Int(params, "pid"), rawPid > 0 else {
-            return v2InvalidParam("pid — must be a positive integer")
+        guard SidebarTelemetryLimits.utf8ByteCount(key) <= SidebarTelemetryLimits.maxKeyBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "key exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxKeyBytes) bytes",
+                data: nil
+            )
+        }
+        guard let rawPid = v2Int(params, "pid"),
+              (1...Int(pid_t.max)).contains(rawPid) else {
+            return .err(
+                code: "invalid_params",
+                message: "pid must be an integer from 1 through \(Int(pid_t.max))",
+                data: nil
+            )
         }
         let pid = pid_t(rawPid)
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { [weak self] _, tab in
             guard let self else { return }
-            tab.agentPIDs[key] = pid
-            self.refreshTrackedAgentPorts(for: tab)
+            if tab.setSidebarAgentPID(key: key, pid: pid) {
+                self.refreshTrackedAgentPorts(for: tab)
+            }
         }
 
         return .ok([
@@ -946,6 +1087,13 @@ extension TerminalController {
         guard let key = v2String(params, "key") else {
             return .err(code: "invalid_params", message: "Missing key", data: nil)
         }
+        guard SidebarTelemetryLimits.utf8ByteCount(key) <= SidebarTelemetryLimits.maxKeyBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "key exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxKeyBytes) bytes",
+                data: nil
+            )
+        }
         guard let rawMarkdown = v2RawString(params, "markdown") else {
             return .err(code: "invalid_params", message: "Missing markdown", data: nil)
         }
@@ -956,6 +1104,13 @@ extension TerminalController {
         let trimmedMarkdown = normalizedMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMarkdown.isEmpty else {
             return .err(code: "invalid_params", message: "Missing markdown", data: nil)
+        }
+        guard SidebarTelemetryLimits.utf8ByteCount(normalizedMarkdown) <= SidebarTelemetryLimits.maxMetadataMarkdownBytes else {
+            return .err(
+                code: "invalid_params",
+                message: "markdown exceeds the UTF-8 limit of \(SidebarTelemetryLimits.maxMetadataMarkdownBytes) bytes",
+                data: nil
+            )
         }
 
         var priority = 0
@@ -975,12 +1130,12 @@ extension TerminalController {
             ) else {
                 return
             }
-            tab.metadataBlocks[key] = SidebarMetadataBlock(
+            _ = tab.setSidebarMetadataBlock(SidebarMetadataBlock(
                 key: key,
                 markdown: normalizedMarkdown,
                 priority: priority,
                 timestamp: Date()
-            )
+            ))
         }
 
         return .ok([
