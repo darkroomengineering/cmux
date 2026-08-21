@@ -1840,6 +1840,123 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         startupSessionSnapshot = nil
         isApplyingStartupSessionRestore = false
         _ = saveSessionSnapshot(includeScrollback: false)
+        reconcileOrphanedEscrowedSessions()
+    }
+
+    /// Issue #307 orphan-reconciliation fix: the coarse-snapshot restore
+    /// that just completed above is keyed entirely by the panel UUIDs
+    /// already present in `session-<bundleId>.json` -- if that snapshot was
+    /// stale or missing at the moment of an abrupt kill, a session that is
+    /// still alive and escrow-claimed on disk (`meta.json`'s
+    /// `escrowed: true`) is never looked up, and becomes a permanently
+    /// orphaned, invisible shell (see `SessionWALStore
+    /// .escrowedSessionIds(excluding:)`'s doc comment). This pass runs
+    /// once, synchronously, right after every normal-launch restore: it
+    /// diffs the escrowed session directories on disk against every panel
+    /// id the restore just produced (a harmless superset that also
+    /// includes freshly-spawned, non-revived panels -- we only need to
+    /// exclude what's already present, not distinguish revived-vs-fresh),
+    /// and reattaches whatever is left into one clearly-labeled recovery
+    /// window.
+    ///
+    /// Reuses `Workspace.revivePanel(sessionId:inPane:workingDirectory:)`
+    /// (the same primitive the coarse restore itself uses) directly against
+    /// each new tab's freshly-spawned initial pane, rather than pre-building
+    /// a `TerminalSurfaceReviveDescriptor` and threading it through
+    /// workspace creation: building that descriptor requires the escrow
+    /// retrieve, which already lives inside `revivePanel` and shouldn't be
+    /// duplicated here. The one fresh panel each new tab starts with is
+    /// closed immediately once the revived panel has taken its place in the
+    /// same pane, so no tab is ever left showing two panels or an empty one.
+    private func reconcileOrphanedEscrowedSessions() {
+        var known = Set<String>()
+        for context in mainWindowContexts.values {
+            for workspace in context.tabManager.tabs {
+                for panelId in workspace.panels.keys {
+                    known.insert(panelId.uuidString)
+                }
+            }
+        }
+
+        let orphans = SessionWALStore.shared.escrowedSessionIds(excluding: known)
+        guard !orphans.isEmpty else {
+            dilog("escrow.reconcile", "found=0")
+            return
+        }
+
+        let windowId = createMainWindow()
+        guard let context = mainWindowContexts.values.first(where: { $0.windowId == windowId }),
+              let firstWorkspace = context.tabManager.tabs.first else {
+            dilog("escrow.reconcile", "found=\(orphans.count) recovered=0 reason=no_window")
+            return
+        }
+        let tabManager = context.tabManager
+
+        var recoveredCount = 0
+        for (index, orphan) in orphans.enumerated() {
+            let workspace: Workspace = index == 0
+                ? firstWorkspace
+                : tabManager.addWorkspace(
+                    workingDirectory: orphan.meta.workingDirectory,
+                    select: false,
+                    autoWelcomeIfNeeded: false
+                )
+
+            guard let freshPanelId = workspace.panels.keys.first,
+                  let paneId = workspace.paneId(forPanelId: freshPanelId) else {
+                continue
+            }
+
+            guard workspace.revivePanel(
+                sessionId: orphan.sessionId,
+                inPane: paneId,
+                workingDirectory: orphan.meta.workingDirectory
+            ) != nil else {
+                continue
+            }
+
+            // The revived panel now lives in the same pane as the fresh
+            // placeholder panel the tab started with -- close the
+            // placeholder so the tab ends up with exactly one (revived)
+            // panel, never a leftover empty one.
+            workspace.closePanel(freshPanelId, force: true)
+            if let workingDirectory = orphan.meta.workingDirectory,
+               !workingDirectory.isEmpty {
+                workspace.setCustomTitle(workingDirectory)
+            }
+            recoveredCount += 1
+        }
+
+        dilog("escrow.reconcile", "found=\(orphans.count) recovered=\(recoveredCount)")
+
+        guard recoveredCount > 0 else {
+            // Every revive attempt failed: nothing to show, and leaving an
+            // empty, oddly-titled window open with only blank placeholder
+            // shells would just confuse whoever opens it next.
+            resolvedWindow(for: context)?.close()
+            return
+        }
+
+        // Set the window title last, after every workspace mutation above --
+        // `TabManager.updateWindowTitle(for:)` reactively overwrites
+        // `window.title` on tab selection and title changes (including the
+        // `setCustomTitle` calls in the loop above), so setting it any
+        // earlier gets clobbered before the user ever sees it.
+        resolvedWindow(for: context)?.title = String(
+            localized: "session_reconcile.window.title",
+            defaultValue: "Recovered Sessions"
+        )
+
+        TerminalNotificationStore.shared.postAppNotification(
+            title: String(
+                localized: "session_reconcile.notification.title",
+                defaultValue: "Recovered \(recoveredCount) session(s) from before the last restart"
+            ),
+            body: String(
+                localized: "session_reconcile.notification.body",
+                defaultValue: "Programa found terminal sessions still running from before the last restart and reattached them into a new window."
+            )
+        )
     }
 
     private func applySessionWindowSnapshot(

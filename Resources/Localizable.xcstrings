@@ -13644,6 +13644,57 @@
         }
       }
     },
+    "session_reconcile.window.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovered Sessions"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "復元されたセッション"
+          }
+        }
+      }
+    },
+    "session_reconcile.notification.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovered %lld session(s) from before the last restart"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前回の再起動前のセッションを%lld件復元しました"
+          }
+        }
+      }
+    },
+    "session_reconcile.notification.body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programa found terminal sessions still running from before the last restart and reattached them into a new window."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前回の再起動前から実行中だったターミナルセッションを見つけ、新しいウィンドウに再アタッチしました。"
+          }
+        }
+      }
+    },
     "settings.terminalOpacity.title": {
       "extractionState": "manual",
       "localizations": {
