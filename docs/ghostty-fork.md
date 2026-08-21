@@ -12,7 +12,7 @@ When we change the fork, update this document and the parent submodule SHA.
 
 ## Current fork changes
 
-Current Programa pinned fork head: `96316fc50`, on fork `main`. It contains
+Current committed Programa fork head: `bccfc8333`, on fork `main`. It contains
 the PTY tee, PTY/process accessors, surface revival, occluded-render throttle,
 renderer realization API, bounded screen export, precision scrolling, and the
 temporary-directory handle fix. The parent previously pinned `6772a8884`
@@ -20,6 +20,15 @@ directly on the temporary-directory feature branch. Although the historical
 Programa commits remained reachable through retain-ancestry merges, their
 accessor and revival changes were absent from the resulting fork-main tree.
 `96316fc50` reconciles those required APIs onto the actual fork `main` tree.
+
+`bccfc8333fecf707dd918d46e3849fc8ed72cca0` reconciles the prior fork head with
+`ghostty-org/ghostty` `main` at
+`c8634f3fce12f8189ed058e018195eb693f8562b` (August 21, 2026). The merge
+preserves the Programa APIs described below while moving the fork to Zig
+0.16.0. It also brings in upstream's complete Kitty graphics protocol
+implementation, including validation and deletion fixes, relative placements,
+margin clipping, animation parsing and storage, playback, and renderer-driven
+frame scheduling.
 
 The section 8 occluded-render skip (`c25020f99`, branch
 `perf/occluded-update-frame-skip`, retain-ancestry merge `363d56e5d` on fork
@@ -148,7 +157,7 @@ tend to conflict together during rebases.
 - Summary:
   - `renderCallback` previously called `updateFrame` unconditionally on every wakeup (i.e. every PTY output burst), even for surfaces the app has told us are fully occluded. That call locks the terminal mutex, consumes dirty tracking, and rebuilds render state — the dominant idle-CPU cost for hidden-but-busy surfaces (e.g. background agent panes).
   - The first attempt at fixing this (`c25020f99`) hard-skipped `updateFrame` entirely while occluded. That broke anything with only half its state machine living inside `updateFrame`: `scrollbar_dirty` is set inside `updateFrame` (generic.zig) but only cleared inside `drawFrame`, and `drawFrame` is *also* gated off while invisible. On CI, where every surface is permanently occluded on the virtual display, this manifested as `ghostty_surface_read_text` (locks `renderer_state.mutex`; used by the app's socket event-subscription polling) hanging indefinitely.
-  - The current implementation throttles instead of skipping: `updateFrame` still runs on every wakeup while visible (unchanged from upstream), and while occluded it runs at most once per `OCCLUDED_UPDATE_INTERVAL_MS` (250ms / 4Hz), tracked via a monotonic `std.time.Instant` timestamp on `Thread` that resets to `null` on the visible→occluded transition so the first occluded update fires immediately. PTY-burst wakeups for a busy hidden surface can arrive at 60-120Hz, so this is a ~95-98% reduction in frame-generation work — nearly all of the CPU win of the hard skip — while guaranteeing anything gated behind `updateFrame` keeps making forward progress.
+  - The current implementation throttles instead of skipping: both upstream call sites, `renderCallback` and `renderNow`, run `updateFrame` on every wakeup while visible and at most once per `OCCLUDED_UPDATE_INTERVAL_MS` (250ms / 4Hz) while occluded. The monotonic timestamp resets on the visible-to-occluded transition so the first occluded update fires immediately. This keeps renderer and Kitty-animation state moving forward without restoring the hard-skip deadlock.
   - `drainMailbox`'s `.visible` false→true transition still calls `renderer.markDirty()` to force one full rebuild at un-occlude, unchanged from the original skip implementation. Terminal-side dirty tracking is level-triggered (bits accumulate until consumed; dimensions/viewport compared directly), so this remains correctness-optional but cheap insurance against renderer-side cache staleness.
   - Merge gate for this fork branch is 3 consecutive green CI runs before it lands on fork `main` — the failure mode that motivated the throttle (CI hangs on an occluded virtual display) is probabilistic, not deterministic.
 
@@ -185,7 +194,12 @@ tend to conflict together during rebases.
   - Release: `xcframework-96316fc506f0015f6e8e3906b995e2c4aba23ebf`
   - Asset SHA-256: `0f12f0d6dd920ccfa49789eae1018be314344797894ef0aae7db3e90fc27a441`
 
-The fork branch head is now `96316fc50` on fork `main`.
+The committed fork branch head is `bccfc8333fecf707dd918d46e3849fc8ed72cca0`
+on fork `main`.
+
+- Prebuilt framework:
+  - Release: `xcframework-bccfc8333fecf707dd918d46e3849fc8ed72cca0`
+  - Asset SHA-256: `26441b6e038523b9c6223bfbb73535a727d5c7c26c225326dc85122bda30881f`
 
 ## Upstreamed fork changes
 
@@ -201,11 +215,42 @@ The fork branch head is now `96316fc50` on fork `main`.
 
 ### initial focus seeding and DECSET 1004 startup behavior
 
-- Was local in the fork as `c19c82bfd`.
-- Dropped from the current pinned fork head when Programa removed the corresponding
-  app-side initial focus seed and went back to post-create focus sync.
+- The older Programa-only surface-config plumbing was local as `c19c82bfd` and
+  was dropped when Programa returned to post-create focus synchronization.
+- The reconciled tree preserves the current core behavior: surfaces start with
+  Ghostty's default focused state, a later host focus callback reports real
+  transitions, and enabling DECSET 1004 immediately reports the terminal's
+  current focus state before subsequent transition reports.
 
 ## Merge conflict notes
+
+The August 21, 2026 upstream reconciliation had literal conflicts in:
+
+- `src/Surface.zig`
+- `src/cli/list_themes.zig`
+- `src/cli/toggle_quick_terminal.zig`
+- `src/config/url.zig`
+- `src/crash/dir.zig`
+- `src/font/shaper/coretext.zig`
+- `src/os/TempDir.zig`
+- `src/renderer/generic.zig`
+- `src/termio/Termio.zig`
+
+Semantic reconciliation was also required in `src/App.zig`,
+`src/apprt/embedded.zig`, `src/config/CApi.zig`, and
+`src/renderer/Thread.zig`. The important resolutions were:
+
+- Migrate fork APIs to Zig 0.16's explicit `std.Io` mutex, event, environment,
+  file, mailbox, resize, and allocator interfaces without removing exports.
+- Preserve manual IO, mobile render-grid and tmux hooks, PTY tee and revival,
+  selection and process accessors, layer-background alpha behavior, renderer
+  realization, display-link restart, and resize fixes.
+- Export render-grid rows through `pagePreservingState` so compressed
+  scrollback is decoded at most once per page without changing PageList storage.
+- Apply the 4 Hz occlusion throttle to every upstream `updateFrame` caller and
+  retain `markDirty()` when a surface becomes visible.
+- Keep the upstream Kitty graphics animation scheduler active through the
+  throttle rather than restoring upstream's hard invisible skip.
 
 These files change frequently upstream; be careful when rebasing the fork:
 
@@ -239,22 +284,21 @@ These files change frequently upstream; be careful when rebasing the fork:
     paths still zero out `bg_color[3]` correctly.
 
 - `src/Surface.zig`, `src/apprt/embedded.zig`, `macos/Sources/Ghostty/Surface View/SurfaceView.swift`
-  - The initial `focused` plumbing has to stay aligned across the C config, embedded runtime surface,
-    and macOS wrapper. If upstream refactors surface creation or post-create focus sync, re-check that
-    background panes can start unfocused without synthesizing a focus-loss transition during creation.
+  - Keep host focus callbacks aligned with the core surface state. If upstream
+    refactors surface creation or focus synchronization, re-check the initial
+    DECSET 1004 report and later transition reports together.
 
 - `src/renderer/Thread.zig`
-  - The occluded-render throttle guards the ONLY `updateFrame` call site at our base
-    (`renderCallback`). Upstream `main` has since added another caller (`renderNow`) plus more
-    visibility-adjacent logic — on the next upstream sync, re-apply the same throttle (call on every
-    wakeup while visible, at most once per `OCCLUDED_UPDATE_INTERVAL_MS` while occluded, using the
-    `last_occluded_update` timestamp on `Thread`) to EVERY `updateFrame` call site, not just
-    `renderCallback`. Do NOT go back to a hard `flags.visible` skip — see section 8 above for why
-    that broke `ghostty_surface_read_text` polling on CI's permanently-occluded virtual display.
-    Keep the `markDirty()` force on the occluded→visible transition in `drainMailbox`.
+  - The occluded-render throttle guards both current `updateFrame` call sites,
+    `renderCallback` and `renderNow`. On future syncs, apply the same throttle to
+    every new caller. Do not go back to a hard `flags.visible` skip; see section
+    8 for why that broke `ghostty_surface_read_text` polling on CI's
+    permanently occluded virtual display. Keep the `markDirty()` force on the
+    occluded-to-visible transition in `drainMailbox`.
 
 - `src/termio/stream_handler.zig`
-  - Keep DECSET 1004 enablement side-effect free. xterm-compatible focus reporting should only emit
-    `CSI I` / `CSI O` on actual focus transitions, not immediately when the mode is enabled.
+  - Keep DECSET 1004 aligned with the terminal's current focus flag. Enabling
+    the mode reports the current state immediately; later `CSI I` / `CSI O`
+    reports follow actual focus transitions.
 
 If you resolve a conflict, update this doc with what changed.

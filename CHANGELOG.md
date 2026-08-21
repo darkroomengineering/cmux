@@ -7,6 +7,9 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 ## [Unreleased]
 
 ### Fixed
+- Socket automation no longer hangs on split Unicode requests or unsubscribe races, and malformed telemetry can no longer crash the app or grow retained workspace state without bounds.
+- Large command output no longer deadlocks the CLI or background Git checks, and stalled Git probes now time out instead of accumulating work.
+- Browser favicons now have strict download and decode limits, so a hostile or broken site cannot consume unbounded memory or restore a stale icon after navigation.
 - Restoring a damaged session no longer crashes when two saved panels share an ID, cancelling a system shutdown no longer leaves the next snapshot marked as a clean quit, and the configurable review shortcut works again.
 - Browser automation now returns stable workspace and surface references, while obsolete native dialog state and macOS 11 compatibility branches have been removed. CI also fails clearly when a matching prebuilt GhosttyKit checksum is unavailable instead of silently compiling a different dependency from source.
 - Closing a terminal tab or a workspace now actually ends the session. Anything running in it, an agent included, was being kept alive in the background after the tab disappeared: invisible, still using memory, and unable to talk back to the app. Quitting still preserves your sessions so they come back on the next launch.
@@ -19,6 +22,8 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - A restart after an update no longer kills every terminal when the new app comes up faster than the background session-holder notices the old one is gone. The app now waits out that window instead of giving up, escrow sockets no longer leak into shell processes (which silently delayed that detection), and a session that falls back anyway keeps its reattach records on disk while its process is still alive instead of deleting them.
 
 ### Changed
+- Ghostty is updated to the current upstream implementation with complete Kitty graphics animation and placement support. Programa now builds the fork and helper tools with Zig 0.16.
+- Background work is lighter: unchanged config reloads are ignored, idle output polling stops, duplicate update checks are gone, and update logs rotate at 1 MiB.
 - Sidebar resizing now uses native macOS pointer capture, so the resize cursor and drag stay stable when crossing terminal or browser content. Command-palette, review-panel, find-field, and workspace telemetry updates also avoid unnecessary whole-window redraws.
 - Hidden terminal panes now release their Metal renderer and IOSurface pool after a short idle period while keeping the shell, scrollback, and terminal state alive. Returning to the pane rebuilds its renderer before it becomes visible, so graphics memory scales with the terminals on screen instead of every workspace opened during the session.
 - Terminal output subscriptions now take one bounded snapshot per surface and publish only the changed suffix, reducing main-thread work and memory churn for automation clients watching busy terminals.
