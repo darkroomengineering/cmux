@@ -23,6 +23,11 @@ struct GhosttyConfig {
     // Colors (from theme or config)
     var backgroundColor: NSColor = NSColor(hex: "#272822")!
     var backgroundOpacity: Double = 1.0
+    // Read-only display state: mirrors backgroundOpacity's presence here, but nothing in
+    // Programa's Swift code currently reads it — the actual blur application already happens
+    // in GhosttyApp.swift by reading `background-blur` straight off the loaded ghostty_config_t.
+    // Reserved for future chrome/Settings display parity with backgroundOpacity.
+    var backgroundBlur: Bool = false
     var foregroundColor: NSColor = NSColor(hex: "#fdfff1")!
     var cursorColor: NSColor = NSColor(hex: "#c0c1b5")!
     var cursorTextColor: NSColor = NSColor(hex: "#8d8e82")!
@@ -291,6 +296,10 @@ struct GhosttyConfig {
                 case "background-opacity":
                     if let opacity = Double(value) {
                         backgroundOpacity = opacity
+                    }
+                case "background-blur":
+                    if let blur = TerminalThemeStore.parseBoolDirective(value) {
+                        backgroundBlur = blur
                     }
                 case "foreground":
                     if let color = NSColor(hex: value) {
