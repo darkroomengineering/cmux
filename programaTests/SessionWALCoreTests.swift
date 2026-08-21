@@ -385,3 +385,65 @@ final class SessionWALDeferredReviveEscrowTests: XCTestCase {
         XCTAssertEqual(meta?.childPID, 4242, "reattach's guard requires childPID; the stamp must record it")
     }
 }
+
+// Issue #307 orphan-reconciliation fix: `escrowedSessionIds(excluding:)` is the
+// enumeration primitive `AppDelegate.reconcileOrphanedEscrowedSessions` uses to
+// find escrow-claimed session directories the coarse-snapshot restore never
+// looked up. Follows `SessionWALDeferredReviveEscrowTests`'s own harness pattern
+// above: real app-support sessions root, random UUID fixture ids (so runs never
+// collide with each other or with any real session directory), explicit
+// synchronous cleanup rather than the async `unregister` (which is a no-op here
+// since these fixtures never go through `register`/`startWriter`).
+final class SessionWALEscrowedSessionIdsTests: XCTestCase {
+    private var fixtureSessionIds: [String] = []
+
+    override func tearDownWithError() throws {
+        for sessionId in fixtureSessionIds {
+            if let paths = SessionWALPaths.make(sessionId: sessionId) {
+                try? FileManager.default.removeItem(at: paths.sessionDirectory)
+            }
+        }
+        fixtureSessionIds = []
+    }
+
+    func testEscrowedSessionIdsReturnsOnlyTrueEscrowedNonExcludedFixtures() throws {
+        let escrowedId = UUID().uuidString
+        let notEscrowedId = UUID().uuidString
+        let missingEscrowedId = UUID().uuidString
+        let excludedEscrowedId = UUID().uuidString
+        fixtureSessionIds = [escrowedId, notEscrowedId, missingEscrowedId, excludedEscrowedId]
+
+        try seedEscrowMeta(sessionId: escrowedId, escrowed: true)
+        try seedEscrowMeta(sessionId: notEscrowedId, escrowed: false)
+        try seedEscrowMeta(sessionId: missingEscrowedId, escrowed: nil)
+        try seedEscrowMeta(sessionId: excludedEscrowedId, escrowed: true)
+
+        let result = SessionWALStore.shared.escrowedSessionIds(excluding: [excludedEscrowedId])
+        let resultById = Dictionary(uniqueKeysWithValues: result.map { ($0.sessionId, $0.meta) })
+
+        XCTAssertTrue(resultById.keys.contains(escrowedId), "a true-escrowed, non-excluded session must be returned")
+        XCTAssertEqual(resultById[escrowedId]?.escrowed, true)
+        XCTAssertFalse(resultById.keys.contains(notEscrowedId), "escrowed=false must be filtered out")
+        XCTAssertFalse(resultById.keys.contains(missingEscrowedId), "escrowed=nil (missing) must be filtered out")
+        XCTAssertFalse(resultById.keys.contains(excludedEscrowedId), "an excluded id must be filtered out even though it's escrowed=true")
+    }
+
+    private func seedEscrowMeta(sessionId: String, escrowed: Bool?) throws {
+        guard let paths = SessionWALPaths.make(sessionId: sessionId) else {
+            XCTFail("could not build SessionWALPaths for fixture session")
+            return
+        }
+        let meta = SessionWALMeta(
+            sessionId: sessionId,
+            childPID: escrowed == true ? 4242 : nil,
+            ptyPath: nil,
+            workingDirectory: "/tmp",
+            lastHeartbeatAt: Date(),
+            walGeneration: 0,
+            escrowed: escrowed,
+            escrowSocketPath: escrowed == true ? "/tmp/test-escrow-\(sessionId).sock" : nil,
+            escrowToken: escrowed == true ? "deadbeefcafe" : nil
+        )
+        _ = try SessionWALCore.persistMeta(meta, to: paths)
+    }
+}

@@ -630,13 +630,48 @@ extension Workspace {
     /// any failure so the caller falls through to its existing
     /// spawn-fresh path unchanged. Synchronous and launch-time only, same
     /// contract as the WAL restore reads it builds on.
+    ///
+    /// Thin wrapper over `revivePanel(sessionId:inPane:workingDirectory:)`
+    /// (below), which holds every bit of the actual retrieve/build/cleanup
+    /// logic. This wrapper only adds the snapshot-specific bookkeeping
+    /// (`applySessionPanelMetadata`) once the generic revive succeeds, so
+    /// the coarse-snapshot restore path stays byte-for-byte identical to
+    /// before the split.
     private func attemptSessionReattach(
         snapshot: SessionPanelSnapshot,
         inPane paneId: PaneID,
         workingDirectory: String?
     ) -> UUID? {
+        guard let panelId = revivePanel(
+            sessionId: snapshot.id.uuidString,
+            inPane: paneId,
+            workingDirectory: workingDirectory
+        ) else {
+            return nil
+        }
+        applySessionPanelMetadata(snapshot, toPanelId: panelId)
+        return panelId
+    }
+
+    /// The generic escrow-retrieve-and-build-panel primitive extracted from
+    /// `attemptSessionReattach` above (Issue #307 orphan-reconciliation
+    /// fix). Given only a session id -- no `SessionPanelSnapshot` -- looks
+    /// up `meta.json`, retrieves the escrowed PTY fd from the holder, and
+    /// builds a live `TerminalPanel` seeded with pre-crash scrollback.
+    /// Callers own attaching any of their own bookkeeping (title, pin
+    /// state, etc.) on top of the returned panel id; this method itself is
+    /// pure revive-and-build so it can be shared between the coarse-snapshot
+    /// restore path (via `attemptSessionReattach`) and the orphan
+    /// reconciliation pass (`AppDelegate.reconcileOrphanedEscrowedSessions`),
+    /// with no duplicated retrieve/cleanup logic between them. Synchronous
+    /// and launch-time only, same contract as `attemptSessionReattach`.
+    func revivePanel(
+        sessionId: String,
+        inPane paneId: PaneID,
+        workingDirectory: String?
+    ) -> UUID? {
         guard !SessionMachineryGate.isUnitTesting else { return nil }
-        let oldSessionId = snapshot.id.uuidString
+        let oldSessionId = sessionId
         guard let meta = SessionWALStore.shared.readMeta(sessionId: oldSessionId),
               meta.escrowed == true,
               let socketPath = meta.escrowSocketPath,
@@ -689,7 +724,6 @@ extension Workspace {
             return nil
         }
 
-        applySessionPanelMetadata(snapshot, toPanelId: terminalPanel.id)
         // This old session's directory has now been given its one chance to
         // be read (childPID/token/scrollback); the new panel above has its
         // own fresh WAL directory going forward under a new id, so the old

@@ -1034,6 +1034,32 @@ final class SessionWALStore {
         return try? Self.metaDecoder.decode(SessionWALMeta.self, from: data)
     }
 
+    /// Issue #307 orphan-reconciliation fix: launch-time scan for session
+    /// directories that are still escrow-claimed (`meta.escrowed == true`)
+    /// but weren't reattached by the coarse-snapshot restore that just ran.
+    /// Mirrors `sweepOrphanedSessionDirectories`'s own
+    /// `FileManager.contentsOfDirectory` listing idiom below, and `readMeta`
+    /// above for the per-directory read -- synchronous, direct file reads,
+    /// no `writeQueue` dispatch (reads never need the write queue; only
+    /// mutations do, per `discardOrphanedSession`). `known` is whatever the
+    /// caller already reattached this launch; entries whose directory name
+    /// is in that set are skipped without a read.
+    func escrowedSessionIds(excluding known: Set<String>) -> [(sessionId: String, meta: SessionWALMeta)] {
+        guard let root = SessionWALPaths.sessionsRootURL() else { return [] }
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil
+        ) else { return [] }
+        var result: [(sessionId: String, meta: SessionWALMeta)] = []
+        for entry in entries {
+            let sessionId = entry.lastPathComponent
+            guard !known.contains(sessionId) else { continue }
+            guard let meta = readMeta(sessionId: sessionId), meta.escrowed == true else { continue }
+            result.append((sessionId: sessionId, meta: meta))
+        }
+        return result
+    }
+
     /// Restore-path fallback read. Synchronous and launch-time only (mirrors
     /// `SessionPersistenceStore.load`'s synchronous snapshot read) — never
     /// called from the tee callback or any latency-sensitive path. Reads the
