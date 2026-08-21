@@ -21,6 +21,7 @@ CHECKSUMS_FILE="${GHOSTTYKIT_CHECKSUMS_FILE:-$SCRIPT_DIR/ghosttykit-checksums.tx
 DOWNLOAD_URL="${GHOSTTYKIT_URL:-https://github.com/darkroomengineering/ghostty/releases/download/$TAG/$ARCHIVE_NAME}"
 DOWNLOAD_RETRIES="${GHOSTTYKIT_DOWNLOAD_RETRIES:-2}"
 DOWNLOAD_RETRY_DELAY="${GHOSTTYKIT_DOWNLOAD_RETRY_DELAY:-20}"
+PLIST_BUDDY="${GHOSTTYKIT_PLIST_BUDDY:-/usr/libexec/PlistBuddy}"
 
 if [ ! -f "$CHECKSUMS_FILE" ]; then
   echo "Missing checksum file: $CHECKSUMS_FILE" >&2
@@ -189,7 +190,13 @@ is_safe_relative_path() {
 }
 
 cat > "$INSTALL_HELPER_SOURCE" <<'EOF'
+#if defined(__APPLE__)
 #define _DARWIN_C_SOURCE 1
+#elif defined(__linux__)
+#define _GNU_SOURCE 1
+#else
+#error "The atomic GhosttyKit installer supports only Apple and Linux platforms"
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -231,8 +238,24 @@ static int validate_path(const char *root, const char *path, int require_directo
     return 0;
 }
 
+static int rename_exclusively(const char *source, const char *destination) {
+#if defined(__APPLE__)
+    return renameatx_np(AT_FDCWD, source, AT_FDCWD, destination, RENAME_EXCL);
+#elif defined(__linux__)
+    return renameat2(AT_FDCWD, source, AT_FDCWD, destination, RENAME_NOREPLACE);
+#endif
+}
+
+static int rename_exchange(const char *source, const char *destination) {
+#if defined(__APPLE__)
+    return renameatx_np(AT_FDCWD, source, AT_FDCWD, destination, RENAME_SWAP);
+#elif defined(__linux__)
+    return renameat2(AT_FDCWD, source, AT_FDCWD, destination, RENAME_EXCHANGE);
+#endif
+}
+
 static int install_exclusively(const char *source, const char *destination) {
-    if (renameatx_np(AT_FDCWD, source, AT_FDCWD, destination, RENAME_EXCL) == 0) {
+    if (rename_exclusively(source, destination) == 0) {
         return 0;
     }
 
@@ -244,7 +267,7 @@ static int replace_atomically(const char *source, const char *destination) {
     int attempt;
 
     for (attempt = 0; attempt < 8; attempt++) {
-        if (renameatx_np(AT_FDCWD, source, AT_FDCWD, destination, RENAME_SWAP) == 0) {
+        if (rename_exchange(source, destination) == 0) {
             return 0;
         }
         if (errno != ENOENT) {
@@ -252,7 +275,7 @@ static int replace_atomically(const char *source, const char *destination) {
             return 1;
         }
 
-        if (renameatx_np(AT_FDCWD, source, AT_FDCWD, destination, RENAME_EXCL) == 0) {
+        if (rename_exclusively(source, destination) == 0) {
             return 0;
         }
         if (errno != EEXIST) {
@@ -284,7 +307,20 @@ int main(int argc, char **argv) {
 }
 EOF
 
-if ! xcrun --sdk macosx clang \
+case "$(uname -s)" in
+  Darwin)
+    INSTALL_COMPILER=(xcrun --sdk macosx clang)
+    ;;
+  Linux)
+    INSTALL_COMPILER=("${CC:-cc}")
+    ;;
+  *)
+    echo "Unable to compile the atomic GhosttyKit installer on this platform" >&2
+    exit 1
+    ;;
+esac
+
+if ! "${INSTALL_COMPILER[@]}" \
   -std=c11 \
   -Wall \
   -Wextra \
@@ -304,17 +340,17 @@ validate_xcframework() {
   "$INSTALL_HELPER" validate-directory "$EXTRACT_DIR" "$framework" || return 1
   "$INSTALL_HELPER" validate-file "$EXTRACT_DIR" "$info" || return 1
   plutil -lint "$info" >/dev/null
-  package_type="$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$info")"
+  package_type="$("$PLIST_BUDDY" -c 'Print :CFBundlePackageType' "$info")"
   [ "$package_type" = "XFWK" ] || return 1
 
-  library_count="$(/usr/libexec/PlistBuddy -c 'Print :AvailableLibraries' "$info" | grep -c 'LibraryIdentifier = ' || true)"
+  library_count="$("$PLIST_BUDDY" -c 'Print :AvailableLibraries' "$info" | grep -c 'LibraryIdentifier = ' || true)"
   [ "$library_count" -gt 0 ] || return 1
 
   index=0
   while [ "$index" -lt "$library_count" ]; do
-    identifier="$(/usr/libexec/PlistBuddy -c "Print :AvailableLibraries:$index:LibraryIdentifier" "$info")"
-    binary_path="$(/usr/libexec/PlistBuddy -c "Print :AvailableLibraries:$index:BinaryPath" "$info")"
-    headers_path="$(/usr/libexec/PlistBuddy -c "Print :AvailableLibraries:$index:HeadersPath" "$info")"
+    identifier="$("$PLIST_BUDDY" -c "Print :AvailableLibraries:$index:LibraryIdentifier" "$info")"
+    binary_path="$("$PLIST_BUDDY" -c "Print :AvailableLibraries:$index:BinaryPath" "$info")"
+    headers_path="$("$PLIST_BUDDY" -c "Print :AvailableLibraries:$index:HeadersPath" "$info")"
     is_safe_relative_path "$identifier" || return 1
     is_safe_relative_path "$binary_path" || return 1
     is_safe_relative_path "$headers_path" || return 1

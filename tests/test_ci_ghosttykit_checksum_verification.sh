@@ -19,8 +19,37 @@ MISMATCH_LOG="$TMP_DIR/curl-mismatch.log"
 MISMATCH_OUTPUT="$TMP_DIR/mismatch.out"
 MISSING_ENTRY_OUTPUT="$TMP_DIR/missing-entry.out"
 
-mkdir -p "$FIXTURE_DIR/GhosttyKit.xcframework" "$SUCCESS_DIR" "$MISMATCH_DIR" "$MISSING_ENTRY_DIR" "$BIN_DIR"
+mkdir -p \
+  "$FIXTURE_DIR/GhosttyKit.xcframework/macos-arm64/Headers" \
+  "$SUCCESS_DIR" \
+  "$MISMATCH_DIR" \
+  "$MISSING_ENTRY_DIR" \
+  "$BIN_DIR"
+cat > "$FIXTURE_DIR/GhosttyKit.xcframework/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundlePackageType</key>
+  <string>XFWK</string>
+  <key>AvailableLibraries</key>
+  <array>
+    <dict>
+      <key>LibraryIdentifier</key>
+      <string>macos-arm64</string>
+      <key>BinaryPath</key>
+      <string>libghostty-internal.a</string>
+      <key>HeadersPath</key>
+      <string>Headers</string>
+    </dict>
+  </array>
+</dict>
+</plist>
+EOF
 printf 'fixture\n' > "$FIXTURE_DIR/GhosttyKit.xcframework/marker.txt"
+printf 'binary\n' > "$FIXTURE_DIR/GhosttyKit.xcframework/macos-arm64/libghostty-internal.a"
+printf 'void ghostty_fixture(void);\n' > "$FIXTURE_DIR/GhosttyKit.xcframework/macos-arm64/Headers/ghostty.h"
+printf 'module GhosttyKit { header "ghostty.h" export * }\n' > "$FIXTURE_DIR/GhosttyKit.xcframework/macos-arm64/Headers/module.modulemap"
 (cd "$FIXTURE_DIR" && tar czf "$TMP_DIR/GhosttyKit.xcframework.tar.gz" GhosttyKit.xcframework)
 ACTUAL_SHA256="$(shasum -a 256 "$TMP_DIR/GhosttyKit.xcframework.tar.gz" | awk '{print $1}')"
 printf '%s %s\n' "$FIXTURE_SHA" "$ACTUAL_SHA256" > "$CHECKSUMS_FILE"
@@ -55,6 +84,50 @@ cp "$FIXTURE_ARCHIVE" "$OUTPUT"
 EOF
 chmod +x "$BIN_DIR/curl"
 
+cat > "$BIN_DIR/plutil" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 2 ] || [ "$1" != "-lint" ] || [ ! -f "$2" ]; then
+  echo "plutil stub expected: -lint FILE" >&2
+  exit 1
+fi
+EOF
+chmod +x "$BIN_DIR/plutil"
+
+cat > "$BIN_DIR/PlistBuddy" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 3 ] || [ "$1" != "-c" ] || [ ! -f "$3" ]; then
+  echo "PlistBuddy stub expected: -c COMMAND FILE" >&2
+  exit 1
+fi
+
+case "$2" in
+  'Print :CFBundlePackageType')
+    printf 'XFWK\n'
+    ;;
+  'Print :AvailableLibraries')
+    printf 'Array {\n    Dict {\n        LibraryIdentifier = macos-arm64\n    }\n}\n'
+    ;;
+  'Print :AvailableLibraries:0:LibraryIdentifier')
+    printf 'macos-arm64\n'
+    ;;
+  'Print :AvailableLibraries:0:BinaryPath')
+    printf 'libghostty-internal.a\n'
+    ;;
+  'Print :AvailableLibraries:0:HeadersPath')
+    printf 'Headers\n'
+    ;;
+  *)
+    echo "Unexpected PlistBuddy command: $2" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$BIN_DIR/PlistBuddy"
+
 (
   cd "$SUCCESS_DIR"
   PATH="$BIN_DIR:$PATH" \
@@ -62,6 +135,7 @@ chmod +x "$BIN_DIR/curl"
   TEST_FIXTURE_ARCHIVE="$TMP_DIR/GhosttyKit.xcframework.tar.gz" \
   GHOSTTY_SHA="$FIXTURE_SHA" \
   GHOSTTYKIT_CHECKSUMS_FILE="$CHECKSUMS_FILE" \
+  GHOSTTYKIT_PLIST_BUDDY="$BIN_DIR/PlistBuddy" \
   "$SCRIPT"
 )
 
