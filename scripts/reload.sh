@@ -14,28 +14,7 @@ PROGRAMA_DEBUG_LOG=""
 CLI_PATH=""
 LAST_SOCKET_PATH_DIR="$HOME/Library/Application Support/programa"
 LAST_SOCKET_PATH_FILE="${LAST_SOCKET_PATH_DIR}/last-socket-path"
-AUTO_SKIP_ZIG_BUILD_REASON=""
 ENSURE_GHOSTTYKIT_COMMAND="${PROGRAMA_ENSURE_GHOSTTYKIT_COMMAND:-$PWD/scripts/ensure-ghosttykit.sh}"
-
-should_skip_ghostty_cli_helper_zig_build() {
-  if [[ "${PROGRAMA_SKIP_ZIG_BUILD:-}" == "1" ]]; then
-    AUTO_SKIP_ZIG_BUILD_REASON="PROGRAMA_SKIP_ZIG_BUILD=1"
-    return 0
-  fi
-
-  local product_version zig_version major_version
-  product_version="$(sw_vers -productVersion 2>/dev/null || true)"
-  zig_version="$(zig version 2>/dev/null || true)"
-  major_version="${product_version%%.*}"
-
-  if [[ "$zig_version" == "0.15.2" ]] && [[ "$major_version" =~ ^[0-9]+$ ]] && (( major_version >= 26 )); then
-    AUTO_SKIP_ZIG_BUILD_REASON="macOS ${product_version} + zig ${zig_version}"
-    return 0
-  fi
-
-  AUTO_SKIP_ZIG_BUILD_REASON=""
-  return 1
-}
 
 write_dev_cli_shim() {
   local target="$1"
@@ -282,13 +261,6 @@ fi
 
 "$ENSURE_GHOSTTYKIT_COMMAND"
 
-if should_skip_ghostty_cli_helper_zig_build; then
-  if [[ "${PROGRAMA_SKIP_ZIG_BUILD:-}" != "1" ]]; then
-    echo "Auto-enabling PROGRAMA_SKIP_ZIG_BUILD=1 for Ghostty CLI helper (${AUTO_SKIP_ZIG_BUILD_REASON})"
-  fi
-  export PROGRAMA_SKIP_ZIG_BUILD=1
-fi
-
 if [[ -n "$TAG" ]]; then
   TAG_ID="$(sanitize_bundle "$TAG")"
   TAG_SLUG="$(sanitize_path "$TAG")"
@@ -319,8 +291,7 @@ if [[ -z "$TAG" ]]; then
     PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
   )
 fi
-# Forward PROGRAMA_SKIP_ZIG_BUILD to xcodebuild run script phases (e.g. macOS
-# Tahoe where zig 0.15.2 can't link the ghostty CLI helper).
+# Forward the explicit skip escape hatch to xcodebuild run script phases.
 if [[ "${PROGRAMA_SKIP_ZIG_BUILD:-}" == "1" ]]; then
   XCODEBUILD_ARGS+=(PROGRAMA_SKIP_ZIG_BUILD=1)
 fi

@@ -92,7 +92,7 @@ jobs:
         if: steps.check-release.outputs.exists == 'false'
         run: |
           set -euo pipefail
-          ZIG_REQUIRED="0.15.2"
+          ZIG_REQUIRED="0.16.0"
           if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
             echo "zig ${ZIG_REQUIRED} already installed"
           else
@@ -114,7 +114,7 @@ jobs:
           rm -rf GhosttyKit.xcframework
           cp -R ghostty/macos/GhosttyKit.xcframework GhosttyKit.xcframework
           # Ghostty has used several archive names across revisions.
-          ARCHIVE="$(find GhosttyKit.xcframework -type f \( -name 'libghostty.a' -o -name 'libghostty-fat.a' -o -name 'libghostty-internal-fat.a' \) -print -quit)"
+          ARCHIVE="$(find GhosttyKit.xcframework -type f \( -name 'libghostty.a' -o -name 'libghostty-fat.a' -o -name 'libghostty-internal.a' -o -name 'libghostty-internal-fat.a' \) -print -quit)"
           if [ -z "$ARCHIVE" ]; then
             echo "GhosttyKit.xcframework does not contain a supported macOS libghostty archive" >&2
             exit 1

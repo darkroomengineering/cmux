@@ -53,7 +53,7 @@ if [[ -z "$OUTPUT_PATH" ]]; then
   exit 1
 fi
 
-# Allow CI to skip the zig build (e.g., macOS 26 where zig 0.15.2 can't link).
+# Allow callers to skip the zig build explicitly.
 # Creates a stub binary so the Xcode Run Script file-existence check passes.
 if [[ "${PROGRAMA_SKIP_ZIG_BUILD:-}" == "1" ]]; then
   echo "Skipping zig CLI helper build (PROGRAMA_SKIP_ZIG_BUILD=1)"
@@ -80,9 +80,8 @@ if [[ -n "$TARGET_TRIPLE" ]]; then
   esac
 
   # When the requested target matches zig's native output arch, drop -Dtarget
-  # so zig uses native compilation. This avoids cross-linker issues on newer
-  # SDKs (e.g., macOS Tahoe + zig 0.15.x). Note: zig may run under Rosetta,
-  # so we detect native output arch from the zig binary itself, not uname -m.
+  # so zig uses native compilation. Zig may run under Rosetta, so detect the
+  # output arch from the zig binary itself rather than uname -m.
   ZIG_ARCH="$(file "$(command -v zig)" 2>/dev/null | grep -oE '(arm64|x86_64)' | head -1)"
   case "$TARGET_TRIPLE" in
     aarch64-macos) [[ "$ZIG_ARCH" == "arm64" ]] && TARGET_TRIPLE="" ;;

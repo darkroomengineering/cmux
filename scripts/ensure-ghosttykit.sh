@@ -107,6 +107,7 @@ find_macos_archive() {
   for candidate in \
     "$framework"/macos-*/libghostty.a \
     "$framework"/macos-*/libghostty-fat.a \
+    "$framework"/macos-*/libghostty-internal.a \
     "$framework"/macos-*/libghostty-internal-fat.a; do
     if [[ -f "$candidate" ]]; then
       printf '%s\n' "$candidate"
