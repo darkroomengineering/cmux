@@ -162,6 +162,19 @@ extension TerminalController {
             return active.token == lease.token
         }
 
+        func beginPendingMutation(_ lease: Lease) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return activeLeases[lease.dataStoreID]?.token == lease.token
+        }
+
+        @discardableResult
+        func endPendingMutation(_ lease: Lease) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return activeLeases[lease.dataStoreID]?.token == lease.token
+        }
+
         func release(_ lease: Lease) {
             lock.lock()
             defer { lock.unlock() }

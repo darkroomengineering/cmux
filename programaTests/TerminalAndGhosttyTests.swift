@@ -4921,6 +4921,41 @@ final class TerminalControllerV2BrowserStateRestoreTests: XCTestCase {
         XCTAssertNotNil(coordinator.acquire(dataStoreID: sharedStoreID, generation: UUID()))
     }
 
+    func testRestoreLeaseDefersReleaseUntilPendingMutationCompletesAndIgnoresStaleCompletion() throws {
+        let coordinator = TerminalController.V2BrowserStateRestoreLeaseCoordinator()
+        let store = WKWebsiteDataStore.nonPersistent()
+        let storeID = ObjectIdentifier(store)
+        let firstGeneration = UUID()
+        let firstLease = try XCTUnwrap(
+            coordinator.acquire(dataStoreID: storeID, generation: firstGeneration)
+        )
+
+        XCTAssertTrue(coordinator.beginPendingMutation(firstLease))
+        coordinator.release(firstLease)
+        XCTAssertFalse(coordinator.isValid(firstLease, currentGeneration: firstGeneration))
+        XCTAssertFalse(
+            coordinator.beginPendingMutation(firstLease),
+            "A release-requested restore must not start another mutation"
+        )
+        XCTAssertNil(
+            coordinator.acquire(dataStoreID: storeID, generation: UUID()),
+            "The shared store must remain leased until its issued WebKit mutation callback drains"
+        )
+
+        XCTAssertTrue(coordinator.endPendingMutation(firstLease))
+        let secondGeneration = UUID()
+        let secondLease = try XCTUnwrap(
+            coordinator.acquire(dataStoreID: storeID, generation: secondGeneration)
+        )
+        XCTAssertFalse(
+            coordinator.endPendingMutation(firstLease),
+            "A stale or duplicate callback must not mutate the newer store lease"
+        )
+        XCTAssertTrue(coordinator.isValid(secondLease, currentGeneration: secondGeneration))
+
+        coordinator.release(secondLease)
+    }
+
     func testRemoteProxyRestorePreservesLogicalOriginAndVerifiesAliasExecutionOrigin() throws {
         let logicalURLs = try [
             "http://127.0.0.1:3000/state",
