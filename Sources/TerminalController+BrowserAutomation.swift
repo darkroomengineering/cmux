@@ -1,6 +1,7 @@
 // Extracted from TerminalController.swift (nuclear-review TC3): the v2 browser-automation surface (~3,700 lines) shares no logic with terminal/surface/workspace handling.
 import AppKit
 import Carbon.HIToolbox
+import Darwin
 @preconcurrency import Foundation
 import Bonsplit
 import WebKit
@@ -52,6 +53,693 @@ private final class BrowserDownloadWaitState {
 
 extension TerminalController {
     // MARK: - V2 Browser Methods
+
+    enum V2BrowserFrameSelectorSource {
+        case frameSelect
+        case stateLoad
+    }
+
+    enum V2BrowserFrameSelectorApplyResult {
+        case applied
+        case rejected(limit: Int)
+    }
+
+    struct V2BrowserStateRestoreLimits {
+        let documentByteLimit: Int
+        let urlByteLimit: Int
+        let cookieCountLimit: Int
+        let storageEntryCountLimit: Int
+        let storageKeyByteLimit: Int
+        let storageValueByteLimit: Int
+        let frameSelectorByteLimit: Int
+
+        static let standard = V2BrowserStateRestoreLimits(
+            documentByteLimit: 8 * 1_024 * 1_024,
+            urlByteLimit: 16 * 1_024,
+            cookieCountLimit: 1_024,
+            storageEntryCountLimit: 4_096,
+            storageKeyByteLimit: 4 * 1_024,
+            storageValueByteLimit: 1_024 * 1_024,
+            frameSelectorByteLimit: 16 * 1_024
+        )
+    }
+
+    enum V2BrowserStateStepOutcome {
+        case succeeded
+        case timedOut
+        case failed(message: String)
+        case originMismatch(message: String)
+        case unavailable(message: String)
+    }
+
+    struct V2BrowserStateNavigationMilestone {
+        let navigationID: UUID
+        let url: URL
+        let executionURL: URL
+
+        init(navigationID: UUID, url: URL, executionURL: URL? = nil) {
+            self.navigationID = navigationID
+            self.url = url
+            self.executionURL = executionURL ?? url
+        }
+    }
+
+    enum V2BrowserStateNavigationOutcome {
+        case finished(
+            committed: V2BrowserStateNavigationMilestone,
+            finished: V2BrowserStateNavigationMilestone
+        )
+        case cancelled
+        case timedOut
+        case failed(message: String)
+        case permissionDenied
+        case unavailable
+        case busy
+    }
+
+    struct V2BrowserStateStoragePayload {
+        let expectedOrigin: String
+        let executionOrigin: String
+        let local: [String: String]
+        let session: [String: String]
+    }
+
+    struct V2BrowserStateRestoreOperations {
+        let installCookies: ([HTTPCookie], URL) -> V2BrowserStateStepOutcome
+        let navigateAndWait: (URL) -> V2BrowserStateNavigationOutcome
+        let applyStorage: (V2BrowserStateStoragePayload) -> V2BrowserStateStepOutcome
+        let applyFrameSelector: (String?) -> V2BrowserStateStepOutcome
+        let leaseIsValid: () -> Bool
+        let cancelNavigation: () -> Void
+    }
+
+    final class V2BrowserStateRestoreLeaseCoordinator {
+        struct Lease {
+            fileprivate let token: UUID
+            fileprivate let dataStoreID: ObjectIdentifier
+            fileprivate let generation: UUID
+        }
+
+        static let shared = V2BrowserStateRestoreLeaseCoordinator()
+
+        private let lock = NSLock()
+        private var activeLeases: [ObjectIdentifier: Lease] = [:]
+
+        func acquire(dataStoreID: ObjectIdentifier, generation: UUID) -> Lease? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard activeLeases[dataStoreID] == nil else { return nil }
+            let lease = Lease(token: UUID(), dataStoreID: dataStoreID, generation: generation)
+            activeLeases[dataStoreID] = lease
+            return lease
+        }
+
+        func isValid(_ lease: Lease, currentGeneration: UUID) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard currentGeneration == lease.generation,
+                  let active = activeLeases[lease.dataStoreID] else { return false }
+            return active.token == lease.token
+        }
+
+        func release(_ lease: Lease) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard activeLeases[lease.dataStoreID]?.token == lease.token else { return }
+            activeLeases.removeValue(forKey: lease.dataStoreID)
+        }
+    }
+
+    struct V2BrowserStateRestoreFailure: Error, Equatable {
+        enum Code: Equatable {
+            case documentReadFailed
+            case documentNotRegular
+            case documentTooLarge
+            case malformedDocument
+            case unsupportedSchemaVersion
+            case invalidURL
+            case invalidCookie
+            case duplicateCookie
+            case cookieLimitExceeded
+            case storageEntryLimitExceeded
+            case storageKeyTooLarge
+            case storageValueTooLarge
+            case frameSelectorTooLarge
+            case originMismatch
+            case navigationMismatch
+            case navigationCancelled
+            case navigationFailed
+            case navigationTimedOut
+            case navigationPermissionDenied
+            case navigationUnavailable
+            case surfaceUnavailable
+            case navigationBusy
+            case restoreInvalidated
+            case cookieInstallTimedOut
+            case cookieInstallFailed
+            case storageApplyTimedOut
+            case storageApplyFailed
+            case frameSelectorApplyTimedOut
+            case frameSelectorApplyFailed
+        }
+
+        let code: Code
+        let message: String
+        let cookiesMayHaveBeenMutated: Bool
+        let cookieCount: Int
+        let storageMayHaveBeenMutated: Bool
+
+        init(
+            code: Code,
+            message: String,
+            cookiesMayHaveBeenMutated: Bool = false,
+            cookieCount: Int = 0,
+            storageMayHaveBeenMutated: Bool = false
+        ) {
+            self.code = code
+            self.message = message
+            self.cookiesMayHaveBeenMutated = cookiesMayHaveBeenMutated
+            self.cookieCount = cookieCount
+            self.storageMayHaveBeenMutated = storageMayHaveBeenMutated
+        }
+    }
+
+    enum V2BrowserStateRestorer {
+        static let currentSchemaVersion = 1
+
+        struct PreparedState {
+            let targetURL: URL
+            let cookies: [HTTPCookie]
+            let storage: V2BrowserStateStoragePayload
+            let frameSelector: String?
+        }
+
+        static func restore(
+            fileURL: URL,
+            limits: V2BrowserStateRestoreLimits = .standard,
+            using operations: V2BrowserStateRestoreOperations
+        ) -> Result<Void, V2BrowserStateRestoreFailure> {
+            switch prepare(fileURL: fileURL, limits: limits) {
+            case .failure(let failure):
+                return .failure(failure)
+            case .success(let state):
+                return execute(state, using: operations)
+            }
+        }
+
+        static func prepare(
+            fileURL: URL,
+            limits: V2BrowserStateRestoreLimits = .standard
+        ) -> Result<PreparedState, V2BrowserStateRestoreFailure> {
+            let byteLimit = max(0, limits.documentByteLimit)
+            let readCount: Int
+            let (limitPlusOne, overflow) = byteLimit.addingReportingOverflow(1)
+            readCount = overflow ? Int.max : limitPlusOne
+
+            let descriptor = Darwin.open(fileURL.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+            guard descriptor >= 0 else {
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .documentReadFailed,
+                        message: String(cString: strerror(errno))
+                    )
+                )
+            }
+            var fileStatus = stat()
+            guard fstat(descriptor, &fileStatus) == 0 else {
+                let message = String(cString: strerror(errno))
+                Darwin.close(descriptor)
+                return .failure(failure(.documentReadFailed, message))
+            }
+            guard (fileStatus.st_mode & S_IFMT) == S_IFREG else {
+                Darwin.close(descriptor)
+                return .failure(
+                    failure(.documentNotRegular, "Browser state path must identify a regular file")
+                )
+            }
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            defer { try? handle.close() }
+
+            let data: Data
+            do {
+                data = try handle.read(upToCount: readCount) ?? Data()
+            } catch {
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .documentReadFailed,
+                        message: error.localizedDescription
+                    )
+                )
+            }
+
+            guard data.count <= byteLimit else {
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .documentTooLarge,
+                        message: "Browser state document exceeds \(byteLimit) bytes"
+                    )
+                )
+            }
+
+            let raw: [String: Any]
+            do {
+                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    return .failure(
+                        V2BrowserStateRestoreFailure(
+                            code: .malformedDocument,
+                            message: "Browser state document must be a JSON object"
+                        )
+                    )
+                }
+                raw = object
+            } catch {
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .malformedDocument,
+                        message: error.localizedDescription
+                    )
+                )
+            }
+
+            if let rawSchemaVersion = raw["schema_version"] {
+                guard let schemaVersion = rawSchemaVersion as? NSNumber,
+                      CFGetTypeID(schemaVersion) != CFBooleanGetTypeID(),
+                      schemaVersion.doubleValue == Double(schemaVersion.intValue),
+                      schemaVersion.intValue == currentSchemaVersion else {
+                    return .failure(
+                        failure(.unsupportedSchemaVersion, "Unsupported browser state schema version")
+                    )
+                }
+            }
+
+            guard let rawURL = raw["url"] as? String,
+                  !rawURL.isEmpty,
+                  rawURL.utf8.count <= max(0, limits.urlByteLimit),
+                  let targetURL = URL(string: rawURL),
+                  originString(for: targetURL) != nil else {
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .invalidURL,
+                        message: "Browser state URL must be an absolute HTTP or HTTPS URL"
+                    )
+                )
+            }
+
+            let cookieRows: [[String: Any]]
+            if let rawCookies = raw["cookies"] {
+                guard let rows = rawCookies as? [[String: Any]] else {
+                    return .failure(
+                        V2BrowserStateRestoreFailure(
+                            code: .malformedDocument,
+                            message: "Browser state cookies must be an array of objects"
+                        )
+                    )
+                }
+                cookieRows = rows
+            } else {
+                cookieRows = []
+            }
+            guard cookieRows.count <= max(0, limits.cookieCountLimit) else {
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .cookieLimitExceeded,
+                        message: "Browser state cookie count exceeds \(max(0, limits.cookieCountLimit))"
+                    )
+                )
+            }
+
+            var cookies: [HTTPCookie] = []
+            cookies.reserveCapacity(cookieRows.count)
+            var cookieIdentities = Set<String>()
+            for row in cookieRows {
+                guard let cookie = makeCookie(from: row, fallbackURL: targetURL) else {
+                    return .failure(
+                        V2BrowserStateRestoreFailure(
+                            code: .invalidCookie,
+                            message: "Browser state contains an invalid cookie"
+                        )
+                    )
+                }
+                let normalizedDomain = cookie.domain
+                    .lowercased()
+                    .drop(while: { $0 == "." })
+                let identity = "\(normalizedDomain)\u{0}\(cookie.name)\u{0}\(cookie.path)"
+                guard cookieIdentities.insert(identity).inserted else {
+                    return .failure(
+                        failure(.duplicateCookie, "Browser state contains duplicate cookie identities")
+                    )
+                }
+                cookies.append(cookie)
+            }
+
+            let storageObject: [String: Any]
+            if let rawStorage = raw["storage"] {
+                guard let dictionary = rawStorage as? [String: Any] else {
+                    return .failure(
+                        V2BrowserStateRestoreFailure(
+                            code: .malformedDocument,
+                            message: "Browser state storage must be an object"
+                        )
+                    )
+                }
+                storageObject = dictionary
+            } else {
+                storageObject = [:]
+            }
+
+            let localStorage: [String: String]
+            switch storageMap(named: "local", in: storageObject, limits: limits) {
+            case .success(let map):
+                localStorage = map
+            case .failure(let failure):
+                return .failure(failure)
+            }
+            let sessionStorage: [String: String]
+            switch storageMap(named: "session", in: storageObject, limits: limits) {
+            case .success(let map):
+                sessionStorage = map
+            case .failure(let failure):
+                return .failure(failure)
+            }
+
+            let frameSelector: String?
+            if let rawFrameSelector = raw["frame_selector"], !(rawFrameSelector is NSNull) {
+                guard let selector = rawFrameSelector as? String else {
+                    return .failure(
+                        V2BrowserStateRestoreFailure(
+                            code: .malformedDocument,
+                            message: "Browser state frame selector must be a string or null"
+                        )
+                    )
+                }
+                guard selector.utf8.count <= max(0, limits.frameSelectorByteLimit) else {
+                    return .failure(
+                        V2BrowserStateRestoreFailure(
+                            code: .frameSelectorTooLarge,
+                            message: "Browser state frame selector exceeds \(max(0, limits.frameSelectorByteLimit)) bytes"
+                        )
+                    )
+                }
+                frameSelector = selector.isEmpty ? nil : selector
+            } else {
+                frameSelector = nil
+            }
+
+            guard let expectedOrigin = originString(for: targetURL) else {
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .invalidURL,
+                        message: "Browser state URL has no storage origin"
+                    )
+                )
+            }
+            return .success(
+                PreparedState(
+                    targetURL: targetURL,
+                    cookies: cookies,
+                    storage: V2BrowserStateStoragePayload(
+                        expectedOrigin: expectedOrigin,
+                        executionOrigin: expectedOrigin,
+                        local: localStorage,
+                        session: sessionStorage
+                    ),
+                    frameSelector: frameSelector
+                )
+            )
+        }
+
+        static func execute(
+            _ state: PreparedState,
+            using operations: V2BrowserStateRestoreOperations
+        ) -> Result<Void, V2BrowserStateRestoreFailure> {
+            guard operations.leaseIsValid() else {
+                return .failure(failure(.restoreInvalidated, "Browser state restore was invalidated"))
+            }
+            switch operations.installCookies(state.cookies, state.targetURL) {
+            case .succeeded:
+                break
+            case .timedOut:
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .cookieInstallTimedOut,
+                        message: "Timed out installing browser state cookies",
+                        cookiesMayHaveBeenMutated: !state.cookies.isEmpty,
+                        cookieCount: state.cookies.count
+                    )
+                )
+            case .failed(let message), .originMismatch(let message):
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .cookieInstallFailed,
+                        message: message,
+                        cookiesMayHaveBeenMutated: !state.cookies.isEmpty,
+                        cookieCount: state.cookies.count
+                    )
+                )
+            case .unavailable(let message):
+                return .failure(
+                    V2BrowserStateRestoreFailure(
+                        code: .surfaceUnavailable,
+                        message: message,
+                        cookiesMayHaveBeenMutated: !state.cookies.isEmpty,
+                        cookieCount: state.cookies.count
+                    )
+                )
+            }
+
+            let cookiesMutated = !state.cookies.isEmpty
+            let cookieCount = state.cookies.count
+            guard operations.leaseIsValid() else {
+                return .failure(failure(.restoreInvalidated, "Browser state restore was invalidated", cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            }
+
+            let committed: V2BrowserStateNavigationMilestone
+            let finished: V2BrowserStateNavigationMilestone
+            switch operations.navigateAndWait(state.targetURL) {
+            case .finished(let committedMilestone, let finishedMilestone):
+                committed = committedMilestone
+                finished = finishedMilestone
+            case .cancelled:
+                return .failure(failure(.navigationCancelled, "Browser state navigation was cancelled", cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            case .timedOut:
+                operations.cancelNavigation()
+                return .failure(failure(.navigationTimedOut, "Timed out waiting for browser state navigation", cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            case .failed(let message):
+                return .failure(failure(.navigationFailed, message, cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            case .permissionDenied:
+                return .failure(failure(.navigationPermissionDenied, "Insecure HTTP navigation is not allowed", cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            case .unavailable:
+                return .failure(failure(.navigationUnavailable, "Browser surface became unavailable", cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            case .busy:
+                return .failure(failure(.navigationBusy, "Another browser state navigation is active", cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            }
+
+            guard operations.leaseIsValid() else {
+                return .failure(failure(.restoreInvalidated, "Browser state restore was invalidated", cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            }
+            guard committed.navigationID == finished.navigationID else {
+                return .failure(
+                    failure(
+                        .navigationMismatch,
+                        "Browser state navigation commit and finish do not refer to the same navigation",
+                        cookiesMutated: cookiesMutated,
+                        cookieCount: cookieCount
+                    )
+                )
+            }
+            guard originString(for: committed.url) == state.storage.expectedOrigin,
+                  originString(for: finished.url) == state.storage.expectedOrigin else {
+                return .failure(
+                    failure(.originMismatch, "Browser state navigation finished on an unexpected origin", cookiesMutated: cookiesMutated, cookieCount: cookieCount)
+                )
+            }
+
+            guard let committedExecutionOrigin = originString(for: committed.executionURL),
+                  let finishedExecutionOrigin = originString(for: finished.executionURL),
+                  committedExecutionOrigin == finishedExecutionOrigin else {
+                return .failure(failure(.originMismatch, "Browser state navigation execution origin changed", cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            }
+            guard operations.leaseIsValid() else {
+                return .failure(failure(.restoreInvalidated, "Browser state restore was invalidated", cookiesMutated: cookiesMutated, cookieCount: cookieCount))
+            }
+            let storage = V2BrowserStateStoragePayload(
+                expectedOrigin: state.storage.expectedOrigin,
+                executionOrigin: finishedExecutionOrigin,
+                local: state.storage.local,
+                session: state.storage.session
+            )
+            switch operations.applyStorage(storage) {
+            case .succeeded:
+                break
+            case .timedOut:
+                return .failure(failure(.storageApplyTimedOut, "Timed out applying browser storage", cookiesMutated: cookiesMutated, cookieCount: cookieCount, storageMutated: true))
+            case .failed(let message):
+                return .failure(failure(.storageApplyFailed, message, cookiesMutated: cookiesMutated, cookieCount: cookieCount, storageMutated: true))
+            case .originMismatch(let message):
+                return .failure(failure(.originMismatch, message, cookiesMutated: cookiesMutated, cookieCount: cookieCount, storageMutated: true))
+            case .unavailable(let message):
+                return .failure(failure(.surfaceUnavailable, message, cookiesMutated: cookiesMutated, cookieCount: cookieCount, storageMutated: true))
+            }
+
+            guard operations.leaseIsValid() else {
+                return .failure(failure(.restoreInvalidated, "Browser state restore was invalidated", cookiesMutated: cookiesMutated, cookieCount: cookieCount, storageMutated: true))
+            }
+            switch operations.applyFrameSelector(state.frameSelector) {
+            case .succeeded:
+                return .success(())
+            case .timedOut:
+                return .failure(failure(.frameSelectorApplyTimedOut, "Timed out applying frame selector", cookiesMutated: cookiesMutated, cookieCount: cookieCount, storageMutated: true))
+            case .failed(let message), .originMismatch(let message):
+                return .failure(failure(.frameSelectorApplyFailed, message, cookiesMutated: cookiesMutated, cookieCount: cookieCount, storageMutated: true))
+            case .unavailable(let message):
+                return .failure(failure(.surfaceUnavailable, message, cookiesMutated: cookiesMutated, cookieCount: cookieCount, storageMutated: true))
+            }
+        }
+
+        static func originString(for url: URL) -> String? {
+            guard let rawScheme = url.scheme?.lowercased(),
+                  rawScheme == "http" || rawScheme == "https",
+                  let rawHost = url.host?.lowercased(),
+                  !rawHost.isEmpty else {
+                return nil
+            }
+            let unbracketedHost = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            let host = unbracketedHost.contains(":") ? "[\(unbracketedHost)]" : unbracketedHost
+            let defaultPort = rawScheme == "https" ? 443 : 80
+            if let port = url.port, port != defaultPort {
+                return "\(rawScheme)://\(host):\(port)"
+            }
+            return "\(rawScheme)://\(host)"
+        }
+
+        private static func storageMap(
+            named name: String,
+            in storage: [String: Any],
+            limits: V2BrowserStateRestoreLimits
+        ) -> Result<[String: String], V2BrowserStateRestoreFailure> {
+            guard let rawMap = storage[name] else { return .success([:]) }
+            guard let map = rawMap as? [String: Any] else {
+                return .failure(
+                    failure(.malformedDocument, "Browser state \(name) storage must be an object")
+                )
+            }
+            guard map.count <= max(0, limits.storageEntryCountLimit) else {
+                return .failure(
+                    failure(
+                        .storageEntryLimitExceeded,
+                        "Browser state \(name) storage exceeds \(max(0, limits.storageEntryCountLimit)) entries"
+                    )
+                )
+            }
+
+            var validated: [String: String] = [:]
+            validated.reserveCapacity(map.count)
+            for (key, rawValue) in map {
+                guard key.utf8.count <= max(0, limits.storageKeyByteLimit) else {
+                    return .failure(
+                        failure(.storageKeyTooLarge, "Browser state storage key exceeds the byte limit")
+                    )
+                }
+                guard let value = rawValue as? String else {
+                    return .failure(
+                        failure(.malformedDocument, "Browser state storage values must be strings")
+                    )
+                }
+                guard value.utf8.count <= max(0, limits.storageValueByteLimit) else {
+                    return .failure(
+                        failure(.storageValueTooLarge, "Browser state storage value exceeds the byte limit")
+                    )
+                }
+                validated[key] = value
+            }
+            return .success(validated)
+        }
+
+        private static func makeCookie(from raw: [String: Any], fallbackURL: URL) -> HTTPCookie? {
+            guard let name = raw["name"] as? String, !name.isEmpty,
+                  let value = raw["value"] as? String else {
+                return nil
+            }
+
+            let originURL: URL
+            if let rawCookieURL = raw["url"] {
+                guard let cookieURLString = rawCookieURL as? String,
+                      let cookieURL = URL(string: cookieURLString),
+                      originString(for: cookieURL) != nil else {
+                    return nil
+                }
+                originURL = cookieURL
+            } else {
+                originURL = fallbackURL
+            }
+
+            let domain: String
+            if let rawDomain = raw["domain"] {
+                guard let cookieDomain = rawDomain as? String, !cookieDomain.isEmpty else { return nil }
+                domain = cookieDomain
+            } else {
+                guard let host = originURL.host, !host.isEmpty else { return nil }
+                domain = host
+            }
+
+            let path: String
+            if let rawPath = raw["path"] {
+                guard let cookiePath = rawPath as? String, cookiePath.hasPrefix("/") else { return nil }
+                path = cookiePath
+            } else {
+                path = "/"
+            }
+
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: name,
+                .value: value,
+                .originURL: originURL,
+                .domain: domain,
+                .path: path,
+            ]
+            if let rawSecure = raw["secure"] {
+                guard let secure = rawSecure as? Bool else { return nil }
+                if secure { properties[.secure] = "TRUE" }
+            }
+            if let rawHTTPOnly = raw["http_only"] {
+                guard let httpOnly = rawHTTPOnly as? Bool else { return nil }
+                if httpOnly { properties[HTTPCookiePropertyKey("HttpOnly")] = "TRUE" }
+            }
+            if let rawSameSite = raw["same_site"], !(rawSameSite is NSNull) {
+                guard let sameSite = rawSameSite as? String,
+                      sameSite == HTTPCookieStringPolicy.sameSiteStrict.rawValue
+                        || sameSite == HTTPCookieStringPolicy.sameSiteLax.rawValue else {
+                    return nil
+                }
+                properties[.sameSitePolicy] = HTTPCookieStringPolicy(rawValue: sameSite)
+            }
+            if let rawExpires = raw["expires"], !(rawExpires is NSNull) {
+                guard let expires = rawExpires as? NSNumber,
+                      CFGetTypeID(expires) != CFBooleanGetTypeID(),
+                      expires.doubleValue.isFinite else {
+                    return nil
+                }
+                properties[.expires] = Date(timeIntervalSince1970: expires.doubleValue)
+            }
+            return HTTPCookie(properties: properties)
+        }
+
+        private static func failure(
+            _ code: V2BrowserStateRestoreFailure.Code,
+            _ message: String,
+            cookiesMutated: Bool = false,
+            cookieCount: Int = 0,
+            storageMutated: Bool = false
+        ) -> V2BrowserStateRestoreFailure {
+            V2BrowserStateRestoreFailure(
+                code: code,
+                message: message,
+                cookiesMayHaveBeenMutated: cookiesMutated,
+                cookieCount: cookieCount,
+                storageMayHaveBeenMutated: storageMutated
+            )
+        }
+    }
 
     func v2BrowserWithPanel(
         params: [String: Any],
@@ -404,6 +1092,25 @@ extension TerminalController {
 
     func v2BrowserCurrentFrameSelector(surfaceId: UUID) -> String? {
         v2BrowserFrameSelectorBySurface[surfaceId]
+    }
+
+    @discardableResult
+    func v2BrowserApplyFrameSelector(
+        _ selector: String?,
+        surfaceId: UUID,
+        source: V2BrowserFrameSelectorSource
+    ) -> V2BrowserFrameSelectorApplyResult {
+        _ = source
+        guard let selector, !selector.isEmpty else {
+            v2BrowserFrameSelectorBySurface.removeValue(forKey: surfaceId)
+            return .applied
+        }
+        guard selector.utf8.count <= Self.v2BrowserElementRefSelectorByteLimit else {
+            v2BrowserFrameSelectorBySurface.removeValue(forKey: surfaceId)
+            return .rejected(limit: Self.v2BrowserElementRefSelectorByteLimit)
+        }
+        v2BrowserFrameSelectorBySurface[surfaceId] = selector
+        return .applied
     }
 
     private func v2RunBrowserJavaScript(
@@ -2878,6 +3585,8 @@ extension TerminalController {
             "domain": cookie.domain,
             "path": cookie.path,
             "secure": cookie.isSecure,
+            "http_only": cookie.isHTTPOnly,
+            "same_site": cookie.sameSitePolicy?.rawValue ?? NSNull(),
             "session_only": cookie.isSessionOnly
         ]
         if let expiresDate = cookie.expiresDate {
@@ -3491,6 +4200,7 @@ extension TerminalController {
             let cookies = (v2BrowserCookieStoreAll(store) ?? []).map(v2BrowserCookieDict)
 
             let state: [String: Any] = [
+                "schema_version": V2BrowserStateRestorer.currentSchemaVersion,
                 "url": browserPanel.currentURL?.absoluteString ?? "",
                 "cookies": cookies,
                 "storage": storageValue,
@@ -3520,58 +4230,194 @@ extension TerminalController {
             return .err(code: "invalid_params", message: "Missing path", data: nil)
         }
 
-        let url = URL(fileURLWithPath: path)
-        let raw: [String: Any]
-        do {
-            let data = try Data(contentsOf: url)
-            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return .err(code: "invalid_params", message: "State file must contain a JSON object", data: ["path": path])
-            }
-            raw = obj
-        } catch {
-            return .err(code: "not_found", message: "Failed to read state file", data: ["path": path, "error": error.localizedDescription])
+        let preparedState: V2BrowserStateRestorer.PreparedState
+        switch V2BrowserStateRestorer.prepare(fileURL: URL(fileURLWithPath: path)) {
+        case .success(let state):
+            preparedState = state
+        case .failure(let failure):
+            return v2BrowserStateRestoreFailureResult(failure, path: path)
         }
 
         return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
-            if let frameSelector = raw["frame_selector"] as? String, !frameSelector.isEmpty {
-                v2BrowserFrameSelectorBySurface[surfaceId] = frameSelector
-            } else {
-                v2BrowserFrameSelectorBySurface.removeValue(forKey: surfaceId)
+            guard let restoreLease = browserPanel.beginBrowserStateRestore() else {
+                return .err(
+                    code: "busy",
+                    message: "Another browser state restore is already active on this surface",
+                    data: ["surface_id": surfaceId.uuidString, "path": path]
+                )
             }
+            defer { browserPanel.endBrowserStateRestore(restoreLease) }
 
-            if let urlStr = raw["url"] as? String,
-               !urlStr.isEmpty,
-               let parsed = URL(string: urlStr) {
-                browserPanel.navigate(to: parsed)
-            }
-
-            if let cookieRows = raw["cookies"] as? [[String: Any]] {
-                let store = browserPanel.webView.configuration.websiteDataStore.httpCookieStore
-                for row in cookieRows {
-                    if let cookie = v2BrowserCookieFromObject(row, fallbackURL: browserPanel.currentURL) {
-                        _ = v2BrowserCookieStoreSet(store, cookie: cookie)
+            let restoreWebView = browserPanel.webView
+            let restoreWebViewInstanceID = browserPanel.webViewInstanceID
+            let operations = V2BrowserStateRestoreOperations(
+                installCookies: { cookies, _ in
+                    guard browserPanel.webView === restoreWebView,
+                          browserPanel.webViewInstanceID == restoreWebViewInstanceID else {
+                        return .unavailable(message: "Browser surface changed before cookies were installed")
                     }
+                    guard !cookies.isEmpty else { return .succeeded }
+
+                    let cookieStore = restoreWebView.configuration.websiteDataStore.httpCookieStore
+                    let completed: Void? = self.v2AwaitCallback(timeout: 10.0) { finish in
+                        let group = DispatchGroup()
+                        for cookie in cookies {
+                            group.enter()
+                            cookieStore.setCookie(cookie) {
+                                group.leave()
+                            }
+                        }
+                        group.notify(queue: .main) {
+                            finish(())
+                        }
+                    }
+                    guard completed != nil else { return .timedOut }
+                    guard browserPanel.webView === restoreWebView,
+                          browserPanel.webViewInstanceID == restoreWebViewInstanceID else {
+                        return .unavailable(message: "Browser surface changed while cookies were being installed")
+                    }
+                    return .succeeded
+                },
+                navigateAndWait: { targetURL in
+                    let result: V2BrowserStateNavigationOutcome? = self.v2AwaitCallback(timeout: 20.0) { finish in
+                        let startOutcome = browserPanel.startBrowserStateRestoreNavigation(to: targetURL) { outcome in
+                            switch outcome {
+                            case .finished(let committed, let finished):
+                                finish(
+                                    .finished(
+                                        committed: V2BrowserStateNavigationMilestone(
+                                            navigationID: committed.navigationID,
+                                            url: committed.url,
+                                            executionURL: committed.executionURL
+                                        ),
+                                        finished: V2BrowserStateNavigationMilestone(
+                                            navigationID: finished.navigationID,
+                                            url: finished.url,
+                                            executionURL: finished.executionURL
+                                        )
+                                    )
+                                )
+                            case .cancelled:
+                                finish(.cancelled)
+                            case .permissionDenied:
+                                finish(.permissionDenied)
+                            case .unavailable:
+                                finish(.unavailable)
+                            case .failed(let message):
+                                finish(.failed(message: message))
+                            }
+                        }
+                        switch startOutcome {
+                        case .started:
+                            break
+                        case .permissionDenied:
+                            finish(.permissionDenied)
+                        case .unavailable:
+                            finish(.unavailable)
+                        case .busy:
+                            finish(.busy)
+                        }
+                    }
+                    guard let result else {
+                        return .timedOut
+                    }
+                    return result
+                },
+                applyStorage: { storage in
+                    guard browserPanel.webView === restoreWebView,
+                          browserPanel.webViewInstanceID == restoreWebViewInstanceID,
+                          let actualURL = restoreWebView.url else {
+                        return .unavailable(message: "Browser surface changed before storage was applied")
+                    }
+                    guard V2BrowserStateRestorer.originString(for: actualURL) == storage.executionOrigin else {
+                        return .originMismatch(message: "Browser origin changed before storage was applied")
+                    }
+
+                    let storageLiteral = self.v2JSONLiteral([
+                        "local": storage.local,
+                        "session": storage.session,
+                    ])
+                    let originLiteral = self.v2JSONLiteral(storage.executionOrigin)
+                    let script = """
+                    return (() => {
+                      const expectedOrigin = \(originLiteral);
+                      const payload = \(storageLiteral);
+                      try {
+                        const actualOrigin = String(location.origin || '');
+                        if (actualOrigin !== expectedOrigin) {
+                          return { ok: false, kind: 'origin_mismatch', actual_origin: actualOrigin };
+                        }
+                        const apply = (target, entries) => {
+                          target.clear();
+                          for (const [key, value] of Object.entries(entries)) {
+                            target.setItem(key, value);
+                          }
+                        };
+                        apply(window.localStorage, payload.local);
+                        apply(window.sessionStorage, payload.session);
+                        return { ok: true };
+                      } catch (error) {
+                        return {
+                          ok: false,
+                          kind: 'storage_error',
+                          message: String(error && error.message ? error.message : error)
+                        };
+                      }
+                    })();
+                    """
+                    switch self.v2RunJavaScript(
+                        restoreWebView,
+                        script: script,
+                        timeout: 10.0,
+                        preferAsync: true,
+                        contentWorld: .defaultClient
+                    ) {
+                    case .failure(let message):
+                        if message == "Timed out waiting for JavaScript result" {
+                            return .timedOut
+                        }
+                        return .failed(message: message)
+                    case .success(let value):
+                        guard let response = value as? [String: Any],
+                              let ok = response["ok"] as? Bool else {
+                            return .failed(message: "Invalid browser storage result")
+                        }
+                        if ok { return .succeeded }
+                        if response["kind"] as? String == "origin_mismatch" {
+                            return .originMismatch(message: "Browser origin changed while storage was being applied")
+                        }
+                        return .failed(
+                            message: (response["message"] as? String) ?? "Browser storage mutation failed"
+                        )
+                    }
+                },
+                applyFrameSelector: { frameSelector in
+                    switch self.v2BrowserApplyFrameSelector(
+                        frameSelector,
+                        surfaceId: surfaceId,
+                        source: .stateLoad
+                    ) {
+                    case .applied:
+                        return .succeeded
+                    case .rejected(let limit):
+                        return .failed(message: "Frame selector exceeds \(limit) bytes")
+                    }
+                },
+                leaseIsValid: {
+                    browserPanel.isBrowserStateRestoreLeaseValid(restoreLease)
+                        && browserPanel.webView === restoreWebView
+                        && browserPanel.webViewInstanceID == restoreWebViewInstanceID
+                },
+                cancelNavigation: {
+                    browserPanel.cancelBrowserStateRestoreNavigationWait()
                 }
-            }
+            )
 
-            if let storage = raw["storage"] as? [String: Any] {
-                let storageLiteral = v2JSONLiteral(storage)
-                let script = """
-                (() => {
-                  const payload = \(storageLiteral);
-                  const apply = (st, data) => {
-                    if (!st || !data || typeof data !== 'object') return;
-                    st.clear();
-                    for (const [k, v] of Object.entries(data)) {
-                      st.setItem(String(k), v == null ? '' : String(v));
-                    }
-                  };
-                  apply(window.localStorage, payload.local);
-                  apply(window.sessionStorage, payload.session);
-                  return true;
-                })()
-                """
-                _ = v2RunBrowserJavaScript(browserPanel.webView, surfaceId: surfaceId, script: script, timeout: 10.0)
+            switch V2BrowserStateRestorer.execute(preparedState, using: operations) {
+            case .failure(let failure):
+                return v2BrowserStateRestoreFailureResult(failure, path: path)
+            case .success:
+                break
             }
 
             return .ok([
@@ -3580,9 +4426,56 @@ extension TerminalController {
                 "surface_id": surfaceId.uuidString,
                 "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
                 "path": path,
-                "loaded": true
+                "loaded": true,
+                "url": preparedState.targetURL.absoluteString,
+                "cookies": preparedState.cookies.count,
             ])
         }
+    }
+
+    private func v2BrowserStateRestoreFailureResult(
+        _ failure: V2BrowserStateRestoreFailure,
+        path: String
+    ) -> V2CallResult {
+        let code: String
+        switch failure.code {
+        case .documentReadFailed:
+            code = "not_found"
+        case .documentNotRegular, .documentTooLarge, .malformedDocument, .unsupportedSchemaVersion,
+             .invalidURL, .invalidCookie, .duplicateCookie,
+             .cookieLimitExceeded, .storageEntryLimitExceeded, .storageKeyTooLarge,
+             .storageValueTooLarge, .frameSelectorTooLarge:
+            code = "invalid_params"
+        case .navigationPermissionDenied:
+            code = "permission_denied"
+        case .navigationUnavailable, .surfaceUnavailable, .cookieInstallFailed, .restoreInvalidated:
+            code = "unavailable"
+        case .navigationBusy:
+            code = "busy"
+        case .navigationTimedOut, .cookieInstallTimedOut, .storageApplyTimedOut,
+             .frameSelectorApplyTimedOut:
+            code = "timeout"
+        case .navigationCancelled:
+            code = "cancelled"
+        case .navigationFailed, .navigationMismatch:
+            code = "navigation_failed"
+        case .originMismatch:
+            code = "origin_mismatch"
+        case .storageApplyFailed:
+            code = "storage_apply_failed"
+        case .frameSelectorApplyFailed:
+            code = "internal_error"
+        }
+
+        var data: [String: Any] = ["path": path]
+        if failure.cookiesMayHaveBeenMutated {
+            data["partial_cookie_mutation"] = true
+            data["cookies_attempted"] = failure.cookieCount
+        }
+        if failure.storageMayHaveBeenMutated {
+            data["partial_storage_mutation"] = true
+        }
+        return .err(code: code, message: failure.message, data: data)
     }
 
     func v2BrowserAddInitScript(params: [String: Any]) -> V2CallResult {
