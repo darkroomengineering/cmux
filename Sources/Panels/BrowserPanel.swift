@@ -1300,6 +1300,7 @@ final class BrowserPanel: Panel, ObservableObject {
         proxyEndpoint: BrowserProxyEndpoint?,
         remoteStatus: BrowserRemoteWorkspaceStatus?
     ) {
+        invalidateBrowserStateRestoreForWorkspaceTransfer()
         workspaceId = newWorkspaceId
         usesRemoteWorkspaceProxy = isRemoteWorkspace
         let targetStore = isRemoteWorkspace
@@ -2293,6 +2294,10 @@ final class BrowserPanel: Panel, ObservableObject {
             waiter.webView.stopLoading()
             completeBrowserStateRestoreNavigation(waiter, with: outcome)
         }
+    }
+
+    func invalidateBrowserStateRestoreForWorkspaceTransfer() {
+        invalidateBrowserStateRestore(with: .unavailable)
     }
 
     func startBrowserStateRestoreNavigation(

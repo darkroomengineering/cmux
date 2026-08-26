@@ -140,17 +140,23 @@ extension TerminalController {
             fileprivate let generation: UUID
         }
 
+        private struct ActiveLease {
+            let lease: Lease
+            var pendingMutationCount = 0
+            var releaseRequested = false
+        }
+
         static let shared = V2BrowserStateRestoreLeaseCoordinator()
 
         private let lock = NSLock()
-        private var activeLeases: [ObjectIdentifier: Lease] = [:]
+        private var activeLeases: [ObjectIdentifier: ActiveLease] = [:]
 
         func acquire(dataStoreID: ObjectIdentifier, generation: UUID) -> Lease? {
             lock.lock()
             defer { lock.unlock() }
             guard activeLeases[dataStoreID] == nil else { return nil }
             let lease = Lease(token: UUID(), dataStoreID: dataStoreID, generation: generation)
-            activeLeases[dataStoreID] = lease
+            activeLeases[dataStoreID] = ActiveLease(lease: lease)
             return lease
         }
 
@@ -159,27 +165,47 @@ extension TerminalController {
             defer { lock.unlock() }
             guard currentGeneration == lease.generation,
                   let active = activeLeases[lease.dataStoreID] else { return false }
-            return active.token == lease.token
+            return active.lease.token == lease.token && !active.releaseRequested
         }
 
         func beginPendingMutation(_ lease: Lease) -> Bool {
             lock.lock()
             defer { lock.unlock() }
-            return activeLeases[lease.dataStoreID]?.token == lease.token
+            guard var active = activeLeases[lease.dataStoreID],
+                  active.lease.token == lease.token,
+                  !active.releaseRequested else { return false }
+            active.pendingMutationCount += 1
+            activeLeases[lease.dataStoreID] = active
+            return true
         }
 
         @discardableResult
         func endPendingMutation(_ lease: Lease) -> Bool {
             lock.lock()
             defer { lock.unlock() }
-            return activeLeases[lease.dataStoreID]?.token == lease.token
+            guard var active = activeLeases[lease.dataStoreID],
+                  active.lease.token == lease.token,
+                  active.pendingMutationCount > 0 else { return false }
+            active.pendingMutationCount -= 1
+            if active.pendingMutationCount == 0, active.releaseRequested {
+                activeLeases.removeValue(forKey: lease.dataStoreID)
+            } else {
+                activeLeases[lease.dataStoreID] = active
+            }
+            return true
         }
 
         func release(_ lease: Lease) {
             lock.lock()
             defer { lock.unlock() }
-            guard activeLeases[lease.dataStoreID]?.token == lease.token else { return }
-            activeLeases.removeValue(forKey: lease.dataStoreID)
+            guard var active = activeLeases[lease.dataStoreID],
+                  active.lease.token == lease.token else { return }
+            if active.pendingMutationCount == 0 {
+                activeLeases.removeValue(forKey: lease.dataStoreID)
+            } else {
+                active.releaseRequested = true
+                activeLeases[lease.dataStoreID] = active
+            }
         }
     }
 
@@ -4272,6 +4298,10 @@ extension TerminalController {
                     guard !cookies.isEmpty else { return .succeeded }
 
                     let cookieStore = restoreWebView.configuration.websiteDataStore.httpCookieStore
+                    let leaseCoordinator = V2BrowserStateRestoreLeaseCoordinator.shared
+                    guard leaseCoordinator.beginPendingMutation(restoreLease) else {
+                        return .unavailable(message: "Browser state restore was invalidated before cookies were installed")
+                    }
                     let completed: Void? = self.v2AwaitCallback(timeout: 10.0) { finish in
                         let group = DispatchGroup()
                         for cookie in cookies {
@@ -4281,6 +4311,7 @@ extension TerminalController {
                             }
                         }
                         group.notify(queue: .main) {
+                            leaseCoordinator.endPendingMutation(restoreLease)
                             finish(())
                         }
                     }
