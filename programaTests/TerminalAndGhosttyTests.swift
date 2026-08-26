@@ -5120,7 +5120,8 @@ final class TerminalControllerV2BrowserStateRestoreTests: XCTestCase {
 
     func testStorageMutationCallbackKeepsSharedStoreLeasedAfterRestoreTimeout() throws {
         let coordinator = TerminalController.V2BrowserStateRestoreLeaseCoordinator()
-        let storeID = ObjectIdentifier(WKWebsiteDataStore.nonPersistent())
+        let store = WKWebsiteDataStore.nonPersistent()
+        let storeID = ObjectIdentifier(store)
         let firstLease = try XCTUnwrap(
             coordinator.acquire(dataStoreID: storeID, generation: UUID())
         )
@@ -5128,14 +5129,21 @@ final class TerminalControllerV2BrowserStateRestoreTests: XCTestCase {
         XCTAssertTrue(coordinator.beginPendingMutation(firstLease), "Cookie writes are in flight")
         XCTAssertTrue(coordinator.beginPendingMutation(firstLease), "The storage JavaScript callback is in flight")
         coordinator.release(firstLease)
+        XCTAssertEqual(
+            coordinator.state(dataStoreID: storeID),
+            .taintedByUndrainedMutationCallbacks,
+            "If WebKit never invokes the callback, the store must remain explicitly tainted and busy rather than overlap a later restore"
+        )
 
         XCTAssertTrue(coordinator.endPendingMutation(firstLease), "Cookie callbacks drained")
+        XCTAssertEqual(coordinator.state(dataStoreID: storeID), .taintedByUndrainedMutationCallbacks)
         XCTAssertNil(
             coordinator.acquire(dataStoreID: storeID, generation: UUID()),
             "A timed-out restore must keep the store fenced until its late storage callback drains"
         )
 
         XCTAssertTrue(coordinator.endPendingMutation(firstLease), "The late storage callback drained")
+        XCTAssertEqual(coordinator.state(dataStoreID: storeID), .available)
         let secondGeneration = UUID()
         let secondLease = try XCTUnwrap(
             coordinator.acquire(dataStoreID: storeID, generation: secondGeneration)

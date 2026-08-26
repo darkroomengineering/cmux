@@ -134,6 +134,15 @@ extension TerminalController {
     }
 
     final class V2BrowserStateRestoreLeaseCoordinator {
+        enum DataStoreLeaseState: String, Equatable {
+            case available
+            case activeRestore = "active_restore"
+            /// WebKit has accepted a mutation whose callback has not drained. This remains
+            /// fail-closed, potentially until process restart, because releasing without the
+            /// callback would let a late mutation overlap a newer restore.
+            case taintedByUndrainedMutationCallbacks = "tainted_by_undrained_mutation_callbacks"
+        }
+
         struct Lease {
             fileprivate let token: UUID
             fileprivate let dataStoreID: ObjectIdentifier
@@ -158,6 +167,15 @@ extension TerminalController {
             let lease = Lease(token: UUID(), dataStoreID: dataStoreID, generation: generation)
             activeLeases[dataStoreID] = ActiveLease(lease: lease)
             return lease
+        }
+
+        func state(dataStoreID: ObjectIdentifier) -> DataStoreLeaseState {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let active = activeLeases[dataStoreID] else { return .available }
+            return active.releaseRequested
+                ? .taintedByUndrainedMutationCallbacks
+                : .activeRestore
         }
 
         func isValid(_ lease: Lease, currentGeneration: UUID) -> Bool {
@@ -896,12 +914,14 @@ extension TerminalController {
         script: String,
         timeout: TimeInterval = 5.0,
         preferAsync: Bool = false,
-        contentWorld: WKContentWorld
+        contentWorld: WKContentWorld,
+        webKitCompletionDidDrain: (() -> Void)? = nil
     ) -> V2JavaScriptResult {
         let timeoutSeconds = max(0.01, timeout)
         let evaluator: (@escaping (Any?, String?) -> Void) -> Void = { finish in
             if preferAsync {
                 webView.callAsyncJavaScript(script, arguments: [:], in: nil, in: contentWorld) { result in
+                    webKitCompletionDidDrain?()
                     switch result {
                     case .success(let value):
                         finish(value, nil)
@@ -911,6 +931,7 @@ extension TerminalController {
                 }
             } else {
                 webView.evaluateJavaScript(script) { value, error in
+                    webKitCompletionDidDrain?()
                     if let error {
                         finish(nil, error.localizedDescription)
                     } else {
@@ -4337,16 +4358,28 @@ extension TerminalController {
 
         return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
             guard let restoreLease = browserPanel.beginBrowserStateRestore() else {
+                let dataStoreID = ObjectIdentifier(browserPanel.webView.configuration.websiteDataStore)
+                let leaseState = V2BrowserStateRestoreLeaseCoordinator.shared.state(
+                    dataStoreID: dataStoreID
+                )
+                let message = leaseState == .taintedByUndrainedMutationCallbacks
+                    ? "Browser data store is waiting for an issued WebKit mutation callback to drain"
+                    : "Another browser state restore is already active on this data store"
                 return .err(
                     code: "busy",
-                    message: "Another browser state restore is already active on this surface",
-                    data: ["surface_id": surfaceId.uuidString, "path": path]
+                    message: message,
+                    data: [
+                        "surface_id": surfaceId.uuidString,
+                        "path": path,
+                        "busy_reason": leaseState.rawValue,
+                    ]
                 )
             }
             defer { browserPanel.endBrowserStateRestore(restoreLease) }
 
             let restoreWebView = browserPanel.webView
             let restoreWebViewInstanceID = browserPanel.webViewInstanceID
+            let leaseCoordinator = V2BrowserStateRestoreLeaseCoordinator.shared
             let operations = V2BrowserStateRestoreOperations(
                 installCookies: { cookies, _ in
                     guard browserPanel.webView === restoreWebView,
@@ -4356,7 +4389,6 @@ extension TerminalController {
                     guard !cookies.isEmpty else { return .succeeded }
 
                     let cookieStore = restoreWebView.configuration.websiteDataStore.httpCookieStore
-                    let leaseCoordinator = V2BrowserStateRestoreLeaseCoordinator.shared
                     guard leaseCoordinator.beginPendingMutation(restoreLease) else {
                         return .unavailable(message: "Browser state restore was invalidated before cookies were installed")
                     }
@@ -4467,12 +4499,18 @@ extension TerminalController {
                       }
                     })();
                     """
+                    guard leaseCoordinator.beginPendingMutation(restoreLease) else {
+                        return .unavailable(message: "Browser state restore was invalidated before storage was applied")
+                    }
                     switch self.v2RunJavaScript(
                         restoreWebView,
                         script: script,
                         timeout: 10.0,
                         preferAsync: true,
-                        contentWorld: .defaultClient
+                        contentWorld: .defaultClient,
+                        webKitCompletionDidDrain: {
+                            leaseCoordinator.endPendingMutation(restoreLease)
+                        }
                     ) {
                     case .failure(let message):
                         if message == "Timed out waiting for JavaScript result" {
