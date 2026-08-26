@@ -154,6 +154,60 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertNotEqual(higherPIDWins, lowerPIDWins, "Identical kernel timestamps must elect exactly one winner")
     }
 
+    func testDuplicateInstanceCandidateExcludesEmbeddedCLIExecutable() {
+        let embeddedCLIURL = URL(
+            fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+        )
+
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: embeddedCLIURL,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: embeddedCLIURL
+        ))
+    }
+
+    func testDuplicateInstanceCandidateIncludesSameBundleGUIExecutable() {
+        XCTAssertTrue(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: URL(
+                fileURLWithPath: "/Applications/Programa.app/Contents/MacOS/Programa"
+            ),
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: URL(
+                fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+            )
+        ))
+    }
+
+    func testDuplicateInstanceCandidateRejectsCurrentProcessAndDifferentBundle() {
+        let embeddedCLIURL = URL(
+            fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+        )
+        let guiURL = URL(fileURLWithPath: "/Applications/Programa.app/Contents/MacOS/Programa")
+
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 100,
+            candidateExecutableURL: guiURL,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: embeddedCLIURL
+        ))
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.example.other",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: guiURL,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: embeddedCLIURL
+        ))
+    }
+
     func testSingleInstanceProcessKeyReadsCurrentKernelProcessIdentity() throws {
         let currentPID = getpid()
         let key = try XCTUnwrap(AppDelegate.singleInstanceProcessKey(for: currentPID))

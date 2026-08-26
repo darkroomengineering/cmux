@@ -8885,6 +8885,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         return current.processIdentifier > other.processIdentifier
     }
 
+    nonisolated static func shouldConsiderDuplicateApplication(
+        candidateBundleIdentifier: String?,
+        candidateProcessIdentifier: pid_t,
+        candidateExecutableURL: URL?,
+        expectedBundleIdentifier: String,
+        currentProcessIdentifier: pid_t,
+        embeddedCLIURL: URL
+    ) -> Bool {
+        guard candidateBundleIdentifier == expectedBundleIdentifier,
+              candidateProcessIdentifier != currentProcessIdentifier else {
+            return false
+        }
+        guard let candidateExecutableURL else { return true }
+        return candidateExecutableURL.standardizedFileURL.resolvingSymlinksInPath()
+            != embeddedCLIURL.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
     nonisolated private static func terminateDuplicateApplication(_ app: NSRunningApplication) {
         app.terminate()
         if !app.isTerminated {
@@ -8894,12 +8911,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
     private func enforceSingleInstance() {
         guard let bundleId = Bundle.main.bundleIdentifier else { return }
+        let embeddedCLIURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/bin/programa", isDirectory: false)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
         let currentPid = NSRunningApplication.current.processIdentifier
         guard let currentKey = Self.singleInstanceProcessKey(for: currentPid) else { return }
 
         for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId) {
-            guard app.processIdentifier != currentPid,
-                  let otherKey = Self.singleInstanceProcessKey(for: app.processIdentifier),
+            guard Self.shouldConsiderDuplicateApplication(
+                candidateBundleIdentifier: app.bundleIdentifier,
+                candidateProcessIdentifier: app.processIdentifier,
+                candidateExecutableURL: app.executableURL,
+                expectedBundleIdentifier: bundleId,
+                currentProcessIdentifier: currentPid,
+                embeddedCLIURL: embeddedCLIURL
+            ) else {
+                continue
+            }
+            guard let otherKey = Self.singleInstanceProcessKey(for: app.processIdentifier),
                   Self.shouldTerminateDuplicateInstance(current: currentKey, other: otherKey) else {
                 continue
             }
@@ -8923,11 +8953,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         ) { [weak self] notification in
             guard self != nil else { return }
             guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-            guard app.bundleIdentifier == bundleId, app.processIdentifier != currentPid else { return }
-            if let executableURL = app.executableURL?
-                   .standardizedFileURL
-                   .resolvingSymlinksInPath(),
-               executableURL == embeddedCLIURL {
+            guard Self.shouldConsiderDuplicateApplication(
+                candidateBundleIdentifier: app.bundleIdentifier,
+                candidateProcessIdentifier: app.processIdentifier,
+                candidateExecutableURL: app.executableURL,
+                expectedBundleIdentifier: bundleId,
+                currentProcessIdentifier: currentPid,
+                embeddedCLIURL: embeddedCLIURL
+            ) else {
                 return
             }
 
