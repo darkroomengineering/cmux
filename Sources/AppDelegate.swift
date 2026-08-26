@@ -775,6 +775,12 @@ func shouldSuppressWindowMoveForFolderDrag(window: NSWindow, event: NSEvent) -> 
     return shouldSuppressWindowMoveForFolderDrag(hitView: hitView)
 }
 
+struct ProgramaSingleInstanceProcessKey: Equatable, Sendable {
+    let startSeconds: Int64
+    let startMicroseconds: Int64
+    let processIdentifier: pid_t
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate, NSMenuItemValidation {
     nonisolated(unsafe) static var shared: AppDelegate?
@@ -8845,16 +8851,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 #endif
 
+    nonisolated static func singleInstanceProcessKey(
+        for processIdentifier: pid_t
+    ) -> ProgramaSingleInstanceProcessKey? {
+        var processInfo = kinfo_proc()
+        var processInfoSize = MemoryLayout<kinfo_proc>.size
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, processIdentifier]
+        guard sysctl(&mib, UInt32(mib.count), &processInfo, &processInfoSize, nil, 0) == 0,
+              processInfoSize == MemoryLayout<kinfo_proc>.size,
+              processInfo.kp_proc.p_pid == processIdentifier else {
+            return nil
+        }
+
+        let startTime = processInfo.kp_proc.p_starttime
+        guard startTime.tv_sec > 0 || startTime.tv_usec > 0 else { return nil }
+        return ProgramaSingleInstanceProcessKey(
+            startSeconds: Int64(startTime.tv_sec),
+            startMicroseconds: Int64(startTime.tv_usec),
+            processIdentifier: processIdentifier
+        )
+    }
+
+    nonisolated static func shouldTerminateDuplicateInstance(
+        current: ProgramaSingleInstanceProcessKey,
+        other: ProgramaSingleInstanceProcessKey
+    ) -> Bool {
+        if current.startSeconds != other.startSeconds {
+            return current.startSeconds > other.startSeconds
+        }
+        if current.startMicroseconds != other.startMicroseconds {
+            return current.startMicroseconds > other.startMicroseconds
+        }
+        return current.processIdentifier > other.processIdentifier
+    }
+
+    nonisolated private static func terminateDuplicateApplication(_ app: NSRunningApplication) {
+        app.terminate()
+        if !app.isTerminated {
+            _ = app.forceTerminate()
+        }
+    }
+
     private func enforceSingleInstance() {
         guard let bundleId = Bundle.main.bundleIdentifier else { return }
-        let currentPid = ProcessInfo.processInfo.processIdentifier
+        let currentPid = NSRunningApplication.current.processIdentifier
+        guard let currentKey = Self.singleInstanceProcessKey(for: currentPid) else { return }
 
         for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId) {
-            guard app.processIdentifier != currentPid else { continue }
-            app.terminate()
-            if !app.isTerminated {
-                _ = app.forceTerminate()
+            guard app.processIdentifier != currentPid,
+                  let otherKey = Self.singleInstanceProcessKey(for: app.processIdentifier),
+                  Self.shouldTerminateDuplicateInstance(current: currentKey, other: otherKey) else {
+                continue
             }
+            Self.terminateDuplicateApplication(app)
         }
     }
 
@@ -8864,7 +8913,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             .appendingPathComponent("Contents/Resources/bin/programa", isDirectory: false)
             .standardizedFileURL
             .resolvingSymlinksInPath()
-        let currentPid = ProcessInfo.processInfo.processIdentifier
+        let currentPid = NSRunningApplication.current.processIdentifier
+        guard let currentKey = Self.singleInstanceProcessKey(for: currentPid) else { return }
 
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification,
@@ -8881,10 +8931,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 return
             }
 
-            app.terminate()
-            if !app.isTerminated {
-                _ = app.forceTerminate()
+            guard let otherKey = Self.singleInstanceProcessKey(for: app.processIdentifier),
+                  Self.shouldTerminateDuplicateInstance(current: currentKey, other: otherKey) else {
+                return
             }
+            Self.terminateDuplicateApplication(app)
             NSRunningApplication.current.activate(options: [.activateAllWindows])
         }
     }
