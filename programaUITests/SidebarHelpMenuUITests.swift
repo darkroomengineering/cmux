@@ -80,6 +80,7 @@ final class SidebarHelpMenuUITests: XCTestCase {
         app.launchEnvironment["PROGRAMA_UI_TEST_FEED_MODE"] = "available"
         app.launchEnvironment["PROGRAMA_UI_TEST_UPDATE_VERSION"] = "9.9.9"
         app.launchEnvironment["PROGRAMA_UI_TEST_AUTO_ALLOW_PERMISSION"] = "1"
+        app.launchEnvironment["PROGRAMA_UI_TEST_TRIGGER_UPDATE_CHECK"] = "1"
         launchAndActivate(app)
 
         XCTAssertTrue(waitForWindowCount(atLeast: 1, app: app, timeout: 6.0))
