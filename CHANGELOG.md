@@ -7,6 +7,15 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 ## [Unreleased]
 
 ### Fixed
+- Crash recovery no longer opens a second window full of empty workspaces when only some detached terminal sessions can be reattached. The recovery window now contains only live recovered sessions and closes when none recover.
+- Closing a window now tears down every timer, observer, task, panel, and workspace it owns, so closed windows cannot keep empty workspaces alive or reappear in a later session snapshot.
+- The title-bar hide-sidebar button now always toggles the sidebar belonging to its own window instead of relying on whichever window was last active.
+- Provider usage is now available on demand from a sidebar icon and shows every signed-in supported provider, without continuously polling while the popover is closed.
+- Browser downloads now keep the completed temporary file available when moving it to the destination fails, so a finalization error cannot silently discard the download.
+- Revoking a paired mobile device now also blocks connections still being admitted, and disabling the bridge closes active phone sessions.
+- An unreadable browser history file no longer causes repeated disk reads on every omnibar keystroke.
+- Clearing browser history now stays cleared after a temporary disk deletion failure or app termination.
+- Browser imports now treat Unicode domains and their Punycode forms as the same filter, so internationalized domains no longer silently import zero matching cookies or history entries.
 - Socket automation no longer hangs on split Unicode requests or unsubscribe races, and malformed telemetry can no longer crash the app or grow retained workspace state without bounds.
 - Large command output no longer deadlocks the CLI or background Git checks, and stalled Git probes now time out instead of accumulating work.
 - Browser favicons now have strict download and decode limits, so a hostile or broken site cannot consume unbounded memory or restore a stale icon after navigation.
@@ -22,6 +31,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - A restart after an update no longer kills every terminal when the new app comes up faster than the background session-holder notices the old one is gone. The app now waits out that window instead of giving up, escrow sockets no longer leak into shell processes (which silently delayed that detection), and a session that falls back anyway keeps its reattach records on disk while its process is still alive instead of deleting them.
 
 ### Changed
+- The local diagnostics logger now keeps one file handle open between records and reopens it only after rotation, removing repeated directory checks and open/seek/close work from socket and session activity.
 - Ghostty is updated to the current upstream implementation with complete Kitty graphics animation and placement support. Programa now builds the fork and helper tools with Zig 0.16.
 - Background work is lighter: unchanged config reloads are ignored, idle output polling stops, duplicate update checks are gone, and update logs rotate at 1 MiB.
 - Sidebar resizing now uses native macOS pointer capture, so the resize cursor and drag stay stable when crossing terminal or browser content. Command-palette, review-panel, find-field, and workspace telemetry updates also avoid unnecessary whole-window redraws.
