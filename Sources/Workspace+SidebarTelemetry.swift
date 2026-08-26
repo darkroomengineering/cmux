@@ -29,6 +29,9 @@ enum SidebarTelemetryLimits {
     static let maxStatusEntries = 128
     static let maxMetadataBlocks = 128
     static let maxAgentPIDs = 128
+    // With no protocol dimension, 1...65_535 exhausts the numeric port domain;
+    // duplicates count toward this raw ingress limit before canonicalization.
+    static let maxReportedPorts = 65_535
 
     static func utf8ByteCount(_ value: String) -> Int {
         value.utf8.count
@@ -273,9 +276,13 @@ extension Workspace {
 #endif
     }
 
-    func resetSidebarContext(reason: String = "unspecified") {
+    func resetSidebarContext(
+        reason: String = "unspecified",
+        portScanner: PortScanner = .shared
+    ) {
         statusEntries.removeAll()
         agentPIDs.removeAll()
+        portScanner.refreshAgentPorts(workspaceId: id, agentPIDs: [])
         agentListeningPorts.removeAll()
         logEntries.removeAll()
         progress = nil
@@ -396,23 +403,63 @@ extension Workspace {
     }
 
     func pruneSurfaceMetadata(validSurfaceIds: Set<UUID>) {
-        panelDirectories = panelDirectories.filter { validSurfaceIds.contains($0.key) }
-        panelTitles = panelTitles.filter { validSurfaceIds.contains($0.key) }
-        panelsWithLiveTitle = panelsWithLiveTitle.filter { validSurfaceIds.contains($0) }
-        panelCustomTitles = panelCustomTitles.filter { validSurfaceIds.contains($0.key) }
-        pinnedPanelIds = pinnedPanelIds.filter { validSurfaceIds.contains($0) }
-        manualUnreadPanelIds = manualUnreadPanelIds.filter { validSurfaceIds.contains($0) }
-        panelGitBranches = panelGitBranches.filter { validSurfaceIds.contains($0.key) }
-        manualUnreadMarkedAt = manualUnreadMarkedAt.filter { validSurfaceIds.contains($0.key) }
-        surfaceListeningPorts = surfaceListeningPorts.filter { validSurfaceIds.contains($0.key) }
-        surfaceTTYNames = surfaceTTYNames.filter { validSurfaceIds.contains($0.key) }
-        remoteDetectedSurfaceIds = remoteDetectedSurfaceIds.filter { validSurfaceIds.contains($0) }
-        panelShellActivityStates = panelShellActivityStates.filter { validSurfaceIds.contains($0.key) }
-        panelPullRequests = panelPullRequests.filter { validSurfaceIds.contains($0.key) }
-        panelAgentStates = panelAgentStates.filter { validSurfaceIds.contains($0.key) }
-        panelAgentStateSources = panelAgentStateSources.filter { validSurfaceIds.contains($0.key) }
-        syncRemotePortScanTTYs()
-        recomputeListeningPorts()
+        if panelDirectories.keys.contains(where: { !validSurfaceIds.contains($0) }) {
+            panelDirectories = panelDirectories.filter { validSurfaceIds.contains($0.key) }
+        }
+        if panelTitles.keys.contains(where: { !validSurfaceIds.contains($0) }) {
+            panelTitles = panelTitles.filter { validSurfaceIds.contains($0.key) }
+        }
+        if panelsWithLiveTitle.contains(where: { !validSurfaceIds.contains($0) }) {
+            panelsWithLiveTitle = panelsWithLiveTitle.filter { validSurfaceIds.contains($0) }
+        }
+        if panelCustomTitles.keys.contains(where: { !validSurfaceIds.contains($0) }) {
+            panelCustomTitles = panelCustomTitles.filter { validSurfaceIds.contains($0.key) }
+        }
+        if pinnedPanelIds.contains(where: { !validSurfaceIds.contains($0) }) {
+            pinnedPanelIds = pinnedPanelIds.filter { validSurfaceIds.contains($0) }
+        }
+        if manualUnreadPanelIds.contains(where: { !validSurfaceIds.contains($0) }) {
+            manualUnreadPanelIds = manualUnreadPanelIds.filter { validSurfaceIds.contains($0) }
+        }
+        if panelGitBranches.keys.contains(where: { !validSurfaceIds.contains($0) }) {
+            panelGitBranches = panelGitBranches.filter { validSurfaceIds.contains($0.key) }
+        }
+        if manualUnreadMarkedAt.keys.contains(where: { !validSurfaceIds.contains($0) }) {
+            manualUnreadMarkedAt = manualUnreadMarkedAt.filter { validSurfaceIds.contains($0.key) }
+        }
+        let didPruneListeningPorts = surfaceListeningPorts.keys.contains(where: {
+            !validSurfaceIds.contains($0)
+        })
+        if didPruneListeningPorts {
+            surfaceListeningPorts = surfaceListeningPorts.filter { validSurfaceIds.contains($0.key) }
+        }
+        let didPruneTTYNames = surfaceTTYNames.keys.contains(where: {
+            !validSurfaceIds.contains($0)
+        })
+        if didPruneTTYNames {
+            surfaceTTYNames = surfaceTTYNames.filter { validSurfaceIds.contains($0.key) }
+        }
+        if remoteDetectedSurfaceIds.contains(where: { !validSurfaceIds.contains($0) }) {
+            remoteDetectedSurfaceIds = remoteDetectedSurfaceIds.filter { validSurfaceIds.contains($0) }
+        }
+        if panelShellActivityStates.keys.contains(where: { !validSurfaceIds.contains($0) }) {
+            panelShellActivityStates = panelShellActivityStates.filter { validSurfaceIds.contains($0.key) }
+        }
+        if panelPullRequests.keys.contains(where: { !validSurfaceIds.contains($0) }) {
+            panelPullRequests = panelPullRequests.filter { validSurfaceIds.contains($0.key) }
+        }
+        if panelAgentStates.keys.contains(where: { !validSurfaceIds.contains($0) }) {
+            panelAgentStates = panelAgentStates.filter { validSurfaceIds.contains($0.key) }
+        }
+        if panelAgentStateSources.keys.contains(where: { !validSurfaceIds.contains($0) }) {
+            panelAgentStateSources = panelAgentStateSources.filter { validSurfaceIds.contains($0.key) }
+        }
+        if didPruneTTYNames {
+            syncRemotePortScanTTYs()
+        }
+        if didPruneListeningPorts {
+            recomputeListeningPorts()
+        }
     }
 
     func recomputeListeningPorts() {
