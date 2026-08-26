@@ -41,9 +41,35 @@ enum UITestLaunchManifest {
     }
 }
 
+@MainActor
+final class PrimaryTabManagerStore: ObservableObject {
+    @Published private(set) var manager: TabManager
+
+    init(initialManager: TabManager? = nil) {
+        let resolvedManager = initialManager ?? TabManager()
+        manager = resolvedManager
+        bindReplacement(for: resolvedManager)
+    }
+
+    private func bindReplacement(for managedInstance: TabManager) {
+        managedInstance.onWindowCloseTeardown = { [weak self, weak managedInstance] in
+            guard let self,
+                  let managedInstance,
+                  self.manager === managedInstance,
+                  managedInstance.isStopped else {
+                return
+            }
+
+            let replacement = TabManager()
+            self.bindReplacement(for: replacement)
+            self.manager = replacement
+        }
+    }
+}
+
 @main
 struct programaApp: App {
-    @StateObject private var tabManager: TabManager
+    @StateObject private var primaryTabManagerStore: PrimaryTabManagerStore
     @StateObject private var notificationStore = TerminalNotificationStore.shared
     @StateObject private var sidebarState = SidebarState()
     @StateObject private var sidebarSelectionState = SidebarSelectionState()
@@ -59,6 +85,10 @@ struct programaApp: App {
     @AppStorage(MobileBridgeSettings.appStorageKey) private var mobileBridgeMode = MobileBridgeSettings.defaultMode.rawValue
     @AppStorage(BrowserToolbarAccessorySpacingDebugSettings.key) private var browserToolbarAccessorySpacingRaw = BrowserToolbarAccessorySpacingDebugSettings.defaultSpacing
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    private var tabManager: TabManager {
+        primaryTabManagerStore.manager
+    }
 
     private var browserToolbarAccessorySpacing: Int {
         BrowserToolbarAccessorySpacingDebugSettings.resolved(browserToolbarAccessorySpacingRaw)
@@ -101,7 +131,8 @@ struct programaApp: App {
             defaults: defaults,
             nativeGlassAvailable: WindowGlassEffect.isAvailable
         )
-        _tabManager = StateObject(wrappedValue: TabManager())
+        let primaryTabManagerStore = PrimaryTabManagerStore()
+        _primaryTabManagerStore = StateObject(wrappedValue: primaryTabManagerStore)
         // Rebrand: forward every legacy cmux-prefixed default to its programa key
         // before anything reads the new keys, so existing users keep their prefs.
         Self.migrateCmuxDefaultsToProgramaIfNeeded(defaults: defaults)
@@ -131,7 +162,11 @@ struct programaApp: App {
 
         // UI tests depend on AppDelegate wiring happening even if SwiftUI view appearance
         // callbacks (e.g. `.onAppear`) are delayed or skipped.
-        appDelegate.configure(tabManager: tabManager, notificationStore: notificationStore, sidebarState: sidebarState)
+        appDelegate.configure(
+            tabManager: primaryTabManagerStore.manager,
+            notificationStore: notificationStore,
+            sidebarState: sidebarState
+        )
     }
 
     private static func terminateForMissingLaunchTag() -> Never {

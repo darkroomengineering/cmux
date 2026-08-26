@@ -12,12 +12,12 @@ extension TabManager {
     /// If a process has exited (SIGKILL, crash, etc.), clears the stale status entry.
     /// This is the safety net for cases where no hook fires (e.g. SIGKILL).
     func startAgentPIDSweepTimer() {
+        guard !isStopped, agentPIDSweepTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.schedule(deadline: .now() + 30, repeating: 30)
         timer.setEventHandler { [weak self] in
-            guard let self else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, !self.isStopped else { return }
                 self.sweepStaleAgentPIDs()
             }
         }
@@ -29,13 +29,13 @@ extension TabManager {
     /// remote GitHub state changes (e.g. PR open -> merged) reach sidebar state
     /// even when the local branch/directory does not change.
     func startWorkspaceGitMetadataPollTimer() {
+        guard !isStopped, workspaceGitMetadataPollTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         let interval = Self.workspaceGitMetadataPollInterval
         timer.schedule(deadline: .now() + interval, repeating: interval)
         timer.setEventHandler { [weak self] in
-            guard let self else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, !self.isStopped else { return }
                 self.refreshTrackedWorkspaceGitMetadata()
             }
         }
@@ -47,13 +47,13 @@ extension TabManager {
     /// newly created PRs show up in the sidebar without waiting for the slower
     /// background sweep across every tracked workspace.
     func startSelectedWorkspaceGitMetadataPollTimer() {
+        guard !isStopped, selectedWorkspaceGitMetadataPollTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         let interval = Self.selectedWorkspaceGitMetadataPollInterval
         timer.schedule(deadline: .now() + interval, repeating: interval)
         timer.setEventHandler { [weak self] in
-            guard let self else { return }
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, !self.isStopped else { return }
                 self.refreshSelectedWorkspaceGitMetadata()
             }
         }
@@ -86,6 +86,7 @@ extension TabManager {
     }
 
     private func refreshTrackedWorkspaceGitMetadata() {
+        guard !isStopped else { return }
         let activeProbeKeys = Set(workspaceGitProbeGenerationByKey.keys)
         let selectedWorkspaceId = selectedWorkspace?.id
         let now = Date()
@@ -119,6 +120,7 @@ extension TabManager {
     }
 
     private func refreshSelectedWorkspaceGitMetadata() {
+        guard !isStopped else { return }
         guard let workspace = selectedWorkspace,
               let focusedPanelId = workspace.focusedPanelId else {
             return
@@ -252,7 +254,8 @@ extension TabManager {
         panelId: UUID,
         reason: String = "initial"
     ) {
-        guard let workspace = workspace(withId: workspaceId),
+        guard !isStopped,
+              let workspace = workspace(withId: workspaceId),
               !workspace.isRemoteWorkspace else {
             return
         }
@@ -276,7 +279,8 @@ extension TabManager {
         reason: String,
         delays: [TimeInterval] = [0]
     ) -> Bool {
-        guard let workspace = workspace(withId: workspaceId),
+        guard !isStopped,
+              let workspace = workspace(withId: workspaceId),
               workspace.panels[panelId] != nil,
               let directory = gitProbeDirectory(for: workspace, panelId: panelId) else {
             return false

@@ -429,6 +429,7 @@ final class NotificationBurstCoalescer {
     private let delay: TimeInterval
     private var isFlushScheduled = false
     private var pendingAction: (() -> Void)?
+    private var scheduleGeneration: UInt64 = 0
 
     init(delay: TimeInterval = 1.0 / 30.0) {
         self.delay = max(0, delay)
@@ -440,16 +441,30 @@ final class NotificationBurstCoalescer {
         scheduleFlushIfNeeded()
     }
 
+    var hasPendingWork: Bool {
+        isFlushScheduled || pendingAction != nil
+    }
+
+    func cancel() {
+        precondition(Thread.isMainThread, "NotificationBurstCoalescer must be used on the main thread")
+        scheduleGeneration &+= 1
+        isFlushScheduled = false
+        pendingAction = nil
+    }
+
     private func scheduleFlushIfNeeded() {
         guard !isFlushScheduled else { return }
         isFlushScheduled = true
+        scheduleGeneration &+= 1
+        let generation = scheduleGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.flush()
+            self?.flush(generation: generation)
         }
     }
 
-    private func flush() {
+    private func flush(generation: UInt64) {
         precondition(Thread.isMainThread, "NotificationBurstCoalescer must be used on the main thread")
+        guard scheduleGeneration == generation else { return }
         isFlushScheduled = false
         guard let action = pendingAction else { return }
         pendingAction = nil
@@ -486,6 +501,20 @@ struct RecentlyClosedBrowserStack {
 
 @MainActor
 class TabManager: ObservableObject {
+    struct LifecycleResourceSnapshot {
+        let isStopped: Bool
+        let observerCount: Int
+        let hasAgentPIDSweepTimer: Bool
+        let hasWorkspaceGitMetadataPollTimer: Bool
+        let hasSelectedWorkspaceGitMetadataPollTimer: Bool
+        let workspaceGitProbeTimerCount: Int
+        let workspaceGitProbeGenerationCount: Int
+        let workspaceGitTrackedDirectoryCount: Int
+        let hasWorkspaceCycleCooldownTask: Bool
+        let hasPendingPanelTitleCoalescerWork: Bool
+        let uiTestCancellableCount: Int
+    }
+
     struct WorkspaceGitProbeKey: Hashable {
         let workspaceId: UUID
         let panelId: UUID
@@ -500,6 +529,7 @@ class TabManager: ObservableObject {
     /// The window that owns this TabManager. Set by AppDelegate.registerMainWindow().
     /// Used to apply title updates to the correct window instead of NSApp.keyWindow.
     weak var window: NSWindow?
+    var onWindowCloseTeardown: (() -> Void)?
 
     @Published var tabs: [Workspace] = []
     @Published var isWorkspaceCycleHot: Bool = false
@@ -573,7 +603,9 @@ class TabManager: ObservableObject {
             selectionSideEffectsGeneration &+= 1
             let generation = selectionSideEffectsGeneration
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.selectionSideEffectsGeneration == generation else { return }
+                guard let self,
+                      !self.isStopped,
+                      self.selectionSideEffectsGeneration == generation else { return }
                 if let focusTransitionRequest {
                     guard self.focusTransitionCoordinator.completeTransition(focusTransitionRequest) else {
                         return
@@ -601,6 +633,7 @@ class TabManager: ObservableObject {
             }
         }
     }
+    private(set) var isStopped = false
     private var observers: [NSObjectProtocol] = []
     private var suppressFocusFlash = false
     var lastFocusedPanelByTab: [UUID: UUID] = [:]
@@ -680,6 +713,28 @@ class TabManager: ObservableObject {
     var uiTestCancellables = Set<AnyCancellable>()
 #endif
 
+    var lifecycleResourceSnapshot: LifecycleResourceSnapshot {
+#if DEBUG
+        let uiTestCancellableCount = uiTestCancellables.count
+#else
+        let uiTestCancellableCount = 0
+#endif
+        return LifecycleResourceSnapshot(
+            isStopped: isStopped,
+            observerCount: observers.count,
+            hasAgentPIDSweepTimer: agentPIDSweepTimer != nil,
+            hasWorkspaceGitMetadataPollTimer: workspaceGitMetadataPollTimer != nil,
+            hasSelectedWorkspaceGitMetadataPollTimer: selectedWorkspaceGitMetadataPollTimer != nil,
+            workspaceGitProbeTimerCount: workspaceGitProbeTimersByKey.values.reduce(0) { $0 + $1.count },
+            workspaceGitProbeGenerationCount: workspaceGitProbeGenerationByKey.count,
+            workspaceGitTrackedDirectoryCount: workspaceGitTrackedDirectoryByKey.count,
+            hasWorkspaceCycleCooldownTask: workspaceCycleCooldownTask != nil,
+            hasPendingPanelTitleCoalescerWork: panelTitleUpdateCoalescer.hasPendingWork
+                || !pendingPanelTitleUpdates.isEmpty,
+            uiTestCancellableCount: uiTestCancellableCount
+        )
+    }
+
     init(initialWorkingDirectory: String? = nil) {
         addWorkspace(workingDirectory: initialWorkingDirectory)
         observers.append(NotificationCenter.default.addObserver(
@@ -688,7 +743,7 @@ class TabManager: ObservableObject {
             queue: .main
         ) { [weak self] notification in
             MainActor.assumeIsolated { [weak self] in
-                guard let self else { return }
+                guard let self, !self.isStopped else { return }
                 guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID else { return }
                 guard let surfaceId = notification.userInfo?[GhosttyNotificationKey.surfaceId] as? UUID else { return }
                 guard let title = notification.userInfo?[GhosttyNotificationKey.title] as? String else { return }
@@ -701,7 +756,7 @@ class TabManager: ObservableObject {
             queue: .main
         ) { [weak self] notification in
             MainActor.assumeIsolated { [weak self] in
-                guard let self else { return }
+                guard let self, !self.isStopped else { return }
                 guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID else { return }
                 guard let surfaceId = notification.userInfo?[GhosttyNotificationKey.surfaceId] as? UUID else { return }
                 dismissPanelNotificationOnFocusIfActive(tabId: tabId, panelId: surfaceId)
@@ -721,9 +776,19 @@ class TabManager: ObservableObject {
 
     deinit {
         workspaceCycleCooldownTask?.cancel()
-        agentPIDSweepTimer?.cancel()
-        workspaceGitMetadataPollTimer?.cancel()
-        selectedWorkspaceGitMetadataPollTimer?.cancel()
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        for timer in [agentPIDSweepTimer, workspaceGitMetadataPollTimer, selectedWorkspaceGitMetadataPollTimer] {
+            timer?.setEventHandler {}
+            timer?.cancel()
+        }
+        for timers in workspaceGitProbeTimersByKey.values {
+            for timer in timers {
+                timer.setEventHandler {}
+                timer.cancel()
+            }
+        }
     }
 
     /// Wires both the browser-restore stack and the terminal close-undo callback for `workspace`.
@@ -1216,6 +1281,7 @@ class TabManager: ObservableObject {
         delays: [TimeInterval],
         reason: String
     ) {
+        guard !isStopped else { return }
         let normalizedDirectory = normalizeDirectory(directory)
         let key = WorkspaceGitProbeKey(workspaceId: workspaceId, panelId: panelId)
         let generation = UUID()
@@ -1237,7 +1303,8 @@ class TabManager: ObservableObject {
             timer.setEventHandler { [weak self] in
                 let snapshot = GitMetadataProber.initialWorkspaceGitMetadataSnapshot(for: normalizedDirectory)
                 Task { @MainActor [weak self] in
-                    self?.applyWorkspaceGitMetadataSnapshot(
+                    guard let self, !self.isStopped else { return }
+                    self.applyWorkspaceGitMetadataSnapshot(
                         snapshot,
                         generation: generation,
                         probeKey: key,
@@ -1286,6 +1353,7 @@ class TabManager: ObservableObject {
         expectedDirectory: String,
         isLastAttempt: Bool
     ) {
+        guard !isStopped else { return }
         defer {
             if shouldStopWorkspaceGitMetadataRefresh(snapshot) || isLastAttempt,
                workspaceGitProbeGenerationByKey[probeKey] == generation {
@@ -1868,6 +1936,68 @@ class TabManager: ObservableObject {
             }
         }
         return trimmed
+    }
+
+    /// Permanently tears down every workspace still owned by a closing window. Context removal,
+    /// rather than tab mutation, excludes the window from later session snapshots; no live panel,
+    /// remote session, undo transfer, or callback may outlive the context.
+    func teardownForWindowClose(notifyOwner: Bool = true) {
+        guard !isStopped else { return }
+        isStopped = true
+
+        selectionSideEffectsGeneration &+= 1
+        pendingWorkspaceUnfocusTarget = nil
+        workspaceCycleGeneration &+= 1
+        workspaceCycleCooldownTask?.cancel()
+        workspaceCycleCooldownTask = nil
+        isWorkspaceCycleHot = false
+
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observers.removeAll()
+
+        for timer in [agentPIDSweepTimer, workspaceGitMetadataPollTimer, selectedWorkspaceGitMetadataPollTimer] {
+            timer?.setEventHandler {}
+            timer?.cancel()
+        }
+        agentPIDSweepTimer = nil
+        workspaceGitMetadataPollTimer = nil
+        selectedWorkspaceGitMetadataPollTimer = nil
+
+        for timers in workspaceGitProbeTimersByKey.values {
+            for timer in timers {
+                timer.setEventHandler {}
+                timer.cancel()
+            }
+        }
+        workspaceGitProbeTimersByKey.removeAll()
+        workspaceGitProbeGenerationByKey.removeAll()
+        workspaceGitTrackedDirectoryByKey.removeAll()
+        workspaceGitMetadataLastRefreshedAt.removeAll()
+
+        panelTitleUpdateCoalescer.cancel()
+        pendingPanelTitleUpdates.removeAll()
+#if DEBUG
+        for cancellable in uiTestCancellables {
+            cancellable.cancel()
+        }
+        uiTestCancellables.removeAll()
+#endif
+
+        closedTerminalUndoStore.expireAll()
+        for workspace in tabs {
+            workspace.teardownAllPanels()
+            workspace.teardownRemoteConnection()
+            unwireClosedBrowserTracking(for: workspace)
+            workspace.owningTabManager = nil
+        }
+
+        let ownerCallback = onWindowCloseTeardown
+        onWindowCloseTeardown = nil
+        if notifyOwner {
+            ownerCallback?()
+        }
     }
 
     func closeWorkspace(_ workspace: Workspace) {
@@ -2729,6 +2859,7 @@ class TabManager: ObservableObject {
     }
 
     private func enqueuePanelTitleUpdate(tabId: UUID, panelId: UUID, title: String) {
+        guard !isStopped else { return }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let key = PanelTitleUpdateKey(tabId: tabId, panelId: panelId)
@@ -2739,6 +2870,7 @@ class TabManager: ObservableObject {
     }
 
     private func flushPendingPanelTitleUpdates() {
+        guard !isStopped else { return }
         guard !pendingPanelTitleUpdates.isEmpty else { return }
         let updates = pendingPanelTitleUpdates
         pendingPanelTitleUpdates.removeAll(keepingCapacity: true)
@@ -2906,6 +3038,7 @@ class TabManager: ObservableObject {
     }
 
     private func activateWorkspaceCycleHotWindow() {
+        guard !isStopped else { return }
         workspaceCycleGeneration &+= 1
         let generation = workspaceCycleGeneration
 #if DEBUG
@@ -2950,7 +3083,7 @@ class TabManager: ObservableObject {
                 return
             }
             await MainActor.run {
-                guard let self else { return }
+                guard let self, !self.isStopped else { return }
                 guard self.workspaceCycleGeneration == generation else { return }
 #if DEBUG
                 let dtMs = self.debugWorkspaceSwitchStartTime > 0

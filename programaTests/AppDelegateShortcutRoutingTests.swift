@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 
 #if canImport(Programa_DEV)
 @testable import Programa_DEV
@@ -99,6 +100,124 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             }
         }
         super.tearDown()
+    }
+
+    func testOrphanReconciliationRetainsOneRecoveryWorkspacePerSuccessfulSessionOnly() throws {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let candidates: [(sessionId: String, workingDirectory: String?)] = [
+            ("failed-before-first-success", "/tmp/failed-before"),
+            ("first-success", "/tmp/first-success"),
+            ("failed-between-successes", "/tmp/failed-between"),
+            ("second-success", "/tmp/second-success"),
+        ]
+        let successfulSessionIds: Set<String> = ["first-success", "second-success"]
+        var attemptedSessionIds: [String] = []
+        var attemptedWorkspaceIds: [UUID] = []
+        var attemptedWorkspaceDirectories: [String] = []
+        var successfulWorkspaceIds: Set<UUID> = []
+
+        let result = try XCTUnwrap(appDelegate.reconcileOrphanedEscrowedSessions(
+            candidates: candidates,
+            attemptRecovery: { candidate, workspace in
+                attemptedSessionIds.append(candidate.sessionId)
+                attemptedWorkspaceIds.append(workspace.id)
+                attemptedWorkspaceDirectories.append(workspace.currentDirectory)
+                guard successfulSessionIds.contains(candidate.sessionId) else { return false }
+                successfulWorkspaceIds.insert(workspace.id)
+                return true
+            }
+        ))
+        defer { closeWindow(withId: result.windowId) }
+
+        let manager = try XCTUnwrap(appDelegate.tabManagerFor(windowId: result.windowId))
+        XCTAssertEqual(result.recoveredCount, successfulSessionIds.count)
+        XCTAssertEqual(
+            attemptedSessionIds,
+            candidates.map(\.sessionId),
+            "Reconciliation must attempt every distinct orphan once and in enumeration order"
+        )
+        XCTAssertEqual(
+            Set(attemptedSessionIds).count,
+            attemptedSessionIds.count,
+            "A session ID must not be attempted twice during one reconciliation pass"
+        )
+        guard attemptedWorkspaceIds.count == candidates.count else {
+            XCTFail("Reconciliation must attempt all candidates before workspace-identity assertions")
+            return
+        }
+        XCTAssertEqual(
+            Set(attemptedWorkspaceIds).count,
+            candidates.count,
+            "Every orphan must get a fresh candidate workspace so failed-session metadata cannot leak into a later success"
+        )
+        XCTAssertEqual(
+            attemptedWorkspaceDirectories,
+            candidates.compactMap(\.workingDirectory),
+            "Each recovery attempt must start in its own orphan session's working directory"
+        )
+        XCTAssertEqual(
+            manager.tabs.count,
+            successfulSessionIds.count,
+            "Failed revive attempts must not leave empty workspaces in a partially successful recovery window"
+        )
+        XCTAssertEqual(
+            Set(manager.tabs.map(\.id)),
+            successfulWorkspaceIds,
+            "The recovery window must retain exactly the workspaces whose revival succeeded"
+        )
+        XCTAssertTrue(
+            manager.tabs.allSatisfy { !$0.panels.isEmpty },
+            "Every retained recovery workspace must contain a recovered panel rather than an empty tab"
+        )
+    }
+
+    func testOrphanReconciliationRemovesRecoveryWindowWhenEverySessionFails() throws {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let candidates: [(sessionId: String, workingDirectory: String?)] = [
+            (sessionId: "first-failure", workingDirectory: "/tmp/first-failure"),
+            (sessionId: "second-failure", workingDirectory: "/tmp/second-failure"),
+        ]
+        var attemptedSessionIds: [String] = []
+        var attemptedWorkspaceIds: [UUID] = []
+        let result = try XCTUnwrap(appDelegate.reconcileOrphanedEscrowedSessions(
+            candidates: candidates,
+            attemptRecovery: { candidate, workspace in
+                attemptedSessionIds.append(candidate.sessionId)
+                attemptedWorkspaceIds.append(workspace.id)
+                return false
+            }
+        ))
+
+        XCTAssertEqual(result.recoveredCount, 0)
+        XCTAssertEqual(
+            attemptedSessionIds,
+            candidates.map(\.sessionId),
+            "Even an all-fail pass must attempt each distinct orphan exactly once"
+        )
+        XCTAssertEqual(
+            Set(attemptedWorkspaceIds).count,
+            candidates.count,
+            "Every failed orphan must get a distinct candidate workspace before that workspace is removed"
+        )
+        waitUntil(description: "all-fail recovery window context to be removed") {
+            appDelegate.tabManagerFor(windowId: result.windowId) == nil
+        }
+        XCTAssertNil(
+            appDelegate.tabManagerFor(windowId: result.windowId),
+            "An all-fail reconciliation pass must close the recovery window and unregister its context"
+        )
+        XCTAssertFalse(
+            window(withId: result.windowId)?.isVisible == true,
+            "An all-fail reconciliation pass must not leave an empty recovery window visible"
+        )
     }
 
     func testCmdNUsesEventWindowContextWhenActiveManagerIsStale() {
@@ -1466,6 +1585,328 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         // whether the close took effect.
         XCTAssertFalse(targetWindow.isVisible, "Confirming Cmd+Ctrl+W should close the window")
         XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId), "Confirmed close should unregister the window's context")
+    }
+
+    func testTabManagerWindowCloseTeardownStopsEveryLifecycleResourceIdempotently() throws {
+        let manager = TabManager()
+        defer { manager.teardownForWindowClose() }
+
+        let firstWorkspace = try XCTUnwrap(manager.selectedWorkspace)
+        let firstPanelId = try XCTUnwrap(firstWorkspace.panels.keys.first)
+        let probeKey = TabManager.WorkspaceGitProbeKey(
+            workspaceId: firstWorkspace.id,
+            panelId: firstPanelId
+        )
+        manager.scheduleWorkspaceGitMetadataRefresh(
+            workspaceId: firstWorkspace.id,
+            panelId: firstPanelId,
+            directory: "/tmp",
+            delays: [60],
+            reason: "window-close-lifecycle-test"
+        )
+        manager.workspaceGitTrackedDirectoryByKey[probeKey] = "/tmp"
+
+        _ = manager.addTab(select: false)
+        manager.selectNextTab()
+        NotificationCenter.default.post(
+            name: .ghosttyDidSetTitle,
+            object: nil,
+            userInfo: [
+                GhosttyNotificationKey.tabId: firstWorkspace.id,
+                GhosttyNotificationKey.surfaceId: firstPanelId,
+                GhosttyNotificationKey.title: "Pending lifecycle title"
+            ]
+        )
+#if DEBUG
+        manager.uiTestCancellables.insert(AnyCancellable {})
+#endif
+
+        let primed = manager.lifecycleResourceSnapshot
+        XCTAssertFalse(primed.isStopped, "A live manager must not report a stopped lifecycle")
+        XCTAssertGreaterThan(primed.observerCount, 0, "The test must exercise installed global observers")
+        XCTAssertTrue(primed.hasAgentPIDSweepTimer, "The test must exercise the repeating PID sweep")
+        XCTAssertTrue(primed.hasWorkspaceGitMetadataPollTimer, "The test must exercise the workspace metadata poll")
+        XCTAssertTrue(
+            primed.hasSelectedWorkspaceGitMetadataPollTimer,
+            "The test must exercise the selected-workspace metadata poll"
+        )
+        XCTAssertGreaterThan(primed.workspaceGitProbeTimerCount, 0, "The test must schedule a cancellable git probe")
+        XCTAssertGreaterThan(primed.workspaceGitProbeGenerationCount, 0, "The test must retain a live probe generation")
+        XCTAssertGreaterThan(primed.workspaceGitTrackedDirectoryCount, 0, "The test must retain tracked probe state")
+        XCTAssertTrue(primed.hasWorkspaceCycleCooldownTask, "The test must schedule workspace-cycle cooldown work")
+        XCTAssertTrue(primed.hasPendingPanelTitleCoalescerWork, "The test must queue coalesced title work")
+#if DEBUG
+        XCTAssertGreaterThan(primed.uiTestCancellableCount, 0, "The test must retain a DEBUG cancellable")
+#endif
+
+        manager.teardownForWindowClose()
+        assertLifecycleResourcesStopped(manager, reason: "The first teardown must stop every window-owned resource")
+
+        manager.teardownForWindowClose()
+        assertLifecycleResourcesStopped(manager, reason: "Repeated teardown must remain a safe no-op")
+
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.35))
+        assertLifecycleResourcesStopped(
+            manager,
+            reason: "Queued title, selection, and cooldown work must not revive a stopped manager"
+        )
+    }
+
+    func testPrimaryManagerStoreReplacesStoppedManagerAfterRealWindowClose() throws {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = UUID()
+        let initialManager = TabManager()
+        let initialWorkspace = try XCTUnwrap(initialManager.selectedWorkspace)
+        let store = PrimaryTabManagerStore(initialManager: initialManager)
+        let initialWindow = makeUnregisteredMainWindow(windowId: windowId)
+        var replacementWindow: NSWindow?
+        defer {
+            if appDelegate.tabManagerFor(windowId: windowId) != nil {
+                if let replacementWindow {
+                    NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: replacementWindow)
+                } else {
+                    NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: initialWindow)
+                }
+            }
+            initialWindow.close()
+            replacementWindow?.close()
+            initialManager.teardownForWindowClose()
+            store.manager.teardownForWindowClose()
+        }
+
+        appDelegate.registerMainWindow(
+            initialWindow,
+            windowId: windowId,
+            tabManager: store.manager,
+            sidebarState: SidebarState(),
+            sidebarSelectionState: SidebarSelectionState()
+        )
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: initialWindow)
+
+        XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId), "Closing the primary window must remove its context")
+        assertLifecycleResourcesStopped(initialManager, reason: "The closed primary manager must remain stopped")
+        XCTAssertTrue(initialWorkspace.panels.isEmpty, "The closed primary workspace must remain torn down")
+
+        let replacementManager = store.manager
+        XCTAssertFalse(replacementManager === initialManager, "The primary owner must replace, not reactivate, a stopped manager")
+        assertLifecycleResourcesRunning(
+            replacementManager,
+            reason: "The replacement primary manager must own a fresh lifecycle"
+        )
+        let freshWorkspace = try XCTUnwrap(replacementManager.selectedWorkspace)
+        XCTAssertFalse(
+            freshWorkspace === initialWorkspace,
+            "The replacement manager must not reuse the torn-down primary workspace"
+        )
+        XCTAssertFalse(freshWorkspace.panels.isEmpty, "The replacement workspace must contain a viable panel")
+        let freshPanelId = try XCTUnwrap(freshWorkspace.panels.keys.first)
+        XCTAssertFalse(replacementManager.lifecycleResourceSnapshot.hasPendingPanelTitleCoalescerWork)
+
+        let nextWindow = makeUnregisteredMainWindow(windowId: windowId)
+        replacementWindow = nextWindow
+        appDelegate.registerMainWindow(
+            nextWindow,
+            windowId: windowId,
+            tabManager: replacementManager,
+            sidebarState: SidebarState(),
+            sidebarSelectionState: SidebarSelectionState()
+        )
+
+        NotificationCenter.default.post(
+            name: .ghosttyDidSetTitle,
+            object: nil,
+            userInfo: [
+                GhosttyNotificationKey.tabId: freshWorkspace.id,
+                GhosttyNotificationKey.surfaceId: freshPanelId,
+                GhosttyNotificationKey.title: "Replacement lifecycle title"
+            ]
+        )
+
+        XCTAssertTrue(
+            replacementManager.lifecycleResourceSnapshot.hasPendingPanelTitleCoalescerWork,
+            "A title notification must reach the fresh primary manager's observers"
+        )
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: nextWindow)
+
+        XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId), "Closing the replacement window must remove its context")
+        assertLifecycleResourcesStopped(replacementManager, reason: "The replacement manager must stop on close")
+        let nextPrimaryManager = store.manager
+        XCTAssertFalse(nextPrimaryManager === initialManager)
+        XCTAssertFalse(nextPrimaryManager === replacementManager, "Each primary close must advance to another fresh manager")
+        assertLifecycleResourcesRunning(nextPrimaryManager, reason: "The next primary manager must start live")
+        XCTAssertFalse(try XCTUnwrap(nextPrimaryManager.selectedWorkspace).panels.isEmpty)
+    }
+
+    func testRebindingMainWindowReplacesAndRemovesCloseObserverWithoutStoppingLiveContext() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = UUID()
+        let manager = TabManager()
+        let sidebarState = SidebarState()
+        let sidebarSelectionState = SidebarSelectionState()
+        let firstWindow = makeUnregisteredMainWindow(windowId: windowId)
+        let replacementWindow = makeUnregisteredMainWindow(windowId: windowId)
+        var finalWindow: NSWindow?
+        var finalManager: TabManager?
+        defer {
+            if let finalWindow {
+                NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: finalWindow)
+            } else if appDelegate.tabManagerFor(windowId: windowId) != nil {
+                NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: replacementWindow)
+            }
+            firstWindow.close()
+            replacementWindow.close()
+            finalWindow?.close()
+            manager.teardownForWindowClose()
+            finalManager?.teardownForWindowClose()
+        }
+
+        appDelegate.registerMainWindow(
+            firstWindow,
+            windowId: windowId,
+            tabManager: manager,
+            sidebarState: sidebarState,
+            sidebarSelectionState: sidebarSelectionState
+        )
+        appDelegate.registerMainWindow(
+            replacementWindow,
+            windowId: windowId,
+            tabManager: manager,
+            sidebarState: sidebarState,
+            sidebarSelectionState: sidebarSelectionState
+        )
+
+        XCTAssertTrue(appDelegate.mainWindow(for: windowId) === replacementWindow)
+        XCTAssertTrue(appDelegate.tabManagerFor(windowId: windowId) === manager)
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: firstWindow)
+
+        XCTAssertTrue(
+            appDelegate.mainWindow(for: windowId) === replacementWindow,
+            "Closing a retired NSWindow must not unregister its replacement's context"
+        )
+        XCTAssertTrue(
+            appDelegate.tabManagerFor(windowId: windowId) === manager,
+            "Closing a retired NSWindow must not stop the manager still owned by its replacement"
+        )
+        XCTAssertFalse(manager.lifecycleResourceSnapshot.isStopped)
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: replacementWindow)
+
+        XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId), "Closing the current window must unregister its context")
+        assertLifecycleResourcesStopped(manager, reason: "Closing the current window must stop its manager")
+
+        let nextManager = TabManager()
+        let nextWindow = makeUnregisteredMainWindow(windowId: windowId)
+        finalManager = nextManager
+        finalWindow = nextWindow
+        appDelegate.registerMainWindow(
+            nextWindow,
+            windowId: windowId,
+            tabManager: nextManager,
+            sidebarState: SidebarState(),
+            sidebarSelectionState: SidebarSelectionState()
+        )
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: replacementWindow)
+
+        XCTAssertTrue(
+            appDelegate.mainWindow(for: windowId) === nextWindow,
+            "A close observer must be removed after teardown so it cannot unregister a later context with the same ID"
+        )
+        XCTAssertTrue(appDelegate.tabManagerFor(windowId: windowId) === nextManager)
+        XCTAssertFalse(nextManager.lifecycleResourceSnapshot.isStopped)
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: nextWindow)
+        XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId))
+        assertLifecycleResourcesStopped(nextManager, reason: "The final current window must still own a working close observer")
+    }
+
+    func testReindexingIntoOccupiedWindowTearsDownDisplacedContextAndPreservesMovedContext() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let firstWindowId = UUID()
+        let displacedWindowId = UUID()
+        let firstManager = TabManager()
+        let displacedManager = TabManager()
+        let firstWindow = makeUnregisteredMainWindow(windowId: firstWindowId)
+        let occupiedWindow = makeUnregisteredMainWindow(windowId: displacedWindowId)
+        defer {
+            if appDelegate.tabManagerFor(windowId: firstWindowId) != nil {
+                NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: firstWindow)
+                NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: occupiedWindow)
+            }
+            if appDelegate.tabManagerFor(windowId: displacedWindowId) != nil {
+                NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: occupiedWindow)
+            }
+            firstWindow.close()
+            occupiedWindow.close()
+            firstManager.teardownForWindowClose()
+            displacedManager.teardownForWindowClose()
+        }
+
+        appDelegate.registerMainWindow(
+            firstWindow,
+            windowId: firstWindowId,
+            tabManager: firstManager,
+            sidebarState: SidebarState(),
+            sidebarSelectionState: SidebarSelectionState()
+        )
+        appDelegate.registerMainWindow(
+            occupiedWindow,
+            windowId: displacedWindowId,
+            tabManager: displacedManager,
+            sidebarState: SidebarState(),
+            sidebarSelectionState: SidebarSelectionState()
+        )
+
+        appDelegate.registerMainWindow(
+            occupiedWindow,
+            windowId: firstWindowId,
+            tabManager: firstManager,
+            sidebarState: SidebarState(),
+            sidebarSelectionState: SidebarSelectionState()
+        )
+
+        XCTAssertNil(
+            appDelegate.tabManagerFor(windowId: displacedWindowId),
+            "Reindexing into an occupied NSWindow must remove the displaced context"
+        )
+        assertLifecycleResourcesStopped(
+            displacedManager,
+            reason: "The manager displaced from an occupied NSWindow must be torn down"
+        )
+        XCTAssertTrue(appDelegate.tabManagerFor(windowId: firstWindowId) === firstManager)
+        XCTAssertTrue(
+            appDelegate.mainWindow(for: firstWindowId) === occupiedWindow,
+            "The moved context must own the destination NSWindow under its original ID"
+        )
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: firstWindow)
+
+        XCTAssertTrue(
+            appDelegate.tabManagerFor(windowId: firstWindowId) === firstManager,
+            "Closing the moved context's stale NSWindow must not remove its destination context"
+        )
+        XCTAssertTrue(appDelegate.mainWindow(for: firstWindowId) === occupiedWindow)
+        XCTAssertFalse(firstManager.lifecycleResourceSnapshot.isStopped)
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: occupiedWindow)
+
+        XCTAssertNil(appDelegate.tabManagerFor(windowId: firstWindowId))
+        assertLifecycleResourcesStopped(firstManager, reason: "Closing the destination NSWindow must stop the moved manager")
     }
 
     func testCmdWClosesWindowWhenClosingLastSurfaceInLastWorkspace() {
@@ -4610,6 +5051,54 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
     private func window(withId windowId: UUID) -> NSWindow? {
         let identifier = "cmux.main.\(windowId.uuidString)"
         return NSApp.windows.first(where: { $0.identifier?.rawValue == identifier })
+    }
+
+    private func makeUnregisteredMainWindow(windowId: UUID) -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier("cmux.main.\(windowId.uuidString)")
+        return window
+    }
+
+    private func assertLifecycleResourcesStopped(
+        _ manager: TabManager,
+        reason: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let snapshot = manager.lifecycleResourceSnapshot
+        XCTAssertTrue(snapshot.isStopped, reason, file: file, line: line)
+        XCTAssertEqual(snapshot.observerCount, 0, reason, file: file, line: line)
+        XCTAssertFalse(snapshot.hasAgentPIDSweepTimer, reason, file: file, line: line)
+        XCTAssertFalse(snapshot.hasWorkspaceGitMetadataPollTimer, reason, file: file, line: line)
+        XCTAssertFalse(snapshot.hasSelectedWorkspaceGitMetadataPollTimer, reason, file: file, line: line)
+        XCTAssertEqual(snapshot.workspaceGitProbeTimerCount, 0, reason, file: file, line: line)
+        XCTAssertEqual(snapshot.workspaceGitProbeGenerationCount, 0, reason, file: file, line: line)
+        XCTAssertEqual(snapshot.workspaceGitTrackedDirectoryCount, 0, reason, file: file, line: line)
+        XCTAssertFalse(snapshot.hasWorkspaceCycleCooldownTask, reason, file: file, line: line)
+        XCTAssertFalse(snapshot.hasPendingPanelTitleCoalescerWork, reason, file: file, line: line)
+#if DEBUG
+        XCTAssertEqual(snapshot.uiTestCancellableCount, 0, reason, file: file, line: line)
+#endif
+    }
+
+    private func assertLifecycleResourcesRunning(
+        _ manager: TabManager,
+        reason: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let snapshot = manager.lifecycleResourceSnapshot
+        XCTAssertFalse(snapshot.isStopped, reason, file: file, line: line)
+        XCTAssertEqual(snapshot.observerCount, 2, reason, file: file, line: line)
+        XCTAssertTrue(snapshot.hasAgentPIDSweepTimer, reason, file: file, line: line)
+        XCTAssertTrue(snapshot.hasWorkspaceGitMetadataPollTimer, reason, file: file, line: line)
+        XCTAssertTrue(snapshot.hasSelectedWorkspaceGitMetadataPollTimer, reason, file: file, line: line)
     }
 
     private func surfaceView(in hostedView: GhosttySurfaceScrollView) -> GhosttyNSView? {
