@@ -30,7 +30,7 @@ final class SidebarHelpMenuUITests: XCTestCase {
 
         XCTAssertTrue(waitForWindowCount(atLeast: 1, app: app, timeout: 6.0))
 
-        let sidebar = app.otherElements["Sidebar"].firstMatch
+        let sidebar = app.descendants(matching: .any).matching(identifier: "Sidebar").firstMatch
         XCTAssertTrue(sidebar.waitForExistence(timeout: 6.0), "Expected the main window sidebar to start visible")
 
         let toggle = sidebar.descendants(matching: .button)
@@ -98,7 +98,7 @@ final class SidebarHelpMenuUITests: XCTestCase {
         )
         checkForUpdatesItem.click()
 
-        let updatePill = app.buttons["UpdatePill"]
+        let updatePill = app.buttons["Update Available: 9.9.9"]
         XCTAssertTrue(updatePill.waitForExistence(timeout: 6.0))
         XCTAssertEqual(updatePill.label, "Update Available: 9.9.9")
     }
