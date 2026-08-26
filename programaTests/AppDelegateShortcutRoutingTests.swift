@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 import Combine
 
 #if canImport(Programa_DEV)
@@ -100,6 +101,69 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             }
         }
         super.tearDown()
+    }
+
+    func testDuplicateInstanceArbitrationLetsLaterStartSecondWinAndEarlierStartLose() {
+        let earlier = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 999_999,
+            processIdentifier: 200
+        )
+        let later = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 100
+        )
+
+        XCTAssertTrue(AppDelegate.shouldTerminateDuplicateInstance(current: later, other: earlier))
+        XCTAssertFalse(AppDelegate.shouldTerminateDuplicateInstance(current: earlier, other: later))
+    }
+
+    func testDuplicateInstanceArbitrationLetsLaterStartMicrosecondWinAndEarlierStartLose() {
+        let earlier = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 200
+        )
+        let later = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 101,
+            processIdentifier: 100
+        )
+
+        XCTAssertTrue(AppDelegate.shouldTerminateDuplicateInstance(current: later, other: earlier))
+        XCTAssertFalse(AppDelegate.shouldTerminateDuplicateInstance(current: earlier, other: later))
+    }
+
+    func testDuplicateInstanceArbitrationUsesPIDToElectOneWinnerForIdenticalTimestamps() {
+        let lowerPID = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let higherPID = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 200
+        )
+        let higherPIDWins = AppDelegate.shouldTerminateDuplicateInstance(current: higherPID, other: lowerPID)
+        let lowerPIDWins = AppDelegate.shouldTerminateDuplicateInstance(current: lowerPID, other: higherPID)
+
+        XCTAssertTrue(higherPIDWins)
+        XCTAssertFalse(lowerPIDWins)
+        XCTAssertNotEqual(higherPIDWins, lowerPIDWins, "Identical kernel timestamps must elect exactly one winner")
+    }
+
+    func testSingleInstanceProcessKeyReadsCurrentKernelProcessIdentity() throws {
+        let currentPID = getpid()
+        let key = try XCTUnwrap(AppDelegate.singleInstanceProcessKey(for: currentPID))
+
+        XCTAssertEqual(key.processIdentifier, currentPID)
+        XCTAssertGreaterThan(key.startSeconds, 0, "The current process must have a positive kernel start timestamp")
+    }
+
+    func testSingleInstanceProcessKeyRejectsMissingKernelProcessRecord() {
+        XCTAssertNil(AppDelegate.singleInstanceProcessKey(for: pid_t.max))
     }
 
     func testOrphanReconciliationRetainsOneRecoveryWorkspacePerSuccessfulSessionOnly() throws {
