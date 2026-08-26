@@ -523,7 +523,8 @@ extension TerminalController {
             frameSelector: String?,
             limits: V2BrowserStateRestoreLimits = .standard
         ) -> Result<Data, V2BrowserStateRestoreFailure> {
-            _ = limits
+            // Saved state is origin-bound. Blank/about:blank tabs intentionally fail URL
+            // validation so every reported save success is loadable by the same contract.
             let raw: [String: Any] = [
                 "schema_version": currentSchemaVersion,
                 "url": url?.absoluteString ?? "",
@@ -532,12 +533,16 @@ extension TerminalController {
                 "frame_selector": frameSelector ?? NSNull(),
             ]
             do {
-                return .success(
-                    try JSONSerialization.data(
-                        withJSONObject: raw,
-                        options: [.prettyPrinted, .sortedKeys]
-                    )
+                let data = try JSONSerialization.data(
+                    withJSONObject: raw,
+                    options: [.prettyPrinted, .sortedKeys]
                 )
+                switch prepare(data: data, limits: limits) {
+                case .success:
+                    return .success(data)
+                case .failure(let failure):
+                    return .failure(failure)
+                }
             } catch {
                 return .failure(failure(.malformedDocument, error.localizedDescription))
             }
@@ -3424,7 +3429,20 @@ extension TerminalController {
                 if let dict = value as? [String: Any],
                    let ok = dict["ok"] as? Bool,
                    ok {
-                    v2BrowserFrameSelectorBySurface[surfaceId] = selector
+                    switch v2BrowserApplyFrameSelector(
+                        selector,
+                        surfaceId: surfaceId,
+                        source: .frameSelect
+                    ) {
+                    case .applied:
+                        break
+                    case .rejected(let limit):
+                        return .err(
+                            code: "invalid_params",
+                            message: "Frame selector exceeds \(limit) bytes",
+                            data: ["selector": selector]
+                        )
+                    }
                     return .ok([
                         "workspace_id": ws.id.uuidString,
                         "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
