@@ -1,42 +1,162 @@
 import SwiftUI
 
-/// Compact, read-only readout of Claude Code rate-limit headroom (5h / 7d windows),
-/// sourced from `~/.claude/tmp/rate-limits.json` via `ClaudeQuotaMonitor`. Renders
-/// nothing at all when that file is absent (e.g. the user doesn't run cc-settings) or
-/// when the user has turned the readout off in Settings.
-struct SidebarQuotaFooter: View {
-    @ObservedObject private var monitor = ClaudeQuotaMonitor.shared
-    @AppStorage("sidebarShowClaudeQuota") private var showClaudeQuota = true
-
-    var body: some View {
-        if showClaudeQuota, let snapshot = monitor.snapshot {
-            VStack(alignment: .leading, spacing: 3) {
-                quotaRow(
-                    label: String(localized: "sidebar.quota.fiveHour", defaultValue: "5h"),
-                    window: snapshot.fiveHour
-                )
-                quotaRow(
-                    label: String(localized: "sidebar.quota.sevenDay", defaultValue: "7d"),
-                    window: snapshot.sevenDay
-                )
-            }
-            // Sidebar spacing grid: bare rows align to the content line (card
-            // edge 8 + row inset 8), not the card-edge line.
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-            .padding(.bottom, 8)
-        } else {
-            EmptyView()
+extension ProviderUsageProvider {
+    var localizedDisplayName: String {
+        switch self {
+        case .claude:
+            String(localized: "sidebar.usage.provider.claude", defaultValue: "Claude")
+        case .codex:
+            String(localized: "sidebar.usage.provider.codex", defaultValue: "Codex")
         }
     }
+}
 
-    @ViewBuilder
-    private func quotaRow(label: String, window: ClaudeQuotaWindow) -> some View {
-        HStack(spacing: 6) {
-            Text(label)
-                .font(.system(size: 9, weight: .medium))
+struct SidebarQuotaPresentation {
+    struct Failure: Identifiable, Equatable {
+        let provider: ProviderUsageProvider
+        let message: String
+
+        var id: ProviderUsageProvider { provider }
+    }
+
+    let availableSnapshots: [ProviderUsageSnapshot]
+    let failures: [Failure]
+    let unavailableProviders: [ProviderUsageProvider]
+
+    init(results: [ProviderUsageResult]) {
+        availableSnapshots = results.compactMap { result in
+            guard case let .available(snapshot) = result else { return nil }
+            return snapshot
+        }
+        failures = results.compactMap { result in
+            guard case let .failed(provider, message) = result else { return nil }
+            return Failure(provider: provider, message: message)
+        }
+        unavailableProviders = results.compactMap { result in
+            guard case let .unavailable(provider) = result else { return nil }
+            return provider
+        }
+    }
+}
+
+/// Provider usage content hosted by the sidebar footer's on-demand popover.
+struct SidebarQuotaFooter: View {
+    @ObservedObject var store: ProviderUsageStore
+
+    private var presentation: SidebarQuotaPresentation {
+        SidebarQuotaPresentation(results: store.results)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(String(localized: "sidebar.usage.title", defaultValue: "Provider Usage"))
+                    .font(.headline)
+                Spacer(minLength: 8)
+                if store.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel(
+                            String(localized: "sidebar.usage.refreshing", defaultValue: "Refreshing usage")
+                        )
+                }
+                Button(String(localized: "sidebar.usage.refresh", defaultValue: "Refresh")) {
+                    Task { await store.refresh() }
+                }
+                .controlSize(.small)
+                .disabled(store.isRefreshing)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if store.results.isEmpty, store.isRefreshing {
+                        loadingState
+                    } else {
+                        if presentation.availableSnapshots.isEmpty {
+                            emptyState
+                        }
+
+                        ForEach(presentation.availableSnapshots, id: \.provider) { snapshot in
+                            providerSection(snapshot)
+                        }
+
+                        ForEach(presentation.failures) { failure in
+                            failureSection(provider: failure.provider, message: failure.message)
+                        }
+
+                        ForEach(presentation.unavailableProviders, id: \.self) { provider in
+                            unavailableSection(provider: provider)
+                        }
+                    }
+                }
+                .padding(14)
+            }
+        }
+        .frame(width: 320, height: 340)
+    }
+
+    private var loadingState: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(String(localized: "sidebar.usage.loading", defaultValue: "Loading usage…"))
                 .foregroundStyle(.secondary)
-                .frame(width: 14, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, minHeight: 80, alignment: .center)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(String(localized: "sidebar.usage.empty.title", defaultValue: "No usage available"))
+                .font(.system(size: 12, weight: .semibold))
+            Text(
+                String(
+                    localized: "sidebar.usage.empty.subtitle",
+                    defaultValue: "Sign in to a supported provider, then refresh."
+                )
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func providerSection(_ snapshot: ProviderUsageSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(snapshot.provider.localizedDisplayName)
+                .font(.system(size: 12, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
+
+            ForEach(snapshot.windows) { window in
+                usageRow(window)
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        )
+    }
+
+    private func usageRow(_ window: ProviderUsageWindow) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text(window.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(Self.percentText(window.usedPercent))
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                Text(Self.resetText(window.resetsAt))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
 
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
@@ -47,28 +167,58 @@ struct SidebarQuotaFooter: View {
                         .frame(width: proxy.size.width * CGFloat(window.usedPercent) / 100)
                 }
             }
-            .frame(height: 3)
-
-            Text(Self.percentText(window.usedPercent))
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 26, alignment: .trailing)
-
-            Text(Self.resetText(window.resetsAt))
-                .font(.system(size: 9, weight: .regular, design: .monospaced))
-                .foregroundStyle(Color.secondary.opacity(0.7))
-                .frame(width: 30, alignment: .trailing)
+            .frame(height: 4)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            String.localizedStringWithFormat(
+                String(
+                    localized: "sidebar.usage.window.accessibility",
+                    defaultValue: "%1$@, %2$@ used, resets in %3$@"
+                ),
+                window.label,
+                Self.percentText(window.usedPercent),
+                Self.resetText(window.resetsAt)
+            )
+        )
+    }
+
+    private func failureSection(provider: ProviderUsageProvider, message: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(provider.localizedDisplayName)
+                .font(.system(size: 12, weight: .semibold))
+            Label(message, systemImage: "exclamationmark.triangle")
+                .font(.system(size: 11))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private func unavailableSection(provider: ProviderUsageProvider) -> some View {
+        HStack(spacing: 6) {
+            Text(provider.localizedDisplayName)
+                .fontWeight(.medium)
+            Text(String(localized: "sidebar.usage.unavailable", defaultValue: "Unavailable"))
+                .foregroundStyle(.secondary)
+        }
+        .font(.system(size: 11))
+        .accessibilityElement(children: .combine)
     }
 
     private static func barColor(for usedPercent: Int) -> Color {
         switch usedPercent {
         case ..<60:
-            return .secondary
+            .secondary
         case 60..<85:
-            return .orange
+            .orange
         default:
-            return .red
+            .red
         }
     }
 
@@ -101,10 +251,9 @@ struct SidebarQuotaFooter: View {
             )
         }
 
-        let totalDays = totalHours / 24
         return String.localizedStringWithFormat(
             String(localized: "sidebar.quota.resetDays", defaultValue: "%@d"),
-            String(totalDays)
+            String(totalHours / 24)
         )
     }
 }

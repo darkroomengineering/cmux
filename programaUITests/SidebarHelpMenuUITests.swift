@@ -23,6 +23,32 @@ final class SidebarHelpMenuUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testVisibleSidebarHeaderToggleHidesItsOwningSidebar() {
+        let app = XCUIApplication()
+        app.launchEnvironment["PROGRAMA_UI_TEST_MODE"] = "1"
+        launchAndActivate(app)
+
+        XCTAssertTrue(waitForWindowCount(atLeast: 1, app: app, timeout: 6.0))
+
+        let sidebar = app.otherElements["Sidebar"].firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 6.0), "Expected the main window sidebar to start visible")
+
+        let toggle = sidebar.descendants(matching: .button)
+            .matching(identifier: "titlebarControl.toggleSidebar")
+            .firstMatch
+        XCTAssertTrue(
+            sidebarHelpPollUntil(timeout: 3.0) { toggle.exists && toggle.isHittable },
+            "Expected the visible sidebar header to expose its own sidebar toggle"
+        )
+
+        toggle.click()
+
+        XCTAssertTrue(
+            sidebarHelpPollUntil(timeout: 3.0) { !sidebar.exists || !sidebar.isHittable },
+            "The sidebar header toggle must hide the SidebarState that rendered it"
+        )
+    }
+
     func testHelpMenuOpensKeyboardShortcutsSection() {
         let app = XCUIApplication()
         app.launchEnvironment["PROGRAMA_UI_TEST_MODE"] = "1"

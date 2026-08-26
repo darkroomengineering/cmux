@@ -1,6 +1,41 @@
 import Darwin
 import Foundation
 
+protocol MobileBridgeRelayLineReading: Sendable {
+    func nextLine() async throws -> Data?
+}
+
+protocol MobileBridgeRelayFrameWriting: Sendable {
+    func writeLine(_ data: Data) async throws
+}
+
+protocol MobileBridgeRelayLocalPiping: Sendable {
+    func nextLine() async throws -> Data?
+    func send(_ data: Data) async throws
+    func shutdownLocalEnd()
+}
+
+extension MobileBridgeStreamLineReader: MobileBridgeRelayLineReading {}
+extension MobileBridgeFrameWriter: MobileBridgeRelayFrameWriting {}
+
+final class MobileBridgeCloseOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (@Sendable () -> Void)?
+
+    init(_ action: @escaping @Sendable () -> Void) {
+        self.action = action
+    }
+
+    func close() {
+        let action = lock.withLock {
+            let action = self.action
+            self.action = nil
+            return action
+        }
+        action?()
+    }
+}
+
 /// One phone connection's admission and relay to Programa's terminal
 /// control dispatch. Ported from
 /// `tools/mobile-spike/Sources/iroh-spike/Bridge.swift`'s `admit`/`relay`/
@@ -20,34 +55,39 @@ import Foundation
 /// will admit and relay-connect phones, but `handleClient` will return
 /// immediately without processing any commands.
 enum MobileBridgeSession {
+    enum AdmissionOutcome: Sendable {
+        case trusted
+        case paired(label: String)
+    }
+
     /// Admission order: trusted devices are admitted outright; otherwise,
     /// if a pairing window is open and unexpired, the first line is read
     /// and checked as a `{"pair":"<token>"}` frame; otherwise the
-    /// connection is rejected as not paired. Returns `true` if the
-    /// connection should proceed to relay.
+    /// connection is rejected as not paired. Pairing only proves the token;
+    /// the listener commits trust and registration as one transaction.
     static func admit(
         idString: String,
         reader: MobileBridgeStreamLineReader,
         writer: MobileBridgeFrameWriter,
         pairingWindow: MobileBridgePairingWindow?
-    ) async throws -> Bool {
+    ) async throws -> AdmissionOutcome? {
         if await MobileBridgeTrustedDeviceStore.shared.isTrusted(idString) {
-            return true
+            return .trusted
         }
 
-        if let pairingWindow, await pairingWindow.isOpen {
+        if let pairingWindow, pairingWindow.isOpen {
             guard let firstLine = try await reader.nextLine() else {
-                return false
+                return nil
             }
             guard
                 let object = try? JSONSerialization.jsonObject(with: firstLine) as? [String: Any],
                 let presentedToken = object["pair"] as? String
             else {
                 try? await writer.writeLine(errorFrame(id: nil, code: "pairing_failed"))
-                return false
+                return nil
             }
 
-            let matched = await pairingWindow.attemptConsume(Data(presentedToken.utf8))
+            let matched = pairingWindow.attemptConsume(Data(presentedToken.utf8))
             if matched {
                 // The phone may send a human-readable name alongside the
                 // token so the device list reads "Franco's iPhone" rather
@@ -58,18 +98,16 @@ enum MobileBridgeSession {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .prefix(64)
                     .description
-                let resolvedLabel = (label?.isEmpty == false) ? label! : "paired-device"
-                await MobileBridgeTrustedDeviceStore.shared.add(endpointId: idString, label: resolvedLabel)
-                try await writer.writeLine(Data(#"{"ok":true,"paired":true}"#.utf8))
-                return true
+                let resolvedLabel = label.flatMap { $0.isEmpty ? nil : $0 } ?? "paired-device"
+                return .paired(label: resolvedLabel)
             } else {
                 try? await writer.writeLine(errorFrame(id: nil, code: "pairing_failed"))
-                return false
+                return nil
             }
         }
 
         try? await writer.writeLine(errorFrame(id: nil, code: "not_paired"))
-        return false
+        return nil
     }
 
     /// Creates a connected `socketpair`, hands one end to
@@ -84,8 +122,12 @@ enum MobileBridgeSession {
     static func relay(
         reader: MobileBridgeStreamLineReader,
         writer: MobileBridgeFrameWriter,
-        idString: String
+        idString: String,
+        closeRemote: @escaping @Sendable () -> Void
     ) async {
+        let remoteClose = MobileBridgeCloseOnce(closeRemote)
+        defer { remoteClose.close() }
+
         // Greet every admitted phone, pairing and trusted reconnect alike, so a
         // renamed Mac corrects itself on the next connect instead of staying
         // stale until re-pair. Shaped as an event frame ("event" key, no "id")
@@ -112,38 +154,65 @@ enum MobileBridgeSession {
             TerminalController.shared.handleClient(remoteFD, peerPid: getpid(), ignoresListenerState: true)
         }
 
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                do {
-                    while let line = try await reader.nextLine() {
-                        await forwardPhoneLine(line, pipe: pipe, writer: writer, idString: idString)
+        await pump(
+            reader: reader,
+            writer: writer,
+            pipe: pipe,
+            closeRemote: { remoteClose.close() },
+            idString: idString
+        )
+    }
+
+    static func pump(
+        reader: any MobileBridgeRelayLineReading,
+        writer: any MobileBridgeRelayFrameWriting,
+        pipe: any MobileBridgeRelayLocalPiping,
+        closeRemote: @escaping @Sendable () -> Void,
+        idString: String = "unknown"
+    ) async {
+        let shutdown = MobileBridgeCloseOnce {
+            closeRemote()
+            pipe.shutdownLocalEnd()
+        }
+
+        await withTaskCancellationHandler {
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    do {
+                        while let line = try await reader.nextLine() {
+                            await forwardPhoneLine(
+                                line,
+                                pipe: pipe,
+                                writer: writer,
+                                idString: idString
+                            )
+                        }
+                    } catch {
+                        NSLog("MobileBridge: phone read error for %@: %@", idString, "\(error)")
                     }
-                } catch {
-                    NSLog("MobileBridge: phone read error for %@: %@", idString, "\(error)")
                 }
-                // Signal the local side's blocking read to unblock (EOF)
-                // once the phone has disconnected, so `handleClient`'s
-                // read loop can also observe the peer going away.
-                pipe.closeLocalEnd()
-            }
-            group.addTask {
-                do {
-                    while let line = try await pipe.nextLine() {
-                        try await writer.writeLine(line)
+                group.addTask {
+                    do {
+                        while let line = try await pipe.nextLine() {
+                            try await writer.writeLine(line)
+                        }
+                    } catch {
+                        NSLog("MobileBridge: local read error for %@: %@", idString, "\(error)")
                     }
-                } catch {
-                    NSLog("MobileBridge: local read error for %@: %@", idString, "\(error)")
                 }
+                await group.next()
+                shutdown.close()
+                group.cancelAll()
             }
-            await group.next()
-            group.cancelAll()
+        } onCancel: {
+            shutdown.close()
         }
     }
 
     private static func forwardPhoneLine(
         _ line: Data,
-        pipe: MobileBridgeLocalPipe,
-        writer: MobileBridgeFrameWriter,
+        pipe: any MobileBridgeRelayLocalPiping,
+        writer: any MobileBridgeRelayFrameWriting,
         idString: String
     ) async {
         guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
@@ -196,11 +265,12 @@ enum MobileBridgeSession {
 /// `handleClient` and this pipe's local end both perform blocking
 /// `read`/`write` syscalls that must never run on Swift Concurrency's
 /// cooperative thread pool.
-final class MobileBridgeLocalPipe: @unchecked Sendable {
+final class MobileBridgeLocalPipe: MobileBridgeRelayLocalPiping, @unchecked Sendable {
     let remoteFD: Int32
     private let localFD: Int32
     private var buffer = Data()
     private let closeLock = NSLock()
+    private var localShutdown = false
     private var localClosed = false
 
     private init(localFD: Int32, remoteFD: Int32) {
@@ -221,11 +291,22 @@ final class MobileBridgeLocalPipe: @unchecked Sendable {
     /// closes `remoteFD` itself via its own `defer`, so this must never
     /// touch `remoteFD`.
     func closeLocalEnd() {
-        closeLock.lock()
-        defer { closeLock.unlock() }
-        guard !localClosed else { return }
-        localClosed = true
-        Darwin.close(localFD)
+        closeLock.withLock {
+            guard !localClosed else { return }
+            localClosed = true
+            Darwin.close(localFD)
+        }
+    }
+
+    /// Wakes both blocking local-end syscalls without releasing the file
+    /// descriptor. The pump closes it only after both child tasks have joined,
+    /// so a concurrent teardown cannot target a reused descriptor.
+    func shutdownLocalEnd() {
+        closeLock.withLock {
+            guard !localClosed, !localShutdown else { return }
+            localShutdown = true
+            Darwin.shutdown(localFD, SHUT_RDWR)
+        }
     }
 
     private func readLineBlocking() throws -> Data? {

@@ -166,6 +166,7 @@ struct VerticalTabsSidebar: View {
     let onSendFeedback: () -> Void
     @EnvironmentObject var tabManager: TabManager
     @EnvironmentObject var notificationStore: TerminalNotificationStore
+    @EnvironmentObject var sidebarState: SidebarState
     @Binding var selection: SidebarSelection
     @Binding var selectedTabIds: Set<UUID>
     @Binding var lastSidebarSelectionIndex: Int?
@@ -228,7 +229,10 @@ struct VerticalTabsSidebar: View {
                 Spacer(minLength: 0)
                 // Right-aligned: the controls view carries its own ~18pt trailing
                 // inset (shortcut-hint clearance), which serves as the edge padding.
-                HiddenTitlebarSidebarControlsView(notificationStore: notificationStore)
+                HiddenTitlebarSidebarControlsView(
+                    notificationStore: notificationStore,
+                    sidebarState: sidebarState
+                )
             }
             .frame(height: trafficLightPadding)
             // Flush sidebar (no panel inset): keep the header aligned with
@@ -331,17 +335,13 @@ struct VerticalTabsSidebar: View {
                 .background(Color.clear)
                 .modifier(ClearScrollBackground())
             }
-            VStack(spacing: 0) {
-                SidebarFooter(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                SidebarQuotaFooter()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            SidebarFooter(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
+                .frame(maxWidth: .infinity, alignment: .leading)
             // Clearance from the window's bottom-left corner curve so the last
             // footer row doesn't ride the radius.
             .padding(.bottom, 6)
-            // Empty footer space (below/around the help button, feedback row, and
-            // quota meters) drags the window; the buttons/rows above keep their own
+            // Empty footer space (below/around the help, usage, and feedback controls)
+            // drags the window; the buttons/rows above keep their own
             // clicks via the sibling hit-test walk in windowDragHandleShouldCaptureHit.
             .background(WindowDragHandleView())
         }

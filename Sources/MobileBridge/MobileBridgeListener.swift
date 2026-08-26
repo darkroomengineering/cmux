@@ -27,6 +27,262 @@ struct MobileBridgePairingInfo: Sendable {
     let expiresAt: Date
 }
 
+enum MobileBridgeDeviceRevocationOutcome: Sendable, Equatable {
+    case revoked
+    case persistenceFailed
+}
+
+final class MobileBridgeConnectionRegistry: @unchecked Sendable {
+    typealias CloseAction = @Sendable () -> Void
+
+    struct PendingAdmissionLease: Sendable {
+        fileprivate let id: UUID
+        fileprivate let listenerGeneration: UInt64
+    }
+
+    struct AdmissionTicket: Sendable {
+        fileprivate let endpointId: String
+        fileprivate let endpointGeneration: UInt64
+        fileprivate let listenerGeneration: UInt64
+        fileprivate let pendingAdmissionID: UUID?
+    }
+
+    struct ListenerLifecycle: Sendable {
+        fileprivate let listenerGeneration: UInt64
+    }
+
+    enum RegistrationResult: Sendable {
+        case registered(superseded: [CloseAction])
+        case rejected(CloseAction)
+    }
+
+    private struct IdentifiedPendingAdmission {
+        let endpointId: String
+        let endpointGeneration: UInt64
+        let listenerGeneration: UInt64
+        let close: CloseAction
+    }
+
+    private static let maximumPendingAdmissions = 10
+    private static let maximumLiveConnections = 10
+    private static let noOpClose: CloseAction = {}
+
+    private let lock = NSLock()
+    private var isAccepting = false
+    private var listenerGeneration: UInt64 = 0
+    private var endpointGenerations: [String: UInt64] = [:]
+    private var anonymousPendingAdmissions: [UUID: UInt64] = [:]
+    private var identifiedPendingAdmissions: [UUID: IdentifiedPendingAdmission] = [:]
+    private var liveRecords: [String: [ObjectIdentifier: CloseAction]] = [:]
+
+    func start() -> ListenerLifecycle {
+        lock.withLock {
+            if !isAccepting {
+                listenerGeneration &+= 1
+                isAccepting = true
+            }
+            return ListenerLifecycle(listenerGeneration: listenerGeneration)
+        }
+    }
+
+    func beginAdmission(endpointId: String, lifecycle: ListenerLifecycle) -> AdmissionTicket? {
+        lock.withLock {
+            guard isAccepting, lifecycle.listenerGeneration == listenerGeneration else { return nil }
+            return AdmissionTicket(
+                endpointId: endpointId,
+                endpointGeneration: endpointGenerations[endpointId] ?? 0,
+                listenerGeneration: listenerGeneration,
+                pendingAdmissionID: nil
+            )
+        }
+    }
+
+    func reservePending(lifecycle: ListenerLifecycle) -> PendingAdmissionLease? {
+        lock.withLock {
+            guard isAccepting,
+                  lifecycle.listenerGeneration == listenerGeneration,
+                  anonymousPendingAdmissions.count + identifiedPendingAdmissions.count
+                      < Self.maximumPendingAdmissions
+            else {
+                return nil
+            }
+
+            let lease = PendingAdmissionLease(
+                id: UUID(),
+                listenerGeneration: listenerGeneration
+            )
+            anonymousPendingAdmissions[lease.id] = listenerGeneration
+            return lease
+        }
+    }
+
+    func identifyPending(
+        _ lease: PendingAdmissionLease,
+        endpointId: String,
+        close: @escaping CloseAction
+    ) -> AdmissionTicket? {
+        lock.withLock {
+            guard let reservedGeneration = anonymousPendingAdmissions.removeValue(forKey: lease.id),
+                  reservedGeneration == lease.listenerGeneration,
+                  isAccepting,
+                  lease.listenerGeneration == listenerGeneration,
+                  !identifiedPendingAdmissions.values.contains(where: { $0.endpointId == endpointId })
+            else {
+                return nil
+            }
+
+            let endpointGeneration = endpointGenerations[endpointId] ?? 0
+            identifiedPendingAdmissions[lease.id] = IdentifiedPendingAdmission(
+                endpointId: endpointId,
+                endpointGeneration: endpointGeneration,
+                listenerGeneration: listenerGeneration,
+                close: close
+            )
+            return AdmissionTicket(
+                endpointId: endpointId,
+                endpointGeneration: endpointGeneration,
+                listenerGeneration: listenerGeneration,
+                pendingAdmissionID: lease.id
+            )
+        }
+    }
+
+    func expireAdmission(_ ticket: AdmissionTicket) -> CloseAction? {
+        claimPendingAdmission(ticket)
+    }
+
+    @discardableResult
+    func abandonPending(_ lease: PendingAdmissionLease) -> Bool {
+        lock.withLock {
+            guard anonymousPendingAdmissions[lease.id] == lease.listenerGeneration else { return false }
+            anonymousPendingAdmissions[lease.id] = nil
+            return true
+        }
+    }
+
+    func abandonAdmission(_ ticket: AdmissionTicket) -> CloseAction? {
+        claimPendingAdmission(ticket)
+    }
+
+    func registerIfCurrent(
+        connectionID: ObjectIdentifier,
+        ticket: AdmissionTicket,
+        close: @escaping CloseAction,
+        beforeRegister: () -> Bool = { true }
+    ) -> RegistrationResult {
+        lock.withLock {
+            let candidateClose: CloseAction
+            if let pendingAdmissionID = ticket.pendingAdmissionID {
+                guard let pending = identifiedPendingAdmissions[pendingAdmissionID] else {
+                    return .rejected(Self.noOpClose)
+                }
+                guard isAccepting,
+                      ticket.listenerGeneration == listenerGeneration,
+                      ticket.endpointGeneration == (endpointGenerations[ticket.endpointId] ?? 0),
+                      pending.endpointId == ticket.endpointId,
+                      pending.endpointGeneration == ticket.endpointGeneration,
+                      pending.listenerGeneration == ticket.listenerGeneration
+                else {
+                    identifiedPendingAdmissions[pendingAdmissionID] = nil
+                    return .rejected(pending.close)
+                }
+                candidateClose = pending.close
+            } else {
+                guard isAccepting,
+                      ticket.listenerGeneration == listenerGeneration,
+                      ticket.endpointGeneration == (endpointGenerations[ticket.endpointId] ?? 0)
+                else {
+                    return .rejected(close)
+                }
+                candidateClose = close
+            }
+
+            let liveConnectionCount = liveRecords.values.reduce(into: 0) {
+                $0 += $1.count
+            }
+            let replacesCurrentEndpoint = liveRecords[ticket.endpointId]?.isEmpty == false
+            guard liveConnectionCount < Self.maximumLiveConnections || replacesCurrentEndpoint else {
+                if let pendingAdmissionID = ticket.pendingAdmissionID {
+                    identifiedPendingAdmissions[pendingAdmissionID] = nil
+                }
+                return .rejected(candidateClose)
+            }
+            guard beforeRegister() else {
+                if let pendingAdmissionID = ticket.pendingAdmissionID {
+                    identifiedPendingAdmissions[pendingAdmissionID] = nil
+                }
+                return .rejected(candidateClose)
+            }
+
+            if let pendingAdmissionID = ticket.pendingAdmissionID {
+                identifiedPendingAdmissions[pendingAdmissionID] = nil
+            }
+            let superseded = liveRecords.removeValue(forKey: ticket.endpointId).map {
+                Array($0.values)
+            } ?? []
+            liveRecords[ticket.endpointId] = [connectionID: candidateClose]
+            return .registered(superseded: superseded)
+        }
+    }
+
+    func unregister(connectionID: ObjectIdentifier, endpointId: String) {
+        lock.withLock {
+            liveRecords[endpointId]?[connectionID] = nil
+            if liveRecords[endpointId]?.isEmpty == true {
+                liveRecords[endpointId] = nil
+            }
+        }
+    }
+
+    func revoke(endpointId: String, beforeClaim: () -> Void = {}) -> [CloseAction] {
+        lock.withLock {
+            endpointGenerations[endpointId] = (endpointGenerations[endpointId] ?? 0) &+ 1
+            beforeClaim()
+
+            let pendingIDs = identifiedPendingAdmissions.compactMap { id, admission in
+                admission.endpointId == endpointId ? id : nil
+            }
+            let pendingActions = pendingIDs.compactMap {
+                identifiedPendingAdmissions.removeValue(forKey: $0)?.close
+            }
+            let liveActions = liveRecords.removeValue(forKey: endpointId).map {
+                Array($0.values)
+            } ?? []
+            return pendingActions + liveActions
+        }
+    }
+
+    func stop() -> [CloseAction] {
+        lock.withLock {
+            if isAccepting {
+                isAccepting = false
+                listenerGeneration &+= 1
+            }
+            let actions = identifiedPendingAdmissions.values.map(\.close)
+                + liveRecords.values.flatMap { Array($0.values) }
+            anonymousPendingAdmissions.removeAll(keepingCapacity: true)
+            identifiedPendingAdmissions.removeAll(keepingCapacity: true)
+            liveRecords.removeAll(keepingCapacity: true)
+            return actions
+        }
+    }
+
+    private func claimPendingAdmission(_ ticket: AdmissionTicket) -> CloseAction? {
+        lock.withLock {
+            guard let pendingAdmissionID = ticket.pendingAdmissionID,
+                  let pending = identifiedPendingAdmissions[pendingAdmissionID],
+                  pending.endpointId == ticket.endpointId,
+                  pending.endpointGeneration == ticket.endpointGeneration,
+                  pending.listenerGeneration == ticket.listenerGeneration
+            else {
+                return nil
+            }
+            identifiedPendingAdmissions[pendingAdmissionID] = nil
+            return pending.close
+        }
+    }
+}
+
 /// Owns the in-process iroh endpoint that lets a paired iPhone reach this
 /// Mac's terminal control dispatch without the user ever running the
 /// `tools/mobile-spike bridge` CLI in a terminal. Ported from
@@ -43,24 +299,21 @@ final class MobileBridgeListener: @unchecked Sendable {
     static let shared = MobileBridgeListener()
 
     private let stateLock = NSLock()
+    private let endpointBinder: @Sendable () async throws -> Endpoint
     private var endpoint: Endpoint?
     private var acceptTask: Task<Void, Never>?
     private var pairingWindow: MobileBridgePairingWindow?
     private var isStarting = false
     private var generation: UInt64 = 0
+    private let connectionRegistry = MobileBridgeConnectionRegistry()
 
-    /// Live connections per admitted `endpointId`, so `revoke(endpointId:)`
-    /// can reach an in-progress relay rather than only blocking future
-    /// reconnects. Keyed by `ObjectIdentifier` (not a `Set`, since
-    /// `Connection` isn't `Hashable`) to tolerate more than one concurrent
-    /// connection from the same device. Guarded by `stateLock`, the same
-    /// lock as every other mutable field on this type. Registered in
-    /// `handleIncoming` right after `admit()` succeeds; unregistered via
-    /// `defer` so every relay exit path (normal completion, thrown error)
-    /// clears its entry.
-    private var liveConnections: [String: [ObjectIdentifier: Connection]] = [:]
-
-    private init() {}
+    init(
+        endpointBinder: @escaping @Sendable () async throws -> Endpoint = {
+            try await MobileBridgeListener.bindEndpoint()
+        }
+    ) {
+        self.endpointBinder = endpointBinder
+    }
 
     /// Starts the endpoint if it is not already running or starting.
     /// Idempotent. Never blocks the caller.
@@ -74,142 +327,151 @@ final class MobileBridgeListener: @unchecked Sendable {
     func start(tabManager: TabManager) {
         TerminalController.shared.tabManager = tabManager
 
-        stateLock.lock()
-        guard endpoint == nil, !isStarting else {
-            stateLock.unlock()
-            return
+        let startState = stateLock.withLock {
+            guard endpoint == nil, !isStarting else {
+                return nil as (generation: UInt64, lifecycle: MobileBridgeConnectionRegistry.ListenerLifecycle)?
+            }
+            isStarting = true
+            generation &+= 1
+            return (
+                generation: generation,
+                lifecycle: connectionRegistry.start()
+            )
         }
-        isStarting = true
-        generation += 1
-        let currentGeneration = generation
-        stateLock.unlock()
+        guard let startState else { return }
 
         Task { [weak self] in
-            await self?.bindAndAccept(generation: currentGeneration)
+            await self?.bindAndAccept(
+                generation: startState.generation,
+                lifecycle: startState.lifecycle
+            )
         }
     }
 
     /// Stops the listener and closes the endpoint. Safe to call whether or
     /// not the listener is currently running.
     func stop() {
-        stateLock.lock()
-        let task = acceptTask
-        let ep = endpoint
-        acceptTask = nil
-        endpoint = nil
-        pairingWindow = nil
-        isStarting = false
-        generation += 1
-        stateLock.unlock()
+        let stoppedState = stateLock.withLock {
+            let task = acceptTask
+            let ep = endpoint
+            pairingWindow?.invalidate()
+            acceptTask = nil
+            endpoint = nil
+            pairingWindow = nil
+            isStarting = false
+            generation &+= 1
+            return (
+                task: task,
+                endpoint: ep,
+                closeActions: connectionRegistry.stop()
+            )
+        }
 
-        task?.cancel()
-        if let ep {
+        stoppedState.task?.cancel()
+        stoppedState.closeActions.forEach { $0() }
+        if let ep = stoppedState.endpoint {
             Task { try? await ep.close() }
         }
     }
 
     /// Opens a single-use, 5-minute pairing window and returns the pairing
     /// payload (ticket) and token to display in Settings. Returns `nil` if
-    /// the endpoint isn't bound yet (mode just enabled, still connecting to
-    /// relays) -- the caller should show a brief error and let the user
-    /// retry.
+    /// the endpoint isn't bound yet (mode just enabled, still binding) --
+    /// the caller should show a brief error and let the user retry.
     func beginPairing() async -> MobileBridgePairingInfo? {
-        stateLock.lock()
-        let ep = endpoint
-        stateLock.unlock()
-        guard let ep else { return nil }
+        let snapshot = stateLock.withLock {
+            endpoint.map { (endpoint: $0, generation: generation) }
+        }
+        guard let snapshot else { return nil }
 
         let tokenBytes = Data((0 ..< 32).map { _ in UInt8.random(in: 0 ... 255) })
         let tokenString = MobileBridgeBase64URL.encode(tokenBytes)
         let window = MobileBridgePairingWindow(token: Data(tokenString.utf8), duration: mobileBridgePairingWindowDuration)
         let expiresAt = Date().addingTimeInterval(mobileBridgePairingWindowDuration.timeIntervalValue)
 
-        stateLock.lock()
-        pairingWindow = window
-        stateLock.unlock()
+        guard let ticket = try? EndpointTicket.fromAddr(addr: snapshot.endpoint.addr()) else {
+            window.invalidate()
+            return nil
+        }
 
-        guard let ticket = try? EndpointTicket.fromAddr(addr: ep.addr()) else { return nil }
+        let published = stateLock.withLock {
+            guard generation == snapshot.generation, endpoint === snapshot.endpoint else {
+                return false
+            }
+            pairingWindow?.invalidate()
+            pairingWindow = window
+            return true
+        }
+        guard published else {
+            window.invalidate()
+            return nil
+        }
+
         return MobileBridgePairingInfo(ticket: ticket.description, token: tokenString, expiresAt: expiresAt)
     }
 
-    /// Revokes a previously paired device immediately: removes it from the
-    /// trusted store (so a reconnect is rejected at `admit()`, unchanged)
-    /// and closes every connection currently registered for it, so a
-    /// long-lived relay session doesn't keep running on borrowed trust
-    /// until the phone disconnects on its own.
-    func revoke(endpointId: String) async {
-        await MobileBridgeTrustedDeviceStore.shared.remove(endpointId: endpointId)
-
-        stateLock.lock()
-        let connections = liveConnections[endpointId]
-        stateLock.unlock()
-
-        guard let connections else { return }
-        for connection in connections.values {
-            try? connection.close(errorCode: 0, reason: Data("revoked".utf8))
-        }
-    }
-
-    /// Registers a live, admitted connection so `revoke(endpointId:)` can
-    /// close it later. Must be paired with `unregisterLiveConnection` on
-    /// every exit path (see call site in `handleIncoming`).
-    private func registerLiveConnection(_ connection: Connection, endpointId: String) {
-        let key = ObjectIdentifier(connection)
-        stateLock.lock()
-        liveConnections[endpointId, default: [:]][key] = connection
-        stateLock.unlock()
-    }
-
-    private func unregisterLiveConnection(_ connection: Connection, endpointId: String) {
-        let key = ObjectIdentifier(connection)
-        stateLock.lock()
-        liveConnections[endpointId]?[key] = nil
-        if liveConnections[endpointId]?.isEmpty == true {
-            liveConnections[endpointId] = nil
-        }
-        stateLock.unlock()
-    }
-
-    private func bindAndAccept(generation: UInt64) async {
-        do {
-            let secretKey = try MobileBridgeSecretKeyStore.loadOrCreate()
-            // Mirrors `makeEndpointOptions` in
-            // `tools/mobile-spike/Sources/iroh-spike/App.swift` exactly --
-            // see that file's doc comment for why each field matters
-            // (`presetN0()`, `RelayMode.defaultMode()`, `0.0.0.0:0` bind,
-            // `portMappingEnabled: true`).
-            let options = EndpointOptions(
-                preset: presetN0(),
-                bindAddr: "0.0.0.0:0",
-                secretKey: secretKey,
-                alpns: [mobileBridgeALPN],
-                relayMode: RelayMode.defaultMode(),
-                portMappingEnabled: true,
-                deferNatTraversalUntilAuthorized: true,
-                initialMaxConcurrentBiStreams: 0,
-                initialMaxConcurrentUniStreams: 0
+    /// Revokes a previously paired device after its removal is durably stored:
+    /// reconnects are then rejected at `admit()`, and every registered
+    /// connection is closed so a long-lived relay session cannot keep running
+    /// on borrowed trust until the phone disconnects on its own.
+    func revoke(endpointId: String) async -> MobileBridgeDeviceRevocationOutcome {
+        let result = await MobileBridgeTrustedDeviceStore.shared.revokeAndClaimConnections(
+            endpointId: endpointId,
+            registry: connectionRegistry
+        )
+        if let persistenceFailure = result.persistenceFailure {
+            NSLog(
+                "MobileBridge: failed to persist device revocation; connection remains active: %@",
+                persistenceFailure
             )
-            let ep = try await Endpoint.bind(options: options)
+            return .persistenceFailed
+        }
 
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { await ep.online() }
-                group.addTask { try? await Task.sleep(for: .seconds(10)) }
-                await group.next()
-                group.cancelAll()
+        result.closeActions.forEach { $0() }
+        return .revoked
+    }
+
+    private static func bindEndpoint() async throws -> Endpoint {
+        let secretKey = try MobileBridgeSecretKeyStore.loadOrCreate()
+        // Mirrors `makeEndpointOptions` in
+        // `tools/mobile-spike/Sources/iroh-spike/App.swift` exactly --
+        // see that file's doc comment for why each field matters
+        // (`presetN0()`, `RelayMode.defaultMode()`, `0.0.0.0:0` bind,
+        // `portMappingEnabled: true`).
+        let options = EndpointOptions(
+            preset: presetN0(),
+            bindAddr: "0.0.0.0:0",
+            secretKey: secretKey,
+            alpns: [mobileBridgeALPN],
+            relayMode: RelayMode.defaultMode(),
+            portMappingEnabled: true,
+            deferNatTraversalUntilAuthorized: true,
+            initialMaxConcurrentBiStreams: 0,
+            initialMaxConcurrentUniStreams: 0
+        )
+        return try await Endpoint.bind(options: options)
+    }
+
+    private func bindAndAccept(
+        generation: UInt64,
+        lifecycle: MobileBridgeConnectionRegistry.ListenerLifecycle
+    ) async {
+        do {
+            let ep = try await endpointBinder()
+
+            let published = stateLock.withLock {
+                guard self.generation == generation else { return false }
+                self.endpoint = ep
+                self.isStarting = false
+                return true
             }
-
-            stateLock.lock()
-            guard self.generation == generation else {
+            guard published else {
                 // `stop()` (or a subsequent `start()`) ran while we were
-                // binding/waiting for relay connectivity -- this bind is
-                // stale, close it without publishing state.
-                stateLock.unlock()
+                // binding -- this bind is stale, close it without publishing
+                // state.
                 try? await ep.close()
                 return
             }
-            self.endpoint = ep
-            self.isStarting = false
-            stateLock.unlock()
 
 #if DEBUG
             // Log the dialable ticket, not just the node id: without it there is
@@ -223,39 +485,111 @@ final class MobileBridgeListener: @unchecked Sendable {
 
             let task = Task { [weak self] in
                 guard let self else { return }
-                await self.acceptLoop(endpoint: ep, generation: generation)
+                await self.acceptLoop(
+                    endpoint: ep,
+                    generation: generation,
+                    lifecycle: lifecycle
+                )
             }
-            stateLock.lock()
-            if self.generation == generation {
+            let installed = stateLock.withLock {
+                guard self.generation == generation else { return false }
                 acceptTask = task
-            } else {
+                return true
+            }
+            if !installed {
                 task.cancel()
             }
-            stateLock.unlock()
         } catch {
             NSLog("MobileBridge: failed to bind endpoint: %@", "\(error)")
-            stateLock.lock()
-            if self.generation == generation {
-                isStarting = false
+            stateLock.withLock {
+                if self.generation == generation {
+                    isStarting = false
+                }
             }
-            stateLock.unlock()
         }
     }
 
-    private func acceptLoop(endpoint: Endpoint, generation: UInt64) async {
+    private func acceptLoop(
+        endpoint: Endpoint,
+        generation: UInt64,
+        lifecycle: MobileBridgeConnectionRegistry.ListenerLifecycle
+    ) async {
         while let incoming = await endpoint.acceptNext() {
-            stateLock.lock()
-            let stillCurrent = self.generation == generation
-            stateLock.unlock()
-            guard stillCurrent else { break }
+            let stillCurrent = stateLock.withLock { self.generation == generation }
+            guard stillCurrent else {
+                try? await incoming.refuse()
+                break
+            }
 
+            guard let pendingLease = connectionRegistry.reservePending(lifecycle: lifecycle) else {
+                try? await incoming.refuse()
+                let remainsCurrent = stateLock.withLock { self.generation == generation }
+                if !remainsCurrent {
+                    break
+                }
+                continue
+            }
+
+            let registry = connectionRegistry
+            let pendingDeadline = Self.startPendingAdmissionDeadline(
+                registry: registry,
+                lease: pendingLease,
+                timeout: .seconds(15)
+            ) {
+                try? await incoming.refuse()
+            }
             Task { [weak self] in
-                await self?.handleIncoming(incoming)
+                guard let self else {
+                    pendingDeadline.cancel()
+                    if registry.abandonPending(pendingLease) {
+                        try? await incoming.refuse()
+                    }
+                    return
+                }
+                await self.handleIncoming(
+                    incoming,
+                    pendingLease: pendingLease,
+                    pendingDeadline: pendingDeadline
+                )
             }
         }
     }
 
-    private func handleIncoming(_ incoming: Incoming) async {
+    static func startPendingAdmissionDeadline(
+        registry: MobileBridgeConnectionRegistry,
+        lease: MobileBridgeConnectionRegistry.PendingAdmissionLease,
+        timeout: Duration,
+        onTimeout: @escaping @Sendable () async -> Void
+    ) -> Task<Void, Never> {
+        Task {
+            do {
+                try await Task.sleep(for: timeout)
+            } catch {
+                return
+            }
+            guard registry.abandonPending(lease) else { return }
+            await onTimeout()
+        }
+    }
+
+    private func handleIncoming(
+        _ incoming: Incoming,
+        pendingLease initialPendingLease: MobileBridgeConnectionRegistry.PendingAdmissionLease,
+        pendingDeadline: Task<Void, Never>
+    ) async {
+        var pendingLease: MobileBridgeConnectionRegistry.PendingAdmissionLease? = initialPendingLease
+        var admissionTicket: MobileBridgeConnectionRegistry.AdmissionTicket?
+        var admissionDeadline: Task<Void, Never>?
+        defer {
+            pendingDeadline.cancel()
+            admissionDeadline?.cancel()
+            if let admissionTicket {
+                connectionRegistry.abandonAdmission(admissionTicket)?()
+            } else if let pendingLease {
+                connectionRegistry.abandonPending(pendingLease)
+            }
+        }
+
         do {
             let accepting = try await incoming.accept()
             let remoteALPN = try await accepting.alpn()
@@ -267,44 +601,105 @@ final class MobileBridgeListener: @unchecked Sendable {
             }
 
             let connection = try await accepting.connect()
-            try connection.setMaxConcurrentBiStreams(count: 1)
-            try connection.setMaxConcurrentUniStreams(count: 0)
-            try await connection.authorizeNatTraversal()
+            let connectionClose = MobileBridgeCloseOnce {
+                try? connection.close(
+                    errorCode: 0,
+                    reason: Data("bridge session closed".utf8)
+                )
+            }
+            let closeAction: MobileBridgeConnectionRegistry.CloseAction = {
+                connectionClose.close()
+            }
+            defer { closeAction() }
 
             let idString = connection.remoteId().description
+            let ticket = connectionRegistry.identifyPending(
+                initialPendingLease,
+                endpointId: idString,
+                close: closeAction
+            )
+            pendingLease = nil
+            pendingDeadline.cancel()
+            guard let ticket else {
+                closeAction()
+                return
+            }
+            admissionTicket = ticket
+
+            let registry = connectionRegistry
+            admissionDeadline = Task {
+                do {
+                    try await Task.sleep(for: .seconds(15))
+                } catch {
+                    return
+                }
+                registry.expireAdmission(ticket)?()
+            }
+
+            try connection.setMaxConcurrentBiStreams(count: 1)
+            try connection.setMaxConcurrentUniStreams(count: 0)
 
             let stream = try await connection.acceptBi()
             let reader = MobileBridgeStreamLineReader(stream: stream.recv())
             let writer = MobileBridgeFrameWriter(stream: stream.send())
 
-            stateLock.lock()
-            let window = pairingWindow
-            stateLock.unlock()
+            let window = stateLock.withLock { pairingWindow }
 
-            let admitted = try await MobileBridgeSession.admit(
+            guard let admissionOutcome = try await MobileBridgeSession.admit(
                 idString: idString,
                 reader: reader,
                 writer: writer,
                 pairingWindow: window
-            )
-            guard admitted else {
-                _ = await connection.closed()
+            ) else {
                 return
             }
 
-            // Registered only once admitted -- `revoke()` must never be
-            // able to reach a connection that hasn't passed `admit()` yet.
-            // Unregistered via `defer` so this fires whether `relay()`
-            // returns normally, this scope exits early, or an error is
-            // thrown while unwinding out of the enclosing `do` block.
-            registerLiveConnection(connection, endpointId: idString)
-            defer { unregisterLiveConnection(connection, endpointId: idString) }
+            let connectionID = ObjectIdentifier(connection)
+            let registrationResult: MobileBridgeConnectionRegistry.RegistrationResult
+            switch admissionOutcome {
+            case .trusted:
+                registrationResult = connectionRegistry.registerIfCurrent(
+                    connectionID: connectionID,
+                    ticket: ticket,
+                    close: closeAction
+                )
+            case .paired(let label):
+                registrationResult = await MobileBridgeTrustedDeviceStore.shared.registerPairedIfCurrent(
+                    endpointId: idString,
+                    label: label,
+                    registry: connectionRegistry,
+                    connectionID: connectionID,
+                    ticket: ticket,
+                    close: closeAction
+                )
+            }
+            admissionDeadline?.cancel()
+
+            switch registrationResult {
+            case .registered(let superseded):
+                superseded.forEach { $0() }
+            case .rejected(let close):
+                close()
+                return
+            }
+            defer {
+                connectionRegistry.unregister(connectionID: connectionID, endpointId: idString)
+            }
+
+            if case .paired = admissionOutcome {
+                try await writer.writeLine(Data(#"{"ok":true,"paired":true}"#.utf8))
+            }
+            try await connection.authorizeNatTraversal()
 
 #if DEBUG
             dlog("mobileBridge.connected id=\(idString)")
 #endif
-            await MobileBridgeSession.relay(reader: reader, writer: writer, idString: idString)
-            _ = await connection.closed()
+            await MobileBridgeSession.relay(
+                reader: reader,
+                writer: writer,
+                idString: idString,
+                closeRemote: closeAction
+            )
 #if DEBUG
             dlog("mobileBridge.disconnected id=\(idString)")
 #endif
