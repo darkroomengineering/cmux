@@ -1944,9 +1944,9 @@ enum BrowserDataImporter {
             while value.hasPrefix(".") {
                 value.removeFirst()
             }
-            guard !value.isEmpty else { continue }
-            guard seen.insert(value).inserted else { continue }
-            result.append(value)
+            guard let canonicalValue = canonicalDomain(value) else { continue }
+            guard seen.insert(canonicalValue).inserted else { continue }
+            result.append(canonicalValue)
         }
         return result
     }
@@ -2533,16 +2533,32 @@ enum BrowserDataImporter {
         return Array(dedupedByKey.values)
     }
 
-    private static func domainMatches(host: String, filters: [String]) -> Bool {
-        if filters.isEmpty { return true }
-        var normalizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        while normalizedHost.hasPrefix(".") {
-            normalizedHost.removeFirst()
+    private static func canonicalDomain(_ raw: String) -> String? {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while value.hasPrefix(".") {
+            value.removeFirst()
         }
-        guard !normalizedHost.isEmpty else { return false }
+        guard !value.isEmpty else { return nil }
+        guard let components = URLComponents(string: "https://\(value)"),
+              components.user == nil,
+              components.password == nil,
+              components.port == nil,
+              components.path.isEmpty,
+              components.query == nil,
+              components.fragment == nil,
+              let host = components.host else {
+            return value
+        }
+        return host.lowercased()
+    }
+
+    static func domainMatches(host: String, filters: [String]) -> Bool {
+        if filters.isEmpty { return true }
+        guard let normalizedHost = canonicalDomain(host) else { return false }
         for filter in filters {
-            if normalizedHost == filter { return true }
-            if normalizedHost.hasSuffix(".\(filter)") { return true }
+            guard let normalizedFilter = canonicalDomain(filter) else { continue }
+            if normalizedHost == normalizedFilter { return true }
+            if normalizedHost.hasSuffix(".\(normalizedFilter)") { return true }
         }
         return false
     }

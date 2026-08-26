@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import os
 
 func normalizedBrowserHistoryNamespace(bundleIdentifier: String) -> String {
     if bundleIdentifier.hasPrefix("com.darkroom.programa.debug.") {
@@ -15,7 +16,7 @@ func normalizedBrowserHistoryNamespace(bundleIdentifier: String) -> String {
 final class BrowserHistoryStore: ObservableObject {
     static let shared = BrowserHistoryStore()
 
-    struct Entry: Codable, Identifiable, Hashable {
+    struct Entry: Codable, Identifiable, Hashable, Sendable {
         let id: UUID
         var url: String
         var title: String?
@@ -64,11 +65,61 @@ final class BrowserHistoryStore: ObservableObject {
         }
     }
 
+    struct Persistence: Sendable {
+        let load: @Sendable (URL) throws -> Data
+        let persist: @Sendable ([Entry], URL) throws -> Void
+        let remove: @Sendable (URL) throws -> Void
+
+        nonisolated static let live = Persistence(
+            load: { fileURL in
+                try Data(contentsOf: fileURL)
+            },
+            persist: { snapshot, fileURL in
+                try BrowserHistoryStore.persistSnapshot(snapshot, to: fileURL)
+            },
+            remove: { fileURL in
+                let fileManager = FileManager.default
+                guard fileManager.fileExists(atPath: fileURL.path) else { return }
+                try fileManager.removeItem(at: fileURL)
+            }
+        )
+    }
+
+    private final class SaveCancellationToken: Sendable {
+        private let cancelled = OSAllocatedUnfairLock(initialState: false)
+
+        func cancel() {
+            cancelled.withLock { $0 = true }
+        }
+
+        var isCancelled: Bool {
+            cancelled.withLock { $0 }
+        }
+    }
+
+    private struct PendingSave {
+        let workItem: DispatchWorkItem
+        let cancellationToken: SaveCancellationToken
+    }
+
+    private enum LoadState {
+        case notLoaded
+        case loaded
+        case failed
+    }
+
     @Published private(set) var entries: [Entry] = []
 
     private let fileURL: URL?
-    private var didLoad: Bool = false
-    private var saveTask: Task<Void, Never>?
+    private let persistence: Persistence
+    private let persistenceQueue = DispatchQueue(
+        label: "com.darkroom.programa.browser-history.persistence",
+        qos: .utility
+    )
+    private var loadState: LoadState = .notLoaded
+    private var pendingSave: PendingSave?
+    private var mutationRevision: UInt64 = 0
+    private var isDirty: Bool = false
     private let maxEntries: Int = 5000
     private let saveDebounceNanoseconds: UInt64 = 120_000_000
 
@@ -86,35 +137,48 @@ final class BrowserHistoryStore: ObservableObject {
         let score: Double
     }
 
-    init(fileURL: URL? = nil) {
+    init(fileURL: URL? = nil, persistence: Persistence = .live) {
         // Avoid calling @MainActor-isolated static methods from default argument context.
         self.fileURL = fileURL ?? BrowserHistoryStore.defaultHistoryFileURL()
+        self.persistence = persistence
     }
 
-    func loadIfNeeded() {
-        guard !didLoad else { return }
-        didLoad = true
-        guard let fileURL else { return }
+    @discardableResult
+    func loadIfNeeded(retryAfterFailure: Bool = true) -> Bool {
+        if case .loaded = loadState { return true }
+        if case .failed = loadState, !retryAfterFailure { return false }
+        guard let fileURL else {
+            loadState = .loaded
+            return true
+        }
         migrateLegacyTaggedHistoryFileIfNeeded(to: fileURL)
+
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            loadState = .loaded
+            return true
+        }
 
         // Load synchronously on first access so the first omnibar query can use
         // persisted history immediately (important for deterministic UI behavior).
         let data: Data
         do {
-            data = try Data(contentsOf: fileURL)
+            data = try persistence.load(fileURL)
         } catch {
-            return
+            loadState = .failed
+            return false
         }
 
         let decoded: [Entry]
         do {
             decoded = try JSONDecoder().decode([Entry].self, from: data)
         } catch {
-            return
+            loadState = .failed
+            return false
         }
 
         // Most-recent first.
         entries = decoded.sorted(by: { $0.lastVisited > $1.lastVisited })
+        loadState = .loaded
 
         // Remove entries with invalid hosts (no TLD), e.g. "https://news."
         let beforeCount = entries.count
@@ -127,10 +191,11 @@ final class BrowserHistoryStore: ObservableObject {
         if entries.count != beforeCount {
             scheduleSave()
         }
+        return true
     }
 
     func recordVisit(url: URL?, title: String?) {
-        loadIfNeeded()
+        guard loadIfNeeded() else { return }
 
         guard let url else { return }
         guard let scheme = url.scheme?.lowercased(),
@@ -175,7 +240,7 @@ final class BrowserHistoryStore: ObservableObject {
     }
 
     func recordTypedNavigation(url: URL?) {
-        loadIfNeeded()
+        guard loadIfNeeded() else { return }
 
         guard let url else { return }
         guard let scheme = url.scheme?.lowercased(),
@@ -219,7 +284,7 @@ final class BrowserHistoryStore: ObservableObject {
     }
 
     func suggestions(for input: String, limit: Int = 10) -> [Entry] {
-        loadIfNeeded()
+        _ = loadIfNeeded(retryAfterFailure: false)
         guard limit > 0 else { return [] }
 
         let q = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -246,7 +311,7 @@ final class BrowserHistoryStore: ObservableObject {
     }
 
     func recentSuggestions(limit: Int = 10) -> [Entry] {
-        loadIfNeeded()
+        _ = loadIfNeeded(retryAfterFailure: false)
         guard limit > 0 else { return [] }
 
         let ranked = entries.sorted { lhs, rhs in
@@ -265,7 +330,7 @@ final class BrowserHistoryStore: ObservableObject {
 
     @discardableResult
     func mergeImportedEntries(_ importedEntries: [Entry]) -> Int {
-        loadIfNeeded()
+        guard loadIfNeeded() else { return 0 }
         guard !importedEntries.isEmpty else { return 0 }
 
         var mergedCount = 0
@@ -358,17 +423,29 @@ final class BrowserHistoryStore: ObservableObject {
     }
 
     func clearHistory() {
-        loadIfNeeded()
-        saveTask?.cancel()
-        saveTask = nil
+        _ = loadIfNeeded()
+        cancelPendingSave()
         entries = []
         guard let fileURL else { return }
-        try? FileManager.default.removeItem(at: fileURL)
+
+        mutationRevision += 1
+        let revision = mutationRevision
+        isDirty = true
+        let succeeded = persistenceQueue.sync {
+            do {
+                try persistence.remove(fileURL)
+                return true
+            } catch {
+                return false
+            }
+        }
+        loadState = .loaded
+        completePersistence(revision: revision, succeeded: succeeded)
     }
 
     @discardableResult
     func removeHistoryEntry(urlString: String) -> Bool {
-        loadIfNeeded()
+        guard loadIfNeeded() else { return false }
         let normalized = normalizedHistoryKey(urlString: urlString)
         let originalCount = entries.count
         entries.removeAll { entry in
@@ -384,33 +461,66 @@ final class BrowserHistoryStore: ObservableObject {
     }
 
     func flushPendingSaves() {
-        loadIfNeeded()
-        saveTask?.cancel()
-        saveTask = nil
-        guard let fileURL else { return }
-        try? Self.persistSnapshot(entries, to: fileURL)
+        guard loadIfNeeded() else { return }
+        cancelPendingSave()
+        guard let fileURL, isDirty else { return }
+
+        let snapshot = entries
+        let revision = mutationRevision
+        let succeeded = persistenceQueue.sync {
+            do {
+                try persistence.persist(snapshot, fileURL)
+                return true
+            } catch {
+                return false
+            }
+        }
+        completePersistence(revision: revision, succeeded: succeeded)
     }
 
     private func scheduleSave() {
         guard let fileURL else { return }
 
-        saveTask?.cancel()
+        cancelPendingSave()
+        mutationRevision += 1
+        let revision = mutationRevision
+        isDirty = true
         let snapshot = entries
-        let debounceNanoseconds = saveDebounceNanoseconds
+        let persistence = persistence
+        let cancellationToken = SaveCancellationToken()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard !cancellationToken.isCancelled else { return }
 
-        saveTask = Task.detached(priority: .utility) {
+            let succeeded: Bool
             do {
-                try await Task.sleep(nanoseconds: debounceNanoseconds) // debounce
+                try persistence.persist(snapshot, fileURL)
+                succeeded = true
             } catch {
-                return
+                succeeded = false
             }
-            if Task.isCancelled { return }
 
-            do {
-                try Self.persistSnapshot(snapshot, to: fileURL)
-            } catch {
-                return
+            Task { @MainActor [weak self] in
+                self?.completePersistence(revision: revision, succeeded: succeeded)
             }
+        }
+        pendingSave = PendingSave(workItem: workItem, cancellationToken: cancellationToken)
+        persistenceQueue.asyncAfter(
+            deadline: .now() + .nanoseconds(Int(saveDebounceNanoseconds)),
+            execute: workItem
+        )
+    }
+
+    private func cancelPendingSave() {
+        pendingSave?.cancellationToken.cancel()
+        pendingSave?.workItem.cancel()
+        pendingSave = nil
+    }
+
+    private func completePersistence(revision: UInt64, succeeded: Bool) {
+        guard revision == mutationRevision else { return }
+        pendingSave = nil
+        if succeeded {
+            isDirty = false
         }
     }
 
@@ -550,6 +660,31 @@ final class BrowserHistoryStore: ObservableObject {
         return normalizedHistoryKey(components: &components)
     }
 
+    private func canonicalizedPercentEscapes(in value: String) -> String {
+        func isHexDigit(_ byte: UInt8) -> Bool {
+            switch byte {
+            case 0x30...0x39, 0x41...0x46, 0x61...0x66: true
+            default: false
+            }
+        }
+
+        var bytes = Array(value.utf8)
+        var index = 0
+        while index + 2 < bytes.count {
+            guard bytes[index] == 0x25,
+                  isHexDigit(bytes[index + 1]),
+                  isHexDigit(bytes[index + 2]) else {
+                index += 1
+                continue
+            }
+
+            if bytes[index + 1] >= 0x61 { bytes[index + 1] -= 0x20 }
+            if bytes[index + 2] >= 0x61 { bytes[index + 2] -= 0x20 }
+            index += 3
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
     private func normalizedHistoryKey(components: inout URLComponents) -> String? {
         guard let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
@@ -581,7 +716,7 @@ final class BrowserHistoryStore: ObservableObject {
 
         let queryPart: String
         if let query = components.percentEncodedQuery, !query.isEmpty {
-            queryPart = "?\(query.lowercased())"
+            queryPart = "?\(canonicalizedPercentEscapes(in: query))"
         } else {
             queryPart = ""
         }

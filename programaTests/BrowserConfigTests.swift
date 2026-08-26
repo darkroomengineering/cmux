@@ -7,6 +7,7 @@ import WebKit
 import ObjectiveC.runtime
 import Bonsplit
 import UserNotifications
+import os
 
 #if canImport(Programa_DEV)
 @testable import Programa_DEV
@@ -3203,7 +3204,158 @@ final class BrowserSearchSettingsTests: XCTestCase {
 }
 
 
+private enum BrowserHistoryPersistenceHarnessError: Error {
+    case injectedLoadFailure
+    case injectedPersistFailure
+    case injectedRemoveFailure
+    case blockedPersistTimedOut
+}
+
+private final class BrowserHistoryPersistenceHarness: Sendable {
+    private struct State: Sendable {
+        var loadCallCount = 0
+        var remainingLoadFailures: Int
+        var persistCallCount = 0
+        var completedPersistCallCount = 0
+        var remainingPersistFailures: Int
+        var remainingRemoveFailures: Int
+    }
+
+    private let state: OSAllocatedUnfairLock<State>
+    private let blockFirstPersist: Bool
+    private let firstPersistStarted = DispatchSemaphore(value: 0)
+    private let releaseFirstPersist = DispatchSemaphore(value: 0)
+    private let persistCompleted = DispatchSemaphore(value: 0)
+
+    init(
+        blockFirstPersist: Bool = false,
+        loadFailures: Int = 0,
+        persistFailures: Int = 0,
+        removeFailures: Int = 0
+    ) {
+        self.blockFirstPersist = blockFirstPersist
+        state = OSAllocatedUnfairLock(initialState: State(
+            remainingLoadFailures: loadFailures,
+            remainingPersistFailures: persistFailures,
+            remainingRemoveFailures: removeFailures
+        ))
+    }
+
+    var persistence: BrowserHistoryStore.Persistence {
+        BrowserHistoryStore.Persistence(
+            load: { [self] fileURL in
+                let shouldFail = state.withLock { state in
+                    state.loadCallCount += 1
+                    guard state.remainingLoadFailures > 0 else { return false }
+                    state.remainingLoadFailures -= 1
+                    return true
+                }
+                if shouldFail {
+                    throw BrowserHistoryPersistenceHarnessError.injectedLoadFailure
+                }
+                return try Data(contentsOf: fileURL)
+            },
+            persist: { [self] snapshot, fileURL in
+                try persist(snapshot, to: fileURL)
+            },
+            remove: { [self] fileURL in
+                let shouldFail = state.withLock { state in
+                    guard state.remainingRemoveFailures > 0 else { return false }
+                    state.remainingRemoveFailures -= 1
+                    return true
+                }
+                if shouldFail {
+                    throw BrowserHistoryPersistenceHarnessError.injectedRemoveFailure
+                }
+                guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+                try FileManager.default.removeItem(at: fileURL)
+            }
+        )
+    }
+
+    var persistCallCount: Int {
+        state.withLock { $0.persistCallCount }
+    }
+
+    var loadCallCount: Int {
+        state.withLock { $0.loadCallCount }
+    }
+
+    func waitForFirstPersistToStart(timeout: TimeInterval = 2) -> DispatchTimeoutResult {
+        firstPersistStarted.wait(timeout: .now() + timeout)
+    }
+
+    func releaseBlockedPersist() {
+        releaseFirstPersist.signal()
+    }
+
+    func waitForPersistCompletions(_ expectedCount: Int, timeout: TimeInterval = 2) -> Bool {
+        let deadline = DispatchTime.now() + timeout
+        while state.withLock({ $0.completedPersistCallCount }) < expectedCount {
+            guard persistCompleted.wait(timeout: deadline) == .success else { return false }
+        }
+        return true
+    }
+
+    private func persist(_ snapshot: [BrowserHistoryStore.Entry], to fileURL: URL) throws {
+        let outcome = state.withLock { state -> (call: Int, shouldFail: Bool) in
+            state.persistCallCount += 1
+            let shouldFail = state.remainingPersistFailures > 0
+            if shouldFail {
+                state.remainingPersistFailures -= 1
+            }
+            return (state.persistCallCount, shouldFail)
+        }
+        defer {
+            state.withLock { $0.completedPersistCallCount += 1 }
+            persistCompleted.signal()
+        }
+
+        if blockFirstPersist, outcome.call == 1 {
+            firstPersistStarted.signal()
+            guard releaseFirstPersist.wait(timeout: .now() + 5) == .success else {
+                throw BrowserHistoryPersistenceHarnessError.blockedPersistTimedOut
+            }
+        }
+
+        if outcome.shouldFail {
+            throw BrowserHistoryPersistenceHarnessError.injectedPersistFailure
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let data = try encoder.encode(snapshot)
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: fileURL, options: [.atomic])
+    }
+}
+
 final class BrowserHistoryStoreTests: XCTestCase {
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrowserHistoryStoreTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func decodeEntries(at fileURL: URL) throws -> [BrowserHistoryStore.Entry] {
+        try JSONDecoder().decode([BrowserHistoryStore.Entry].self, from: Data(contentsOf: fileURL))
+    }
+
+    private func waitForSignal(
+        _ semaphore: DispatchSemaphore,
+        timeout: TimeInterval
+    ) async -> DispatchTimeoutResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: semaphore.wait(timeout: .now() + timeout))
+            }
+        }
+    }
+
     func testRecordVisitDedupesAndSuggests() async throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("BrowserHistoryStoreTests-\(UUID().uuidString)", isDirectory: true)
@@ -3228,6 +3380,87 @@ final class BrowserHistoryStoreTests: XCTestCase {
         XCTAssertEqual(suggestions.first?.url, "https://example.com/foo")
         XCTAssertEqual(suggestions.first?.visitCount, 2)
         XCTAssertEqual(suggestions.first?.title, "Example Foo Updated")
+    }
+
+    func testRecordVisitKeepsCaseSensitiveQueryValuesAsDistinctHistoryEntries() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        let store = await MainActor.run { BrowserHistoryStore(fileURL: fileURL) }
+        let uppercaseTokenURL = try XCTUnwrap(URL(string: "https://example.com/callback?token=AbC"))
+        let lowercaseTokenURL = try XCTUnwrap(URL(string: "https://example.com/callback?token=abc"))
+
+        let initialEntries = await MainActor.run { () -> [BrowserHistoryStore.Entry] in
+            store.recordVisit(url: uppercaseTokenURL, title: "Uppercase Token")
+            store.recordVisit(url: lowercaseTokenURL, title: "Lowercase Token")
+            store.flushPendingSaves()
+            return store.entries
+        }
+
+        XCTAssertEqual(
+            initialEntries.count,
+            2,
+            "Case-sensitive query values can identify different resources and must not be merged"
+        )
+        XCTAssertEqual(
+            initialEntries.first(where: { $0.url == uppercaseTokenURL.absoluteString })?.visitCount,
+            1
+        )
+        XCTAssertEqual(
+            initialEntries.first(where: { $0.url == lowercaseTokenURL.absoluteString })?.visitCount,
+            1
+        )
+
+        let repeatedEntries = await MainActor.run { () -> [BrowserHistoryStore.Entry] in
+            store.recordVisit(url: uppercaseTokenURL, title: "Uppercase Token Revisited")
+            store.flushPendingSaves()
+            return store.entries
+        }
+
+        XCTAssertEqual(repeatedEntries.count, 2)
+        XCTAssertEqual(
+            repeatedEntries.first(where: { $0.url == uppercaseTokenURL.absoluteString })?.visitCount,
+            2,
+            "Revisiting a URL must increment only its exact query-value identity"
+        )
+        XCTAssertEqual(
+            repeatedEntries.first(where: { $0.url == lowercaseTokenURL.absoluteString })?.visitCount,
+            1,
+            "A differently cased query value must retain its independent visit count"
+        )
+    }
+
+    func testRecordVisitDedupesEquivalentPercentEscapeHexCase() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        let store = await MainActor.run { BrowserHistoryStore(fileURL: fileURL) }
+        let lowercaseEscapeURL = try XCTUnwrap(
+            URL(string: "https://example.com/callback?next=%2faccount")
+        )
+        let uppercaseEscapeURL = try XCTUnwrap(
+            URL(string: "https://example.com/callback?next=%2Faccount")
+        )
+
+        let entries = await MainActor.run { () -> [BrowserHistoryStore.Entry] in
+            store.recordVisit(url: lowercaseEscapeURL, title: "Lowercase Escape")
+            store.recordVisit(url: uppercaseEscapeURL, title: "Uppercase Escape")
+            store.flushPendingSaves()
+            return store.entries
+        }
+
+        XCTAssertEqual(
+            entries.count,
+            1,
+            "Hexadecimal letter case in a percent escape must not create duplicate history entries"
+        )
+        XCTAssertEqual(
+            entries.first?.visitCount,
+            2,
+            "Equivalent percent-escape spellings must contribute to the same visit history"
+        )
     }
 
     func testSuggestionsLoadsPersistedHistoryImmediatelyOnFirstQuery() async throws {
@@ -3268,6 +3501,308 @@ final class BrowserHistoryStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(suggestions.count, 2)
         XCTAssertEqual(suggestions.first?.url, "https://go.dev/")
         XCTAssertTrue(suggestions.contains(where: { $0.url == "https://www.google.com/" }))
+    }
+
+    func testNewerVisitCannotBeOverwrittenByAnOlderSaveThatFinishesLate() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        let harness = BrowserHistoryPersistenceHarness(blockFirstPersist: true)
+        let store = await MainActor.run {
+            BrowserHistoryStore(fileURL: fileURL, persistence: harness.persistence)
+        }
+        let olderURL = try XCTUnwrap(URL(string: "https://example.com/older"))
+        let newerURL = try XCTUnwrap(URL(string: "https://example.com/newer"))
+
+        await MainActor.run {
+            store.recordVisit(url: olderURL, title: "Older")
+        }
+        XCTAssertEqual(
+            harness.waitForFirstPersistToStart(),
+            .success,
+            "The test must control an active old save before creating the newer snapshot"
+        )
+
+        await MainActor.run {
+            store.recordVisit(url: newerURL, title: "Newer")
+        }
+        _ = harness.waitForPersistCompletions(1, timeout: 0.5)
+        harness.releaseBlockedPersist()
+        XCTAssertTrue(
+            harness.waitForPersistCompletions(2),
+            "The newer debounced snapshot must persist after the old writer is released"
+        )
+
+        let persistedURLs = Set(try decodeEntries(at: fileURL).map(\.url))
+        XCTAssertEqual(
+            persistedURLs,
+            Set([olderURL.absoluteString, newerURL.absoluteString]),
+            "A late old save must not leave history at a snapshot that omits a newer visit"
+        )
+    }
+
+    func testClearHistoryWaitsForAnActiveSaveSoDeletedHistoryCannotReappear() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        let harness = BrowserHistoryPersistenceHarness(blockFirstPersist: true)
+        let store = await MainActor.run {
+            BrowserHistoryStore(fileURL: fileURL, persistence: harness.persistence)
+        }
+        let visitedURL = try XCTUnwrap(URL(string: "https://example.com/private-history"))
+
+        await MainActor.run {
+            store.recordVisit(url: visitedURL, title: "Private History")
+        }
+        XCTAssertEqual(
+            harness.waitForFirstPersistToStart(),
+            .success,
+            "The deletion test must begin while the old history save is active"
+        )
+
+        let clearStarted = DispatchSemaphore(value: 0)
+        let clearCompleted = DispatchSemaphore(value: 0)
+        let clearTask = Task { @MainActor in
+            clearStarted.signal()
+            store.clearHistory()
+            clearCompleted.signal()
+        }
+        let clearStartedResult = await waitForSignal(clearStarted, timeout: 2)
+        XCTAssertEqual(clearStartedResult, .success)
+        let clearCompletedBeforeRelease = await waitForSignal(clearCompleted, timeout: 0.5) == .success
+        XCTAssertFalse(
+            clearCompletedBeforeRelease,
+            "clearHistory must not return while an older history write can still recreate the file"
+        )
+
+        harness.releaseBlockedPersist()
+        XCTAssertTrue(harness.waitForPersistCompletions(1))
+        if !clearCompletedBeforeRelease {
+            let clearCompletedResult = await waitForSignal(clearCompleted, timeout: 2)
+            XCTAssertEqual(clearCompletedResult, .success)
+        }
+        await clearTask.value
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fileURL.path),
+            "History cleared during an active save must remain deleted after clearHistory returns"
+        )
+    }
+
+    func testFailedClearCannotBeUndoneByTerminationFlush() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        let seededEntry = BrowserHistoryStore.Entry(
+            id: UUID(),
+            url: "https://example.com/history-that-must-stay-cleared",
+            title: "History That Must Stay Cleared",
+            lastVisited: Date(),
+            visitCount: 1
+        )
+        try JSONEncoder().encode([seededEntry]).write(to: fileURL, options: [.atomic])
+
+        let harness = BrowserHistoryPersistenceHarness(removeFailures: 1)
+        let store = await MainActor.run {
+            BrowserHistoryStore(fileURL: fileURL, persistence: harness.persistence)
+        }
+
+        let loadedEntries = await MainActor.run { () -> [BrowserHistoryStore.Entry] in
+            XCTAssertTrue(store.loadIfNeeded())
+            return store.entries
+        }
+        XCTAssertEqual(loadedEntries, [seededEntry])
+
+        await MainActor.run {
+            store.clearHistory()
+            XCTAssertTrue(store.entries.isEmpty)
+            store.flushPendingSaves()
+        }
+
+        let finalEntries = await MainActor.run { store.entries }
+        XCTAssertTrue(
+            finalEntries.isEmpty,
+            "A termination flush must not reload history that the user already cleared"
+        )
+        let persistedEntries = FileManager.default.fileExists(atPath: fileURL.path)
+            ? try decodeEntries(at: fileURL)
+            : []
+        XCTAssertTrue(
+            persistedEntries.isEmpty,
+            "A transient deletion failure must not let termination persist the cleared URL or title again"
+        )
+    }
+
+    func testFlushWaitsForAnActiveOldSaveAndPersistsTheNewestSnapshot() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        let harness = BrowserHistoryPersistenceHarness(blockFirstPersist: true)
+        let store = await MainActor.run {
+            BrowserHistoryStore(fileURL: fileURL, persistence: harness.persistence)
+        }
+        let olderURL = try XCTUnwrap(URL(string: "https://example.com/before-flush"))
+        let newerURL = try XCTUnwrap(URL(string: "https://example.com/at-flush"))
+
+        await MainActor.run {
+            store.recordVisit(url: olderURL, title: "Before Flush")
+        }
+        XCTAssertEqual(
+            harness.waitForFirstPersistToStart(),
+            .success,
+            "The flush test must hold the old save before mutating the in-memory history"
+        )
+        await MainActor.run {
+            store.recordVisit(url: newerURL, title: "At Flush")
+        }
+
+        let flushStarted = DispatchSemaphore(value: 0)
+        let flushCompleted = DispatchSemaphore(value: 0)
+        let flushTask = Task { @MainActor in
+            flushStarted.signal()
+            store.flushPendingSaves()
+            flushCompleted.signal()
+        }
+        let flushStartedResult = await waitForSignal(flushStarted, timeout: 2)
+        XCTAssertEqual(flushStartedResult, .success)
+        let flushCompletedBeforeRelease = await waitForSignal(flushCompleted, timeout: 0.5) == .success
+        XCTAssertFalse(
+            flushCompletedBeforeRelease,
+            "A flush must not return while an older save can still overwrite its snapshot"
+        )
+
+        harness.releaseBlockedPersist()
+        XCTAssertTrue(harness.waitForPersistCompletions(2))
+        if !flushCompletedBeforeRelease {
+            let flushCompletedResult = await waitForSignal(flushCompleted, timeout: 2)
+            XCTAssertEqual(flushCompletedResult, .success)
+        }
+        await flushTask.value
+        let persistedURLs = Set(try decodeEntries(at: fileURL).map(\.url))
+        XCTAssertEqual(
+            persistedURLs,
+            Set([olderURL.absoluteString, newerURL.absoluteString]),
+            "A flush must be a barrier that leaves the newest history snapshot on disk"
+        )
+    }
+
+    func testTransientLoadFailurePreservesHistoryAndRetriesBeforeTheNextMutation() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        let seededEntry = BrowserHistoryStore.Entry(
+            id: UUID(),
+            url: "https://example.com/preserved",
+            title: "Preserved",
+            lastVisited: Date(),
+            visitCount: 4
+        )
+        let originalData = try JSONEncoder().encode([seededEntry])
+        try originalData.write(to: fileURL, options: [.atomic])
+
+        let newURL = try XCTUnwrap(URL(string: "https://example.com/after-retry"))
+        let harness = BrowserHistoryPersistenceHarness(loadFailures: 1)
+        let store = await MainActor.run {
+            BrowserHistoryStore(fileURL: fileURL, persistence: harness.persistence)
+        }
+        await MainActor.run {
+            store.recordVisit(url: newURL, title: "After Retry")
+            store.flushPendingSaves()
+        }
+
+        XCTAssertEqual(
+            try Data(contentsOf: fileURL),
+            originalData,
+            "A read failure must preserve the last known history bytes instead of treating the file as empty"
+        )
+        XCTAssertEqual(try decodeEntries(at: fileURL).map(\.url), [seededEntry.url])
+        XCTAssertEqual(
+            harness.persistCallCount,
+            0,
+            "Flushing an unchanged store after a read failure must not write an empty history array"
+        )
+
+        await MainActor.run {
+            store.recordVisit(url: newURL, title: "After Retry")
+            store.flushPendingSaves()
+        }
+
+        XCTAssertEqual(harness.persistCallCount, 1)
+        XCTAssertEqual(
+            Set(try decodeEntries(at: fileURL).map(\.url)),
+            Set([seededEntry.url, newURL.absoluteString]),
+            "A transient read failure must retry from the existing file before accepting a later mutation"
+        )
+    }
+
+    func testReadOnlySuggestionsDoNotRetryAFailedHistoryLoad() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        let seededEntry = BrowserHistoryStore.Entry(
+            id: UUID(),
+            url: "https://example.com/seeded-history",
+            title: "Seeded History",
+            lastVisited: Date(),
+            visitCount: 1
+        )
+        try JSONEncoder().encode([seededEntry]).write(to: fileURL, options: [.atomic])
+
+        let harness = BrowserHistoryPersistenceHarness(loadFailures: 3)
+        let store = await MainActor.run {
+            BrowserHistoryStore(fileURL: fileURL, persistence: harness.persistence)
+        }
+
+        let results = await MainActor.run {
+            [
+                store.suggestions(for: "seeded"),
+                store.recentSuggestions(),
+                store.suggestions(for: "history"),
+            ]
+        }
+
+        XCTAssertTrue(results.allSatisfy(\.isEmpty))
+        XCTAssertEqual(
+            harness.loadCallCount,
+            1,
+            "Read-only omnibar queries must not repeat a failed synchronous history load on every keystroke"
+        )
+    }
+
+    func testFailedSaveRemainsDirtyAndRetriesWithTheLatestHistory() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        let harness = BrowserHistoryPersistenceHarness(persistFailures: 1)
+        let store = await MainActor.run {
+            BrowserHistoryStore(fileURL: fileURL, persistence: harness.persistence)
+        }
+        let firstURL = try XCTUnwrap(URL(string: "https://example.com/failed-save"))
+        let latestURL = try XCTUnwrap(URL(string: "https://example.com/retry"))
+
+        await MainActor.run {
+            store.recordVisit(url: firstURL, title: "Failed Save")
+            store.flushPendingSaves()
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+
+        await MainActor.run {
+            store.recordVisit(url: latestURL, title: "Retry")
+            store.flushPendingSaves()
+        }
+
+        XCTAssertEqual(harness.persistCallCount, 2)
+        XCTAssertEqual(
+            Set(try decodeEntries(at: fileURL).map(\.url)),
+            Set([firstURL.absoluteString, latestURL.absoluteString]),
+            "A failed write must remain retryable, and the retry must persist the newest complete history"
+        )
     }
 }
 
@@ -3606,5 +4141,114 @@ final class BrowserOmnibarFocusPolicyTests: XCTestCase {
                 nextResponderIsOtherTextField: false
             )
         )
+    }
+}
+
+
+private final class FailingBrowserDownloadFileManager: FileManager, @unchecked Sendable {
+    let moveError = NSError(
+        domain: "BrowserDownloadFinalizationTests.Move",
+        code: 41
+    )
+
+    override func moveItem(at srcURL: URL, to dstURL: URL) throws {
+        throw moveError
+    }
+}
+
+final class BrowserDownloadFinalizationTests: XCTestCase {
+    func testReadyCallbackObservesTheDownloadAtItsFinalDestination() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("BrowserDownloadFinalizationTests-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let sourceURL = root.appendingPathComponent("temporary-download", isDirectory: false)
+        let destinationURL = root.appendingPathComponent("saved-download", isDirectory: false)
+        try Data("download contents".utf8).write(to: sourceURL)
+        var readyCount = 0
+        var failures: [Error] = []
+
+        BrowserDownloadDelegate.finalizeDownload(
+            from: sourceURL,
+            to: destinationURL,
+            fileManager: fileManager,
+            onReady: {
+                readyCount += 1
+                XCTAssertTrue(
+                    fileManager.fileExists(atPath: destinationURL.path),
+                    "Download readiness must mean the file is already available at its final destination"
+                )
+                XCTAssertFalse(
+                    fileManager.fileExists(atPath: sourceURL.path),
+                    "Download readiness must not expose the temporary file as an alternate copy"
+                )
+            },
+            onFailure: { failures.append($0) }
+        )
+
+        XCTAssertEqual(readyCount, 1)
+        XCTAssertTrue(failures.isEmpty)
+    }
+
+    func testMoveFailureReportsFailureAndRetainsTheTemporaryDownload() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("BrowserDownloadFinalizationTests-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let sourceURL = root.appendingPathComponent("temporary-download", isDirectory: false)
+        let destinationURL = root
+            .appendingPathComponent("missing-parent", isDirectory: true)
+            .appendingPathComponent("saved-download", isDirectory: false)
+        let sourceContents = Data("download contents".utf8)
+        try sourceContents.write(to: sourceURL)
+        var readyCount = 0
+        var failures: [Error] = []
+
+        BrowserDownloadDelegate.finalizeDownload(
+            from: sourceURL,
+            to: destinationURL,
+            fileManager: fileManager,
+            onReady: { readyCount += 1 },
+            onFailure: { failures.append($0) }
+        )
+
+        XCTAssertEqual(readyCount, 0, "A download that never reached its destination must not be announced as ready")
+        XCTAssertEqual(failures.count, 1, "A failed move must surface exactly one download failure")
+        XCTAssertTrue(
+            fileManager.fileExists(atPath: sourceURL.path),
+            "A failed move must retain the completed temporary download for recovery"
+        )
+        XCTAssertEqual(try Data(contentsOf: sourceURL), sourceContents)
+        let failure = try XCTUnwrap(failures.first as? BrowserDownloadFinalizationError)
+        XCTAssertEqual(failure.retainedTempURL, sourceURL)
+    }
+
+    func testMoveFailurePreservesTheOriginalErrorAndRetainedTemporaryURL() throws {
+        let fileManager = FailingBrowserDownloadFileManager()
+        let sourceURL = URL(fileURLWithPath: "/unused/temporary-download", isDirectory: false)
+        let destinationURL = URL(fileURLWithPath: "/unused/saved-download", isDirectory: false)
+        var readyCount = 0
+        var failures: [Error] = []
+
+        BrowserDownloadDelegate.finalizeDownload(
+            from: sourceURL,
+            to: destinationURL,
+            fileManager: fileManager,
+            onReady: { readyCount += 1 },
+            onFailure: { failures.append($0) }
+        )
+
+        XCTAssertEqual(readyCount, 0, "A failed move must never announce a download as ready")
+        XCTAssertEqual(failures.count, 1, "A failed move must be reported as one finalization failure")
+        let failure = try XCTUnwrap(failures.first as? BrowserDownloadFinalizationError)
+        XCTAssertTrue(
+            (failure.moveError as NSError) === fileManager.moveError,
+            "The finalization error must preserve the exact move failure for diagnostics"
+        )
+        XCTAssertEqual(failure.retainedTempURL, sourceURL)
     }
 }

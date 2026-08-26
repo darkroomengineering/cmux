@@ -2,6 +2,21 @@ import AppKit
 import Bonsplit
 import WebKit
 
+struct BrowserDownloadFinalizationError: Error, CustomNSError {
+    let moveError: Error
+    let retainedTempURL: URL
+
+    static let errorDomain = "com.darkroom.programa.browser-download-finalization"
+    var errorCode: Int { 1 }
+    var errorUserInfo: [String: Any] {
+        [
+            NSLocalizedDescriptionKey: moveError.localizedDescription,
+            NSUnderlyingErrorKey: moveError,
+            "BrowserDownloadRetainedTemporaryURL": retainedTempURL,
+        ]
+    }
+}
+
 // MARK: - Download Delegate
 
 /// Handles WKDownload lifecycle by saving to a temp file synchronously (no UI
@@ -54,6 +69,26 @@ class BrowserDownloadDelegate: NSObject, WKDownloadDelegate {
             counter += 1
         } while fileManager.fileExists(atPath: candidate.path)
         return candidate
+    }
+
+    static func finalizeDownload(
+        from tempURL: URL,
+        to destinationURL: URL,
+        fileManager: FileManager = .default,
+        onReady: () -> Void,
+        onFailure: (Error) -> Void
+    ) {
+        do {
+            try fileManager.moveItem(at: tempURL, to: destinationURL)
+            onReady()
+        } catch let moveError {
+            onFailure(
+                BrowserDownloadFinalizationError(
+                    moveError: moveError,
+                    retainedTempURL: tempURL
+                )
+            )
+        }
     }
 
     private func storeState(_ state: DownloadState, for download: WKDownload) {
@@ -113,15 +148,27 @@ class BrowserDownloadDelegate: NSObject, WKDownloadDelegate {
 
         // #9: auto-save to ~/Downloads (Safari-style) instead of prompting with a save panel.
         DispatchQueue.main.async {
-            self.onDownloadReadyToSave?()
             let destURL = Self.uniqueDownloadsURL(for: info.suggestedFilename)
-            do {
-                try FileManager.default.moveItem(at: info.tempURL, to: destURL)
-                NSLog("BrowserPanel download saved: %@", destURL.path)
-            } catch {
-                NSLog("BrowserPanel download move failed: %@", error.localizedDescription)
-                try? FileManager.default.removeItem(at: info.tempURL)
-            }
+            Self.finalizeDownload(
+                from: info.tempURL,
+                to: destURL,
+                onReady: {
+                    NSLog("BrowserPanel download saved: %@", destURL.path)
+                    self.onDownloadReadyToSave?()
+                },
+                onFailure: { error in
+                    if let finalizationError = error as? BrowserDownloadFinalizationError {
+                        NSLog(
+                            "BrowserPanel download move failed: %@; completed download retained at: %@",
+                            finalizationError.moveError.localizedDescription,
+                            finalizationError.retainedTempURL.path
+                        )
+                    } else {
+                        NSLog("BrowserPanel download move failed: %@", error.localizedDescription)
+                    }
+                    self.onDownloadFailed?(error)
+                }
+            )
         }
     }
 
