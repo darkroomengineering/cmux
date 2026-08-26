@@ -17,7 +17,7 @@ on:
       record_video:
         description: Record the virtual display during tests
         required: false
-        default: true
+        default: false
         type: boolean
       runner:
         description: "Runner OS"
