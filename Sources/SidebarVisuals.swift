@@ -80,7 +80,6 @@ private struct SidebarUsageButton: View {
         ) {
             SidebarQuotaFooter(store: store)
         })
-        .accessibilityElement(children: .ignore)
         .safeHelp(title)
         .accessibilityLabel(title)
         .accessibilityIdentifier("SidebarUsageButton")
@@ -149,7 +148,6 @@ private struct SidebarHelpMenuButton: View {
         ) {
             helpPopover
         })
-        .accessibilityElement(children: .ignore)
         .safeHelp(helpTitle)
         .accessibilityLabel(helpTitle)
         .accessibilityIdentifier("SidebarHelpMenuButton")

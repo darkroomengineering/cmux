@@ -345,6 +345,7 @@ struct VerticalTabsSidebar: View {
             // clicks via the sibling hit-test walk in windowDragHandleShouldCaptureHit.
             .background(WindowDragHandleView())
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Sidebar")
 
         ZStack {
