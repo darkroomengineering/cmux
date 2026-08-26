@@ -331,6 +331,15 @@ extension TerminalController {
                 )
             }
 
+            return prepare(data: data, limits: limits)
+        }
+
+        static func prepare(
+            data: Data,
+            limits: V2BrowserStateRestoreLimits = .standard
+        ) -> Result<PreparedState, V2BrowserStateRestoreFailure> {
+            let byteLimit = max(0, limits.documentByteLimit)
+
             guard data.count <= byteLimit else {
                 return .failure(
                     V2BrowserStateRestoreFailure(
@@ -505,6 +514,33 @@ extension TerminalController {
                     frameSelector: frameSelector
                 )
             )
+        }
+
+        static func encodeDocument(
+            url: URL?,
+            cookies: [[String: Any]],
+            storage: Any,
+            frameSelector: String?,
+            limits: V2BrowserStateRestoreLimits = .standard
+        ) -> Result<Data, V2BrowserStateRestoreFailure> {
+            _ = limits
+            let raw: [String: Any] = [
+                "schema_version": currentSchemaVersion,
+                "url": url?.absoluteString ?? "",
+                "cookies": cookies,
+                "storage": storage,
+                "frame_selector": frameSelector ?? NSNull(),
+            ]
+            do {
+                return .success(
+                    try JSONSerialization.data(
+                        withJSONObject: raw,
+                        options: [.prettyPrinted, .sortedKeys]
+                    )
+                )
+            } catch {
+                return .failure(failure(.malformedDocument, error.localizedDescription))
+            }
         }
 
         static func execute(
@@ -4238,16 +4274,20 @@ extension TerminalController {
             let store = browserPanel.webView.configuration.websiteDataStore.httpCookieStore
             let cookies = (v2BrowserCookieStoreAll(store) ?? []).map(v2BrowserCookieDict)
 
-            let state: [String: Any] = [
-                "schema_version": V2BrowserStateRestorer.currentSchemaVersion,
-                "url": browserPanel.currentURL?.absoluteString ?? "",
-                "cookies": cookies,
-                "storage": storageValue,
-                "frame_selector": v2OrNull(v2BrowserFrameSelectorBySurface[surfaceId])
-            ]
+            let data: Data
+            switch V2BrowserStateRestorer.encodeDocument(
+                url: browserPanel.currentURL,
+                cookies: cookies,
+                storage: storageValue,
+                frameSelector: v2BrowserFrameSelectorBySurface[surfaceId]
+            ) {
+            case .success(let encoded):
+                data = encoded
+            case .failure(let failure):
+                return v2BrowserStateRestoreFailureResult(failure, path: path)
+            }
 
             do {
-                let data = try JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys])
                 try data.write(to: URL(fileURLWithPath: path), options: .atomic)
             } catch {
                 return .err(code: "internal_error", message: "Failed to write state file", data: ["path": path, "error": error.localizedDescription])
