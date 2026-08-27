@@ -41,6 +41,8 @@ struct SidebarQuotaPresentation {
 
 /// Provider usage content hosted by the sidebar footer's on-demand popover.
 struct SidebarQuotaFooter: View {
+    static let showsManualRefreshControl = true
+
     @ObservedObject var store: ProviderUsageStore
 
     private var presentation: SidebarQuotaPresentation {
@@ -60,11 +62,13 @@ struct SidebarQuotaFooter: View {
                             String(localized: "sidebar.usage.refreshing", defaultValue: "Refreshing usage")
                         )
                 }
-                Button(String(localized: "sidebar.usage.refresh", defaultValue: "Refresh")) {
-                    Task { await store.refresh() }
+                if Self.showsManualRefreshControl {
+                    Button(String(localized: "sidebar.usage.refresh", defaultValue: "Refresh")) {
+                        Task { await store.refresh() }
+                    }
+                    .controlSize(.small)
+                    .disabled(store.isRefreshing)
                 }
-                .controlSize(.small)
-                .disabled(store.isRefreshing)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)

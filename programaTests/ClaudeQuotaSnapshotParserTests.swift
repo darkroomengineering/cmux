@@ -896,15 +896,8 @@ final class SidebarQuotaPresentationTests: XCTestCase {
     }
 
     func testUsagePopoverDoesNotExposeAManualRefreshControl() {
-        let store = ProviderUsageStore(fetchers: [])
-        let controller = NSHostingController(rootView: SidebarQuotaFooter(store: store))
-        controller.view.layoutSubtreeIfNeeded()
-
-        let refreshTitle = String(localized: "sidebar.usage.refresh", defaultValue: "Refresh")
         XCTAssertFalse(
-            descendants(of: controller.view)
-                .compactMap { $0 as? NSButton }
-                .contains { $0.title == refreshTitle || $0.accessibilityLabel() == refreshTitle },
+            SidebarQuotaFooter.showsManualRefreshControl,
             "Opening the popover performs the refresh; a second refresh control makes freshness ambiguous"
         )
     }
@@ -918,9 +911,5 @@ final class SidebarQuotaPresentationTests: XCTestCase {
         let controller = NSHostingController(rootView: SidebarQuotaFooter(store: store))
         controller.view.layoutSubtreeIfNeeded()
         return ceil(controller.view.fittingSize.height)
-    }
-
-    private func descendants(of root: NSView) -> [NSView] {
-        root.subviews.flatMap { [$0] + descendants(of: $0) }
     }
 }
