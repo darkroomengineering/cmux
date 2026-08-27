@@ -410,6 +410,9 @@ private struct ArrowlessPopoverAnchor<PopoverContent: View>: NSViewRepresentable
             hostingController.rootView = AnyView(rootView.fixedSize())
             hostingController.view.invalidateIntrinsicContentSize()
             hostingController.view.layoutSubtreeIfNeeded()
+            if let popover {
+                sizePopoverToCurrentContent(popover)
+            }
         }
 
         func present(preferredEdge: NSRectEdge, detachedGap: CGFloat) {

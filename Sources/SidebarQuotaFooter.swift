@@ -21,10 +21,10 @@ struct SidebarQuotaPresentation {
 
     let availableSnapshots: [ProviderUsageSnapshot]
     let failures: [Failure]
-    let unavailableProviders: [ProviderUsageProvider]
+    let unavailableProviders: [ProviderUsageProvider] = []
 
     var showsEmptyState: Bool {
-        availableSnapshots.isEmpty
+        availableSnapshots.isEmpty && failures.isEmpty
     }
 
     init(results: [ProviderUsageResult]) {
@@ -35,10 +35,6 @@ struct SidebarQuotaPresentation {
         failures = results.compactMap { result in
             guard case let .failed(provider, message) = result else { return nil }
             return Failure(provider: provider, message: message)
-        }
-        unavailableProviders = results.compactMap { result in
-            guard case let .unavailable(provider) = result else { return nil }
-            return provider
         }
     }
 }
@@ -92,15 +88,15 @@ struct SidebarQuotaFooter: View {
                             failureSection(provider: failure.provider, message: failure.message)
                         }
 
-                        ForEach(presentation.unavailableProviders, id: \.self) { provider in
-                            unavailableSection(provider: provider)
-                        }
                     }
                 }
                 .padding(14)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(width: 320, height: 340)
+        .frame(width: 320)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxHeight: 480, alignment: .top)
     }
 
     private var loadingState: some View {
@@ -201,17 +197,6 @@ struct SidebarQuotaFooter: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
         )
-        .accessibilityElement(children: .combine)
-    }
-
-    private func unavailableSection(provider: ProviderUsageProvider) -> some View {
-        HStack(spacing: 6) {
-            Text(provider.localizedDisplayName)
-                .fontWeight(.medium)
-            Text(String(localized: "sidebar.usage.unavailable", defaultValue: "Unavailable"))
-                .foregroundStyle(.secondary)
-        }
-        .font(.system(size: 11))
         .accessibilityElement(children: .combine)
     }
 
