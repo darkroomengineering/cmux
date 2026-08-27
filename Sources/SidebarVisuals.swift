@@ -240,6 +240,18 @@ private struct SidebarHelpMenuButton: View {
         .frame(minWidth: 200)
     }
 
+    #if DEBUG
+    @MainActor
+    static func popoverFittingSizeForTesting() -> NSSize {
+        let button = Self(onSendFeedback: {})
+        let coordinator = ArrowlessPopoverAnchor<AnyView>.Coordinator(
+            isPresented: .constant(true)
+        )
+        coordinator.updateRootView(AnyView(button.helpPopover))
+        return coordinator.installPopoverForSizingTest()
+    }
+    #endif
+
     private func helpOptionButton(
         title: String,
         action: SidebarHelpMenuAction,
@@ -414,13 +426,7 @@ private struct ArrowlessPopoverAnchor<PopoverContent: View>: NSViewRepresentable
 
             hostingController.view.invalidateIntrinsicContentSize()
             hostingController.view.layoutSubtreeIfNeeded()
-            let fittingSize = hostingController.view.fittingSize
-            if fittingSize.width > 0, fittingSize.height > 0 {
-                popover.contentSize = NSSize(
-                    width: ceil(fittingSize.width),
-                    height: ceil(fittingSize.height)
-                )
-            }
+            sizePopoverToCurrentContent(popover)
 
             popover.show(
                 relativeTo: positioningRect(
@@ -455,6 +461,30 @@ private struct ArrowlessPopoverAnchor<PopoverContent: View>: NSViewRepresentable
             self.popover = popover
             return popover
         }
+
+        private func sizePopoverToCurrentContent(_ popover: NSPopover) {
+            let fittingSize = hostingController.view.fittingSize
+            if fittingSize.width > 0, fittingSize.height > 0 {
+                popover.contentSize = NSSize(
+                    width: ceil(fittingSize.width),
+                    height: ceil(fittingSize.height)
+                )
+            }
+        }
+
+        #if DEBUG
+        func installPopoverForSizingTest() -> NSSize {
+            let popover = makePopover()
+            hostingController.view.invalidateIntrinsicContentSize()
+            hostingController.view.layoutSubtreeIfNeeded()
+            sizePopoverToCurrentContent(popover)
+            return popover.contentSize
+        }
+
+        var contentSizeForTesting: NSSize? {
+            popover?.contentSize
+        }
+        #endif
 
         private func positioningRect(
             for bounds: CGRect,
@@ -499,6 +529,38 @@ private struct ArrowlessPopoverAnchor<PopoverContent: View>: NSViewRepresentable
         }
     }
 }
+
+#if DEBUG
+@MainActor
+final class SidebarPopoverSizingTestDriver {
+    private let coordinator = ArrowlessPopoverAnchor<AnyView>.Coordinator(
+        isPresented: .constant(true)
+    )
+
+    init(rootView: AnyView) {
+        coordinator.updateRootView(rootView)
+    }
+
+    func installPopover() -> NSSize {
+        coordinator.installPopoverForSizingTest()
+    }
+
+    func updateRootView(_ rootView: AnyView) {
+        coordinator.updateRootView(rootView)
+    }
+
+    var contentSize: NSSize? {
+        coordinator.contentSizeForTesting
+    }
+}
+
+@MainActor
+enum SidebarHelpPopoverSizingTestDriver {
+    static func fittingSize() -> NSSize {
+        SidebarHelpMenuButton.popoverFittingSizeForTesting()
+    }
+}
+#endif
 
 private struct SidebarFooterIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {

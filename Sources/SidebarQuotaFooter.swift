@@ -23,6 +23,10 @@ struct SidebarQuotaPresentation {
     let failures: [Failure]
     let unavailableProviders: [ProviderUsageProvider]
 
+    var showsEmptyState: Bool {
+        availableSnapshots.isEmpty
+    }
+
     init(results: [ProviderUsageResult]) {
         availableSnapshots = results.compactMap { result in
             guard case let .available(snapshot) = result else { return nil }
@@ -76,7 +80,7 @@ struct SidebarQuotaFooter: View {
                     if store.results.isEmpty, store.isRefreshing {
                         loadingState
                     } else {
-                        if presentation.availableSnapshots.isEmpty {
+                        if presentation.showsEmptyState {
                             emptyState
                         }
 

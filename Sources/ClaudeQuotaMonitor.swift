@@ -228,9 +228,13 @@ struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
     let provider = ProviderUsageProvider.claude
 
     func fetch() async -> ProviderUsageResult {
+        let fileURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/tmp/rate-limits.json")
+        return await Self.fetchCache(fileURL: fileURL)
+    }
+
+    private static func fetchCache(fileURL: URL) async -> ProviderUsageResult {
         await Task.detached(priority: .utility) {
-            let fileURL = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".claude/tmp/rate-limits.json")
             guard FileManager.default.fileExists(atPath: fileURL.path) else {
                 return .unavailable(.claude)
             }
@@ -248,6 +252,51 @@ struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
             }
         }.value
     }
+
+    #if DEBUG
+    static func fetchForTesting(
+        executableURL: URL,
+        cacheURL: URL,
+        timeout: TimeInterval,
+        now: Date
+    ) async -> ProviderUsageResult {
+        _ = now
+        await runAuthStatusProbeForTesting(executableURL: executableURL, timeout: timeout)
+        return await fetchCache(fileURL: cacheURL)
+    }
+
+    private static func runAuthStatusProbeForTesting(
+        executableURL: URL,
+        timeout: TimeInterval
+    ) async {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = ["auth", "status", "--json"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        if process.isRunning {
+            terminateProcessForTesting(process)
+        }
+    }
+
+    private static func terminateProcessForTesting(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let deadline = Date().addingTimeInterval(0.2)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if process.isRunning {
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        }
+    }
+    #endif
 }
 
 enum CodexUsageSnapshotParser {
@@ -456,7 +505,11 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
             return .unavailable(.codex)
         }
 
-        switch await Self.runAppServer(executableURL: executableURL) {
+        return await Self.fetch(executableURL: executableURL, timeout: 5)
+    }
+
+    private static func fetch(executableURL: URL, timeout: TimeInterval) async -> ProviderUsageResult {
+        switch await Self.runAppServer(executableURL: executableURL, timeout: timeout) {
         case let .responses(account, rateLimits):
             return CodexUsageSnapshotParser.parse(accountData: account, rateLimitsData: rateLimits)
         case .unavailable:
@@ -472,6 +525,12 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
         }
     }
 
+    #if DEBUG
+    static func fetchForTesting(executableURL: URL, timeout: TimeInterval) async -> ProviderUsageResult {
+        await fetch(executableURL: executableURL, timeout: timeout)
+    }
+    #endif
+
     private enum AppServerOutcome {
         case responses(account: Data, rateLimits: Data)
         case unavailable
@@ -485,7 +544,10 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
         var readFailed = false
     }
 
-    private static func runAppServer(executableURL: URL) async -> AppServerOutcome {
+    private static func runAppServer(
+        executableURL: URL,
+        timeout: TimeInterval
+    ) async -> AppServerOutcome {
         let process = Process()
         let stdin = Pipe()
         let stdout = Pipe()
@@ -517,7 +579,7 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
             return .failed
         }
 
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning, Date() < deadline, !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(20))
         }
