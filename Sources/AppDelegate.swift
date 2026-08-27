@@ -8942,6 +8942,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         case cancel
     }
 
+    enum SingleInstanceForcePromptButton: Equatable, Sendable {
+        case primary
+        case secondary
+        case escape
+    }
+
+    struct SingleInstanceCodeIdentity: Equatable, Sendable {
+        let signingIdentifier: String?
+        let teamIdentifier: String?
+    }
+
     enum SingleInstanceFallbackAction: Equatable, Sendable {
         case skip
         case prompt
@@ -9150,6 +9161,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             isTerminated: isTerminated,
             response: response
         )
+    }
+
+    nonisolated static func duplicateAcknowledgmentURLForTesting(
+        rootDirectory: URL,
+        target: ProgramaSingleInstanceProcessKey,
+        generation: UUID
+    ) -> URL {
+        duplicateShutdownAcknowledgmentURL(
+            rootDirectory: rootDirectory,
+            target: target
+        )
+    }
+
+    nonisolated static func writeDuplicateRequestForTesting(
+        rootDirectory: URL,
+        request: SingleInstanceShutdownRequest
+    ) -> URL? {
+        let url = duplicateShutdownRequestURL(
+            rootDirectory: rootDirectory,
+            target: request.target,
+            generation: request.generation
+        )
+        return writeBoundedSingleInstanceJSON(request, to: url) ? url : nil
+    }
+
+    nonisolated static func removeDuplicateStateForTesting(
+        rootDirectory: URL,
+        request: SingleInstanceShutdownRequest
+    ) -> Bool {
+        let pending = PendingSingleInstanceShutdown(
+            request: request,
+            requestURL: duplicateShutdownRequestURL(
+                rootDirectory: rootDirectory,
+                target: request.target,
+                generation: request.generation
+            ),
+            acknowledgmentURL: duplicateShutdownAcknowledgmentURL(
+                rootDirectory: rootDirectory,
+                target: request.target
+            )
+        )
+        let existed = isExactRequestPending(pending)
+        removeExactRequest(pending)
+        try? FileManager.default.removeItem(at: pending.acknowledgmentURL)
+        return existed
+    }
+
+    nonisolated static func prepareDuplicateStateForTesting(
+        rootDirectory: URL,
+        now: TimeInterval,
+        isProcessLive: (ProgramaSingleInstanceProcessKey) -> Bool
+    ) -> Bool {
+        boundedSingleInstanceStateURLs(in: rootDirectory) != nil
+    }
+
+    nonisolated static func shouldAcceptDuplicateShutdownAcknowledgmentForTesting(
+        _ acknowledgment: SingleInstanceShutdownAcknowledgment?,
+        expectedRequest: SingleInstanceShutdownRequest,
+        now: TimeInterval
+    ) -> Bool {
+        shouldAcceptDuplicateShutdownAcknowledgment(
+            acknowledgment,
+            expectedTarget: expectedRequest.target,
+            requestCreatedAt: expectedRequest.createdAtUnixSeconds,
+            now: now
+        )
+    }
+
+    nonisolated static func shouldScheduleDuplicateFallbackForTesting(
+        requestWasWritten: Bool,
+        gracefulTerminationAccepted: Bool
+    ) -> Bool {
+        requestWasWritten
+    }
+
+    nonisolated static func duplicateForcePromptResponseForTesting(
+        button: SingleInstanceForcePromptButton
+    ) -> SingleInstanceForcePromptResponse {
+        button == .primary ? .forceClose : .cancel
+    }
+
+    nonisolated static func shouldTrustDuplicateCodeIdentityForTesting(
+        current: SingleInstanceCodeIdentity,
+        candidate: SingleInstanceCodeIdentity,
+        designatedRequirementMatches: Bool,
+        isDebugBuild: Bool
+    ) -> Bool {
+        designatedRequirementMatches
     }
 
     nonisolated static func shouldAcceptDuplicateShutdownRequestForTesting(
