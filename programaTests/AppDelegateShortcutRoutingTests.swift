@@ -197,9 +197,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         ))
     }
 
-    func testDuplicateInstanceTerminationWaitsForGraceBeforeForcing() throws {
+    func testDuplicateInstanceTerminationWaitsForGraceBeforeRunningFallback() throws {
         var gracefulTerminationCount = 0
-        var forcedTerminationCount = 0
+        var fallbackCount = 0
         var scheduledGraceAction: (@MainActor () -> Void)?
 
         AppDelegate.scheduleDuplicateTerminationForTesting(
@@ -210,19 +210,18 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             scheduleGrace: { action in
                 scheduledGraceAction = action
             },
-            forceTerminationIfStillMatching: {
-                forcedTerminationCount += 1
-                return true
+            performFallbackAfterGrace: {
+                fallbackCount += 1
             }
         )
 
         XCTAssertEqual(gracefulTerminationCount, 1)
-        XCTAssertEqual(forcedTerminationCount, 0, "Force termination must not run synchronously")
+        XCTAssertEqual(fallbackCount, 0, "The fallback must not run synchronously")
 
         let graceAction = try XCTUnwrap(scheduledGraceAction)
         graceAction()
 
-        XCTAssertEqual(forcedTerminationCount, 1)
+        XCTAssertEqual(fallbackCount, 1)
     }
 
     func testValidatedDuplicateShutdownRequestTargetsExactCurrentProcessAndBypassesWarning() {
@@ -344,50 +343,6 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             isInternalSingleInstanceLoserExit: false,
             hasValidatedDuplicateShutdownRequest: false,
             isQuitWarningEnabled: true
-        ))
-    }
-
-    func testDuplicateForceFallbackRequiresSameLiveProcessIdentity() {
-        let expected = ProgramaSingleInstanceProcessKey(
-            startSeconds: 1_000,
-            startMicroseconds: 100,
-            processIdentifier: 100
-        )
-        let changed = ProgramaSingleInstanceProcessKey(
-            startSeconds: 1_001,
-            startMicroseconds: 0,
-            processIdentifier: 100
-        )
-
-        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
-            expectedProcessKey: expected,
-            resolvedProcessKey: nil,
-            isTerminated: false,
-            requestIsPending: true
-        ))
-        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
-            expectedProcessKey: expected,
-            resolvedProcessKey: changed,
-            isTerminated: false,
-            requestIsPending: true
-        ))
-        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
-            expectedProcessKey: expected,
-            resolvedProcessKey: expected,
-            isTerminated: true,
-            requestIsPending: true
-        ))
-        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
-            expectedProcessKey: expected,
-            resolvedProcessKey: expected,
-            isTerminated: false,
-            requestIsPending: false
-        ))
-        XCTAssertTrue(AppDelegate.shouldForceDuplicateTerminationForTesting(
-            expectedProcessKey: expected,
-            resolvedProcessKey: expected,
-            isTerminated: false,
-            requestIsPending: true
         ))
     }
 
