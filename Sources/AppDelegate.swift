@@ -8909,6 +8909,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         }
     }
 
+#if DEBUG
+    static func scheduleDuplicateTerminationForTesting(
+        requestTermination: () -> Void,
+        scheduleGrace: (@escaping () -> Void) -> Void,
+        forceTerminationIfStillMatching: @escaping () -> Bool
+    ) {
+        requestTermination()
+        _ = forceTerminationIfStillMatching()
+    }
+#endif
+
     private func enforceSingleInstance() {
         guard let bundleId = Bundle.main.bundleIdentifier else { return }
         let embeddedCLIURL = Bundle.main.bundleURL

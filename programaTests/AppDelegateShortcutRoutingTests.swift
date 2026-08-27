@@ -184,6 +184,46 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         ))
     }
 
+    func testDuplicateInstanceCandidateRejectsMissingExecutableMetadata() {
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: nil,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: URL(
+                fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+            )
+        ))
+    }
+
+    func testDuplicateInstanceTerminationWaitsForGraceBeforeForcing() throws {
+        var gracefulTerminationCount = 0
+        var forcedTerminationCount = 0
+        var scheduledGraceAction: (() -> Void)?
+
+        AppDelegate.scheduleDuplicateTerminationForTesting(
+            requestTermination: {
+                gracefulTerminationCount += 1
+            },
+            scheduleGrace: { action in
+                scheduledGraceAction = action
+            },
+            forceTerminationIfStillMatching: {
+                forcedTerminationCount += 1
+                return true
+            }
+        )
+
+        XCTAssertEqual(gracefulTerminationCount, 1)
+        XCTAssertEqual(forcedTerminationCount, 0, "Force termination must not run synchronously")
+
+        let graceAction = try XCTUnwrap(scheduledGraceAction)
+        graceAction()
+
+        XCTAssertEqual(forcedTerminationCount, 1)
+    }
+
     func testDuplicateInstanceCandidateRejectsCurrentProcessAndDifferentBundle() {
         let embeddedCLIURL = URL(
             fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
