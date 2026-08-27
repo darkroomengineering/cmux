@@ -1029,6 +1029,16 @@ final class ProgramaWebViewContextMenuTests: XCTestCase {
         )
     }
 
+    func testGoogleRedirectNormalizationPreservesEmbeddedQueryEncoding() {
+        let webView = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let redirect = URL(string: "https://www.google.com/url?q=https%3A%2F%2Fexample.com%2Ffile%3Ftoken%3Da%2526b")!
+
+        XCTAssertEqual(
+            webView.normalizedLinkedDownloadURLForTesting(redirect).absoluteString,
+            "https://example.com/file?token=a%26b"
+        )
+    }
+
     func testGoogleRedirectNormalizationPreservesUnresolvedURLs() {
         let webView = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
         let nonGoogleURL = URL(string: "https://example.com/url?q=https%3A%2F%2Fasset.example%2Fx")!
