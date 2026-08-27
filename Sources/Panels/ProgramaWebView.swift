@@ -678,6 +678,12 @@ final class ProgramaWebView: WKWebView {
         resolveGoogleRedirectURL(url) ?? url
     }
 
+#if DEBUG
+    func normalizedLinkedDownloadURLForTesting(_ url: URL) -> URL {
+        normalizedLinkedDownloadURL(url)
+    }
+#endif
+
     private func isLikelyFaviconURL(_ url: URL) -> Bool {
         let lower = url.absoluteString.lowercased()
         if lower.contains("favicon") { return true }
