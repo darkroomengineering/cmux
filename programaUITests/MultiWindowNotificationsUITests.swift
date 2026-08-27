@@ -6,6 +6,7 @@ final class MultiWindowNotificationsUITests: XCTestCase {
     private var dataPath = ""
     private var socketPath = ""
     private var launchTag = ""
+    private var launchedApplication: XCUIApplication?
 
     override func setUp() {
         super.setUp()
@@ -18,13 +19,21 @@ final class MultiWindowNotificationsUITests: XCTestCase {
     }
 
     override func tearDown() {
+        launchedApplication?.terminate()
+        launchedApplication = nil
         try? FileManager.default.removeItem(atPath: dataPath)
         try? FileManager.default.removeItem(atPath: socketPath)
         super.tearDown()
     }
 
+    private func makeTrackedApplication() -> XCUIApplication {
+        let application = XCUIApplication()
+        launchedApplication = application
+        return application
+    }
+
     func testNotificationsRouteToCorrectWindow() {
-        let app = XCUIApplication()
+        let app = makeTrackedApplication()
         app.launchEnvironment["PROGRAMA_UI_TEST_MULTI_WINDOW_NOTIF_SETUP"] = "1"
         app.launchEnvironment["PROGRAMA_UI_TEST_MULTI_WINDOW_NOTIF_PATH"] = dataPath
         app.launchEnvironment["PROGRAMA_TAG"] = launchTag
@@ -111,7 +120,7 @@ final class MultiWindowNotificationsUITests: XCTestCase {
     }
 
     func testNotificationsPopoverCanCloseViaShortcutAndEscape() {
-        let app = XCUIApplication()
+        let app = makeTrackedApplication()
         app.launchEnvironment["PROGRAMA_UI_TEST_MULTI_WINDOW_NOTIF_SETUP"] = "1"
         app.launchEnvironment["PROGRAMA_UI_TEST_MULTI_WINDOW_NOTIF_PATH"] = dataPath
         app.launchEnvironment["PROGRAMA_TAG"] = launchTag
@@ -148,7 +157,7 @@ final class MultiWindowNotificationsUITests: XCTestCase {
     }
 
     func testNotificationsPopoverJumpToLatestButtonShowsShortcut() {
-        let app = XCUIApplication()
+        let app = makeTrackedApplication()
         app.launchEnvironment["PROGRAMA_UI_TEST_MULTI_WINDOW_NOTIF_SETUP"] = "1"
         app.launchEnvironment["PROGRAMA_UI_TEST_MULTI_WINDOW_NOTIF_PATH"] = dataPath
         app.launchEnvironment["PROGRAMA_TAG"] = launchTag
@@ -173,7 +182,7 @@ final class MultiWindowNotificationsUITests: XCTestCase {
     }
 
     func testEmptyNotificationsPopoverBlocksTerminalTyping() throws {
-        let app = XCUIApplication()
+        let app = makeTrackedApplication()
         app.launchArguments += ["-socketControlMode", "allowAll"]
         app.launchEnvironment["PROGRAMA_SOCKET_PATH"] = socketPath
         app.launchEnvironment["PROGRAMA_SOCKET_MODE"] = "allowAll"
@@ -222,7 +231,7 @@ final class MultiWindowNotificationsUITests: XCTestCase {
     }
 
     func testNotifyCLIDoesNotStealFocusAcrossWindows() throws {
-        let app = XCUIApplication()
+        let app = makeTrackedApplication()
         app.launchArguments += ["-socketControlMode", "allowAll"]
         app.launchEnvironment["PROGRAMA_UI_TEST_MULTI_WINDOW_NOTIF_SETUP"] = "1"
         app.launchEnvironment["PROGRAMA_UI_TEST_MULTI_WINDOW_NOTIF_PATH"] = dataPath

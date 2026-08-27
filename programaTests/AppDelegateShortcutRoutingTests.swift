@@ -200,7 +200,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
     func testDuplicateInstanceTerminationWaitsForGraceBeforeForcing() throws {
         var gracefulTerminationCount = 0
         var forcedTerminationCount = 0
-        var scheduledGraceAction: (() -> Void)?
+        var scheduledGraceAction: (@MainActor () -> Void)?
 
         AppDelegate.scheduleDuplicateTerminationForTesting(
             requestTermination: {

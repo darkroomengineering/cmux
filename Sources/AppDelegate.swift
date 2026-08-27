@@ -1205,8 +1205,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             }
         } else if forceDuplicateLaunchObserver {
             // Some UI regressions specifically exercise launch-observer behavior while still
-            // running under XCTest. Allow an explicit opt-in for those cases only.
-            DispatchQueue.main.async { [weak self] in
+            // running under XCTest. Give the initial window and accessibility hierarchy a
+            // bounded head start before opting into process inspection for those cases only.
+            dilog("single_instance", "pid=\(getpid()) outcome=scheduled reason=ui_test_observer")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                dilog("single_instance", "pid=\(getpid()) outcome=installed reason=ui_test_observer")
                 self?.observeDuplicateLaunches()
             }
         }
@@ -8893,32 +8896,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         currentProcessIdentifier: pid_t,
         embeddedCLIURL: URL
     ) -> Bool {
-        guard candidateBundleIdentifier == expectedBundleIdentifier,
-              candidateProcessIdentifier != currentProcessIdentifier else {
+        guard candidateBundleIdentifier == expectedBundleIdentifier else {
+            dilog("single_instance", "pid=\(candidateProcessIdentifier) outcome=ignored reason=bundle_mismatch")
             return false
         }
-        guard let candidateExecutableURL else { return true }
-        return candidateExecutableURL.standardizedFileURL.resolvingSymlinksInPath()
-            != embeddedCLIURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard candidateProcessIdentifier != currentProcessIdentifier else {
+            dilog("single_instance", "pid=\(candidateProcessIdentifier) outcome=ignored reason=current_process")
+            return false
+        }
+        guard let candidateExecutableURL else {
+            dilog("single_instance", "pid=\(candidateProcessIdentifier) outcome=ignored reason=missing_executable")
+            return false
+        }
+        guard candidateExecutableURL.standardizedFileURL.resolvingSymlinksInPath()
+                != embeddedCLIURL.standardizedFileURL.resolvingSymlinksInPath() else {
+            dilog("single_instance", "pid=\(candidateProcessIdentifier) outcome=ignored reason=embedded_cli")
+            return false
+        }
+        dilog("single_instance", "pid=\(candidateProcessIdentifier) outcome=accepted reason=gui_candidate")
+        return true
     }
 
-    nonisolated private static func terminateDuplicateApplication(_ app: NSRunningApplication) {
-        app.terminate()
-        if !app.isTerminated {
-            _ = app.forceTerminate()
+    private static func scheduleDuplicateTermination(
+        requestTermination: () -> Void,
+        scheduleGrace: (@escaping @MainActor () -> Void) -> Void,
+        forceTerminationIfStillMatching: @escaping @MainActor () -> Bool
+    ) {
+        requestTermination()
+        scheduleGrace {
+            _ = forceTerminationIfStillMatching()
         }
     }
 
 #if DEBUG
     static func scheduleDuplicateTerminationForTesting(
         requestTermination: () -> Void,
-        scheduleGrace: (@escaping () -> Void) -> Void,
-        forceTerminationIfStillMatching: @escaping () -> Bool
+        scheduleGrace: (@escaping @MainActor () -> Void) -> Void,
+        forceTerminationIfStillMatching: @escaping @MainActor () -> Bool
     ) {
-        requestTermination()
-        _ = forceTerminationIfStillMatching()
+        scheduleDuplicateTermination(
+            requestTermination: requestTermination,
+            scheduleGrace: scheduleGrace,
+            forceTerminationIfStillMatching: forceTerminationIfStillMatching
+        )
     }
 #endif
+
+    private static func terminateDuplicateApplication(
+        _ app: NSRunningApplication,
+        expectedProcessKey: ProgramaSingleInstanceProcessKey
+    ) {
+        let processIdentifier = app.processIdentifier
+        scheduleDuplicateTermination(
+            requestTermination: {
+                let accepted = app.terminate()
+                dilog(
+                    "single_instance",
+                    "pid=\(processIdentifier) outcome=\(accepted ? "requested" : "request_rejected") reason=graceful_terminate"
+                )
+            },
+            scheduleGrace: { action in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { @MainActor in
+                    action()
+                }
+            },
+            forceTerminationIfStillMatching: {
+                guard let resolvedApplication = NSRunningApplication(processIdentifier: processIdentifier) else {
+                    dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=no_longer_running")
+                    return false
+                }
+                guard let resolvedKey = singleInstanceProcessKey(for: processIdentifier),
+                      resolvedKey == expectedProcessKey else {
+                    dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=identity_changed")
+                    return false
+                }
+                guard !resolvedApplication.isTerminated else {
+                    dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=already_terminated")
+                    return false
+                }
+
+                let forced = resolvedApplication.forceTerminate()
+                dilog(
+                    "single_instance",
+                    "pid=\(processIdentifier) outcome=\(forced ? "forced" : "force_rejected") reason=grace_expired"
+                )
+                return forced
+            }
+        )
+    }
 
     private func enforceSingleInstance() {
         guard let bundleId = Bundle.main.bundleIdentifier else { return }
@@ -8942,13 +9007,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             }
             guard let otherKey = Self.singleInstanceProcessKey(for: app.processIdentifier),
                   Self.shouldTerminateDuplicateInstance(current: currentKey, other: otherKey) else {
+                dilog("single_instance", "pid=\(app.processIdentifier) outcome=ignored reason=election")
                 continue
             }
-            Self.terminateDuplicateApplication(app)
+            Self.terminateDuplicateApplication(app, expectedProcessKey: otherKey)
         }
     }
 
     private func observeDuplicateLaunches() {
+        guard workspaceObserver == nil else { return }
         guard let bundleId = Bundle.main.bundleIdentifier else { return }
         let embeddedCLIURL = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Resources/bin/programa", isDirectory: false)
@@ -8977,10 +9044,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
             guard let otherKey = Self.singleInstanceProcessKey(for: app.processIdentifier),
                   Self.shouldTerminateDuplicateInstance(current: currentKey, other: otherKey) else {
+                dilog("single_instance", "pid=\(app.processIdentifier) outcome=ignored reason=election")
                 return
             }
-            Self.terminateDuplicateApplication(app)
-            NSRunningApplication.current.activate(options: [.activateAllWindows])
+            MainActor.assumeIsolated {
+                Self.terminateDuplicateApplication(app, expectedProcessKey: otherKey)
+                NSRunningApplication.current.activate(options: [.activateAllWindows])
+            }
         }
     }
 
