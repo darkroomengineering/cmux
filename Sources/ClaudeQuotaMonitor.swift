@@ -344,6 +344,11 @@ struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
             snapshot = await capture.snapshot()
         }
 
+        if snapshot.isFinished, !snapshot.failed {
+            while process.isRunning, clock.now < deadline, !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
         if process.isRunning {
             terminate(process)
         }
@@ -356,8 +361,10 @@ struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
         guard !Task.isCancelled,
               snapshot.isFinished,
               !snapshot.failed,
-              !process.isRunning,
-              process.terminationStatus == 0,
+              !process.isRunning else {
+            return .failed
+        }
+        guard process.terminationStatus == 0,
               let object = try? JSONSerialization.jsonObject(with: snapshot.data) as? [String: Any],
               let loggedIn = object["loggedIn"] as? Bool else {
             return .failed
