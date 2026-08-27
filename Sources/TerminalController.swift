@@ -182,6 +182,7 @@ class TerminalController {
     static let v2BrowserEvalEnvelopeValueKey = "__programa_v"
     static let v2BrowserEvalEnvelopeTypeUndefined = "undefined"
     static let v2BrowserEvalEnvelopeTypeValue = "value"
+    static let v2BrowserElementRefSelectorByteLimit = 16_384
 
     var v2BrowserNextElementOrdinal: Int = 1
     var v2BrowserElementRefs: [String: V2BrowserElementRefEntry] = [:]

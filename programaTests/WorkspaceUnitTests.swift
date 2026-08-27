@@ -3333,6 +3333,58 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         XCTAssertFalse(attachedTab.hasCustomTitle)
     }
 
+    func testLocalBrowserTransferInvalidatesRestoreWithoutReplacingWebViewOrDataStore() throws {
+        let source = Workspace()
+        let destination = Workspace()
+        let sourcePanelId = try XCTUnwrap(source.focusedPanelId)
+        let browserPanel = try XCTUnwrap(
+            source.newBrowserSplit(
+                from: sourcePanelId,
+                orientation: .horizontal,
+                focus: false
+            )
+        )
+        var activeLease: TerminalController.V2BrowserStateRestoreLeaseCoordinator.Lease?
+        defer {
+            if let activeLease {
+                browserPanel.endBrowserStateRestore(activeLease)
+            }
+            source.teardownAllPanels()
+            destination.teardownAllPanels()
+        }
+
+        let originalWebView = browserPanel.webView
+        let originalDataStore = originalWebView.configuration.websiteDataStore
+        let detachLease = try XCTUnwrap(browserPanel.beginBrowserStateRestore())
+        activeLease = detachLease
+
+        let detached = try XCTUnwrap(source.detachSurface(panelId: browserPanel.id))
+        XCTAssertTrue(browserPanel.webView === originalWebView)
+        XCTAssertTrue(browserPanel.webView.configuration.websiteDataStore === originalDataStore)
+        XCTAssertFalse(
+            browserPanel.isBrowserStateRestoreLeaseValid(detachLease),
+            "Detaching must invalidate an in-flight restore even when the browser objects survive"
+        )
+        browserPanel.endBrowserStateRestore(detachLease)
+        activeLease = nil
+
+        let reattachLease = try XCTUnwrap(browserPanel.beginBrowserStateRestore())
+        activeLease = reattachLease
+        let destinationPane = try XCTUnwrap(destination.bonsplitController.allPaneIds.first)
+        XCTAssertEqual(
+            destination.attachDetachedSurface(detached, inPane: destinationPane, focus: false),
+            browserPanel.id
+        )
+        XCTAssertTrue(browserPanel.webView === originalWebView)
+        XCTAssertTrue(browserPanel.webView.configuration.websiteDataStore === originalDataStore)
+        XCTAssertFalse(
+            browserPanel.isBrowserStateRestoreLeaseValid(reattachLease),
+            "Reattaching must defensively invalidate a restore when the local profile keeps the same data store"
+        )
+        browserPanel.endBrowserStateRestore(reattachLease)
+        activeLease = nil
+    }
+
     func testBrowserSplitWithFocusFalseRecoversFromDelayedStaleSelection() {
         let workspace = Workspace()
         guard let originalFocusedPanelId = workspace.focusedPanelId else {
