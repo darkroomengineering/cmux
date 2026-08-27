@@ -8954,6 +8954,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         let teamIdentifier: String?
     }
 
+    struct SingleInstanceTerminationPersistencePolicy: Equatable, Sendable {
+        let persistPreTerminationSnapshot: Bool
+        let persistCleanShutdownSnapshot: Bool
+        let performProcessLocalTeardown: Bool
+    }
+
     enum SingleInstanceFallbackAction: Equatable, Sendable {
         case skip
         case prompt
@@ -9099,6 +9105,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             return false
         }
         return candidate.teamIdentifier == currentTeamIdentifier
+    }
+
+    nonisolated static func singleInstanceTerminationPersistencePolicy(
+        isDiscardedDuplicate: Bool
+    ) -> SingleInstanceTerminationPersistencePolicy {
+        SingleInstanceTerminationPersistencePolicy(
+            persistPreTerminationSnapshot: true,
+            persistCleanShutdownSnapshot: true,
+            performProcessLocalTeardown: true
+        )
+    }
+
+    nonisolated static func shouldTrustDuplicateRunningCode(
+        expectedProcessKey: ProgramaSingleInstanceProcessKey,
+        resolvedProcessKeyBeforeValidation: ProgramaSingleInstanceProcessKey?,
+        resolvedProcessKeyAfterValidation: ProgramaSingleInstanceProcessKey?,
+        currentIdentity: SingleInstanceCodeIdentity,
+        candidateIdentity: SingleInstanceCodeIdentity,
+        dynamicRequirementMatches: Bool,
+        isDebugBuild: Bool
+    ) -> Bool {
+        shouldTrustDuplicateCodeIdentity(
+            current: currentIdentity,
+            candidate: candidateIdentity,
+            designatedRequirementMatches: dynamicRequirementMatches,
+            isDebugBuild: isDebugBuild
+        )
     }
 
     nonisolated static func duplicateFallbackAction(
@@ -9415,6 +9448,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             designatedRequirementMatches: designatedRequirementMatches,
             isDebugBuild: isDebugBuild
         )
+    }
+
+    nonisolated static func shouldTrustDuplicateRunningCodeForTesting(
+        expectedProcessKey: ProgramaSingleInstanceProcessKey,
+        resolvedProcessKeyBeforeValidation: ProgramaSingleInstanceProcessKey?,
+        resolvedProcessKeyAfterValidation: ProgramaSingleInstanceProcessKey?,
+        currentIdentity: SingleInstanceCodeIdentity,
+        candidateIdentity: SingleInstanceCodeIdentity,
+        dynamicRequirementMatches: Bool,
+        isDebugBuild: Bool
+    ) -> Bool {
+        shouldTrustDuplicateRunningCode(
+            expectedProcessKey: expectedProcessKey,
+            resolvedProcessKeyBeforeValidation: resolvedProcessKeyBeforeValidation,
+            resolvedProcessKeyAfterValidation: resolvedProcessKeyAfterValidation,
+            currentIdentity: currentIdentity,
+            candidateIdentity: candidateIdentity,
+            dynamicRequirementMatches: dynamicRequirementMatches,
+            isDebugBuild: isDebugBuild
+        )
+    }
+
+    nonisolated static func singleInstanceTerminationPersistencePolicyForTesting(
+        isDiscardedDuplicate: Bool
+    ) -> SingleInstanceTerminationPersistencePolicy {
+        singleInstanceTerminationPersistencePolicy(isDiscardedDuplicate: isDiscardedDuplicate)
+    }
+
+    nonisolated static var duplicateTerminationGraceIntervalForTesting: TimeInterval {
+        duplicateTerminationGraceInterval
+    }
+
+    nonisolated static func publishDuplicateAcknowledgmentForTesting(
+        rootDirectory: URL,
+        request: SingleInstanceShutdownRequest,
+        currentProcessKey: ProgramaSingleInstanceProcessKey,
+        now: TimeInterval,
+        allowWrite: Bool = true
+    ) -> Bool {
+        guard let acknowledgment = acknowledgmentForAcceptedRequestForTesting(
+            request,
+            currentProcessKey: currentProcessKey,
+            now: now
+        ) else {
+            return false
+        }
+        let url = duplicateShutdownAcknowledgmentURL(
+            rootDirectory: rootDirectory,
+            target: currentProcessKey,
+            generation: request.generation
+        )
+        if allowWrite {
+            _ = writeBoundedSingleInstanceJSON(acknowledgment, to: url)
+        }
+        return true
+    }
+
+    nonisolated static func hasValidDuplicateAcknowledgmentForTesting(
+        rootDirectory: URL,
+        request: SingleInstanceShutdownRequest,
+        now: TimeInterval
+    ) -> Bool {
+        let pending = PendingSingleInstanceShutdown(
+            request: request,
+            requestURL: duplicateShutdownRequestURL(
+                rootDirectory: rootDirectory,
+                target: request.target,
+                generation: request.generation
+            ),
+            acknowledgmentURL: duplicateShutdownAcknowledgmentURL(
+                rootDirectory: rootDirectory,
+                target: request.target,
+                generation: request.generation
+            )
+        )
+        return isExactRequestPending(pending) && hasValidAcknowledgment(for: pending, now: now)
     }
 
     nonisolated static func shouldAcceptDuplicateShutdownRequestForTesting(
