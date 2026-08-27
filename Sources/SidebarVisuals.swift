@@ -30,6 +30,17 @@ struct SidebarFooter: View {
     }
 }
 
+enum SidebarFooterControlLayout {
+    static let buttonSize: CGFloat = 44
+    static let visualPitch: CGFloat = 20
+
+    static func helpIconOffset(clustersWithUsage: Bool) -> CGFloat {
+        clustersWithUsage ? (buttonSize - visualPitch) / 2 : 0
+    }
+
+    static let usageIconOffset = -(buttonSize - visualPitch) / 2
+}
+
 private struct SidebarFooterButtons: View {
     @ObservedObject var updateViewModel: UpdateViewModel
     @AppStorage("sidebarShowClaudeQuota") private var showProviderUsage = true
@@ -37,9 +48,14 @@ private struct SidebarFooterButtons: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            SidebarHelpMenuButton(onSendFeedback: onSendFeedback)
-            if showProviderUsage {
-                SidebarUsageButton()
+            HStack(spacing: 0) {
+                SidebarHelpMenuButton(
+                    clustersWithUsage: showProviderUsage,
+                    onSendFeedback: onSendFeedback
+                )
+                if showProviderUsage {
+                    SidebarUsageButton()
+                }
             }
             UpdatePill(model: updateViewModel)
         }
@@ -49,7 +65,7 @@ private struct SidebarFooterButtons: View {
 
 private struct SidebarUsageButton: View {
     private let title = String(localized: "sidebar.usage.button", defaultValue: "Provider Usage")
-    private let buttonSize: CGFloat = 44
+    private let buttonSize = SidebarFooterControlLayout.buttonSize
     private let iconSize: CGFloat = 11
 
     @StateObject private var store = ProviderUsageStore()
@@ -70,6 +86,7 @@ private struct SidebarUsageButton: View {
                 .symbolRasterSize(iconSize, weight: .medium)
                 .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                 .frame(width: buttonSize, height: buttonSize, alignment: .center)
+                .offset(x: SidebarFooterControlLayout.usageIconOffset)
         }
         .buttonStyle(SidebarFooterIconButtonStyle())
         .frame(width: buttonSize, height: buttonSize, alignment: .center)
@@ -116,10 +133,11 @@ private struct SidebarHelpMenuButton: View {
     private let twitterURL = URL(string: "https://x.com/darkroomdevs")
     private let websiteURL = URL(string: "https://darkroom.engineering")
     private let helpTitle = String(localized: "sidebar.help.button", defaultValue: "Help")
-    private let buttonSize: CGFloat = 44
+    private let buttonSize = SidebarFooterControlLayout.buttonSize
     private let iconSize: CGFloat = 11
     @ObservedObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
 
+    let clustersWithUsage: Bool
     let onSendFeedback: () -> Void
 
     @State private var isPopoverPresented = false
@@ -138,6 +156,7 @@ private struct SidebarHelpMenuButton: View {
                 .symbolRasterSize(iconSize, weight: .medium)
                 .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                 .frame(width: buttonSize, height: buttonSize, alignment: .center)
+                .offset(x: SidebarFooterControlLayout.helpIconOffset(clustersWithUsage: clustersWithUsage))
         }
         .buttonStyle(SidebarFooterIconButtonStyle())
         .frame(width: buttonSize, height: buttonSize, alignment: .center)
@@ -243,7 +262,7 @@ private struct SidebarHelpMenuButton: View {
     #if DEBUG
     @MainActor
     static func popoverFittingSizeForTesting() -> NSSize {
-        let button = Self(onSendFeedback: {})
+        let button = Self(clustersWithUsage: false, onSendFeedback: {})
         let coordinator = ArrowlessPopoverAnchor<AnyView>.Coordinator(
             isPresented: .constant(true)
         )
@@ -575,26 +594,10 @@ private struct SidebarFooterIconButtonStyleBody: View {
     let configuration: SidebarFooterIconButtonStyle.Configuration
 
     @Environment(\.isEnabled) private var isEnabled
-    @State private var isHovered = false
-
-    private var backgroundOpacity: Double {
-        guard isEnabled else { return 0.0 }
-        if configuration.isPressed { return 0.16 }
-        if isHovered { return 0.08 }
-        return 0.0
-    }
 
     var body: some View {
         configuration.label
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.primary.opacity(backgroundOpacity))
-            )
-            .onHover { hovering in
-                isHovered = hovering
-            }
-            .animation(.easeOut(duration: 0.12), value: isHovered)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.55 : 1) : 0.35)
     }
 }
 

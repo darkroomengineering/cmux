@@ -902,6 +902,18 @@ final class SidebarQuotaPresentationTests: XCTestCase {
         )
     }
 
+    func testFooterControlsKeepAccessibleTargetsOnATrafficLightVisualPitch() {
+        let buttonSize = SidebarFooterControlLayout.buttonSize
+        let helpCenter = buttonSize / 2
+            + SidebarFooterControlLayout.helpIconOffset(clustersWithUsage: true)
+        let usageCenter = buttonSize + buttonSize / 2
+            + SidebarFooterControlLayout.usageIconOffset
+
+        XCTAssertGreaterThanOrEqual(buttonSize, 44)
+        XCTAssertEqual(usageCenter - helpCenter, SidebarFooterControlLayout.visualPitch)
+        XCTAssertEqual(SidebarFooterControlLayout.helpIconOffset(clustersWithUsage: false), 0)
+    }
+
     private func fittingHeight(results: [ProviderUsageResult]) async -> CGFloat {
         let fetchers: [any ProviderUsageFetching] = results.map { result in
             CountingProviderUsageFetcher(provider: result.provider, result: result)
