@@ -10241,6 +10241,23 @@
         }
       }
     },
+    "settings.phone.devices.revokeFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not remove this device. Its connection remains active. Try again."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "デバイスを削除できませんでした。接続は引き続き有効です。もう一度お試しください。"
+          }
+        }
+      }
+    },
     "settings.phone.devices.title": {
       "extractionState": "manual",
       "localizations": {
@@ -10926,13 +10943,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Show Claude Quota"
+            "value": "Show Provider Usage"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Claude使用量を表示"
+            "value": "プロバイダーの使用量を表示"
           }
         }
       }
@@ -10943,13 +10960,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Show remaining Claude Code usage quota in the sidebar footer."
+            "value": "Show on-demand usage for providers with available usage data in the sidebar footer."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "サイドバーのフッターにClaude Codeの残り使用量を表示します。"
+            "value": "サイドバーのフッターに、利用データがあるプロバイダーの使用量を必要なときだけ表示します。"
           }
         }
       }
@@ -12074,6 +12091,312 @@
           "stringUnit": {
             "state": "translated",
             "value": "7日"
+          }
+        }
+      }
+    },
+    "sidebar.usage.button": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provider Usage"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "プロバイダーの使用量"
+          }
+        }
+      }
+    },
+    "sidebar.usage.duration.days": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@d"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@日"
+          }
+        }
+      }
+    },
+    "sidebar.usage.duration.hours": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@h"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@時間"
+          }
+        }
+      }
+    },
+    "sidebar.usage.duration.minutes": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@m"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@分"
+          }
+        }
+      }
+    },
+    "sidebar.usage.empty.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sign in to a supported provider, then refresh."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "対応するプロバイダーにサインインしてから更新してください。"
+          }
+        }
+      }
+    },
+    "sidebar.usage.empty.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No usage available"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用量を取得できません"
+          }
+        }
+      }
+    },
+    "sidebar.usage.error.claudeInvalid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude usage data is invalid."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudeの使用量データが無効です。"
+          }
+        }
+      }
+    },
+    "sidebar.usage.error.claudeRead": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude usage could not be read."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claudeの使用量を読み込めませんでした。"
+          }
+        }
+      }
+    },
+    "sidebar.usage.error.codexInvalid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex returned invalid usage data."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codexから無効な使用量データが返されました。"
+          }
+        }
+      }
+    },
+    "sidebar.usage.error.codexRead": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex usage could not be read."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codexの使用量を読み込めませんでした。"
+          }
+        }
+      }
+    },
+    "sidebar.usage.loading": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading usage…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用量を読み込み中…"
+          }
+        }
+      }
+    },
+    "sidebar.usage.provider.claude": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude"
+          }
+        }
+      }
+    },
+    "sidebar.usage.provider.codex": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex"
+          }
+        }
+      }
+    },
+    "sidebar.usage.refresh": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refresh"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新"
+          }
+        }
+      }
+    },
+    "sidebar.usage.refreshing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Refreshing usage"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用量を更新中"
+          }
+        }
+      }
+    },
+    "sidebar.usage.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Provider Usage"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "プロバイダーの使用量"
+          }
+        }
+      }
+    },
+    "sidebar.usage.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unavailable"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "利用不可"
+          }
+        }
+      }
+    },
+    "sidebar.usage.window.accessibility": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@, %2$@ used, resets in %3$@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@、%2$@使用、%3$@後にリセット"
           }
         }
       }

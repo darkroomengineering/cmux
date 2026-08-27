@@ -1,6 +1,10 @@
 import Foundation
 import IrohLib
 
+enum MobileBridgeStreamLineReaderError: Error {
+    case frameTooLarge
+}
+
 /// Buffers reads from a QUIC `RecvStream` and splits them on `\n`, mirroring
 /// the newline-delimited JSON-RPC framing Programa's own control socket
 /// uses. Ported verbatim (renamed) from
@@ -10,9 +14,12 @@ import IrohLib
 /// Not safe to call `nextLine()` concurrently from two callers -- each
 /// instance is driven by exactly one reader task for its lifetime.
 final class MobileBridgeStreamLineReader: @unchecked Sendable {
+    private static let maximumLineByteCount = 8 * 1024 * 1024
+
     private let stream: RecvStream
     private var buffer = Data()
-    private let chunkSize: UInt32 = 65536
+    private var scannedByteCount = 0
+    private let chunkSize = 65_536
 
     init(stream: RecvStream) {
         self.stream = stream
@@ -22,18 +29,37 @@ final class MobileBridgeStreamLineReader: @unchecked Sendable {
     /// stream.
     func nextLine() async throws -> Data? {
         while true {
-            if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+            let searchStartIndex = buffer.index(
+                buffer.startIndex,
+                offsetBy: scannedByteCount
+            )
+            if let newlineIndex = buffer[searchStartIndex...].firstIndex(of: 0x0A) {
+                guard buffer.distance(from: buffer.startIndex, to: newlineIndex)
+                    <= Self.maximumLineByteCount
+                else {
+                    throw MobileBridgeStreamLineReaderError.frameTooLarge
+                }
                 let line = Data(buffer[buffer.startIndex ..< newlineIndex])
                 buffer.removeSubrange(buffer.startIndex ... newlineIndex)
+                scannedByteCount = 0
                 return line
             }
-            let chunk = try await stream.read(sizeLimit: chunkSize)
+            scannedByteCount = buffer.count
+            guard buffer.count <= Self.maximumLineByteCount else {
+                throw MobileBridgeStreamLineReaderError.frameTooLarge
+            }
+
+            let bytesUntilOverflow = Self.maximumLineByteCount + 1 - buffer.count
+            let readLimit = UInt32(min(chunkSize, bytesUntilOverflow))
+            let chunk = try await stream.read(sizeLimit: readLimit)
             if chunk.isEmpty {
                 if !buffer.isEmpty {
                     let remaining = buffer
                     buffer.removeAll()
+                    scannedByteCount = 0
                     return remaining
                 }
+                scannedByteCount = 0
                 return nil
             }
             buffer.append(chunk)
@@ -88,7 +114,8 @@ enum MobileBridgeBase64URL {
 /// can't be replayed later to pair a second device once the intended one
 /// has paired. Ported verbatim (renamed) from
 /// `tools/mobile-spike/Sources/iroh-spike/PairingWindow.swift`.
-actor MobileBridgePairingWindow {
+final class MobileBridgePairingWindow: @unchecked Sendable {
+    private let lock = NSLock()
     private var tokenData: Data?
     private let expiresAt: ContinuousClock.Instant
 
@@ -98,7 +125,9 @@ actor MobileBridgePairingWindow {
     }
 
     var isOpen: Bool {
-        tokenData != nil && ContinuousClock.now < expiresAt
+        lock.withLock {
+            tokenData != nil && ContinuousClock.now < expiresAt
+        }
     }
 
     /// Compares `presented` against the window's token in constant time. On
@@ -106,10 +135,18 @@ actor MobileBridgePairingWindow {
     /// leaves the window open -- a mistyped attempt shouldn't lock out a
     /// legitimate retry within the 5-minute window -- and returns `false`.
     func attemptConsume(_ presented: Data) -> Bool {
-        guard let tokenData, ContinuousClock.now < expiresAt else { return false }
-        guard MobileBridgeConstantTime.equal(tokenData, presented) else { return false }
-        self.tokenData = nil
-        return true
+        lock.withLock {
+            guard let tokenData, ContinuousClock.now < expiresAt else { return false }
+            guard MobileBridgeConstantTime.equal(tokenData, presented) else { return false }
+            self.tokenData = nil
+            return true
+        }
+    }
+
+    func invalidate() {
+        lock.withLock {
+            tokenData = nil
+        }
     }
 }
 

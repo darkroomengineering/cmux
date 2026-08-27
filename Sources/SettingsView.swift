@@ -117,6 +117,8 @@ struct SettingsView: View {
     @State private var mobileBridgePairingToken: String?
     @State private var mobileBridgePairingExpiresAt: Date?
     @State private var mobileBridgePairingErrorMessage: String?
+    @State private var mobileBridgeRevocationErrorMessage: String?
+    @State private var mobileBridgeRevocationsInFlight: Set<String> = []
     @State private var isPairingMobileBridgeDevice = false
 
     private var selectedWorkspacePlacement: NewWorkspacePlacement {
@@ -512,6 +514,7 @@ struct SettingsView: View {
                         resetSection
                     case .appearance:
                         appearanceSection
+                        terminalAppearanceSection
                         sidebarSection
                     case .automation:
                         socketControlSection
@@ -933,7 +936,10 @@ struct SettingsView: View {
                 }
             }
         }
+    }
 
+    @ViewBuilder
+    private var terminalAppearanceSection: some View {
         SettingsSectionHeader(
             title: String(localized: "settings.section.terminal", defaultValue: "Terminal")
         )
@@ -1127,15 +1133,15 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(
-                String(localized: "settings.sidebarAppearance.showClaudeQuota", defaultValue: "Show Claude Quota"),
-                subtitle: String(localized: "settings.sidebarAppearance.showClaudeQuota.subtitle", defaultValue: "Show remaining Claude Code usage quota in the sidebar footer.")
+                String(localized: "settings.sidebarAppearance.showClaudeQuota", defaultValue: "Show Provider Usage"),
+                subtitle: String(localized: "settings.sidebarAppearance.showClaudeQuota.subtitle", defaultValue: "Show on-demand usage for providers with available usage data in the sidebar footer.")
             ) {
                 Toggle("", isOn: $showClaudeQuota)
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
                     .accessibilityLabel(
-                        String(localized: "settings.sidebarAppearance.showClaudeQuota", defaultValue: "Show Claude Quota")
+                        String(localized: "settings.sidebarAppearance.showClaudeQuota", defaultValue: "Show Provider Usage")
                     )
             }
             // Light/dark tint hex, tint opacity and a section-local reset used to
@@ -1327,9 +1333,19 @@ struct SettingsView: View {
     }
 
     private func revokeMobileBridgeDevice(_ device: MobileBridgeTrustedDevice) {
+        guard mobileBridgeRevocationsInFlight.insert(device.endpointId).inserted else { return }
+        mobileBridgeRevocationErrorMessage = nil
+
         Task {
-            await MobileBridgeListener.shared.revoke(endpointId: device.endpointId)
+            defer { mobileBridgeRevocationsInFlight.remove(device.endpointId) }
+            let outcome = await MobileBridgeListener.shared.revoke(endpointId: device.endpointId)
             await refreshMobileBridgePairedDevices()
+            if outcome == .persistenceFailed {
+                mobileBridgeRevocationErrorMessage = String(
+                    localized: "settings.phone.devices.revokeFailed",
+                    defaultValue: "Could not remove this device. Its connection remains active. Try again."
+                )
+            }
         }
     }
 
@@ -1499,8 +1515,18 @@ struct SettingsView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
+                            .disabled(mobileBridgeRevocationsInFlight.contains(device.endpointId))
                         }
                     }
+                }
+
+                if let mobileBridgeRevocationErrorMessage {
+                    SettingsCardDivider()
+                    Text(mobileBridgeRevocationErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
                 }
             }
         }

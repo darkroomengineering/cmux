@@ -32,14 +32,65 @@ struct SidebarFooter: View {
 
 private struct SidebarFooterButtons: View {
     @ObservedObject var updateViewModel: UpdateViewModel
+    @AppStorage("sidebarShowClaudeQuota") private var showProviderUsage = true
     let onSendFeedback: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
             SidebarHelpMenuButton(onSendFeedback: onSendFeedback)
+            if showProviderUsage {
+                SidebarUsageButton()
+            }
             UpdatePill(model: updateViewModel)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SidebarUsageButton: View {
+    private let title = String(localized: "sidebar.usage.button", defaultValue: "Provider Usage")
+    private let buttonSize: CGFloat = 44
+    private let iconSize: CGFloat = 11
+
+    @StateObject private var store = ProviderUsageStore()
+    @State private var isPopoverPresented = false
+
+    var body: some View {
+        Button {
+            let isOpening = !isPopoverPresented
+            isPopoverPresented.toggle()
+            if isOpening {
+                Task { await store.refresh() }
+            } else {
+                store.cancelRefresh()
+            }
+        } label: {
+            Image(systemName: "gauge.with.dots.needle.33percent")
+                .symbolRenderingMode(.monochrome)
+                .symbolRasterSize(iconSize, weight: .medium)
+                .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+                .frame(width: buttonSize, height: buttonSize, alignment: .center)
+        }
+        .buttonStyle(SidebarFooterIconButtonStyle())
+        .frame(width: buttonSize, height: buttonSize, alignment: .center)
+        .background(ArrowlessPopoverAnchor(
+            isPresented: $isPopoverPresented,
+            preferredEdge: .maxX,
+            detachedGap: 4
+        ) {
+            SidebarQuotaFooter(store: store)
+        })
+        .safeHelp(title)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier("SidebarUsageButton")
+        .onChange(of: isPopoverPresented) { _, isPresented in
+            if !isPresented {
+                store.cancelRefresh()
+            }
+        }
+        .onDisappear {
+            store.cancelRefresh()
+        }
     }
 }
 
@@ -65,7 +116,7 @@ private struct SidebarHelpMenuButton: View {
     private let twitterURL = URL(string: "https://x.com/darkroomdevs")
     private let websiteURL = URL(string: "https://darkroom.engineering")
     private let helpTitle = String(localized: "sidebar.help.button", defaultValue: "Help")
-    private let buttonSize: CGFloat = 22
+    private let buttonSize: CGFloat = 44
     private let iconSize: CGFloat = 11
     @ObservedObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
 
@@ -97,7 +148,6 @@ private struct SidebarHelpMenuButton: View {
         ) {
             helpPopover
         })
-        .accessibilityElement(children: .ignore)
         .safeHelp(helpTitle)
         .accessibilityLabel(helpTitle)
         .accessibilityIdentifier("SidebarHelpMenuButton")
@@ -327,6 +377,10 @@ private struct ArrowlessPopoverAnchor<PopoverContent: View>: NSViewRepresentable
 
     func makeCoordinator() -> Coordinator {
         Coordinator(isPresented: $isPresented)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.dismiss()
     }
 
     final class Coordinator: NSObject, NSPopoverDelegate {

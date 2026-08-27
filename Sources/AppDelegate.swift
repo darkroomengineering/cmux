@@ -816,6 +816,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         let sidebarState: SidebarState
         let sidebarSelectionState: SidebarSelectionState
         weak var window: NSWindow?
+        weak var observedWindow: NSWindow?
+        var willCloseObserver: NSObjectProtocol?
+        var willCloseObserverGeneration: UUID?
 
         init(
             windowId: UUID,
@@ -1884,57 +1887,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             return
         }
 
-        let windowId = createMainWindow()
-        guard let context = mainWindowContexts.values.first(where: { $0.windowId == windowId }),
-              let firstWorkspace = context.tabManager.tabs.first else {
+        let candidates = orphans.map {
+            (sessionId: $0.sessionId, workingDirectory: $0.meta.workingDirectory)
+        }
+        guard let result = reconcileOrphanedEscrowedSessions(
+            candidates: candidates,
+            attemptRecovery: { candidate, workspace in
+                guard let freshPanelId = workspace.panels.keys.first,
+                      let paneId = workspace.paneId(forPanelId: freshPanelId) else {
+                    return false
+                }
+
+                guard workspace.revivePanel(
+                    sessionId: candidate.sessionId,
+                    inPane: paneId,
+                    workingDirectory: candidate.workingDirectory
+                ) != nil else {
+                    return false
+                }
+
+                // The revived panel now lives in the same pane as the fresh
+                // placeholder panel the tab started with -- close the
+                // placeholder so the tab ends up with exactly one (revived)
+                // panel, never a leftover empty one.
+                if !workspace.closePanel(freshPanelId, force: true) {
+                    dilog(
+                        "escrow.reconcile",
+                        "session=\(candidate.sessionId.prefix(8)) outcome=revived reason=placeholder_close_failed panel=\(freshPanelId.uuidString.prefix(8))"
+                    )
+                }
+                if let workingDirectory = candidate.workingDirectory,
+                   !workingDirectory.isEmpty {
+                    workspace.setCustomTitle(workingDirectory)
+                }
+                return true
+            }
+        ) else {
             dilog("escrow.reconcile", "found=\(orphans.count) recovered=0 reason=no_window")
             return
+        }
+
+        dilog("escrow.reconcile", "found=\(orphans.count) recovered=\(result.recoveredCount)")
+    }
+
+    func reconcileOrphanedEscrowedSessions(
+        candidates: [(sessionId: String, workingDirectory: String?)],
+        attemptRecovery: (
+            _ candidate: (sessionId: String, workingDirectory: String?),
+            _ workspace: Workspace
+        ) -> Bool
+    ) -> (windowId: UUID, recoveredCount: Int)? {
+        guard !candidates.isEmpty else { return nil }
+
+        let windowId = createMainWindow()
+        guard let context = mainWindowContexts.values.first(where: { $0.windowId == windowId }),
+              let bootstrapWorkspace = context.tabManager.tabs.first else {
+            return nil
         }
         let tabManager = context.tabManager
 
         var recoveredCount = 0
-        for (index, orphan) in orphans.enumerated() {
-            let workspace: Workspace = index == 0
-                ? firstWorkspace
-                : tabManager.addWorkspace(
-                    workingDirectory: orphan.meta.workingDirectory,
-                    select: false,
-                    autoWelcomeIfNeeded: false
-                )
+        var pendingFailedWorkspace: Workspace?
+        var shouldCloseBootstrapWorkspace = true
 
-            guard let freshPanelId = workspace.panels.keys.first,
-                  let paneId = workspace.paneId(forPanelId: freshPanelId) else {
-                continue
+        for candidate in candidates {
+            let workspace = tabManager.addWorkspace(
+                workingDirectory: candidate.workingDirectory,
+                select: false,
+                autoWelcomeIfNeeded: false
+            )
+
+            if shouldCloseBootstrapWorkspace {
+                tabManager.closeWorkspace(bootstrapWorkspace)
+                shouldCloseBootstrapWorkspace = false
+            }
+            if let failedWorkspace = pendingFailedWorkspace {
+                tabManager.closeWorkspace(failedWorkspace)
+                pendingFailedWorkspace = nil
             }
 
-            guard workspace.revivePanel(
-                sessionId: orphan.sessionId,
-                inPane: paneId,
-                workingDirectory: orphan.meta.workingDirectory
-            ) != nil else {
-                continue
+            if attemptRecovery(candidate, workspace) {
+                recoveredCount += 1
+            } else {
+                pendingFailedWorkspace = workspace
             }
-
-            // The revived panel now lives in the same pane as the fresh
-            // placeholder panel the tab started with -- close the
-            // placeholder so the tab ends up with exactly one (revived)
-            // panel, never a leftover empty one.
-            workspace.closePanel(freshPanelId, force: true)
-            if let workingDirectory = orphan.meta.workingDirectory,
-               !workingDirectory.isEmpty {
-                workspace.setCustomTitle(workingDirectory)
-            }
-            recoveredCount += 1
         }
-
-        dilog("escrow.reconcile", "found=\(orphans.count) recovered=\(recoveredCount)")
 
         guard recoveredCount > 0 else {
             // Every revive attempt failed: nothing to show, and leaving an
             // empty, oddly-titled window open with only blank placeholder
             // shells would just confuse whoever opens it next.
             resolvedWindow(for: context)?.close()
-            return
+            return (windowId: windowId, recoveredCount: 0)
+        }
+
+        if let pendingFailedWorkspace {
+            tabManager.closeWorkspace(pendingFailedWorkspace)
         }
 
         // Set the window title last, after every workspace mutation above --
@@ -1957,6 +2005,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 defaultValue: "Programa found terminal sessions still running from before the last restart and reattached them into a new window."
             )
         )
+
+        // `createMainWindow()` persisted the bootstrap workspace before
+        // reconciliation replaced it. Persist the finalized recovery window
+        // immediately so another abrupt exit cannot restore that stale shell.
+        _ = saveSessionSnapshot(includeScrollback: false)
+
+        return (windowId: windowId, recoveredCount: recoveredCount)
     }
 
     private func applySessionWindowSnapshot(
@@ -2632,6 +2687,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         NotificationCenter.default.post(name: .mainWindowContextsDidChange, object: self)
     }
 
+    private func removeMainWindowCloseObserver(from context: MainWindowContext) {
+        if let observer = context.willCloseObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        context.willCloseObserver = nil
+        context.willCloseObserverGeneration = nil
+        context.observedWindow = nil
+    }
+
+    private func installMainWindowCloseObserver(
+        for context: MainWindowContext,
+        window: NSWindow
+    ) {
+        if context.observedWindow === window, context.willCloseObserver != nil {
+            return
+        }
+
+        removeMainWindowCloseObserver(from: context)
+        let generation = UUID()
+        context.observedWindow = window
+        context.willCloseObserverGeneration = generation
+        context.willCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self, weak window, generation] note in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let window,
+                      let closing = note.object as? NSWindow,
+                      closing === window,
+                      let context = self.mainWindowContexts[ObjectIdentifier(window)],
+                      context.willCloseObserverGeneration == generation,
+                      context.observedWindow === window,
+                      context.window === window else {
+                    return
+                }
+                self.unregisterMainWindow(window)
+            }
+        }
+    }
+
     /// Register a terminal window with the AppDelegate so menu commands and socket control
     /// can target whichever window is currently active.
     func registerMainWindow(
@@ -2655,30 +2752,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         #if DEBUG
         let priorManagerToken = debugManagerToken(self.tabManager)
         #endif
-        if let existing = mainWindowContexts[key] {
+        let context: MainWindowContext
+        if let existing = mainWindowContexts[key], existing.windowId == windowId {
             existing.window = window
+            context = existing
         } else if let existing = mainWindowContexts.values.first(where: { $0.windowId == windowId }) {
-            existing.window = window
             reindexMainWindowContextIfNeeded(existing, for: window)
+            context = existing
         } else {
-            mainWindowContexts[key] = MainWindowContext(
+            if let displaced = mainWindowContexts[key] {
+                discardOrphanedMainWindowContext(displaced)
+            }
+            let newContext = MainWindowContext(
                 windowId: windowId,
                 tabManager: tabManager,
                 sidebarState: sidebarState,
                 sidebarSelectionState: sidebarSelectionState,
                 window: window
             )
-            NotificationCenter.default.addObserver(
-                forName: NSWindow.willCloseNotification,
-                object: window,
-                queue: .main
-            ) { [weak self] note in
-                MainActor.assumeIsolated {
-                    guard let self, let closing = note.object as? NSWindow else { return }
-                    self.unregisterMainWindow(closing)
-                }
-            }
+            mainWindowContexts[key] = newContext
+            context = newContext
         }
+        installMainWindowCloseObserver(for: context, window: window)
         updateCommandPaletteState(for: windowId) { state in
             state.isVisible = false
             state.selectionIndex = 0
@@ -3946,7 +4041,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         let desiredKey = ObjectIdentifier(window)
         if mainWindowContexts[desiredKey] === context {
             context.window = window
+            installMainWindowCloseObserver(for: context, window: window)
             return
+        }
+
+        if let displaced = mainWindowContexts[desiredKey], displaced !== context {
+            discardOrphanedMainWindowContext(displaced)
         }
 
         let contextKeys = mainWindowContexts.compactMap { key, value in
@@ -3956,13 +4056,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             mainWindowContexts.removeValue(forKey: key)
         }
 
-        if let conflicting = mainWindowContexts[desiredKey], conflicting !== context {
-            context.window = window
-            return
-        }
-
         mainWindowContexts[desiredKey] = context
         context.window = window
+        installMainWindowCloseObserver(for: context, window: window)
         notifyMainWindowContextsDidChange()
     }
 
@@ -4002,7 +4098,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
     private func unregisterMainWindowContext(for window: NSWindow) -> MainWindowContext? {
-        guard let removed = contextForMainTerminalWindow(window, reindex: false) else { return nil }
+        guard let removed = mainWindowContexts[ObjectIdentifier(window)],
+              removed.window === window,
+              removed.observedWindow === window else {
+            return nil
+        }
         let removedKeys = mainWindowContexts.compactMap { key, value in
             value === removed ? key : nil
         }
@@ -4011,6 +4111,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         }
         notifyMainWindowContextsDidChange()
         return removed
+    }
+
+    private func teardownMainWindowContext(_ context: MainWindowContext) {
+        removeMainWindowCloseObserver(from: context)
+        context.tabManager.teardownForWindowClose(notifyOwner: !isTerminatingApp)
     }
 
     private func discardOrphanedMainWindowContext(_ context: MainWindowContext) {
@@ -4043,6 +4148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 store.clearNotifications(forTabId: tab.id)
             }
         }
+        teardownMainWindowContext(context)
     }
 
     /// Prune every registered main window context whose window has already been
@@ -9040,6 +9146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 TerminalController.shared.setActiveTabManager(nil)
             }
         }
+
+        teardownMainWindowContext(removed)
 
         // During app termination we already persisted a full snapshot (with scrollback)
         // in applicationShouldTerminate/applicationWillTerminate. Saving again here would

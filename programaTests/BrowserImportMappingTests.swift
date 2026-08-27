@@ -271,6 +271,81 @@ final class BrowserImportMappingTests: XCTestCase {
         XCTAssertTrue(lines.contains("Created Programa profiles: You, austin"))
     }
 
+    func testDomainFiltersCanonicalizeAndDeduplicateEquivalentIDNForms() {
+        let filters = BrowserDataImporter.parseDomainFilters(
+            " bücher.de, xn--bcher-kva.de; *.BÜCHER.DE "
+        )
+
+        XCTAssertEqual(
+            filters,
+            ["bücher.de"],
+            "Unicode and Punycode spellings of one domain must produce one canonical import filter"
+        )
+    }
+
+    func testDomainMatchingTreatsUnicodeAndPunycodeHostsAsEquivalent() {
+        XCTAssertTrue(
+            BrowserDataImporter.domainMatches(
+                host: "xn--bcher-kva.de",
+                filters: ["bücher.de"]
+            )
+        )
+        XCTAssertTrue(
+            BrowserDataImporter.domainMatches(
+                host: "bücher.de",
+                filters: ["xn--bcher-kva.de"]
+            )
+        )
+        XCTAssertTrue(
+            BrowserDataImporter.domainMatches(
+                host: "shop.xn--bcher-kva.de",
+                filters: ["bücher.de"]
+            ),
+            "An IDN filter must include true subdomains after canonicalization"
+        )
+    }
+
+    func testDomainMatchingAllowsAnyHostWhenFiltersAreEmpty() {
+        XCTAssertTrue(
+            BrowserDataImporter.domainMatches(
+                host: "anything.example",
+                filters: []
+            ),
+            "An empty domain filter list must preserve the import-all contract"
+        )
+    }
+
+    func testDomainMatchingRejectsLookalikesAndUnrelatedIDNs() {
+        XCTAssertFalse(
+            BrowserDataImporter.domainMatches(
+                host: "evilxn--bcher-kva.de",
+                filters: ["bücher.de"]
+            ),
+            "Suffix matching must require a dot boundary before the canonical IDN"
+        )
+        XCTAssertFalse(
+            BrowserDataImporter.domainMatches(
+                host: "kücher.de",
+                filters: ["bücher.de"]
+            ),
+            "Canonicalization must not collapse distinct Unicode domains"
+        )
+        XCTAssertFalse(
+            BrowserDataImporter.domainMatches(
+                host: "example.com",
+                filters: ["example.com/path"]
+            ),
+            "A malformed domain-only filter must not be parsed as a URL and broadened to its host"
+        )
+        XCTAssertFalse(
+            BrowserDataImporter.domainMatches(
+                host: "example.com",
+                filters: ["example.com:443"]
+            ),
+            "A domain-only filter containing a port must preserve fail-closed comparison behavior"
+        )
+    }
+
     @MainActor
     func testImportWizardCanBeConstructedForSettingsChoosePath() {
         let destinationProfiles = [

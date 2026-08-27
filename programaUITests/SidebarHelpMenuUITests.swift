@@ -23,6 +23,32 @@ final class SidebarHelpMenuUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    func testVisibleSidebarHeaderToggleHidesItsOwningSidebar() {
+        let app = XCUIApplication()
+        app.launchEnvironment["PROGRAMA_UI_TEST_MODE"] = "1"
+        launchAndActivate(app)
+
+        XCTAssertTrue(waitForWindowCount(atLeast: 1, app: app, timeout: 6.0))
+
+        let sidebar = app.descendants(matching: .any).matching(identifier: "Sidebar").firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 6.0), "Expected the main window sidebar to start visible")
+
+        let toggle = sidebar.descendants(matching: .button)
+            .matching(identifier: "titlebarControl.toggleSidebar")
+            .firstMatch
+        XCTAssertTrue(
+            sidebarHelpPollUntil(timeout: 3.0) { toggle.exists && toggle.isHittable },
+            "Expected the visible sidebar header to expose its own sidebar toggle"
+        )
+
+        toggle.click()
+
+        XCTAssertTrue(
+            sidebarHelpPollUntil(timeout: 3.0) { !sidebar.exists || !sidebar.isHittable },
+            "The sidebar header toggle must hide the SidebarState that rendered it"
+        )
+    }
+
     func testHelpMenuOpensKeyboardShortcutsSection() {
         let app = XCUIApplication()
         app.launchEnvironment["PROGRAMA_UI_TEST_MODE"] = "1"
@@ -54,6 +80,7 @@ final class SidebarHelpMenuUITests: XCTestCase {
         app.launchEnvironment["PROGRAMA_UI_TEST_FEED_MODE"] = "available"
         app.launchEnvironment["PROGRAMA_UI_TEST_UPDATE_VERSION"] = "9.9.9"
         app.launchEnvironment["PROGRAMA_UI_TEST_AUTO_ALLOW_PERMISSION"] = "1"
+        app.launchEnvironment["PROGRAMA_UI_TEST_TRIGGER_UPDATE_CHECK"] = "1"
         launchAndActivate(app)
 
         XCTAssertTrue(waitForWindowCount(atLeast: 1, app: app, timeout: 6.0))
@@ -72,7 +99,7 @@ final class SidebarHelpMenuUITests: XCTestCase {
         )
         checkForUpdatesItem.click()
 
-        let updatePill = app.buttons["UpdatePill"]
+        let updatePill = app.buttons["Update Available: 9.9.9"]
         XCTAssertTrue(updatePill.waitForExistence(timeout: 6.0))
         XCTAssertEqual(updatePill.label, "Update Available: 9.9.9")
     }

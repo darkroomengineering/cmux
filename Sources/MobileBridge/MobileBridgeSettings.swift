@@ -65,14 +65,28 @@ struct MobileBridgeTrustedDevice: Codable, Equatable, Identifiable {
 /// plaintext JSON under `MobileBridgeHome`, owner-only (0600) permissions.
 /// Unlike the spike, devices can also be removed (Settings "Remove" action).
 actor MobileBridgeTrustedDeviceStore {
+    typealias Persistence = @Sendable (Data, URL) throws -> Void
+
+    struct RevocationResult: Sendable {
+        let closeActions: [MobileBridgeConnectionRegistry.CloseAction]
+        let persistenceFailure: String?
+    }
+
     static let shared = MobileBridgeTrustedDeviceStore()
 
     private var devices: [MobileBridgeTrustedDevice] = []
     private var didLoad = false
     private let fileURL: URL
+    private let persistence: Persistence
 
-    private init(fileURL: URL = MobileBridgeHome.directory().appendingPathComponent("mobile-bridge-trusted-devices.json")) {
+    init(
+        fileURL: URL = MobileBridgeHome.directory().appendingPathComponent("mobile-bridge-trusted-devices.json"),
+        persistence: @escaping Persistence = { data, fileURL in
+            try MobileBridgeTrustedDeviceStore.persistToDisk(data, fileURL)
+        }
+    ) {
         self.fileURL = fileURL
+        self.persistence = persistence
     }
 
     private func loadIfNeeded() {
@@ -90,22 +104,63 @@ actor MobileBridgeTrustedDeviceStore {
         return devices.contains { $0.endpointId == endpointId }
     }
 
-    /// Persists `endpointId` as trusted. Idempotent: re-adding an
-    /// already-trusted device is a no-op (no duplicate entries, no rewrite).
-    @discardableResult
-    func add(endpointId: String, label: String) -> Bool {
-        loadIfNeeded()
-        guard !devices.contains(where: { $0.endpointId == endpointId }) else { return false }
-        devices.append(MobileBridgeTrustedDevice(endpointId: endpointId, label: label, pairedAt: Date()))
-        persist()
-        return true
+    func registerPairedIfCurrent(
+        endpointId: String,
+        label: String,
+        registry: MobileBridgeConnectionRegistry,
+        connectionID: ObjectIdentifier,
+        ticket: MobileBridgeConnectionRegistry.AdmissionTicket,
+        close: @escaping MobileBridgeConnectionRegistry.CloseAction
+    ) -> MobileBridgeConnectionRegistry.RegistrationResult {
+        registry.registerIfCurrent(
+            connectionID: connectionID,
+            ticket: ticket,
+            close: close,
+            beforeRegister: {
+                self.loadIfNeeded()
+                guard !self.devices.contains(where: { $0.endpointId == endpointId }) else {
+                    return true
+                }
+
+                let previousDevices = self.devices
+                self.devices.append(MobileBridgeTrustedDevice(
+                    endpointId: endpointId,
+                    label: label,
+                    pairedAt: Date()
+                ))
+                do {
+                    try self.persist()
+                    return true
+                } catch {
+                    self.devices = previousDevices
+                    NSLog("MobileBridge: failed to persist paired device: %@", "\(error)")
+                    return false
+                }
+            }
+        )
     }
 
-    /// Revokes a paired device immediately (Settings "Remove" action).
-    func remove(endpointId: String) {
+    func revokeAndClaimConnections(
+        endpointId: String,
+        registry: MobileBridgeConnectionRegistry
+    ) -> RevocationResult {
         loadIfNeeded()
+        let previousDevices = devices
         devices.removeAll { $0.endpointId == endpointId }
-        persist()
+        do {
+            try persist()
+        } catch {
+            devices = previousDevices
+            return RevocationResult(
+                closeActions: [],
+                persistenceFailure: String(describing: error)
+            )
+        }
+
+        return RevocationResult(
+            closeActions: registry.revoke(endpointId: endpointId),
+            persistenceFailure: nil
+        )
     }
 
     func allDevices() -> [MobileBridgeTrustedDevice] {
@@ -113,17 +168,46 @@ actor MobileBridgeTrustedDeviceStore {
         return devices.sorted { $0.pairedAt > $1.pairedAt }
     }
 
-    private func persist() {
-        guard let data = try? JSONEncoder().encode(devices) else { return }
-        try? FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
+    private func persist() throws {
+        let data = try JSONEncoder().encode(devices)
+        try persistence(data, fileURL)
+    }
+
+    private static func persistToDisk(_ data: Data, _ fileURL: URL) throws {
+        let fileManager = FileManager.default
+        let directory = fileURL.deletingLastPathComponent()
+        try fileManager.createDirectory(
+            at: directory,
             withIntermediateDirectories: true
         )
-        try? data.write(to: fileURL, options: .atomic)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: fileURL.path
+
+        let temporaryURL = directory.appendingPathComponent(
+            ".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp"
         )
+        var committed = false
+        defer {
+            if !committed {
+                try? fileManager.removeItem(at: temporaryURL)
+            }
+        }
+
+        try data.write(to: temporaryURL, options: [.atomic, .withoutOverwriting])
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: temporaryURL.path
+        )
+
+        if fileManager.fileExists(atPath: fileURL.path) {
+            _ = try fileManager.replaceItemAt(
+                fileURL,
+                withItemAt: temporaryURL,
+                backupItemName: nil,
+                options: .usingNewMetadataOnly
+            )
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: fileURL)
+        }
+        committed = true
     }
 }
 

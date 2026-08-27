@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Always-on, local-only diagnostics log for Release builds.
@@ -11,15 +12,28 @@ import Foundation
 /// the public `log` call never does file I/O on the caller's thread — it only formats a
 /// timestamp and enqueues the write onto a dedicated serial `.utility` queue.
 public final class DiagnosticsLog: @unchecked Sendable {
+    typealias FileHandleOpener = (URL) -> FileHandle?
+    typealias FileRotator = (URL, URL) -> Bool
+
     public static let shared = DiagnosticsLog()
 
     /// 2 MB cap before rotation to `<name>.1`.
     private static let maxBytes: UInt64 = 2 * 1024 * 1024
+    /// Bounds records written to a handle whose path was removed externally.
+    static let pathValidationRecordInterval = 64
+    /// Avoids a failed filesystem rotation becoming per-record close/open churn.
+    private static let rotationRetryRecordInterval = 64
 
     private let queue = DispatchQueue(label: "programa.diagnostics-log", qos: .utility)
     private let fileURL: URL
     private let rotatedURL: URL
+    private let fileHandleOpener: FileHandleOpener
+    private let fileRotator: FileRotator
     private var currentBytes: UInt64
+    private var activeHandle: FileHandle?
+    private var directoryIsReady = false
+    private var recordsSincePathValidation = 0
+    private var rotationRetryRecordCountdown = 0
 
     private static let formatter: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
@@ -41,10 +55,24 @@ public final class DiagnosticsLog: @unchecked Sendable {
     }
 
     /// Testable initializer: point the log at an arbitrary file path.
-    public init(fileURL: URL) {
+    public convenience init(fileURL: URL) {
+        self.init(
+            fileURL: fileURL,
+            fileHandleOpener: { FileHandle(forWritingAtPath: $0.path) },
+            fileRotator: Self.replaceFileAtomically
+        )
+    }
+
+    init(
+        fileURL: URL,
+        fileHandleOpener: @escaping FileHandleOpener,
+        fileRotator: @escaping FileRotator = DiagnosticsLog.replaceFileAtomically
+    ) {
         self.fileURL = fileURL
         self.rotatedURL = fileURL.deletingPathExtension()
             .appendingPathExtension(fileURL.pathExtension.isEmpty ? "1" : fileURL.pathExtension + ".1")
+        self.fileHandleOpener = fileHandleOpener
+        self.fileRotator = fileRotator
         let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
         self.currentBytes = (attrs?[.size] as? UInt64) ?? 0
     }
@@ -60,41 +88,121 @@ public final class DiagnosticsLog: @unchecked Sendable {
         queue.async { [self] in
             guard let data = line.data(using: .utf8) else { return }
 
-            let dir = fileURL.deletingLastPathComponent()
-            if !FileManager.default.fileExists(atPath: dir.path) {
-                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            }
+            validateActivePathIfNeeded()
 
-            if currentBytes + UInt64(data.count) > Self.maxBytes {
+            if currentBytes + UInt64(data.count) > Self.maxBytes,
+               rotationRetryRecordCountdown == 0 {
                 rotate()
             }
 
-            if let handle = FileHandle(forWritingAtPath: fileURL.path) {
-                _ = try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
-                try? handle.close()
-            } else {
-                FileManager.default.createFile(
-                    atPath: fileURL.path,
-                    contents: data,
-                    attributes: [.posixPermissions: 0o600]
-                )
+            guard let handle = openHandleIfNeeded() else { return }
+            do {
+                try handle.write(contentsOf: data)
+                currentBytes += UInt64(data.count)
+                recordsSincePathValidation += 1
+                if rotationRetryRecordCountdown > 0 {
+                    rotationRetryRecordCountdown -= 1
+                }
+            } catch {
+                closeActiveHandle()
+                directoryIsReady = false
             }
-            currentBytes += UInt64(data.count)
         }
     }
 
-    /// Blocks until every enqueued write has hit the file. Test seam; also safe
-    /// to call before collecting the log for a bug report.
+    /// Blocks until every queued best-effort write has been attempted, then asks the
+    /// active handle to synchronize. Test seam; also safe before collecting a bug report.
     public func flush() {
-        queue.sync {}
+        queue.sync {
+            try? activeHandle?.synchronize()
+        }
     }
 
     /// Runs on `queue`. Overwrites the previous rotated file and resets the byte counter.
     private func rotate() {
-        try? FileManager.default.removeItem(at: rotatedURL)
-        try? FileManager.default.moveItem(at: fileURL, to: rotatedURL)
-        currentBytes = 0
+        closeActiveHandle()
+        if fileRotator(fileURL, rotatedURL) {
+            currentBytes = 0
+            rotationRetryRecordCountdown = 0
+        } else {
+            directoryIsReady = false
+            let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+            currentBytes = (attrs?[.size] as? UInt64) ?? 0
+            rotationRetryRecordCountdown = Self.rotationRetryRecordInterval
+        }
+    }
+
+    /// POSIX rename replaces the prior `.1` path atomically. A failed rename leaves
+    /// both the current log and the last readable backup untouched.
+    private static func replaceFileAtomically(source: URL, destination: URL) -> Bool {
+        source.withUnsafeFileSystemRepresentation { sourcePath in
+            destination.withUnsafeFileSystemRepresentation { destinationPath in
+                guard let sourcePath, let destinationPath else { return false }
+                return Darwin.rename(sourcePath, destinationPath) == 0
+            }
+        }
+    }
+
+    /// Runs on `queue`. The directory check, file creation, and seek happen once per
+    /// active file rather than once per log record.
+    private func openHandleIfNeeded() -> FileHandle? {
+        if let activeHandle { return activeHandle }
+
+        if !directoryIsReady {
+            let directory = fileURL.deletingLastPathComponent()
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                directoryIsReady = true
+            } catch {
+                directoryIsReady = false
+                return nil
+            }
+        }
+
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            guard FileManager.default.createFile(
+                atPath: fileURL.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            ) else { return nil }
+        }
+
+        guard let handle = fileHandleOpener(fileURL) else {
+            directoryIsReady = false
+            return nil
+        }
+        do {
+            try handle.seekToEnd()
+            activeHandle = handle
+            recordsSincePathValidation = 0
+            return handle
+        } catch {
+            try? handle.close()
+            directoryIsReady = false
+            return nil
+        }
+    }
+
+    /// Runs on `queue`. A periodic path check catches external directory deletion
+    /// without putting a filesystem lookup back on every log record.
+    private func validateActivePathIfNeeded() {
+        guard activeHandle != nil,
+              recordsSincePathValidation + 1 >= Self.pathValidationRecordInterval else { return }
+        recordsSincePathValidation = 0
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            closeActiveHandle()
+            directoryIsReady = false
+            currentBytes = 0
+            rotationRetryRecordCountdown = 0
+            return
+        }
+    }
+
+    /// Runs on `queue` before rotation or after a write failure.
+    private func closeActiveHandle() {
+        guard let activeHandle else { return }
+        try? activeHandle.close()
+        self.activeHandle = nil
     }
 }
 

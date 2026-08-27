@@ -608,6 +608,7 @@ struct TitlebarControlsView: View {
 
 struct HiddenTitlebarSidebarControlsView: View {
     @ObservedObject var notificationStore: TerminalNotificationStore
+    @ObservedObject var sidebarState: SidebarState
     @StateObject private var viewModel = TitlebarControlsViewModel()
 
     // Sized to fit all 3 titlebar buttons (sidebar toggle, notifications, new tab)
@@ -621,7 +622,7 @@ struct HiddenTitlebarSidebarControlsView: View {
         TitlebarControlsView(
             notificationStore: notificationStore,
             viewModel: viewModel,
-            onToggleSidebar: { _ = AppDelegate.shared?.sidebarState?.toggle() },
+            onToggleSidebar: { sidebarState.toggle() },
             onToggleNotifications: { [viewModel] in
                 AppDelegate.shared?.toggleNotificationsPopover(
                     animated: true,

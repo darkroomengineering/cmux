@@ -602,7 +602,7 @@ private struct BrowserImportDataTypesStepView: View {
             )
             .toggleStyle(.checkbox)
             .accessibilityIdentifier("BrowserImportCookiesCheckbox")
-            .onChange(of: viewModel.includeCookies) { _ in viewModel.validationMessage = nil }
+            .onChange(of: viewModel.includeCookies) { viewModel.validationMessage = nil }
 
             Toggle(
                 String(localized: "browser.import.history", defaultValue: "History (visited pages)"),
@@ -610,7 +610,7 @@ private struct BrowserImportDataTypesStepView: View {
             )
             .toggleStyle(.checkbox)
             .accessibilityIdentifier("BrowserImportHistoryCheckbox")
-            .onChange(of: viewModel.includeHistory) { _ in viewModel.validationMessage = nil }
+            .onChange(of: viewModel.includeHistory) { viewModel.validationMessage = nil }
 
             Toggle(
                 String(
@@ -621,7 +621,7 @@ private struct BrowserImportDataTypesStepView: View {
             )
             .toggleStyle(.checkbox)
             .accessibilityIdentifier("BrowserImportAdditionalDataCheckbox")
-            .onChange(of: viewModel.includeAdditionalData) { _ in viewModel.validationMessage = nil }
+            .onChange(of: viewModel.includeAdditionalData) { viewModel.validationMessage = nil }
 
             if viewModel.includeAdditionalData {
                 Text(
