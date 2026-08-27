@@ -601,7 +601,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertTrue(AppDelegate.prepareDuplicateStateForTesting(
             rootDirectory: rootDirectory,
             now: 10_000,
-            isProcessLive: { $0 == target }
+            isProcessLive: { $0 == target || $0 == request.requester }
         ))
         XCTAssertTrue(FileManager.default.fileExists(atPath: requestURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: acknowledgmentURL.path))
@@ -707,7 +707,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         ))
     }
 
-    func testAcceptingOneGenerationAcknowledgesExactTargetForEveryRequester() throws {
+    func testAcceptingOneGenerationAcknowledgesItsExactTargetAndGeneration() throws {
         let target = ProgramaSingleInstanceProcessKey(
             startSeconds: 1_000,
             startMicroseconds: 100,
@@ -734,15 +734,11 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 
         XCTAssertEqual(acknowledgment.target, target)
         XCTAssertEqual(acknowledgment.acceptedGeneration, acceptedRequest.generation)
-        for _ in 0..<2 {
-            XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
-                hasValidTargetAcknowledgment: true,
-                requestGenerationIsPending: true,
-                processIdentityMatches: true,
-                isTerminated: false,
-                response: nil
-            ), .skip)
-        }
+        XCTAssertTrue(AppDelegate.shouldAcceptDuplicateShutdownAcknowledgmentForTesting(
+            acknowledgment,
+            expectedRequest: acceptedRequest,
+            now: 10_002
+        ))
     }
 
     func testDelayedDuplicateTargetPromptsInsteadOfForcingAutomatically() {

@@ -8,6 +8,7 @@ import WebKit
 import Combine
 import ObjectiveC.runtime
 import Darwin
+import Security
 
 
 
@@ -8998,6 +8999,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     private nonisolated static let duplicateShutdownRequestMaxBytes = 4_096
     private nonisolated static let duplicateTerminationGraceInterval: TimeInterval = 2
     private nonisolated static let duplicateStateDirectoryMaxEntries = 128
+    private nonisolated static let duplicateStateDirectoryScanLimit = 512
     private nonisolated static let duplicateTargetRequestScanLimit = 32
 
     nonisolated static func shouldAcceptDuplicateShutdownRequest(
@@ -9044,18 +9046,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     nonisolated static func shouldAcceptDuplicateShutdownAcknowledgment(
         _ acknowledgment: SingleInstanceShutdownAcknowledgment?,
         expectedTarget: ProgramaSingleInstanceProcessKey,
+        expectedGeneration: UUID,
         requestCreatedAt: TimeInterval,
         now: TimeInterval
     ) -> Bool {
         guard let acknowledgment,
               acknowledgment.version == SingleInstanceShutdownAcknowledgment.currentVersion,
               acknowledgment.target == expectedTarget,
+              acknowledgment.acceptedGeneration == expectedGeneration,
               acknowledgment.createdAtUnixSeconds.isFinite else {
             return false
         }
-        let requestDistance = abs(acknowledgment.createdAtUnixSeconds - requestCreatedAt)
+        let requestDistance = acknowledgment.createdAtUnixSeconds - requestCreatedAt
         return acknowledgment.createdAtUnixSeconds <= now + 1
+            && requestDistance >= 0
             && requestDistance <= duplicateShutdownRequestMaxAge
+    }
+
+    nonisolated static func shouldScheduleDuplicateFallback(
+        requestWasWritten: Bool,
+        gracefulTerminationAccepted: Bool
+    ) -> Bool {
+        requestWasWritten
+    }
+
+    nonisolated static func duplicateForcePromptResponse(
+        button: SingleInstanceForcePromptButton
+    ) -> SingleInstanceForcePromptResponse {
+        switch button {
+        case .primary, .escape: return .cancel
+        case .secondary: return .forceClose
+        }
+    }
+
+    nonisolated static func shouldTrustDuplicateCodeIdentity(
+        current: SingleInstanceCodeIdentity,
+        candidate: SingleInstanceCodeIdentity,
+        designatedRequirementMatches: Bool,
+        isDebugBuild: Bool
+    ) -> Bool {
+        guard designatedRequirementMatches,
+              let currentSigningIdentifier = current.signingIdentifier,
+              !currentSigningIdentifier.isEmpty,
+              candidate.signingIdentifier == currentSigningIdentifier else {
+            return false
+        }
+        if isDebugBuild, current.teamIdentifier == nil, candidate.teamIdentifier == nil {
+            return true
+        }
+        guard let currentTeamIdentifier = current.teamIdentifier,
+              !currentTeamIdentifier.isEmpty else {
+            return false
+        }
+        return candidate.teamIdentifier == currentTeamIdentifier
     }
 
     nonisolated static func duplicateFallbackAction(
@@ -9105,6 +9148,115 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         }
         dilog("single_instance", "pid=\(candidateProcessIdentifier) outcome=accepted reason=gui_candidate")
         return true
+    }
+
+    nonisolated private static func staticCodeForCurrentProcess() -> SecStaticCode? {
+        var dynamicCode: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(rawValue: 0), &dynamicCode) == errSecSuccess,
+              let dynamicCode else {
+            return nil
+        }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(
+            dynamicCode,
+            SecCSFlags(rawValue: 0),
+            &staticCode
+        ) == errSecSuccess else {
+            return nil
+        }
+        return staticCode
+    }
+
+    nonisolated private static func staticCode(
+        for processIdentifier: pid_t
+    ) -> SecStaticCode? {
+        let attributes = [
+            kSecGuestAttributePid as String: NSNumber(value: processIdentifier),
+        ] as CFDictionary
+        var dynamicCode: SecCode?
+        guard SecCodeCopyGuestWithAttributes(
+            nil,
+            attributes,
+            SecCSFlags(rawValue: 0),
+            &dynamicCode
+        ) == errSecSuccess,
+              let dynamicCode else {
+            return nil
+        }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(
+            dynamicCode,
+            SecCSFlags(rawValue: 0),
+            &staticCode
+        ) == errSecSuccess else {
+            return nil
+        }
+        return staticCode
+    }
+
+    nonisolated private static func singleInstanceCodeIdentity(
+        for staticCode: SecStaticCode
+    ) -> SingleInstanceCodeIdentity? {
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInformation
+        ) == errSecSuccess,
+              let signingInformation else {
+            return nil
+        }
+        let dictionary = signingInformation as NSDictionary
+        return SingleInstanceCodeIdentity(
+            signingIdentifier: dictionary[kSecCodeInfoIdentifier] as? String,
+            teamIdentifier: dictionary[kSecCodeInfoTeamIdentifier] as? String
+        )
+    }
+
+    nonisolated private static func isAuthenticatedProgramaApplication(
+        processIdentifier: pid_t
+    ) -> Bool {
+        guard let currentCode = staticCodeForCurrentProcess(),
+              let candidateCode = staticCode(for: processIdentifier),
+              let currentIdentity = singleInstanceCodeIdentity(for: currentCode),
+              let candidateIdentity = singleInstanceCodeIdentity(for: candidateCode) else {
+            dilog("single_instance", "pid=\(processIdentifier) outcome=rejected reason=signing_metadata")
+            return false
+        }
+        var designatedRequirement: SecRequirement?
+        guard SecCodeCopyDesignatedRequirement(
+            currentCode,
+            SecCSFlags(rawValue: 0),
+            &designatedRequirement
+        ) == errSecSuccess,
+              let designatedRequirement else {
+            dilog("single_instance", "pid=\(processIdentifier) outcome=rejected reason=signing_requirement")
+            return false
+        }
+        let validationFlags = SecCSFlags(
+            rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures
+        )
+        let designatedRequirementMatches = SecStaticCodeCheckValidity(
+            candidateCode,
+            validationFlags,
+            designatedRequirement
+        ) == errSecSuccess
+#if DEBUG
+        let isDebugBuild = true
+#else
+        let isDebugBuild = false
+#endif
+        let trusted = shouldTrustDuplicateCodeIdentity(
+            current: currentIdentity,
+            candidate: candidateIdentity,
+            designatedRequirementMatches: designatedRequirementMatches,
+            isDebugBuild: isDebugBuild
+        )
+        dilog(
+            "single_instance",
+            "pid=\(processIdentifier) outcome=\(trusted ? "accepted" : "rejected") reason=code_identity"
+        )
+        return trusted
     }
 
     private static func scheduleDuplicateTermination(
@@ -9170,7 +9322,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     ) -> URL {
         duplicateShutdownAcknowledgmentURL(
             rootDirectory: rootDirectory,
-            target: target
+            target: target,
+            generation: generation
         )
     }
 
@@ -9199,12 +9352,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             ),
             acknowledgmentURL: duplicateShutdownAcknowledgmentURL(
                 rootDirectory: rootDirectory,
-                target: request.target
+                target: request.target,
+                generation: request.generation
             )
         )
         let existed = isExactRequestPending(pending)
-        removeExactRequest(pending)
-        try? FileManager.default.removeItem(at: pending.acknowledgmentURL)
+        removeExactShutdownState(pending)
         return existed
     }
 
@@ -9213,7 +9366,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         now: TimeInterval,
         isProcessLive: (ProgramaSingleInstanceProcessKey) -> Bool
     ) -> Bool {
-        boundedSingleInstanceStateURLs(in: rootDirectory) != nil
+        preparedSingleInstanceStateURLs(
+            in: rootDirectory,
+            now: now,
+            isProcessLive: isProcessLive
+        ) != nil
     }
 
     nonisolated static func shouldAcceptDuplicateShutdownAcknowledgmentForTesting(
@@ -9224,6 +9381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         shouldAcceptDuplicateShutdownAcknowledgment(
             acknowledgment,
             expectedTarget: expectedRequest.target,
+            expectedGeneration: expectedRequest.generation,
             requestCreatedAt: expectedRequest.createdAtUnixSeconds,
             now: now
         )
@@ -9233,13 +9391,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         requestWasWritten: Bool,
         gracefulTerminationAccepted: Bool
     ) -> Bool {
-        requestWasWritten
+        shouldScheduleDuplicateFallback(
+            requestWasWritten: requestWasWritten,
+            gracefulTerminationAccepted: gracefulTerminationAccepted
+        )
     }
 
     nonisolated static func duplicateForcePromptResponseForTesting(
         button: SingleInstanceForcePromptButton
     ) -> SingleInstanceForcePromptResponse {
-        button == .primary ? .forceClose : .cancel
+        duplicateForcePromptResponse(button: button)
     }
 
     nonisolated static func shouldTrustDuplicateCodeIdentityForTesting(
@@ -9248,7 +9409,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         designatedRequirementMatches: Bool,
         isDebugBuild: Bool
     ) -> Bool {
-        designatedRequirementMatches
+        shouldTrustDuplicateCodeIdentity(
+            current: current,
+            candidate: candidate,
+            designatedRequirementMatches: designatedRequirementMatches,
+            isDebugBuild: isDebugBuild
+        )
     }
 
     nonisolated static func shouldAcceptDuplicateShutdownRequestForTesting(
@@ -9303,8 +9469,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         let acknowledgmentURL: URL
     }
 
-    nonisolated private static func singleInstanceStateDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent(
+    nonisolated private static func singleInstanceStateDirectoryURL(
+        rootDirectory: URL = FileManager.default.temporaryDirectory
+    ) -> URL {
+        rootDirectory.appendingPathComponent(
             "programa-single-instance-\(getuid())",
             isDirectory: true
         )
@@ -9329,10 +9497,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
     nonisolated private static func duplicateShutdownAcknowledgmentURL(
         rootDirectory: URL,
-        target: ProgramaSingleInstanceProcessKey
+        target: ProgramaSingleInstanceProcessKey,
+        generation: UUID
     ) -> URL {
         rootDirectory.appendingPathComponent(
-            "ack-\(singleInstanceTargetComponent(target)).json",
+            "ack-\(singleInstanceTargetComponent(target))-\(generation.uuidString.lowercased()).json",
             isDirectory: false
         )
     }
@@ -9365,26 +9534,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         } catch {
             return nil
         }
-    }
-
-    nonisolated private static func boundedSingleInstanceStateURLs(
-        in directoryURL: URL
-    ) -> [URL]? {
-        let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(
-            at: directoryURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
-        ) else {
-            return nil
-        }
-
-        var urls: [URL] = []
-        for case let url as URL in enumerator {
-            urls.append(url)
-            guard urls.count <= duplicateStateDirectoryMaxEntries else { return nil }
-        }
-        return urls
     }
 
     nonisolated private static func readBoundedSingleInstanceJSON<Value: Decodable>(
@@ -9434,11 +9583,157 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         ) == pending.request
     }
 
+    @discardableResult
     nonisolated private static func removeExactRequest(
         _ pending: PendingSingleInstanceShutdown
+    ) -> Bool {
+        guard isExactRequestPending(pending) else {
+            return !FileManager.default.fileExists(atPath: pending.requestURL.path)
+        }
+        do {
+            try FileManager.default.removeItem(at: pending.requestURL)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    @discardableResult
+    nonisolated private static func removeExactAcknowledgment(
+        target: ProgramaSingleInstanceProcessKey,
+        generation: UUID,
+        url: URL
+    ) -> Bool {
+        guard let acknowledgment = readBoundedSingleInstanceJSON(
+            SingleInstanceShutdownAcknowledgment.self,
+            from: url
+        ) else {
+            return !FileManager.default.fileExists(atPath: url.path)
+        }
+        guard acknowledgment.version == SingleInstanceShutdownAcknowledgment.currentVersion,
+              acknowledgment.target == target,
+              acknowledgment.acceptedGeneration == generation else {
+            return false
+        }
+        do {
+            try FileManager.default.removeItem(at: url)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    nonisolated private static func removeExactShutdownState(
+        _ pending: PendingSingleInstanceShutdown
     ) {
-        guard isExactRequestPending(pending) else { return }
-        try? FileManager.default.removeItem(at: pending.requestURL)
+        _ = removeExactRequest(pending)
+        _ = removeExactAcknowledgment(
+            target: pending.request.target,
+            generation: pending.request.generation,
+            url: pending.acknowledgmentURL
+        )
+    }
+
+    nonisolated private static func preparedSingleInstanceStateURLs(
+        in directoryURL: URL,
+        now: TimeInterval,
+        isProcessLive: (ProgramaSingleInstanceProcessKey) -> Bool
+    ) -> [URL]? {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else {
+            return nil
+        }
+
+        var requests: [(URL, SingleInstanceShutdownRequest)] = []
+        var acknowledgments: [(URL, SingleInstanceShutdownAcknowledgment)] = []
+        var scannedCount = 0
+        for case let url as URL in enumerator {
+            scannedCount += 1
+            guard scannedCount <= duplicateStateDirectoryScanLimit else { return nil }
+
+            if url.lastPathComponent.hasPrefix("request-"),
+               let request = readBoundedSingleInstanceJSON(
+                   SingleInstanceShutdownRequest.self,
+                   from: url
+               ),
+               duplicateShutdownRequestURL(
+                   rootDirectory: directoryURL,
+                   target: request.target,
+                   generation: request.generation
+               ).standardizedFileURL == url.standardizedFileURL {
+                let age = now - request.createdAtUnixSeconds
+                guard request.version == SingleInstanceShutdownRequest.currentVersion,
+                      request.createdAtUnixSeconds.isFinite,
+                      age >= 0 else { return nil }
+                requests.append((url, request))
+                continue
+            }
+
+            if url.lastPathComponent.hasPrefix("ack-"),
+               let acknowledgment = readBoundedSingleInstanceJSON(
+                   SingleInstanceShutdownAcknowledgment.self,
+                   from: url
+               ),
+               duplicateShutdownAcknowledgmentURL(
+                   rootDirectory: directoryURL,
+                   target: acknowledgment.target,
+                   generation: acknowledgment.acceptedGeneration
+               ).standardizedFileURL == url.standardizedFileURL {
+                let age = now - acknowledgment.createdAtUnixSeconds
+                guard acknowledgment.version == SingleInstanceShutdownAcknowledgment.currentVersion,
+                      acknowledgment.createdAtUnixSeconds.isFinite,
+                      age >= 0 else { return nil }
+                acknowledgments.append((url, acknowledgment))
+                continue
+            }
+
+            return nil
+        }
+
+        var retainedURLs: [URL] = []
+        var liveRequestKeys: Set<String> = []
+        for (url, request) in requests {
+            let age = now - request.createdAtUnixSeconds
+            let isStale = age > duplicateShutdownRequestMaxAge
+                && (!isProcessLive(request.target) || !isProcessLive(request.requester))
+            if isStale {
+                let pending = PendingSingleInstanceShutdown(
+                    request: request,
+                    requestURL: url,
+                    acknowledgmentURL: duplicateShutdownAcknowledgmentURL(
+                        rootDirectory: directoryURL,
+                        target: request.target,
+                        generation: request.generation
+                    )
+                )
+                guard removeExactRequest(pending) else { return nil }
+            } else {
+                retainedURLs.append(url)
+                liveRequestKeys.insert(
+                    "\(singleInstanceTargetComponent(request.target))-\(request.generation.uuidString.lowercased())"
+                )
+            }
+        }
+        for (url, acknowledgment) in acknowledgments {
+            let requestKey = "\(singleInstanceTargetComponent(acknowledgment.target))-\(acknowledgment.acceptedGeneration.uuidString.lowercased())"
+            let age = now - acknowledgment.createdAtUnixSeconds
+            let isStale = age > duplicateShutdownRequestMaxAge
+                && (!isProcessLive(acknowledgment.target) || !liveRequestKeys.contains(requestKey))
+            if isStale {
+                guard removeExactAcknowledgment(
+                    target: acknowledgment.target,
+                    generation: acknowledgment.acceptedGeneration,
+                    url: url
+                ) else { return nil }
+            } else {
+                retainedURLs.append(url)
+            }
+        }
+        guard retainedURLs.count <= duplicateStateDirectoryMaxEntries else { return nil }
+        return retainedURLs
     }
 
     nonisolated private static func hasValidAcknowledgment(
@@ -9452,6 +9747,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         return shouldAcceptDuplicateShutdownAcknowledgment(
             acknowledgment,
             expectedTarget: pending.request.target,
+            expectedGeneration: pending.request.generation,
             requestCreatedAt: pending.request.createdAtUnixSeconds,
             now: now
         )
@@ -9462,7 +9758,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         requester: ProgramaSingleInstanceProcessKey
     ) -> PendingSingleInstanceShutdown? {
         guard let directoryURL = validatedSingleInstanceStateDirectory(),
-              boundedSingleInstanceStateURLs(in: directoryURL) != nil else {
+              preparedSingleInstanceStateURLs(
+                  in: directoryURL,
+                  now: Date().timeIntervalSince1970,
+                  isProcessLive: { singleInstanceProcessKey(for: $0.processIdentifier) == $0 }
+              ) != nil else {
             dilog("single_instance", "pid=\(target.processIdentifier) outcome=rejected reason=state_directory")
             return nil
         }
@@ -9480,7 +9780,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             ),
             acknowledgmentURL: duplicateShutdownAcknowledgmentURL(
                 rootDirectory: directoryURL,
-                target: target
+                target: target,
+                generation: request.generation
             )
         )
         guard writeBoundedSingleInstanceJSON(request, to: pending.requestURL) else {
@@ -9496,7 +9797,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         guard let currentKey = Self.singleInstanceProcessKey(for: currentProcessIdentifier),
               let bundleIdentifier = Bundle.main.bundleIdentifier,
               let directoryURL = Self.validatedSingleInstanceStateDirectory(),
-              let stateURLs = Self.boundedSingleInstanceStateURLs(in: directoryURL) else {
+              let stateURLs = Self.preparedSingleInstanceStateURLs(
+                  in: directoryURL,
+                  now: Date().timeIntervalSince1970,
+                  isProcessLive: { Self.singleInstanceProcessKey(for: $0.processIdentifier) == $0 }
+              ) else {
             dilog("single_instance", "pid=\(currentProcessIdentifier) outcome=rejected reason=state_directory")
             return false
         }
@@ -9505,14 +9810,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             .appendingPathComponent("Contents/Resources/bin/programa", isDirectory: false)
             .standardizedFileURL
             .resolvingSymlinksInPath()
-        var targetRequestCount = 0
-        for requestURL in stateURLs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            guard requestURL.lastPathComponent.hasPrefix(requestPrefix) else { continue }
-            targetRequestCount += 1
-            guard targetRequestCount <= Self.duplicateTargetRequestScanLimit else {
-                dilog("single_instance", "pid=\(currentProcessIdentifier) outcome=rejected reason=request_limit")
-                return false
-            }
+        let targetRequestURLs = stateURLs.filter {
+            $0.lastPathComponent.hasPrefix(requestPrefix)
+        }
+        guard targetRequestURLs.count <= Self.duplicateTargetRequestScanLimit else {
+            dilog("single_instance", "pid=\(currentProcessIdentifier) outcome=rejected reason=request_limit")
+            return false
+        }
+        var acceptedAnyRequest = false
+        for requestURL in targetRequestURLs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             guard let request = Self.readBoundedSingleInstanceJSON(
                 SingleInstanceShutdownRequest.self,
                 from: requestURL
@@ -9531,6 +9837,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                     currentProcessIdentifier: currentProcessIdentifier,
                     embeddedCLIURL: embeddedCLIURL
                 )
+                && Self.isAuthenticatedProgramaApplication(
+                    processIdentifier: application.processIdentifier
+                )
             } ?? false
             guard Self.shouldAcceptDuplicateShutdownRequest(
                 request,
@@ -9543,6 +9852,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             ) else {
                 continue
             }
+            acceptedAnyRequest = true
 
             let acknowledgment = SingleInstanceShutdownAcknowledgment(
                 acceptedGeneration: request.generation,
@@ -9551,15 +9861,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             )
             let acknowledgmentURL = Self.duplicateShutdownAcknowledgmentURL(
                 rootDirectory: directoryURL,
-                target: currentKey
+                target: currentKey,
+                generation: request.generation
             )
-            guard Self.writeBoundedSingleInstanceJSON(acknowledgment, to: acknowledgmentURL) else {
+            if !Self.writeBoundedSingleInstanceJSON(acknowledgment, to: acknowledgmentURL) {
                 dilog("single_instance", "pid=\(currentProcessIdentifier) outcome=rejected reason=ack_write")
-                return false
+                continue
             }
             dilog("single_instance", "pid=\(currentProcessIdentifier) outcome=accepted reason=shutdown_request")
-            return true
         }
+        if acceptedAnyRequest { return true }
         dilog("single_instance", "pid=\(currentProcessIdentifier) outcome=missing reason=shutdown_request")
         return false
     }
@@ -9596,12 +9907,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             localized: "dialog.singleInstanceNotResponding.message",
             defaultValue: "The existing Programa instance is not responding. Force closing it may lose unsaved terminal or session state."
         )
-        alert.addButton(withTitle: String(
+        let cancelButton = alert.addButton(
+            withTitle: String(localized: "common.cancel", defaultValue: "Cancel")
+        )
+        cancelButton.keyEquivalent = "\u{1b}"
+        let forceCloseButton = alert.addButton(withTitle: String(
             localized: "dialog.singleInstanceNotResponding.forceClose",
             defaultValue: "Force Close"
         ))
-        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
-        return alert.runModal() == .alertFirstButtonReturn ? .forceClose : .cancel
+        forceCloseButton.keyEquivalent = ""
+        alert.window.defaultButtonCell = cancelButton.cell as? NSButtonCell
+
+        let button: SingleInstanceForcePromptButton
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: button = .primary
+        case .alertSecondButtonReturn: button = .secondary
+        default: button = .escape
+        }
+        return duplicateForcePromptResponse(button: button)
     }
 
     @MainActor
@@ -9612,7 +9935,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         let processIdentifier = pending.request.target.processIdentifier
         let (initialAction, _) = duplicateFallbackState(app: app, pending: pending, response: nil)
         guard initialAction == .prompt else {
-            removeExactRequest(pending)
+            removeExactShutdownState(pending)
             dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=fallback_revalidated")
             return
         }
@@ -9633,27 +9956,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         switch action {
         case .force:
             guard let resolvedApplication else {
-                removeExactRequest(pending)
+                removeExactShutdownState(pending)
                 dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=no_longer_running")
                 return
             }
             let forced = resolvedApplication.forceTerminate()
-            removeExactRequest(pending)
+            removeExactShutdownState(pending)
             dilog(
                 "single_instance",
                 "pid=\(processIdentifier) outcome=\(forced ? "forced" : "force_rejected") reason=user_consent"
             )
         case .exitNewer:
-            removeExactRequest(pending)
+            removeExactShutdownState(pending)
             resolvedApplication?.activate(options: [.activateAllWindows])
             AppDelegate.shared?.isSingleInstanceLoserTerminationConfirmed = true
             dilog("single_instance", "pid=\(processIdentifier) outcome=exiting_newer reason=user_cancel")
             NSApp.terminate(nil)
         case .skip:
-            removeExactRequest(pending)
+            removeExactShutdownState(pending)
             dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=post_prompt_revalidation")
         case .prompt:
-            removeExactRequest(pending)
+            removeExactShutdownState(pending)
             dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=invalid_prompt_state")
         }
     }
@@ -9679,7 +10002,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                     "single_instance",
                     "pid=\(processIdentifier) outcome=\(accepted ? "requested" : "request_rejected") reason=graceful_terminate"
                 )
-                return true
+                return shouldScheduleDuplicateFallback(
+                    requestWasWritten: true,
+                    gracefulTerminationAccepted: accepted
+                )
             },
             scheduleGrace: { action in
                 DispatchQueue.main.asyncAfter(deadline: .now() + duplicateTerminationGraceInterval) { @MainActor in
@@ -9713,6 +10039,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 expectedBundleIdentifier: bundleId,
                 currentProcessIdentifier: currentPid,
                 embeddedCLIURL: embeddedCLIURL
+            ) else {
+                continue
+            }
+            guard Self.isAuthenticatedProgramaApplication(
+                processIdentifier: app.processIdentifier
             ) else {
                 continue
             }
@@ -9753,6 +10084,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 expectedBundleIdentifier: bundleId,
                 currentProcessIdentifier: currentPid,
                 embeddedCLIURL: embeddedCLIURL
+            ) else {
+                return
+            }
+            guard Self.isAuthenticatedProgramaApplication(
+                processIdentifier: app.processIdentifier
             ) else {
                 return
             }
