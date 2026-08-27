@@ -12169,13 +12169,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sign in to a supported provider, then refresh."
+            "value": "Sign in to a supported provider to view usage."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "対応するプロバイダーにサインインしてから更新してください。"
+            "value": "使用量を表示するには、対応するプロバイダーにサインインしてください。"
           }
         }
       }

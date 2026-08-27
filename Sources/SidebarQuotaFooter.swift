@@ -21,7 +21,11 @@ struct SidebarQuotaPresentation {
 
     let availableSnapshots: [ProviderUsageSnapshot]
     let failures: [Failure]
-    let unavailableProviders: [ProviderUsageProvider]
+    let unavailableProviders: [ProviderUsageProvider] = []
+
+    var showsEmptyState: Bool {
+        availableSnapshots.isEmpty && failures.isEmpty
+    }
 
     init(results: [ProviderUsageResult]) {
         availableSnapshots = results.compactMap { result in
@@ -32,15 +36,13 @@ struct SidebarQuotaPresentation {
             guard case let .failed(provider, message) = result else { return nil }
             return Failure(provider: provider, message: message)
         }
-        unavailableProviders = results.compactMap { result in
-            guard case let .unavailable(provider) = result else { return nil }
-            return provider
-        }
     }
 }
 
 /// Provider usage content hosted by the sidebar footer's on-demand popover.
 struct SidebarQuotaFooter: View {
+    static let showsManualRefreshControl = false
+
     @ObservedObject var store: ProviderUsageStore
 
     private var presentation: SidebarQuotaPresentation {
@@ -60,11 +62,6 @@ struct SidebarQuotaFooter: View {
                             String(localized: "sidebar.usage.refreshing", defaultValue: "Refreshing usage")
                         )
                 }
-                Button(String(localized: "sidebar.usage.refresh", defaultValue: "Refresh")) {
-                    Task { await store.refresh() }
-                }
-                .controlSize(.small)
-                .disabled(store.isRefreshing)
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -76,7 +73,7 @@ struct SidebarQuotaFooter: View {
                     if store.results.isEmpty, store.isRefreshing {
                         loadingState
                     } else {
-                        if presentation.availableSnapshots.isEmpty {
+                        if presentation.showsEmptyState {
                             emptyState
                         }
 
@@ -88,15 +85,15 @@ struct SidebarQuotaFooter: View {
                             failureSection(provider: failure.provider, message: failure.message)
                         }
 
-                        ForEach(presentation.unavailableProviders, id: \.self) { provider in
-                            unavailableSection(provider: provider)
-                        }
                     }
                 }
                 .padding(14)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(width: 320, height: 340)
+        .frame(width: 320)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxHeight: 480, alignment: .top)
     }
 
     private var loadingState: some View {
@@ -117,7 +114,7 @@ struct SidebarQuotaFooter: View {
             Text(
                 String(
                     localized: "sidebar.usage.empty.subtitle",
-                    defaultValue: "Sign in to a supported provider, then refresh."
+                    defaultValue: "Sign in to a supported provider to view usage."
                 )
             )
             .font(.system(size: 11))
@@ -197,17 +194,6 @@ struct SidebarQuotaFooter: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
         )
-        .accessibilityElement(children: .combine)
-    }
-
-    private func unavailableSection(provider: ProviderUsageProvider) -> some View {
-        HStack(spacing: 6) {
-            Text(provider.localizedDisplayName)
-                .fontWeight(.medium)
-            Text(String(localized: "sidebar.usage.unavailable", defaultValue: "Unavailable"))
-                .foregroundStyle(.secondary)
-        }
-        .font(.system(size: 11))
         .accessibilityElement(children: .combine)
     }
 
