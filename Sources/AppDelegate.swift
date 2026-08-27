@@ -8858,6 +8858,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         static let currentVersion = 1
 
         let version: Int
+        let generation: UUID
         let targetStartSeconds: Int64
         let targetStartMicroseconds: Int64
         let targetProcessIdentifier: pid_t
@@ -8868,11 +8869,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
         init(
             version: Int = Self.currentVersion,
+            generation: UUID = UUID(),
             target: ProgramaSingleInstanceProcessKey,
             requester: ProgramaSingleInstanceProcessKey,
             createdAtUnixSeconds: TimeInterval
         ) {
             self.version = version
+            self.generation = generation
             targetStartSeconds = target.startSeconds
             targetStartMicroseconds = target.startMicroseconds
             targetProcessIdentifier = target.processIdentifier
@@ -8897,6 +8900,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 processIdentifier: requesterProcessIdentifier
             )
         }
+    }
+
+    struct SingleInstanceShutdownAcknowledgment: Codable, Equatable, Sendable {
+        static let currentVersion = 1
+
+        let version: Int
+        let acceptedGeneration: UUID
+        let targetStartSeconds: Int64
+        let targetStartMicroseconds: Int64
+        let targetProcessIdentifier: pid_t
+        let createdAtUnixSeconds: TimeInterval
+
+        init(
+            version: Int = Self.currentVersion,
+            acceptedGeneration: UUID,
+            target: ProgramaSingleInstanceProcessKey,
+            createdAtUnixSeconds: TimeInterval
+        ) {
+            self.version = version
+            self.acceptedGeneration = acceptedGeneration
+            targetStartSeconds = target.startSeconds
+            targetStartMicroseconds = target.startMicroseconds
+            targetProcessIdentifier = target.processIdentifier
+            self.createdAtUnixSeconds = createdAtUnixSeconds
+        }
+
+        var target: ProgramaSingleInstanceProcessKey {
+            ProgramaSingleInstanceProcessKey(
+                startSeconds: targetStartSeconds,
+                startMicroseconds: targetStartMicroseconds,
+                processIdentifier: targetProcessIdentifier
+            )
+        }
+    }
+
+    enum SingleInstanceForcePromptResponse: Equatable, Sendable {
+        case forceClose
+        case cancel
+    }
+
+    enum SingleInstanceFallbackAction: Equatable, Sendable {
+        case skip
+        case prompt
+        case force
+        case exitNewer
     }
 
     nonisolated static func singleInstanceProcessKey(
@@ -9026,6 +9074,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
 #if DEBUG
+    nonisolated static func duplicateRequestURLForTesting(
+        rootDirectory: URL,
+        target: ProgramaSingleInstanceProcessKey,
+        generation: UUID
+    ) -> URL {
+        rootDirectory.appendingPathComponent(
+            "programa-single-instance-\(getuid())-\(target.processIdentifier).json",
+            isDirectory: false
+        )
+    }
+
+    nonisolated static func acknowledgmentForAcceptedRequestForTesting(
+        _ request: SingleInstanceShutdownRequest,
+        currentProcessKey: ProgramaSingleInstanceProcessKey,
+        now: TimeInterval
+    ) -> SingleInstanceShutdownAcknowledgment? {
+        nil
+    }
+
+    nonisolated static func duplicateFallbackActionForTesting(
+        hasValidTargetAcknowledgment: Bool,
+        requestGenerationIsPending: Bool,
+        processIdentityMatches: Bool,
+        isTerminated: Bool,
+        response: SingleInstanceForcePromptResponse?
+    ) -> SingleInstanceFallbackAction {
+        guard requestGenerationIsPending, processIdentityMatches, !isTerminated else {
+            return .skip
+        }
+        return .force
+    }
+
     nonisolated static func shouldAcceptDuplicateShutdownRequestForTesting(
         _ request: SingleInstanceShutdownRequest?,
         currentProcessKey: ProgramaSingleInstanceProcessKey,
@@ -9045,6 +9125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     nonisolated static func shouldWarnBeforeTerminationForTesting(
         isTaggedDevBuild: Bool,
         isQuitWarningConfirmed: Bool,
+        isInternalSingleInstanceLoserExit: Bool,
         hasValidatedDuplicateShutdownRequest: Bool,
         isQuitWarningEnabled: Bool
     ) -> Bool {

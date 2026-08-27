@@ -254,6 +254,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertFalse(AppDelegate.shouldWarnBeforeTerminationForTesting(
             isTaggedDevBuild: false,
             isQuitWarningConfirmed: false,
+            isInternalSingleInstanceLoserExit: false,
             hasValidatedDuplicateShutdownRequest: accepted,
             isQuitWarningEnabled: true
         ))
@@ -340,6 +341,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertTrue(AppDelegate.shouldWarnBeforeTerminationForTesting(
             isTaggedDevBuild: false,
             isQuitWarningConfirmed: false,
+            isInternalSingleInstanceLoserExit: false,
             hasValidatedDuplicateShutdownRequest: false,
             isQuitWarningEnabled: true
         ))
@@ -386,6 +388,149 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             resolvedProcessKey: expected,
             isTerminated: false,
             requestIsPending: true
+        ))
+    }
+
+    func testConcurrentDuplicateRequestGenerationsCannotOverwriteOrDeleteEachOther() throws {
+        let rootDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-ownership-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: rootDirectory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: rootDirectory) }
+
+        let target = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let firstGeneration = UUID()
+        let secondGeneration = UUID()
+        let firstURL = AppDelegate.duplicateRequestURLForTesting(
+            rootDirectory: rootDirectory,
+            target: target,
+            generation: firstGeneration
+        )
+        let secondURL = AppDelegate.duplicateRequestURLForTesting(
+            rootDirectory: rootDirectory,
+            target: target,
+            generation: secondGeneration
+        )
+
+        try Data("first".utf8).write(to: firstURL, options: .atomic)
+        try Data("second".utf8).write(to: secondURL, options: .atomic)
+
+        XCTAssertNotEqual(firstURL, secondURL)
+        XCTAssertEqual(try Data(contentsOf: firstURL), Data("first".utf8))
+        XCTAssertEqual(try Data(contentsOf: secondURL), Data("second".utf8))
+
+        try FileManager.default.removeItem(at: firstURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
+    func testAcceptingOneGenerationAcknowledgesExactTargetForEveryRequester() throws {
+        let target = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let requester = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 200
+        )
+        let acceptedRequest = AppDelegate.SingleInstanceShutdownRequest(
+            generation: UUID(),
+            target: target,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+        let acknowledgment = try XCTUnwrap(
+            AppDelegate.acknowledgmentForAcceptedRequestForTesting(
+                acceptedRequest,
+                currentProcessKey: target,
+                now: 10_001
+            )
+        )
+
+        XCTAssertEqual(acknowledgment.target, target)
+        XCTAssertEqual(acknowledgment.acceptedGeneration, acceptedRequest.generation)
+        for _ in 0..<2 {
+            XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+                hasValidTargetAcknowledgment: true,
+                requestGenerationIsPending: true,
+                processIdentityMatches: true,
+                isTerminated: false,
+                response: nil
+            ), .skip)
+        }
+    }
+
+    func testDelayedDuplicateTargetPromptsInsteadOfForcingAutomatically() {
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
+            isTerminated: false,
+            response: nil
+        ), .prompt)
+    }
+
+    func testDuplicateForceRequiresConsentAndCurrentUnacknowledgedGeneration() {
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
+            isTerminated: false,
+            response: .forceClose
+        ), .force)
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: true,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
+            isTerminated: false,
+            response: .forceClose
+        ), .skip)
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: false,
+            processIdentityMatches: true,
+            isTerminated: false,
+            response: .forceClose
+        ), .skip)
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: false,
+            isTerminated: false,
+            response: .forceClose
+        ), .skip)
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
+            isTerminated: true,
+            response: .forceClose
+        ), .skip)
+    }
+
+    func testDuplicateForcePromptCancelSelectsCleanNewerProcessExit() {
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
+            isTerminated: false,
+            response: .cancel
+        ), .exitNewer)
+        XCTAssertFalse(AppDelegate.shouldWarnBeforeTerminationForTesting(
+            isTaggedDevBuild: false,
+            isQuitWarningConfirmed: false,
+            isInternalSingleInstanceLoserExit: true,
+            hasValidatedDuplicateShutdownRequest: false,
+            isQuitWarningEnabled: true
         ))
     }
 
