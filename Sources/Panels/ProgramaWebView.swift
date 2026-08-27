@@ -656,7 +656,7 @@ final class ProgramaWebView: WKWebView {
         for key in candidates {
             for item in queryItems where item.name.lowercased() == key {
                 guard let raw = item.value, !raw.isEmpty,
-                      let candidate = URL(string: raw.removingPercentEncoding ?? raw),
+                      let candidate = URL(string: raw),
                       isDownloadableScheme(candidate) else {
                     continue
                 }
