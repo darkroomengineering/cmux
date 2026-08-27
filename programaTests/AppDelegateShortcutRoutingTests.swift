@@ -224,6 +224,160 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertEqual(forcedTerminationCount, 1)
     }
 
+    func testValidatedDuplicateShutdownRequestTargetsExactCurrentProcessAndBypassesWarning() {
+        let current = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let requester = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 200
+        )
+        let request = AppDelegate.SingleInstanceShutdownRequest(
+            target: current,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+
+        let accepted = AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            request,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        )
+
+        XCTAssertTrue(accepted)
+        XCTAssertFalse(AppDelegate.shouldWarnBeforeTerminationForTesting(
+            isTaggedDevBuild: false,
+            isQuitWarningConfirmed: false,
+            hasValidatedDuplicateShutdownRequest: accepted,
+            isQuitWarningEnabled: true
+        ))
+    }
+
+    func testDuplicateShutdownRequestFailsClosedWhenMissingStaleMalformedOrMismatched() {
+        let current = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let requester = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 200
+        )
+        let wrongTarget = ProgramaSingleInstanceProcessKey(
+            startSeconds: 999,
+            startMicroseconds: 999,
+            processIdentifier: 99
+        )
+        let staleRequest = AppDelegate.SingleInstanceShutdownRequest(
+            target: current,
+            requester: requester,
+            createdAtUnixSeconds: 9_000
+        )
+        let malformedVersionRequest = AppDelegate.SingleInstanceShutdownRequest(
+            version: AppDelegate.SingleInstanceShutdownRequest.currentVersion + 1,
+            target: current,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+        let mismatchedTargetRequest = AppDelegate.SingleInstanceShutdownRequest(
+            target: wrongTarget,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            nil,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            staleRequest,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            malformedVersionRequest,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            mismatchedTargetRequest,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            staleRequest,
+            currentProcessKey: current,
+            now: 9_001,
+            resolvedRequesterKey: wrongTarget,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            staleRequest,
+            currentProcessKey: current,
+            now: 9_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: false
+        ))
+    }
+
+    func testOrdinaryQuitStillWarnsWhenWarningIsEnabled() {
+        XCTAssertTrue(AppDelegate.shouldWarnBeforeTerminationForTesting(
+            isTaggedDevBuild: false,
+            isQuitWarningConfirmed: false,
+            hasValidatedDuplicateShutdownRequest: false,
+            isQuitWarningEnabled: true
+        ))
+    }
+
+    func testDuplicateForceFallbackRequiresSameLiveProcessIdentity() {
+        let expected = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let changed = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 100
+        )
+
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: nil,
+            isTerminated: false
+        ))
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: changed,
+            isTerminated: false
+        ))
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: expected,
+            isTerminated: true
+        ))
+        XCTAssertTrue(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: expected,
+            isTerminated: false
+        ))
+    }
+
     func testDuplicateInstanceCandidateRejectsCurrentProcessAndDifferentBundle() {
         let embeddedCLIURL = URL(
             fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"

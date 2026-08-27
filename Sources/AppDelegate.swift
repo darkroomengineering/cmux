@@ -8854,6 +8854,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 #endif
 
+    struct SingleInstanceShutdownRequest: Codable, Equatable, Sendable {
+        static let currentVersion = 1
+
+        let version: Int
+        let targetStartSeconds: Int64
+        let targetStartMicroseconds: Int64
+        let targetProcessIdentifier: pid_t
+        let requesterStartSeconds: Int64
+        let requesterStartMicroseconds: Int64
+        let requesterProcessIdentifier: pid_t
+        let createdAtUnixSeconds: TimeInterval
+
+        init(
+            version: Int = Self.currentVersion,
+            target: ProgramaSingleInstanceProcessKey,
+            requester: ProgramaSingleInstanceProcessKey,
+            createdAtUnixSeconds: TimeInterval
+        ) {
+            self.version = version
+            targetStartSeconds = target.startSeconds
+            targetStartMicroseconds = target.startMicroseconds
+            targetProcessIdentifier = target.processIdentifier
+            requesterStartSeconds = requester.startSeconds
+            requesterStartMicroseconds = requester.startMicroseconds
+            requesterProcessIdentifier = requester.processIdentifier
+            self.createdAtUnixSeconds = createdAtUnixSeconds
+        }
+
+        var target: ProgramaSingleInstanceProcessKey {
+            ProgramaSingleInstanceProcessKey(
+                startSeconds: targetStartSeconds,
+                startMicroseconds: targetStartMicroseconds,
+                processIdentifier: targetProcessIdentifier
+            )
+        }
+
+        var requester: ProgramaSingleInstanceProcessKey {
+            ProgramaSingleInstanceProcessKey(
+                startSeconds: requesterStartSeconds,
+                startMicroseconds: requesterStartMicroseconds,
+                processIdentifier: requesterProcessIdentifier
+            )
+        }
+    }
+
     nonisolated static func singleInstanceProcessKey(
         for processIdentifier: pid_t
     ) -> ProgramaSingleInstanceProcessKey? {
@@ -8929,6 +8974,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
 #if DEBUG
+    nonisolated static func shouldAcceptDuplicateShutdownRequestForTesting(
+        _ request: SingleInstanceShutdownRequest?,
+        currentProcessKey: ProgramaSingleInstanceProcessKey,
+        now: TimeInterval,
+        resolvedRequesterKey: ProgramaSingleInstanceProcessKey?,
+        requesterIsProgramaGUI: Bool
+    ) -> Bool {
+        false
+    }
+
+    nonisolated static func shouldWarnBeforeTerminationForTesting(
+        isTaggedDevBuild: Bool,
+        isQuitWarningConfirmed: Bool,
+        hasValidatedDuplicateShutdownRequest: Bool,
+        isQuitWarningEnabled: Bool
+    ) -> Bool {
+        guard !isTaggedDevBuild, !isQuitWarningConfirmed else { return false }
+        return isQuitWarningEnabled
+    }
+
+    nonisolated static func shouldForceDuplicateTerminationForTesting(
+        expectedProcessKey: ProgramaSingleInstanceProcessKey,
+        resolvedProcessKey: ProgramaSingleInstanceProcessKey?,
+        isTerminated: Bool
+    ) -> Bool {
+        resolvedProcessKey == expectedProcessKey && !isTerminated
+    }
+
     static func scheduleDuplicateTerminationForTesting(
         requestTermination: () -> Void,
         scheduleGrace: (@escaping @MainActor () -> Void) -> Void,
