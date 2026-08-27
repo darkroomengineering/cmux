@@ -652,22 +652,26 @@ final class ProgramaWebView: WKWebView {
         guard let host = url.host?.lowercased(), host.contains("google.") else { return nil }
         guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let queryItems = comps.queryItems else { return nil }
-        let map = Dictionary(uniqueKeysWithValues: queryItems.map { ($0.name.lowercased(), $0.value ?? "") })
         let candidates = ["imgurl", "mediaurl", "url", "q"]
         for key in candidates {
-            guard let raw = map[key], !raw.isEmpty,
-                  let decoded = raw.removingPercentEncoding ?? raw as String?,
-                  let candidate = URL(string: decoded),
-                  isDownloadableScheme(candidate) else {
-                continue
+            for item in queryItems where item.name.lowercased() == key {
+                guard let raw = item.value, !raw.isEmpty,
+                      let candidate = URL(string: raw.removingPercentEncoding ?? raw),
+                      isDownloadableScheme(candidate) else {
+                    continue
+                }
+                return candidate
             }
-            return candidate
         }
         // Some links are wrapped as /url?...
         if comps.path.lowercased() == "/url" {
             for key in ["url", "q"] {
-                if let raw = map[key], let candidate = URL(string: raw), isDownloadableScheme(candidate) {
-                    return candidate
+                for item in queryItems where item.name.lowercased() == key {
+                    if let raw = item.value,
+                       let candidate = URL(string: raw),
+                       isDownloadableScheme(candidate) {
+                        return candidate
+                    }
                 }
             }
         }
