@@ -585,6 +585,7 @@ extension Workspace: @preconcurrency BonsplitDelegate {
 
         if isDetaching, let panel {
             let browserPanel = panel as? BrowserPanel
+            browserPanel?.invalidateBrowserStateRestoreForWorkspaceTransfer()
             let cachedTitle = panelTitles[panelId]
             let transferFallbackTitle = cachedTitle ?? panel.displayTitle
             pendingDetachedSurfaces[tabId] = DetachedSurfaceTransfer(
