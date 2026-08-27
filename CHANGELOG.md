@@ -15,7 +15,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - Revoking a paired mobile device now also blocks connections still being admitted, and disabling the bridge closes active phone sessions.
 - An unreadable browser history file no longer causes repeated disk reads on every omnibar keystroke.
 - Clearing browser history now stays cleared after a temporary disk deletion failure or app termination.
-- Launching two copies of Programa at nearly the same time now deterministically keeps the newer instance instead of allowing both processes to terminate each other. Candidates with incomplete process metadata are ignored, and an unresponsive older copy is force-closed only after a grace period and a fresh process-identity check.
+- Launching two copies of Programa at nearly the same time now deterministically keeps the newer instance instead of allowing both processes to terminate each other. A responsive older copy bypasses only the quit-confirmation dialog and exits through the normal session-persistence path; incomplete or stale requests are ignored, and force-close remains a bounded fallback only for an unresponsive process whose identity still matches.
 - Browser imports now treat Unicode domains and their Punycode forms as the same filter, so internationalized domains no longer silently import zero matching cookies or history entries.
 - Socket automation no longer hangs on split Unicode requests or unsubscribe races, and malformed telemetry can no longer crash the app or grow retained workspace state without bounds.
 - Large command output no longer deadlocks the CLI or background Git checks, and stalled Git probes now time out instead of accumulating work.

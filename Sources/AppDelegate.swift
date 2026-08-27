@@ -1531,28 +1531,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Consume the exact-process arbitration request before synchronous persistence begins.
+        // Removing the request file acknowledges that this process is responsive, preventing
+        // the winner's bounded fallback from force-closing us while the snapshot is being saved.
+        let hasValidatedDuplicateShutdownRequest = consumeValidatedDuplicateShutdownRequest()
         isTerminatingApp = true
         SessionMachineryGate.isApplicationTerminating = true
         // A warning dialog can still cancel this termination request. The final
         // `applicationWillTerminate` callback is the only point that records a clean exit.
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
 
-        // Tagged DEV builds are ephemeral, skip quit confirmation entirely.
-        if SocketControlSettings.isTaggedDevBuild() {
+        let shouldWarn = Self.shouldWarnBeforeTermination(
+            isTaggedDevBuild: SocketControlSettings.isTaggedDevBuild(),
+            isQuitWarningConfirmed: isQuitWarningConfirmed,
+            hasValidatedDuplicateShutdownRequest: hasValidatedDuplicateShutdownRequest,
+            isQuitWarningEnabled: QuitWarningSettings.isEnabled()
+        )
+        guard shouldWarn else {
+            let reason = hasValidatedDuplicateShutdownRequest ? "duplicate_request" : "warning_bypassed"
+            dilog("single_instance", "pid=\(getpid()) outcome=terminate_now reason=\(reason)")
             return .terminateNow
         }
-
-        // If the user already confirmed via the Cmd+Q shortcut warning dialog
-        // (handleQuitShortcutWarning), skip the check to avoid a second alert.
-        if isQuitWarningConfirmed {
-            return .terminateNow
-        }
-
-        // Respect the "Warn Before Quit" setting even when Cmd+Q arrives via
-        // the Cmd+Tab app switcher, bypassing handleCustomShortcut.
-        guard QuitWarningSettings.isEnabled() else {
-            return .terminateNow
-        }
+        dilog("single_instance", "pid=\(getpid()) outcome=warning reason=ordinary_quit")
 
         // Show the same confirmation dialog used by the Cmd+Q shortcut path,
         // then reply asynchronously so we can return .terminateLater now.
@@ -8933,6 +8933,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         return current.processIdentifier > other.processIdentifier
     }
 
+    private nonisolated static let duplicateShutdownRequestMaxAge: TimeInterval = 10
+    private nonisolated static let duplicateShutdownRequestMaxBytes = 4_096
+    private nonisolated static let duplicateTerminationGraceInterval: TimeInterval = 2
+
+    nonisolated static func shouldAcceptDuplicateShutdownRequest(
+        _ request: SingleInstanceShutdownRequest?,
+        currentProcessKey: ProgramaSingleInstanceProcessKey,
+        now: TimeInterval,
+        resolvedRequesterKey: ProgramaSingleInstanceProcessKey?,
+        requesterIsProgramaGUI: Bool
+    ) -> Bool {
+        guard let request,
+              request.version == SingleInstanceShutdownRequest.currentVersion,
+              request.target == currentProcessKey,
+              request.createdAtUnixSeconds.isFinite else {
+            return false
+        }
+
+        let age = now - request.createdAtUnixSeconds
+        guard age >= 0, age <= duplicateShutdownRequestMaxAge,
+              request.requester != currentProcessKey,
+              resolvedRequesterKey == request.requester,
+              requesterIsProgramaGUI else {
+            return false
+        }
+
+        return shouldTerminateDuplicateInstance(current: request.requester, other: currentProcessKey)
+    }
+
+    nonisolated static func shouldWarnBeforeTermination(
+        isTaggedDevBuild: Bool,
+        isQuitWarningConfirmed: Bool,
+        hasValidatedDuplicateShutdownRequest: Bool,
+        isQuitWarningEnabled: Bool
+    ) -> Bool {
+        guard !isTaggedDevBuild,
+              !isQuitWarningConfirmed,
+              !hasValidatedDuplicateShutdownRequest else {
+            return false
+        }
+        return isQuitWarningEnabled
+    }
+
+    nonisolated static func shouldForceDuplicateTermination(
+        expectedProcessKey: ProgramaSingleInstanceProcessKey,
+        resolvedProcessKey: ProgramaSingleInstanceProcessKey?,
+        isTerminated: Bool,
+        requestIsPending: Bool
+    ) -> Bool {
+        requestIsPending && resolvedProcessKey == expectedProcessKey && !isTerminated
+    }
+
     nonisolated static func shouldConsiderDuplicateApplication(
         candidateBundleIdentifier: String?,
         candidateProcessIdentifier: pid_t,
@@ -8963,11 +9015,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
     private static func scheduleDuplicateTermination(
-        requestTermination: () -> Void,
+        requestTermination: () -> Bool,
         scheduleGrace: (@escaping @MainActor () -> Void) -> Void,
         forceTerminationIfStillMatching: @escaping @MainActor () -> Bool
     ) {
-        requestTermination()
+        guard requestTermination() else { return }
         scheduleGrace {
             _ = forceTerminationIfStillMatching()
         }
@@ -8981,7 +9033,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         resolvedRequesterKey: ProgramaSingleInstanceProcessKey?,
         requesterIsProgramaGUI: Bool
     ) -> Bool {
-        false
+        shouldAcceptDuplicateShutdownRequest(
+            request,
+            currentProcessKey: currentProcessKey,
+            now: now,
+            resolvedRequesterKey: resolvedRequesterKey,
+            requesterIsProgramaGUI: requesterIsProgramaGUI
+        )
     }
 
     nonisolated static func shouldWarnBeforeTerminationForTesting(
@@ -8990,20 +9048,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         hasValidatedDuplicateShutdownRequest: Bool,
         isQuitWarningEnabled: Bool
     ) -> Bool {
-        guard !isTaggedDevBuild, !isQuitWarningConfirmed else { return false }
-        return isQuitWarningEnabled
+        shouldWarnBeforeTermination(
+            isTaggedDevBuild: isTaggedDevBuild,
+            isQuitWarningConfirmed: isQuitWarningConfirmed,
+            hasValidatedDuplicateShutdownRequest: hasValidatedDuplicateShutdownRequest,
+            isQuitWarningEnabled: isQuitWarningEnabled
+        )
     }
 
     nonisolated static func shouldForceDuplicateTerminationForTesting(
         expectedProcessKey: ProgramaSingleInstanceProcessKey,
         resolvedProcessKey: ProgramaSingleInstanceProcessKey?,
-        isTerminated: Bool
+        isTerminated: Bool,
+        requestIsPending: Bool
     ) -> Bool {
-        resolvedProcessKey == expectedProcessKey && !isTerminated
+        shouldForceDuplicateTermination(
+            expectedProcessKey: expectedProcessKey,
+            resolvedProcessKey: resolvedProcessKey,
+            isTerminated: isTerminated,
+            requestIsPending: requestIsPending
+        )
     }
 
     static func scheduleDuplicateTerminationForTesting(
-        requestTermination: () -> Void,
+        requestTermination: () -> Bool,
         scheduleGrace: (@escaping @MainActor () -> Void) -> Void,
         forceTerminationIfStillMatching: @escaping @MainActor () -> Bool
     ) {
@@ -9015,36 +9083,144 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 #endif
 
+    nonisolated private static func duplicateShutdownRequestURL(
+        for processIdentifier: pid_t
+    ) -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-\(getuid())-\(processIdentifier).json",
+            isDirectory: false
+        )
+    }
+
+    private static func writeDuplicateShutdownRequest(
+        target: ProgramaSingleInstanceProcessKey,
+        requester: ProgramaSingleInstanceProcessKey
+    ) -> Bool {
+        let request = SingleInstanceShutdownRequest(
+            target: target,
+            requester: requester,
+            createdAtUnixSeconds: Date().timeIntervalSince1970
+        )
+        let requestURL = duplicateShutdownRequestURL(for: target.processIdentifier)
+        do {
+            let data = try JSONEncoder().encode(request)
+            guard data.count <= duplicateShutdownRequestMaxBytes else {
+                dilog("single_instance", "pid=\(target.processIdentifier) outcome=rejected reason=request_too_large")
+                return false
+            }
+            try data.write(to: requestURL, options: .atomic)
+            dilog("single_instance", "pid=\(target.processIdentifier) outcome=written reason=shutdown_request")
+            return true
+        } catch {
+            dilog("single_instance", "pid=\(target.processIdentifier) outcome=failed reason=request_write")
+            return false
+        }
+    }
+
+    private func consumeValidatedDuplicateShutdownRequest() -> Bool {
+        let currentProcessIdentifier = getpid()
+        let requestURL = Self.duplicateShutdownRequestURL(for: currentProcessIdentifier)
+        guard let fileHandle = try? FileHandle(forReadingFrom: requestURL) else {
+            dilog("single_instance", "pid=\(currentProcessIdentifier) outcome=missing reason=shutdown_request")
+            return false
+        }
+        defer {
+            try? fileHandle.close()
+            try? FileManager.default.removeItem(at: requestURL)
+        }
+
+        guard let data = try? fileHandle.read(upToCount: Self.duplicateShutdownRequestMaxBytes + 1),
+              data.count <= Self.duplicateShutdownRequestMaxBytes,
+              let request = try? JSONDecoder().decode(SingleInstanceShutdownRequest.self, from: data),
+              let currentKey = Self.singleInstanceProcessKey(for: currentProcessIdentifier),
+              let bundleIdentifier = Bundle.main.bundleIdentifier else {
+            dilog("single_instance", "pid=\(currentProcessIdentifier) outcome=rejected reason=malformed_request")
+            return false
+        }
+
+        let requesterApplication = NSRunningApplication(
+            processIdentifier: request.requesterProcessIdentifier
+        )
+        let embeddedCLIURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/bin/programa", isDirectory: false)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let requesterIsProgramaGUI = requesterApplication.map { application in
+            Self.shouldConsiderDuplicateApplication(
+                candidateBundleIdentifier: application.bundleIdentifier,
+                candidateProcessIdentifier: application.processIdentifier,
+                candidateExecutableURL: application.executableURL,
+                expectedBundleIdentifier: bundleIdentifier,
+                currentProcessIdentifier: currentProcessIdentifier,
+                embeddedCLIURL: embeddedCLIURL
+            )
+        } ?? false
+        let accepted = Self.shouldAcceptDuplicateShutdownRequest(
+            request,
+            currentProcessKey: currentKey,
+            now: Date().timeIntervalSince1970,
+            resolvedRequesterKey: Self.singleInstanceProcessKey(
+                for: request.requesterProcessIdentifier
+            ),
+            requesterIsProgramaGUI: requesterIsProgramaGUI
+        )
+        dilog(
+            "single_instance",
+            "pid=\(currentProcessIdentifier) outcome=\(accepted ? "accepted" : "rejected") reason=shutdown_request"
+        )
+        return accepted
+    }
+
     private static func terminateDuplicateApplication(
         _ app: NSRunningApplication,
-        expectedProcessKey: ProgramaSingleInstanceProcessKey
+        expectedProcessKey: ProgramaSingleInstanceProcessKey,
+        requesterProcessKey: ProgramaSingleInstanceProcessKey
     ) {
         let processIdentifier = app.processIdentifier
+        let requestURL = duplicateShutdownRequestURL(for: processIdentifier)
         scheduleDuplicateTermination(
             requestTermination: {
+                guard writeDuplicateShutdownRequest(
+                    target: expectedProcessKey,
+                    requester: requesterProcessKey
+                ) else {
+                    return false
+                }
                 let accepted = app.terminate()
                 dilog(
                     "single_instance",
                     "pid=\(processIdentifier) outcome=\(accepted ? "requested" : "request_rejected") reason=graceful_terminate"
                 )
+                if !accepted {
+                    try? FileManager.default.removeItem(at: requestURL)
+                }
+                return accepted
             },
             scheduleGrace: { action in
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { @MainActor in
+                DispatchQueue.main.asyncAfter(deadline: .now() + duplicateTerminationGraceInterval) { @MainActor in
                     action()
                 }
             },
             forceTerminationIfStillMatching: {
+                let requestIsPending = FileManager.default.fileExists(atPath: requestURL.path)
+                defer { try? FileManager.default.removeItem(at: requestURL) }
+                guard requestIsPending else {
+                    dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=request_acknowledged")
+                    return false
+                }
                 guard let resolvedApplication = NSRunningApplication(processIdentifier: processIdentifier) else {
                     dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=no_longer_running")
                     return false
                 }
-                guard let resolvedKey = singleInstanceProcessKey(for: processIdentifier),
-                      resolvedKey == expectedProcessKey else {
-                    dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=identity_changed")
-                    return false
-                }
-                guard !resolvedApplication.isTerminated else {
-                    dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=already_terminated")
+                let resolvedKey = singleInstanceProcessKey(for: processIdentifier)
+                guard shouldForceDuplicateTermination(
+                    expectedProcessKey: expectedProcessKey,
+                    resolvedProcessKey: resolvedKey,
+                    isTerminated: resolvedApplication.isTerminated,
+                    requestIsPending: requestIsPending
+                ) else {
+                    let reason = resolvedKey == expectedProcessKey ? "already_terminated" : "identity_changed"
+                    dilog("single_instance", "pid=\(processIdentifier) outcome=skipped reason=\(reason)")
                     return false
                 }
 
@@ -9083,7 +9259,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 dilog("single_instance", "pid=\(app.processIdentifier) outcome=ignored reason=election")
                 continue
             }
-            Self.terminateDuplicateApplication(app, expectedProcessKey: otherKey)
+            Self.terminateDuplicateApplication(
+                app,
+                expectedProcessKey: otherKey,
+                requesterProcessKey: currentKey
+            )
         }
     }
 
@@ -9121,7 +9301,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 return
             }
             MainActor.assumeIsolated {
-                Self.terminateDuplicateApplication(app, expectedProcessKey: otherKey)
+                Self.terminateDuplicateApplication(
+                    app,
+                    expectedProcessKey: otherKey,
+                    requesterProcessKey: currentKey
+                )
                 NSRunningApplication.current.activate(options: [.activateAllWindows])
             }
         }

@@ -315,6 +315,14 @@ jobs:
               -exec cp {} "$REPORTS_DIR/" \;
           fi
 
+          PROGRAMA_LOGS_DIR="$HOME/Library/Logs/Programa"
+          mkdir -p "$DIAGNOSTICS_DIR/ProgramaLogs"
+          for log_name in diagnostics.log diagnostics.log.1; do
+            if [ -f "$PROGRAMA_LOGS_DIR/$log_name" ]; then
+              cp "$PROGRAMA_LOGS_DIR/$log_name" "$DIAGNOSTICS_DIR/ProgramaLogs/$log_name"
+            fi
+          done
+
           if [ -d /tmp/programa-e2e.xcresult ]; then
             xcrun xcresulttool get test-results summary \
               --path /tmp/programa-e2e.xcresult \

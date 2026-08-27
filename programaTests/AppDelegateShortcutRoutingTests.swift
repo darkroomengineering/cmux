@@ -205,6 +205,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         AppDelegate.scheduleDuplicateTerminationForTesting(
             requestTermination: {
                 gracefulTerminationCount += 1
+                return true
             },
             scheduleGrace: { action in
                 scheduledGraceAction = action
@@ -359,22 +360,32 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
             expectedProcessKey: expected,
             resolvedProcessKey: nil,
-            isTerminated: false
+            isTerminated: false,
+            requestIsPending: true
         ))
         XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
             expectedProcessKey: expected,
             resolvedProcessKey: changed,
-            isTerminated: false
+            isTerminated: false,
+            requestIsPending: true
         ))
         XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
             expectedProcessKey: expected,
             resolvedProcessKey: expected,
-            isTerminated: true
+            isTerminated: true,
+            requestIsPending: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: expected,
+            isTerminated: false,
+            requestIsPending: false
         ))
         XCTAssertTrue(AppDelegate.shouldForceDuplicateTerminationForTesting(
             expectedProcessKey: expected,
             resolvedProcessKey: expected,
-            isTerminated: false
+            isTerminated: false,
+            requestIsPending: true
         ))
     }
 
