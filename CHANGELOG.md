@@ -7,6 +7,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 ## [Unreleased]
 
 ### Fixed
+- Browser context-menu actions no longer crash when a Google redirect contains repeated query parameters.
 - Crash recovery no longer opens a second window full of empty workspaces when only some detached terminal sessions can be reattached. The recovery window now contains only live recovered sessions and closes when none recover.
 - Closing a window now tears down every timer, observer, task, panel, and workspace it owns, so closed windows cannot keep empty workspaces alive or reappear in a later session snapshot.
 - The title-bar hide-sidebar button now always toggles the sidebar belonging to its own window instead of relying on whichever window was last active.
