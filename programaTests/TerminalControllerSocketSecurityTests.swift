@@ -164,7 +164,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         }
     }
 
-    private func makeIsolatedSurfaceTelemetryFixture() throws -> (
+    private func makeIsolatedSurfaceTelemetryFixture() async throws -> (
         tabManager: TabManager,
         workspace: Workspace,
         surfaceId: UUID,
@@ -181,16 +181,24 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
             let workspace = try XCTUnwrap(tabManager.selectedWorkspace)
             let surfaceId = try XCTUnwrap(workspace.focusedPanelId)
 
-            // The initial git probe applies its directory snapshot asynchronously. Seed the
-            // same value first, then wait for the non-repository probe to finish so no setup
-            // publication can race the exact objectWillChange counts below.
+            // The initial git probe applies its directory snapshot asynchronously via an
+            // unstructured `Task { @MainActor in ... }` hop from a background probe queue.
+            // That hop is only ever serviced by suspending this async test's own Task (so the
+            // MainActor executor can drain its queue) -- a synchronous XCTWaiter/run-loop spin
+            // (the old `waitUntil` helper) never observes it and hangs for the full timeout,
+            // because XCTWaiter's nested CFRunLoop does not pump Swift Concurrency's MainActor
+            // executor. Poll with real suspension points instead. Seed the same directory value
+            // first, then wait for the non-repository probe to finish so no setup publication
+            // can race the exact objectWillChange counts below.
             workspace.updatePanelDirectory(panelId: surfaceId, directory: directoryURL.path)
-            guard waitUntil(timeout: 12.0, {
-                tabManager.activeWorkspaceGitProbePanelIdsForTesting(workspaceId: workspace.id).isEmpty
-            }) else {
-                throw NSError(domain: NSPOSIXErrorDomain, code: Int(ETIMEDOUT), userInfo: [
-                    NSLocalizedDescriptionKey: "Timed out waiting for the isolated workspace git probe",
-                ])
+            let deadline = Date().addingTimeInterval(12.0)
+            while !tabManager.activeWorkspaceGitProbePanelIdsForTesting(workspaceId: workspace.id).isEmpty {
+                guard Date() < deadline else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(ETIMEDOUT), userInfo: [
+                        NSLocalizedDescriptionKey: "Timed out waiting for the isolated workspace git probe",
+                    ])
+                }
+                try await Task.sleep(nanoseconds: 20_000_000)
             }
 
             return (tabManager, workspace, surfaceId, directoryURL)
@@ -253,7 +261,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
     /// A long-lived wait must occupy only its own client connection. Exact model queries from
     /// another client still need prompt main-actor access while that wait remains registered.
     func testPendingSurfaceWaitDoesNotBlockExactSurfaceQueryOnAnotherClient() async throws {
-        let fixture = try makeIsolatedSurfaceTelemetryFixture()
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
         let socketPath = makeSocketPath("surface-wait")
         let workspaceID = fixture.workspace.id.uuidString
         let surfaceID = fixture.surfaceId.uuidString
@@ -425,7 +433,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
 #endif
 
     func testDuplicateSurfacePortsReportDoesNotRepublishWorkspace() async throws {
-        let fixture = try makeIsolatedSurfaceTelemetryFixture()
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
         let tabManager = fixture.tabManager
         let workspace = fixture.workspace
         let surfaceId = fixture.surfaceId
@@ -471,7 +479,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
     }
 
     func testSurfacePortsReportEnforcesInclusiveCountBoundThroughSocket() async throws {
-        let fixture = try makeIsolatedSurfaceTelemetryFixture()
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
         let workspace = fixture.workspace
         let surfaceId = fixture.surfaceId
         let socketPath = makeSocketPath("ports-bound")
@@ -527,7 +535,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
     }
 
     func testSurfacePortsReportCanonicalizesDuplicateUnorderedPortsThroughSocket() async throws {
-        let fixture = try makeIsolatedSurfaceTelemetryFixture()
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
         let workspace = fixture.workspace
         let surfaceId = fixture.surfaceId
         let socketPath = makeSocketPath("ports-canonical")
@@ -566,7 +574,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
     }
 
     func testSurfacePortsReportPrunesOnlyChangedPublishedMetadata() async throws {
-        let fixture = try makeIsolatedSurfaceTelemetryFixture()
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
         let tabManager = fixture.tabManager
         let workspace = fixture.workspace
         let surfaceId = fixture.surfaceId
@@ -616,7 +624,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
     }
 
     func testSurfacePortsReportPrunesStaleTTYAndPortsWithoutDisturbingLiveSurface() async throws {
-        let fixture = try makeIsolatedSurfaceTelemetryFixture()
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
         let tabManager = fixture.tabManager
         let workspace = fixture.workspace
         let surfaceId = fixture.surfaceId
@@ -3214,7 +3222,19 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
             guard count >= 0 else {
                 throw posixError("read")
             }
-            if count == 0 { break }
+            if count == 0 {
+                if data.isEmpty {
+                    // The peer closed the connection before sending any bytes for this
+                    // line (e.g. a revoked client after a password rotation). Surface this
+                    // distinctly from a legitimate empty response so callers using `try?`
+                    // (to tolerate revocation) don't trip an unconditional XCTUnwrap
+                    // failure on the caller side when they parse this as JSON.
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET), userInfo: [
+                        NSLocalizedDescriptionKey: "Connection closed before a response line was received",
+                    ])
+                }
+                break
+            }
             if buffer[0] == 0x0A { break }
             data.append(buffer[0])
         }
