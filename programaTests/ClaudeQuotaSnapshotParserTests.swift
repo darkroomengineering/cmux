@@ -150,6 +150,26 @@ final class ClaudeQuotaSnapshotParserTests: XCTestCase {
         )
     }
 
+    func testSignedOutClaudeCLIExitStatusStillHidesTheProviderInsteadOfFailing() async throws {
+        let now = Date(timeIntervalSince1970: 1_785_168_986)
+        let fixture = try ClaudeUsageFixture.make(
+            authBody: #"print -r -- '{"loggedIn":false}'; exit 1"#,
+            cacheData: payload(updatedAt: String(Int(now.timeIntervalSince1970 * 1_000)))
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+
+        let result = await ClaudeProviderUsageFetcher.fetchForTesting(
+            executableURL: fixture.executableURL,
+            cacheURL: fixture.cacheURL,
+            timeout: 0.5,
+            now: now
+        )
+
+        guard case .unavailable(.claude) = result else {
+            return XCTFail("The official CLI exits 1 when signed out; a parseable answer must hide the provider, got \(result)")
+        }
+    }
+
     func testLoggedInClaudeWithAFreshRegularBoundedCacheIsAvailable() async throws {
         let now = Date(timeIntervalSince1970: 1_785_168_986)
         let fixture = try ClaudeUsageFixture.make(
@@ -459,6 +479,73 @@ final class CodexUsageSnapshotParserTests: XCTestCase {
         )
     }
 
+    func testLongLivedServerWithAnIdleStderrPipeDoesNotStallTheResponseReader() async throws {
+        let fake = try FakeCodexAppServer.make(
+            initializationResponse: #"{"jsonrpc":"2.0","id":0,"result":{}}"#,
+            responseDelay: 0.01,
+            lingerAfterResponses: 3
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: fake.directoryURL) }
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        let result = await CodexProviderUsageFetcher.fetchForTesting(
+            executableURL: fake.executableURL,
+            timeout: 1
+        )
+
+        guard case let .available(snapshot) = result, snapshot.provider == .codex else {
+            return XCTFail("The real app server stays alive after answering; its responses must be read anyway, got \(result)")
+        }
+        XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(800))
+    }
+
+    func testConcurrentClaudeAndCodexProbesDoNotStarveEachOther() async throws {
+        let now = Date(timeIntervalSince1970: 1_785_168_986)
+        let claude = try ClaudeUsageFixture.make(
+            authBody: #"print -r -- '{"loggedIn":true}'"#,
+            cacheData: Data("""
+            {"five_hour":{"used_percentage":17,"resets_at":"1785171600"},
+             "seven_day":{"used_percentage":3,"resets_at":"1785664800"},
+             "updated_at":\(Int(now.timeIntervalSince1970 * 1_000))}
+            """.utf8)
+        )
+        let codex = try FakeCodexAppServer.make(
+            initializationResponse: #"{"jsonrpc":"2.0","id":0,"result":{}}"#,
+            responseDelay: 0.01,
+            lingerAfterResponses: 3
+        )
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: claude.directoryURL)
+            try? FileManager.default.removeItem(at: codex.directoryURL)
+        }
+
+        let results = await withTaskGroup(of: ProviderUsageResult.self, returning: [ProviderUsageResult].self) { group in
+            group.addTask {
+                await ClaudeProviderUsageFetcher.fetchForTesting(
+                    executableURL: claude.executableURL,
+                    cacheURL: claude.cacheURL,
+                    timeout: 1,
+                    now: now
+                )
+            }
+            group.addTask {
+                await CodexProviderUsageFetcher.fetchForTesting(executableURL: codex.executableURL, timeout: 1)
+            }
+            var collected: [ProviderUsageResult] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+
+        for result in results {
+            guard case .available = result else {
+                return XCTFail("Both providers are probed together when the popover opens; neither may time out, got \(results)")
+            }
+        }
+    }
+
     func testFastExitingServerStillReturnsTheFinalAccountAndRateLimitResponses() async throws {
         let fake = try FakeCodexAppServer.make(
             initializationResponse: #"{"jsonrpc":"2.0","id":0,"result":{}}"#,
@@ -519,7 +606,8 @@ private struct FakeCodexAppServer {
 
     static func make(
         initializationResponse: String,
-        responseDelay: TimeInterval = 0.12
+        responseDelay: TimeInterval = 0.12,
+        lingerAfterResponses: TimeInterval = 0
     ) throws -> Self {
         try makeScript { eventsPath in
             """
@@ -543,6 +631,7 @@ private struct FakeCodexAppServer {
             fi
             print -r -- '{"jsonrpc":"2.0","id":1,"result":{"account":{"type":"chatgpt"}}}'
             print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":24,"windowDurationMins":300,"resetsAt":1785171600},"secondary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1785664800}},"rateLimitsByLimitId":{}}}'
+            sleep \(lingerAfterResponses)
             """
         }
     }

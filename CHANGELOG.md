@@ -8,6 +8,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 
 ### Fixed
 - Provider usage now completes the Codex app-server handshake before reading limits, verifies Claude's current login before trusting its bounded fresh cache, hides signed-out providers, refreshes whenever its compact sidebar control opens, and sizes the popover to its visible content.
+- The provider usage popover no longer reports that Claude and Codex usage could not be read: reading the Codex app server's silent stderr through `FileHandle.bytes` blocked Foundation's shared pipe reader, so both probes timed out together. A signed-out Claude CLI now hides the provider instead of showing an error, and the sidebar help and usage icons sit on a slightly wider pitch.
 - Browser context-menu actions no longer crash when a Google redirect contains repeated query parameters.
 - Crash recovery no longer opens a second window full of empty workspaces when only some detached terminal sessions can be reattached. The recovery window now contains only live recovered sessions and closes when none recover.
 - Closing a window now tears down every timer, observer, task, panel, and workspace it owns, so closed windows cannot keep empty workspaces alive or reappear in a later session snapshot.

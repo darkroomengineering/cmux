@@ -224,6 +224,31 @@ enum ClaudeUsageSnapshotParser {
     }
 }
 
+/// Streams pipe output through `readabilityHandler` instead of `FileHandle.bytes`.
+///
+/// Foundation serves every `FileHandle.bytes` sequence from one shared IO actor
+/// that performs blocking reads one at a time. A single idle pipe, such as an
+/// app server's silent stderr, therefore starves every other reader in the
+/// process, and both provider probes time out together.
+enum ProviderUsagePipeReader {
+    static func chunks(from handle: FileHandle) -> AsyncStream<Data> {
+        AsyncStream { continuation in
+            handle.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    continuation.finish()
+                } else {
+                    continuation.yield(data)
+                }
+            }
+            continuation.onTermination = { _ in
+                handle.readabilityHandler = nil
+            }
+        }
+    }
+}
+
 struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
     let provider = ProviderUsageProvider.claude
 
@@ -290,14 +315,14 @@ struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
         private var isFinished = false
         private var failed = false
 
-        func append(_ byte: UInt8) {
+        func append(_ chunk: Data) {
             guard !failed else { return }
-            guard data.count < ClaudeProviderUsageFetcher.maximumAuthResponseBytes else {
+            guard data.count + chunk.count <= ClaudeProviderUsageFetcher.maximumAuthResponseBytes else {
                 data.removeAll(keepingCapacity: false)
                 failed = true
                 return
             }
-            data.append(byte)
+            data.append(chunk)
         }
 
         func finish(readFailed: Bool) {
@@ -327,14 +352,10 @@ struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
 
         let capture = BoundedCapture()
         let reader = Task {
-            do {
-                for try await byte in stdout.fileHandleForReading.bytes {
-                    await capture.append(byte)
-                }
-                await capture.finish(readFailed: false)
-            } catch {
-                await capture.finish(readFailed: !Task.isCancelled)
+            for await chunk in ProviderUsagePipeReader.chunks(from: stdout.fileHandleForReading) {
+                await capture.append(chunk)
             }
+            await capture.finish(readFailed: Task.isCancelled)
         }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .milliseconds(Int64(max(timeout, 0) * 1_000)))
@@ -353,10 +374,10 @@ struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
             terminate(process)
         }
         if !snapshot.isFinished {
-            try? stdout.fileHandleForReading.close()
+            reader.cancel()
         }
-        reader.cancel()
         _ = await reader.value
+        try? stdout.fileHandleForReading.close()
 
         guard !Task.isCancelled,
               snapshot.isFinished,
@@ -364,8 +385,9 @@ struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
               !process.isRunning else {
             return .failed
         }
-        guard process.terminationStatus == 0,
-              let object = try? JSONSerialization.jsonObject(with: snapshot.data) as? [String: Any],
+        // The CLI exits non-zero when signed out while still printing
+        // `{"loggedIn": false}`; a parseable answer beats the exit status.
+        guard let object = try? JSONSerialization.jsonObject(with: snapshot.data) as? [String: Any],
               let loggedIn = object["loggedIn"] as? Bool else {
             return .failed
         }
@@ -751,18 +773,18 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
         let process = Process()
         let stdin = Pipe()
         let stdout = Pipe()
-        let stderr = Pipe()
 
         process.executableURL = executableURL
         process.arguments = ["app-server"]
         process.standardInput = stdin
         process.standardOutput = stdout
-        process.standardError = stderr
+        // Stderr is intentionally discarded; an attached pipe would need its own
+        // reader, and an idle reader starves the stdout reader (see ProviderUsagePipeReader).
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
             try? stdout.fileHandleForWriting.close()
-            try? stderr.fileHandleForWriting.close()
         } catch {
             return .failed
         }
@@ -770,9 +792,6 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
         let inbox = AppServerResponseInbox()
         let responseReader = Task {
             await collectResponses(from: stdout.fileHandleForReading, into: inbox)
-        }
-        let stderrReader = Task {
-            await drain(stderr.fileHandleForReading)
         }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .milliseconds(Int64(max(timeout, 0) * 1_000)))
@@ -825,12 +844,9 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
         if process.isRunning {
             terminate(process)
         }
-        try? stdout.fileHandleForReading.close()
-        try? stderr.fileHandleForReading.close()
         responseReader.cancel()
-        stderrReader.cancel()
         _ = await responseReader.value
-        _ = await stderrReader.value
+        try? stdout.fileHandleForReading.close()
 
         return Task.isCancelled ? .failed : outcome
     }
@@ -846,12 +862,12 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
         var line = Data()
         var receivedBytes = 0
 
-        do {
-            for try await byte in handle.bytes {
+        chunks: for await chunk in ProviderUsagePipeReader.chunks(from: handle) {
+            for byte in chunk {
                 receivedBytes += 1
                 if receivedBytes > maximumCapturedBytes {
                     await inbox.markExceededCaptureLimit()
-                    break
+                    break chunks
                 }
 
                 if byte == 0x0A {
@@ -861,13 +877,11 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
                     line.append(byte)
                 }
             }
-            if !line.isEmpty, receivedBytes <= maximumCapturedBytes {
-                await inbox.consume(line)
-            }
-            await inbox.finish(readFailed: false)
-        } catch {
-            await inbox.finish(readFailed: !Task.isCancelled)
         }
+        if !line.isEmpty, receivedBytes <= maximumCapturedBytes {
+            await inbox.consume(line)
+        }
+        await inbox.finish(readFailed: Task.isCancelled)
     }
 
     private static func sanitizedAccountEnvelope(_ envelope: [String: Any]) -> Data? {
@@ -889,14 +903,6 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
             sanitized = ["id": 1]
         }
         return try? JSONSerialization.data(withJSONObject: sanitized)
-    }
-
-    private static func drain(_ handle: FileHandle) async {
-        do {
-            for try await _ in handle.bytes {}
-        } catch {
-            // Stderr is intentionally discarded and never surfaced or stored.
-        }
     }
 
     private static func initializeRequestPayload() throws -> Data {
