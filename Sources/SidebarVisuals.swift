@@ -32,7 +32,9 @@ struct SidebarFooter: View {
 
 enum SidebarFooterControlLayout {
     static let buttonSize: CGFloat = 44
-    static let visualPitch: CGFloat = 20
+    /// Traffic lights sit on a 20pt pitch; the thinner outline glyphs need one
+    /// extra grid step to read as evenly spaced next to them.
+    static let visualPitch: CGFloat = 24
 
     static func helpIconOffset(clustersWithUsage: Bool) -> CGFloat {
         clustersWithUsage ? (buttonSize - visualPitch) / 2 : 0
