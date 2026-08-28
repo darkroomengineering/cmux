@@ -854,6 +854,11 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
     func testOversizedRolesFallBackToImplicitRoleOrSkipInsteadOfTruncating() async throws {
         let panel = BrowserPanel(workspaceId: UUID())
         defer { panel.close() }
+        // The snapshot's visibility check requires a positive layout rect. A zero-size
+        // WKWebView (the default for a panel that has never been placed in a window) gives
+        // block-level elements a 0px width, so give it a real viewport before laying out
+        // the block-level `invalidDiv` below.
+        panel.webView.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
         _ = try await panel.evaluateJavaScript(
             """
             document.body.innerHTML = '';
@@ -922,10 +927,24 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
     func testGeneratedSnapshotBoundsPageStringsAndPreservesExactPrefixes() async throws {
         let panel = BrowserPanel(workspaceId: UUID())
         defer { panel.close() }
+
+        // WebKit refuses to grow the URL of the WKWebView's initial "about:blank" document via
+        // `location.hash`/`history.replaceState` (SecurityError: session history URL cannot
+        // change from an opaque initial document). Commit a real navigation with a long-path
+        // base URL instead so `document.location.href` is genuinely long, then poll for that
+        // navigation to land before mutating title/body content.
+        let longPath = String(repeating: "u", count: 17000)
+        let longBaseURL = try XCTUnwrap(URL(string: "https://example.com/\(longPath)"))
+        panel.webView.loadHTMLString("<html><head></head><body></body></html>", baseURL: longBaseURL)
+        for _ in 0 ..< 200 {
+            let currentHref = try await panel.evaluateJavaScript("String(location.href)") as? String
+            if currentHref?.hasPrefix("https://example.com/") == true { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
         _ = try await panel.evaluateJavaScript(
             """
             document.title = 't'.repeat(1100);
-            window.location.hash = 'u'.repeat(17000);
             document.body.textContent = 'b'.repeat(1100000);
             true;
             """

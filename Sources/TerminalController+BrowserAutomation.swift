@@ -1698,6 +1698,13 @@ extension TerminalController {
         let trimmed = rawSelector.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .notFound }
 
+        // "@..." is reserved for element-ref tokens (never a literal CSS selector), so any
+        // "@"-prefixed input that isn't a well-formed "@e<ordinal>" ref must report notFound
+        // rather than silently falling through to literal CSS-selector interpretation.
+        if trimmed.hasPrefix("@"), !trimmed.hasPrefix("@e") {
+            return .notFound
+        }
+
         let refKey: String? = {
             if trimmed.hasPrefix("@e") { return trimmed }
             if trimmed.hasPrefix("e"), Int(trimmed.dropFirst()) != nil { return "@\(trimmed)" }
@@ -1826,13 +1833,37 @@ extension TerminalController {
         return await __programaEvalInFrame();
         """
 
-        let rawResult = v2RunJavaScript(
+        var rawResult = v2RunJavaScript(
             webView,
             script: asyncFunctionBody,
             timeout: timeout,
             preferAsync: true,
             contentWorld: useEval ? .page : .defaultClient
         )
+
+        // Non-eval callers (browser.wait, generated selector actions, and the snapshot
+        // collector) run in the isolated `.defaultClient` world above, but the page-world
+        // script environment can still transiently fail right after a fresh navigation (e.g.
+        // browser.open_split returns before the page-world script context is ready). Retry once
+        // against `.page` before giving up so a single transient failure doesn't turn into an
+        // immediate false/timeout instead of the caller's normal polling/retry behavior.
+        if !useEval, case .failure(let isolatedMessage) = rawResult {
+            let pageWorldResult = v2RunJavaScript(
+                webView,
+                script: asyncFunctionBody,
+                timeout: timeout,
+                preferAsync: true,
+                contentWorld: .page
+            )
+            switch pageWorldResult {
+            case .success:
+                rawResult = pageWorldResult
+            case .failure(let pageMessage):
+                if pageMessage != isolatedMessage {
+                    rawResult = .failure("\(isolatedMessage) (page-world retry: \(pageMessage))")
+                }
+            }
+        }
 
         switch rawResult {
         case .failure(let message):
