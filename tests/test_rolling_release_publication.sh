@@ -74,7 +74,17 @@ MILESTONE_MODULE="${ROOT_DIR}/scripts/milestone_payload.js"
 }
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/programa-candidate-publication.XXXXXX")"
-trap 'rm -rf "${TMP_DIR}"' EXIT
+cleanup_harness() {
+  local status=$?
+  # A helper call that fails under `set -e` would otherwise exit this harness
+  # silently; echo the captured helper output so CI logs show the cause.
+  if [[ "${status}" -ne 0 && -s "${TMP_DIR}/run.out" ]]; then
+    echo "--- last helper output (exit ${status}) ---" >&2
+    cat "${TMP_DIR}/run.out" >&2
+  fi
+  rm -rf "${TMP_DIR}"
+}
+trap cleanup_harness EXIT
 STATE_DIR="${TMP_DIR}/state"
 FIXTURE_DIR="${TMP_DIR}/fixtures"
 FAKE_GH="${TMP_DIR}/gh"
@@ -86,7 +96,7 @@ ED25519_SIGNATURE="AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA
 fail() { echo "FAIL: $*" >&2; exit 1; }
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 digest_file() { printf 'sha256:%s' "$(sha256_file "$1")"; }
-file_size() { stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1"; }
+file_size() { stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1"; }
 target_sha_for() { printf '%040x' "$1"; }
 release_dir() { printf '%s/releases/%s' "${STATE_DIR}" "$1"; }
 asset_dir() { printf '%s/assets/%s' "$(release_dir "$1")" "$2"; }
@@ -317,7 +327,7 @@ RELEASES="${STATE_DIR}/releases"
 LOG="${STATE_DIR}/operations.log"
 release_dir() { printf '%s/%s' "${RELEASES}" "$1"; }
 asset_dir() { printf '%s/assets/%s' "$(release_dir "$1")" "$2"; }
-file_size() { stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1"; }
+file_size() { stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1"; }
 digest_file() { printf 'sha256:%s' "$(shasum -a 256 "$1" | awk '{print $1}')"; }
 log() { printf '%s\n' "$*" >> "${LOG}"; }
 next_id() { local file="$1" value; value="$(cat "${file}")"; printf '%s\n' "$((value + 1))" > "${file}"; printf '%s' "${value}"; }

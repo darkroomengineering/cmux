@@ -32,7 +32,7 @@ FAKE_GH="${TMP_DIR}/gh"
 RUN_OUTPUT="${TMP_DIR}/run.out"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
-file_size() { stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1"; }
+file_size() { stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1"; }
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 release_dir() { printf '%s/releases/%s' "${STATE_DIR}" "$1"; }
 asset_dir() { printf '%s/assets/%s' "$(release_dir "$1")" "$2"; }
@@ -155,7 +155,7 @@ RELEASES="${STATE_DIR}/releases"
 LOG="${STATE_DIR}/operations.log"
 release_dir() { printf '%s/%s' "${RELEASES}" "$1"; }
 asset_dir() { printf '%s/assets/%s' "$(release_dir "$1")" "$2"; }
-file_size() { stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1"; }
+file_size() { stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1"; }
 digest_file() { printf 'sha256:%s' "$(shasum -a 256 "$1" | awk '{print $1}')"; }
 log() { printf '%s\n' "$*" >> "${LOG}"; }
 mutation() {

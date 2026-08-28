@@ -47,7 +47,7 @@ sha256_file() {
 }
 
 file_size() {
-  stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1"
+  stat -c '%s' "$1" 2>/dev/null || stat -f '%z' "$1"
 }
 
 query_assets() {
