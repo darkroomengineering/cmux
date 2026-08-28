@@ -161,6 +161,265 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertNotEqual(higherPIDWins, lowerPIDWins, "Identical kernel timestamps must elect exactly one winner")
     }
 
+    func testDuplicateInstanceCandidateExcludesEmbeddedCLIExecutable() {
+        let embeddedCLIURL = URL(
+            fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+        )
+
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: embeddedCLIURL,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: embeddedCLIURL
+        ))
+    }
+
+    func testDuplicateInstanceCandidateIncludesSameBundleGUIExecutable() {
+        XCTAssertTrue(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: URL(
+                fileURLWithPath: "/Applications/Programa.app/Contents/MacOS/Programa"
+            ),
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: URL(
+                fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+            )
+        ))
+    }
+
+    func testDuplicateInstanceCandidateRejectsMissingExecutableMetadata() {
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: nil,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: URL(
+                fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+            )
+        ))
+    }
+
+    func testDuplicateInstanceTerminationWaitsForGraceBeforeForcing() throws {
+        var gracefulTerminationCount = 0
+        var forcedTerminationCount = 0
+        var scheduledGraceAction: (@MainActor () -> Void)?
+
+        AppDelegate.scheduleDuplicateTerminationForTesting(
+            requestTermination: {
+                gracefulTerminationCount += 1
+                return true
+            },
+            scheduleGrace: { action in
+                scheduledGraceAction = action
+            },
+            forceTerminationIfStillMatching: {
+                forcedTerminationCount += 1
+                return true
+            }
+        )
+
+        XCTAssertEqual(gracefulTerminationCount, 1)
+        XCTAssertEqual(forcedTerminationCount, 0, "Force termination must not run synchronously")
+
+        let graceAction = try XCTUnwrap(scheduledGraceAction)
+        graceAction()
+
+        XCTAssertEqual(forcedTerminationCount, 1)
+    }
+
+    func testValidatedDuplicateShutdownRequestTargetsExactCurrentProcessAndBypassesWarning() {
+        let current = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let requester = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 200
+        )
+        let request = AppDelegate.SingleInstanceShutdownRequest(
+            target: current,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+
+        let accepted = AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            request,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        )
+
+        XCTAssertTrue(accepted)
+        XCTAssertFalse(AppDelegate.shouldWarnBeforeTerminationForTesting(
+            isTaggedDevBuild: false,
+            isQuitWarningConfirmed: false,
+            hasValidatedDuplicateShutdownRequest: accepted,
+            isQuitWarningEnabled: true
+        ))
+    }
+
+    func testDuplicateShutdownRequestFailsClosedWhenMissingStaleMalformedOrMismatched() {
+        let current = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let requester = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 200
+        )
+        let wrongTarget = ProgramaSingleInstanceProcessKey(
+            startSeconds: 999,
+            startMicroseconds: 999,
+            processIdentifier: 99
+        )
+        let staleRequest = AppDelegate.SingleInstanceShutdownRequest(
+            target: current,
+            requester: requester,
+            createdAtUnixSeconds: 9_000
+        )
+        let malformedVersionRequest = AppDelegate.SingleInstanceShutdownRequest(
+            version: AppDelegate.SingleInstanceShutdownRequest.currentVersion + 1,
+            target: current,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+        let mismatchedTargetRequest = AppDelegate.SingleInstanceShutdownRequest(
+            target: wrongTarget,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            nil,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            staleRequest,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            malformedVersionRequest,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            mismatchedTargetRequest,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            staleRequest,
+            currentProcessKey: current,
+            now: 9_001,
+            resolvedRequesterKey: wrongTarget,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            staleRequest,
+            currentProcessKey: current,
+            now: 9_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: false
+        ))
+    }
+
+    func testOrdinaryQuitStillWarnsWhenWarningIsEnabled() {
+        XCTAssertTrue(AppDelegate.shouldWarnBeforeTerminationForTesting(
+            isTaggedDevBuild: false,
+            isQuitWarningConfirmed: false,
+            hasValidatedDuplicateShutdownRequest: false,
+            isQuitWarningEnabled: true
+        ))
+    }
+
+    func testDuplicateForceFallbackRequiresSameLiveProcessIdentity() {
+        let expected = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let changed = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 100
+        )
+
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: nil,
+            isTerminated: false,
+            requestIsPending: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: changed,
+            isTerminated: false,
+            requestIsPending: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: expected,
+            isTerminated: true,
+            requestIsPending: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: expected,
+            isTerminated: false,
+            requestIsPending: false
+        ))
+        XCTAssertTrue(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: expected,
+            isTerminated: false,
+            requestIsPending: true
+        ))
+    }
+
+    func testDuplicateInstanceCandidateRejectsCurrentProcessAndDifferentBundle() {
+        let embeddedCLIURL = URL(
+            fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+        )
+        let guiURL = URL(fileURLWithPath: "/Applications/Programa.app/Contents/MacOS/Programa")
+
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 100,
+            candidateExecutableURL: guiURL,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: embeddedCLIURL
+        ))
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.example.other",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: guiURL,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: embeddedCLIURL
+        ))
+    }
+
     func testSingleInstanceProcessKeyReadsCurrentKernelProcessIdentity() throws {
         let currentPID = getpid()
         let key = try XCTUnwrap(AppDelegate.singleInstanceProcessKey(for: currentPID))

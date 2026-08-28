@@ -207,6 +207,8 @@ jobs:
           SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
           ONLY_TESTING="-only-testing:programaUITests/$TEST_FILTER"
           DISPLAY_ENV_PREFIX=()
+          RESULT_BUNDLE_PATH="/tmp/programa-e2e.xcresult"
+          rm -rf "$RESULT_BUNDLE_PATH"
 
           if [ "$TEST_FILTER" = "DisplayResolutionRegressionUITests" ]; then
             HELPER_PATH="/tmp/create-virtual-display"
@@ -256,6 +258,7 @@ jobs:
             -disableAutomaticPackageResolution
             -destination "platform=macOS"
             -maximum-test-execution-time-allowance "$TEST_TIMEOUT"
+            -resultBundlePath "$RESULT_BUNDLE_PATH"
             $ONLY_TESTING
             test
           )
@@ -291,6 +294,50 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
+      - name: Capture E2E diagnostics
+        if: always()
+        run: |
+          set -euo pipefail
+          DIAGNOSTICS_DIR="/tmp/programa-e2e-diagnostics"
+          REPORTS_DIR="$DIAGNOSTICS_DIR/DiagnosticReports"
+          rm -rf "$DIAGNOSTICS_DIR"
+          mkdir -p "$REPORTS_DIR"
+
+          ps -axo pid=,ppid=,lstart=,state=,comm= \
+            | awk 'BEGIN { print "pid ppid start state executable" } /Programa|programa|xctest|XCTRunner|testmanagerd/' \
+            > "$DIAGNOSTICS_DIR/processes.txt"
+
+          SYSTEM_REPORTS="$HOME/Library/Logs/DiagnosticReports"
+          if [ -d "$SYSTEM_REPORTS" ]; then
+            find "$SYSTEM_REPORTS" -maxdepth 1 -type f -mmin -30 \
+              \( -name 'Programa*.crash' -o -name 'Programa*.ips' -o -name 'programa*.crash' -o -name 'programa*.ips' \) \
+              -exec cp {} "$REPORTS_DIR/" \;
+          fi
+
+          PROGRAMA_LOGS_DIR="$HOME/Library/Logs/Programa"
+          mkdir -p "$DIAGNOSTICS_DIR/ProgramaLogs"
+          for log_name in diagnostics.log diagnostics.log.1; do
+            if [ -f "$PROGRAMA_LOGS_DIR/$log_name" ]; then
+              cp "$PROGRAMA_LOGS_DIR/$log_name" "$DIAGNOSTICS_DIR/ProgramaLogs/$log_name"
+            fi
+          done
+
+          if [ -d /tmp/programa-e2e.xcresult ]; then
+            xcrun xcresulttool get test-results summary \
+              --path /tmp/programa-e2e.xcresult \
+              > "$DIAGNOSTICS_DIR/xcresult-summary.json" 2>&1 || true
+          fi
+
+      - name: Upload E2E diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: programa-e2e-diagnostics-${{ github.run_id }}
+          path: |
+            /tmp/programa-e2e.xcresult
+            /tmp/programa-e2e-diagnostics
+          if-no-files-found: warn
 
       - name: Stop recording and trim
         if: ${{ always() && inputs.record_video && env.RECORD_PID != '' }}
