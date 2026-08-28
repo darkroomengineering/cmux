@@ -119,7 +119,7 @@ test("empty public release state bootstraps the first Sparkle publication", asyn
 
 test("drafts and non-draft releases without appcasts do not create authoritative public state", async () => {
   const client = githubWith({ pages: [[
-    release("rolling-candidate-99", 99),
+    release("rolling-candidate-99", 99, { draft: true }),
     release("nightly", 100, { assets: [{ id: 100, name: "programa-macos.dmg" }] }),
     release("v01.2.3", 102, { assets: [] }),
     release("v1.2.3", 101, { draft: true }),

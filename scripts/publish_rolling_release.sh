@@ -173,7 +173,8 @@ prune_candidates() {
     [[ "${is_draft}" == "true" && "${tag}" == "${CANDIDATE_PREFIX}"* ]] || continue
     [[ "${tag}" != "${skip_tag}" ]] || continue
     suffix="${tag#"${CANDIDATE_PREFIX}"}"
-    [[ "${suffix}" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ "${suffix}" =~ ^[0-9]+$ ]] || continue
+    suffix="$((10#${suffix}))"
     if build_is_at_most "${suffix}" "${finalized_build}"; then
       "${GH_BIN}" release delete "${tag}" --repo "${REPOSITORY}" --yes
     fi
@@ -464,6 +465,12 @@ NODE
 
 if [[ ! -s "${SELECTED_MANIFEST}" ]]; then
   if ((sealed_candidate_count > 0)); then
+    UNMATCHED_CURRENT_MAIN="$("${GH_BIN}" api \
+      "repos/${REPOSITORY}/git/ref/heads/main" \
+      --jq .object.sha)" || \
+      fail "could not read current main ref while diagnosing an unmatched reconciler target"
+    [[ "${UNMATCHED_CURRENT_MAIN}" == "${RECONCILER_TARGET_SHA}" ]] || \
+      fail "reconciler target ${RECONCILER_TARGET_SHA} is no longer current main ${UNMATCHED_CURRENT_MAIN}"
     fail "no sealed candidate matches reconciler target ${RECONCILER_TARGET_SHA}"
   fi
   exit 0
@@ -719,15 +726,15 @@ fi
 
 if [[ "${STARTING_REF}" != "${SELECTED_TARGET}" ]]; then
   require_selected_target_is_current_main "rolling ref publication gate"
-  if ! "${GH_BIN}" api "repos/${REPOSITORY}/git/refs/tags/${ROLLING_TAG}" \
+  # Rolling is required (lines 597-598) to already exist as a published
+  # release before this point, so its tag ref is always present; a PATCH
+  # failure here is a real error and must propagate, never be silently
+  # retried as "create instead of move" (that masked genuine failures,
+  # including hard-stop injection, as false success).
+  "${GH_BIN}" api "repos/${REPOSITORY}/git/refs/tags/${ROLLING_TAG}" \
     -X PATCH \
     -f "sha=${SELECTED_TARGET}" \
-    -F force=true >/dev/null; then
-    "${GH_BIN}" api "repos/${REPOSITORY}/git/refs" \
-      -X POST \
-      -f "ref=refs/tags/${ROLLING_TAG}" \
-      -f "sha=${SELECTED_TARGET}" >/dev/null
-  fi
+    -F force=true >/dev/null
 fi
 
 FINAL_METADATA="${TEMP_DIR}/rolling-final-assets.tsv"

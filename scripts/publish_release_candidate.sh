@@ -123,6 +123,11 @@ done
 if [[ "${destination_tag}" == "rolling" ]]; then
   [[ "${candidate_prefix}" == "rolling-candidate-" ]] || die "rolling candidates must use rolling-candidate-"
   [[ "${candidate_tag}" == "${candidate_prefix}${build}" ]] || die "rolling candidate tag must be ${candidate_prefix}${build}"
+elif [[ "${candidate_prefix}" == "rolling-candidate-" && "${destination_tag}" == "${candidate_prefix}${build}" ]]; then
+  # Archive candidates publish to their own permanent build tag instead of
+  # the mutable rolling tag or a milestone semver tag.
+  [[ "${candidate_tag}" == "${destination_tag}" ]] || \
+    die "archive candidate tag must equal its destination tag ${destination_tag}"
 else
   [[ "${destination_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || \
     die "non-rolling destination must be a canonical milestone tag"
@@ -478,9 +483,11 @@ if asset_metadata "${SEAL_NAME}" >/dev/null; then
   die "candidate seal appeared unexpectedly"
 fi
 
-"${gh_command}" release upload "${candidate_tag}" "${seal_output}" --repo "${GITHUB_REPOSITORY}" || \
+# Upload from the temp copy: gh names the asset after the local file, and the
+# --seal-output path is caller-chosen. The bytes were verified identical above.
+"${gh_command}" release upload "${candidate_tag}" "${manifest_path}" --repo "${GITHUB_REPOSITORY}" || \
   die "could not upload candidate seal"
-verify_asset "${SEAL_NAME}" "${seal_output}" "${manifest_size}" "${manifest_hash}"
+verify_asset "${SEAL_NAME}" "${manifest_path}" "${manifest_size}" "${manifest_hash}"
 
 refresh_asset_listing
 asset_total="$(wc -l < "${temp_dir}/seen-assets" | tr -d '[:space:]')"

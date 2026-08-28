@@ -384,7 +384,7 @@ release_view() {
     .name) cat "${dir}/title" ;; .body) cat "${dir}/body" ;;
     *assets*'@tsv'*)
       if [[ "${tag}" == rolling && -f "${dir}/assets/appcast.xml/bytes" ]]; then
-        build="$(sed -n 's:.*<sparkle:version>\([0-9][0-9]*\)</sparkle:version>.*:\1:p' "${dir}/assets/appcast.xml/bytes" | head -1)"
+        build="$(sed -n 's|.*<sparkle:version>\([0-9][0-9]*\)</sparkle:version>.*|\1|p' "${dir}/assets/appcast.xml/bytes" | head -1)"
         log "verify-rolling rolling ${build}"
         maybe_fail "verify:rolling"
       fi
@@ -618,7 +618,8 @@ chmod +x "${FAKE_GH}"
 for build in 100 101 102 103 104 105 200 201; do make_fixture "${build}" "0.64.73"; done
 
 seed_sealed_candidate() {
-  local build="$1" version="${2:-0.64.73}" refresh_fixture="${3:-true}" tag="rolling-candidate-${build}" dir role path name size digest entries=""
+  local build="$1" version="${2:-0.64.73}" refresh_fixture="${3:-true}" dir role path name size digest entries=""
+  local tag="rolling-candidate-${build}"
   # Archived payload URLs are self-contained at the candidate's permanent tag;
   # rolling contains only the mutable feed and stable DMG alias.
   [[ "${refresh_fixture}" != true ]] || make_fixture "${build}" "${version}" "${tag}"
@@ -639,7 +640,8 @@ seed_sealed_candidate() {
 }
 
 stage_archive_candidate() {
-  local build="$1" version="${2:-0.64.73}" tag="rolling-candidate-${build}"
+  local build="$1" version="${2:-0.64.73}"
+  local tag="rolling-candidate-${build}"
   make_fixture "${build}" "${version}" "${tag}"
   invoke_candidate "${build}" "${version}" "" rolling-candidate- "${tag}"
   printf '%s\n' "$(target_sha_for "${build}")" > "${STATE_DIR}/main_sha"
@@ -661,20 +663,23 @@ seed_release_decoys() {
 }
 
 seed_milestone() {
-  local build="$1" source="${2:-${FIXTURE_DIR}/${build}/appcast.xml}"
+  local build="$1"
+  local source="${2:-${FIXTURE_DIR}/${build}/appcast.xml}"
   write_release v0.63.0 "$(target_sha_for "${build}")" false false 'Milestone 0.63.0' milestone
   printf '63\n' > "$(release_dir v0.63.0)/id"
   write_asset v0.63.0 appcast.xml "${source}"
 }
 
 seed_milestone_tag() {
-  local tag="$1" build="$2" source="${3:-${FIXTURE_DIR}/${build}/appcast.xml}"
+  local tag="$1" build="$2"
+  local source="${3:-${FIXTURE_DIR}/${build}/appcast.xml}"
   write_release "${tag}" "$(target_sha_for "${build}")" false false "Milestone ${tag#v}" milestone
   write_asset "${tag}" appcast.xml "${source}"
 }
 
 assert_candidate_sealed() {
-  local build="$1" version="${2:-0.64.73}" tag="${3:-rolling-candidate-${build}}" seal local_seal
+  local build="$1" version="${2:-0.64.73}" seal local_seal
+  local tag="${3:-rolling-candidate-${build}}"
   seal="$(asset_dir "${tag}" "${SEAL_NAME}")/bytes"; assert_release_exists "${tag}"
   local_seal="$(seal_output_for "${tag}")"
   assert_file_equals "$(release_dir "${tag}")/draft" true; [[ -f "${seal}" ]] || fail "candidate ${build} is not sealed"
@@ -715,7 +720,8 @@ assert_rolling_converged() {
 }
 
 assert_published_archive() {
-  local build="$1" tag="rolling-candidate-${build}"
+  local build="$1"
+  local tag="rolling-candidate-${build}"
   assert_release_exists "${tag}"
   assert_file_equals "$(release_dir "${tag}")/draft" false
   assert_file_equals "$(release_dir "${tag}")/latest" false

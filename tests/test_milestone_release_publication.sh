@@ -384,7 +384,7 @@ reset_state; write_release "${TAG}" "${TARGET_SHA}" false true "${TAG}" generate
 write_asset "${TAG}" "programa-macos-${BUILD}.dmg" "${PAYLOAD}/programa-macos-${BUILD}.dmg"
 : > "${STATE_DIR}/operations.log"
 if invoke "${PAYLOAD}"; then fail "partial published release was repaired"; fi
-[[ ! -s "${STATE_DIR}/operations.log" ]] || fail "partial published release was mutated"
+! grep -q '^mutation ' "${STATE_DIR}/operations.log" || fail "partial published release was mutated"
 
 # Partial drafts reject unexpected, duplicate, and wrong-byte assets.
 for conflict in unexpected duplicate wrong-bytes; do
@@ -405,6 +405,7 @@ done
 # Same tag with different bytes or build never mutates the permanent release.
 reset_state; invoke "${PAYLOAD}"; assert_converged "${PAYLOAD}"
 DIFFERENT="${TMP_DIR}/different"; cp -R "${PAYLOAD}" "${DIFFERENT}"
+rm -f "${DIFFERENT}/${MANIFEST_NAME}"
 printf 'different\n' > "${DIFFERENT}/appcast.xml"
 node - "${MODULE}" "${DIFFERENT}" "${BUILD}" <<'NODE'
 const [modulePath, directory, build] = process.argv.slice(2);

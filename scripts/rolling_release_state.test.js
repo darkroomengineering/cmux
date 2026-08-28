@@ -135,7 +135,7 @@ function daemonManifestFor(manifest, tag = "rolling") {
   return JSON.stringify({
     schemaVersion: 1,
     appVersion: manifest.version,
-    releaseTag: "rolling",
+    releaseTag: tag,
     releaseURL,
     checksumsAssetName: `programad-remote-checksums-${manifest.build}.txt`,
     checksumsURL: `${releaseURL}/programad-remote-checksums-${manifest.build}.txt`,
