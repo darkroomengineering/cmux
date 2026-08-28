@@ -2795,8 +2795,9 @@ class TerminalController {
     // MARK: - V2 Context Resolution
 
     func v2ResolveTabManager(params: [String: Any]) -> TabManager? {
-        // The highest-priority present selector is authoritative. Prefer registered managers, but accept
-        // self.tabManager for an owned workspace/surface/tab; bare fallback requires all selectors absent/null.
+        // The highest-priority present selector is authoritative. Prefer registered managers. An id that
+        // no manager owns falls back to self.tabManager so the handler can report not_found for it
+        // (v2ResolveWorkspace fails there); returning nil would surface it as "unavailable" instead.
         if v2HasNonNullParam(params, "window_id") {
             guard let windowId = v2UUID(params, "window_id") else { return nil }
             return v2MainSync { AppDelegate.shared?.tabManagerFor(windowId: windowId) }
@@ -2807,11 +2808,7 @@ class TerminalController {
                 if let tabManager = AppDelegate.shared?.tabManagerFor(tabId: workspaceId) {
                     return tabManager
                 }
-                guard let tabManager = self.tabManager,
-                      tabManager.tabs.contains(where: { $0.id == workspaceId }) else {
-                    return nil
-                }
-                return tabManager
+                return self.tabManager
             }
         }
         if v2HasNonNullParam(params, "surface_id") {
@@ -2820,11 +2817,7 @@ class TerminalController {
                 if let tabManager = AppDelegate.shared?.locateSurface(surfaceId: surfaceId)?.tabManager {
                     return tabManager
                 }
-                guard let tabManager = self.tabManager,
-                      tabManager.tabs.contains(where: { $0.panels[surfaceId] != nil }) else {
-                    return nil
-                }
-                return tabManager
+                return self.tabManager
             }
         }
         if v2HasNonNullParam(params, "tab_id") {
@@ -2833,11 +2826,7 @@ class TerminalController {
                 if let tabManager = AppDelegate.shared?.locateSurface(surfaceId: tabId)?.tabManager {
                     return tabManager
                 }
-                guard let tabManager = self.tabManager,
-                      tabManager.tabs.contains(where: { $0.panels[tabId] != nil }) else {
-                    return nil
-                }
-                return tabManager
+                return self.tabManager
             }
         }
         return v2MainSync { self.tabManager }
