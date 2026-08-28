@@ -7,6 +7,8 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 ## [Unreleased]
 
 ### Fixed
+- Provider usage now completes the Codex app-server handshake before reading limits, verifies Claude's current login before trusting its bounded fresh cache, hides signed-out providers, refreshes whenever its compact sidebar control opens, and sizes the popover to its visible content.
+- Browser context-menu actions no longer crash when a Google redirect contains repeated query parameters.
 - Crash recovery no longer opens a second window full of empty workspaces when only some detached terminal sessions can be reattached. The recovery window now contains only live recovered sessions and closes when none recover.
 - Closing a window now tears down every timer, observer, task, panel, and workspace it owns, so closed windows cannot keep empty workspaces alive or reappear in a later session snapshot.
 - The title-bar hide-sidebar button now always toggles the sidebar belonging to its own window instead of relying on whichever window was last active.

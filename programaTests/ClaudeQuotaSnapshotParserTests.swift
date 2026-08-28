@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 #if canImport(Programa_DEV)
@@ -122,6 +124,179 @@ final class ClaudeQuotaSnapshotParserTests: XCTestCase {
         }
         XCTAssertFalse(message.isEmpty)
     }
+
+    func testClaudeAuthStatusOverridesAValidCacheWhenTheOfficialCLIIsSignedOut() async throws {
+        let now = Date(timeIntervalSince1970: 1_785_168_986)
+        let fixture = try ClaudeUsageFixture.make(
+            authBody: #"print -r -- '{"loggedIn":false}'"#,
+            cacheData: payload(updatedAt: String(Int(now.timeIntervalSince1970 * 1_000)))
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+
+        let result = await ClaudeProviderUsageFetcher.fetchForTesting(
+            executableURL: fixture.executableURL,
+            cacheURL: fixture.cacheURL,
+            timeout: 0.5,
+            now: now
+        )
+
+        guard case .unavailable(.claude) = result else {
+            return XCTFail("A signed-out authoritative Claude CLI must hide a leftover usage cache, got \(result)")
+        }
+        XCTAssertEqual(
+            try fixture.invocations(),
+            ["auth status --json"],
+            "Login state must come from the official Claude CLI contract"
+        )
+    }
+
+    func testLoggedInClaudeWithAFreshRegularBoundedCacheIsAvailable() async throws {
+        let now = Date(timeIntervalSince1970: 1_785_168_986)
+        let fixture = try ClaudeUsageFixture.make(
+            authBody: #"print -r -- '{"loggedIn":true}'"#,
+            cacheData: payload(updatedAt: String(Int(now.timeIntervalSince1970 * 1_000)))
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+
+        let result = await ClaudeProviderUsageFetcher.fetchForTesting(
+            executableURL: fixture.executableURL,
+            cacheURL: fixture.cacheURL,
+            timeout: 0.5,
+            now: now
+        )
+
+        guard case let .available(snapshot) = result else {
+            return XCTFail("A logged-in Claude session with a fresh safe cache must render usage, got \(result)")
+        }
+        XCTAssertEqual(snapshot.windows.map(\.label), ["5h", "7d"])
+    }
+
+    func testUnsafeOrStaleClaudeCachesAreRejectedWithoutReadingThroughThem() async throws {
+        let now = Date(timeIntervalSince1970: 1_785_168_986)
+        let stale = payload(updatedAt: String(Int((now.timeIntervalSince1970 - 7_200) * 1_000)))
+        let fresh = payload(updatedAt: String(Int(now.timeIntervalSince1970 * 1_000)))
+        var oversized = fresh
+        oversized.append(Data(repeating: 0x20, count: 1_048_577))
+
+        for cacheKind in ClaudeUsageFixture.UnsafeCacheKind.allCases {
+            let fixture = try ClaudeUsageFixture.make(
+                authBody: #"print -r -- '{"loggedIn":true}'"#,
+                cacheData: cacheKind == .stale ? stale : (cacheKind == .oversized ? oversized : fresh),
+                unsafeCacheKind: cacheKind
+            )
+            addTeardownBlock { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+
+            let result = await ClaudeProviderUsageFetcher.fetchForTesting(
+                executableURL: fixture.executableURL,
+                cacheURL: fixture.cacheURL,
+                timeout: 0.5,
+                now: now
+            )
+
+            guard case .unavailable(.claude) = result else {
+                return XCTFail("A \(cacheKind) cache must be rejected as unavailable without unsafe reads, got \(result)")
+            }
+        }
+    }
+
+    func testClaudeAuthTimeoutAndErrorsAreBoundedAndNeverExposeCLIOutput() async throws {
+        let now = Date(timeIntervalSince1970: 1_785_168_986)
+        let cache = payload(updatedAt: String(Int(now.timeIntervalSince1970 * 1_000)))
+        let cases = [
+            "sleep 1",
+            "print -ru2 -- 'private-auth-output'; exit 7",
+        ]
+
+        for authBody in cases {
+            let fixture = try ClaudeUsageFixture.make(authBody: authBody, cacheData: cache)
+            addTeardownBlock { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+            let clock = ContinuousClock()
+            let startedAt = clock.now
+
+            let result = await ClaudeProviderUsageFetcher.fetchForTesting(
+                executableURL: fixture.executableURL,
+                cacheURL: fixture.cacheURL,
+                timeout: 0.15,
+                now: now
+            )
+
+            guard case let .failed(.claude, message) = result else {
+                return XCTFail("An indeterminate authoritative login check must be a provider failure, got \(result)")
+            }
+            XCTAssertLessThan(startedAt.duration(to: clock.now), .milliseconds(600))
+            XCTAssertFalse(message.contains("private-auth-output"))
+        }
+    }
+}
+
+private struct ClaudeUsageFixture {
+    enum UnsafeCacheKind: CaseIterable, CustomStringConvertible {
+        case stale
+        case symlink
+        case nonregular
+        case oversized
+
+        var description: String {
+            switch self {
+            case .stale: return "stale"
+            case .symlink: return "symlinked"
+            case .nonregular: return "non-regular"
+            case .oversized: return "oversized"
+            }
+        }
+    }
+
+    let directoryURL: URL
+    let executableURL: URL
+    let cacheURL: URL
+    let invocationURL: URL
+
+    static func make(
+        authBody: String,
+        cacheData: Data,
+        unsafeCacheKind: UnsafeCacheKind? = nil
+    ) throws -> Self {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-claude-usage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: false)
+        let executableURL = directoryURL.appendingPathComponent("claude")
+        let invocationURL = directoryURL.appendingPathComponent("invocations.log")
+        let cacheURL = directoryURL.appendingPathComponent("rate-limits.json")
+        let script = """
+        #!/bin/zsh
+        print -r -- "$*" >> \(shellQuote(invocationURL.path))
+        \(authBody)
+        """
+        try Data(script.utf8).write(to: executableURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executableURL.path)
+
+        switch unsafeCacheKind {
+        case .symlink:
+            let targetURL = directoryURL.appendingPathComponent("actual-rate-limits.json")
+            try cacheData.write(to: targetURL)
+            try FileManager.default.createSymbolicLink(at: cacheURL, withDestinationURL: targetURL)
+        case .nonregular:
+            try FileManager.default.createDirectory(at: cacheURL, withIntermediateDirectories: false)
+        default:
+            try cacheData.write(to: cacheURL)
+        }
+        return Self(
+            directoryURL: directoryURL,
+            executableURL: executableURL,
+            cacheURL: cacheURL,
+            invocationURL: invocationURL
+        )
+    }
+
+    func invocations() throws -> [String] {
+        String(decoding: try Data(contentsOf: invocationURL), as: UTF8.self)
+            .split(separator: "\n")
+            .map(String.init)
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
 }
 
 /// Codex account state is intentionally read through the documented app-server RPCs. These
@@ -221,6 +396,202 @@ final class CodexUsageSnapshotParserTests: XCTestCase {
             }
             XCTAssertFalse(message.isEmpty)
         }
+    }
+
+    func testAppServerWaitsForInitializeBeforeRequestingUsageAndKeepsInputOpenForResponses() async throws {
+        let fake = try FakeCodexAppServer.make(
+            initializationResponse: #"{"jsonrpc":"2.0","id":0,"result":{}}"#
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: fake.directoryURL) }
+
+        let result = await CodexProviderUsageFetcher.fetchForTesting(
+            executableURL: fake.executableURL,
+            timeout: 1
+        )
+
+        guard case let .available(snapshot) = result else {
+            return XCTFail("A valid sequential app-server exchange must expose Codex usage, got \(result)")
+        }
+        XCTAssertEqual(snapshot.windows.map(\.label), ["5h", "7d"])
+        let events = try fake.events()
+        XCTAssertEqual(events.first, "initialize")
+        XCTAssertFalse(events.contains("usage-before-initialize-response"))
+        XCTAssertFalse(events.contains("stdin-closed-before-usage-responses"))
+    }
+
+    func testMalformedOrWrongInitializeResponseFailsWithinTheConfiguredDeadline() async throws {
+        for response in ["not-json", #"{"jsonrpc":"2.0","id":99,"result":{}}"#] {
+            let fake = try FakeCodexAppServer.make(initializationResponse: response)
+            addTeardownBlock { try? FileManager.default.removeItem(at: fake.directoryURL) }
+            let clock = ContinuousClock()
+            let startedAt = clock.now
+
+            let result = await CodexProviderUsageFetcher.fetchForTesting(
+                executableURL: fake.executableURL,
+                timeout: 0.5
+            )
+
+            guard case .failed(.codex, _) = result else {
+                return XCTFail("Usage RPCs must not proceed after an invalid initialize response, got \(result)")
+            }
+            XCTAssertLessThan(startedAt.duration(to: clock.now), .seconds(1))
+        }
+    }
+
+    func testInitializeRPCErrorTerminatesPromptlyWithoutWaitingForTheFullDeadline() async throws {
+        let fake = try FakeCodexAppServer.makeInitializationErrorThenDelay(delay: 0.7)
+        addTeardownBlock { try? FileManager.default.removeItem(at: fake.directoryURL) }
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        let result = await CodexProviderUsageFetcher.fetchForTesting(
+            executableURL: fake.executableURL,
+            timeout: 1
+        )
+
+        guard case .failed(.codex, _) = result else {
+            return XCTFail("An explicit initialization error must fail the provider, got \(result)")
+        }
+        XCTAssertLessThan(
+            startedAt.duration(to: clock.now),
+            .milliseconds(400),
+            "An authoritative id=0 error should terminate immediately instead of consuming the session timeout"
+        )
+    }
+
+    func testFastExitingServerStillReturnsTheFinalAccountAndRateLimitResponses() async throws {
+        let fake = try FakeCodexAppServer.make(
+            initializationResponse: #"{"jsonrpc":"2.0","id":0,"result":{}}"#,
+            responseDelay: 0.01
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: fake.directoryURL) }
+
+        let result = await CodexProviderUsageFetcher.fetchForTesting(
+            executableURL: fake.executableURL,
+            timeout: 1
+        )
+
+        guard case let .available(snapshot) = result, snapshot.provider == .codex else {
+            return XCTFail("Responses written immediately before process exit must not be lost, got \(result)")
+        }
+    }
+
+    func testDescendantsHoldingPipesCannotExtendTheInjectedDeadlineOrCancellation() async throws {
+        for mode in [FakeCodexAppServer.RetentionMode.deadline, .cancellation] {
+            let fake = try FakeCodexAppServer.makePipeRetainingDescendant(retention: 0.8)
+            addTeardownBlock { try? FileManager.default.removeItem(at: fake.directoryURL) }
+            let clock = ContinuousClock()
+            let startedAt = clock.now
+            let task = Task {
+                await CodexProviderUsageFetcher.fetchForTesting(
+                    executableURL: fake.executableURL,
+                    timeout: mode == .deadline ? 0.15 : 2
+                )
+            }
+            if mode == .cancellation {
+                try await Task.sleep(for: .milliseconds(80))
+                task.cancel()
+            }
+
+            let result = await task.value
+
+            guard case .failed(.codex, _) = result else {
+                return XCTFail("A timed-out or cancelled app-server tree must fail safely, got \(result)")
+            }
+            XCTAssertLessThan(
+                startedAt.duration(to: clock.now),
+                .milliseconds(550),
+                "Descendants retaining stdout/stderr must not outlive the fetch deadline or cancellation"
+            )
+        }
+    }
+}
+
+private struct FakeCodexAppServer {
+    enum RetentionMode: Equatable {
+        case deadline
+        case cancellation
+    }
+
+    let directoryURL: URL
+    let executableURL: URL
+    let eventsURL: URL
+
+    static func make(
+        initializationResponse: String,
+        responseDelay: TimeInterval = 0.12
+    ) throws -> Self {
+        try makeScript { eventsPath in
+            """
+            IFS= read -r initialize
+            print -r -- initialize >> \(eventsPath)
+            typeset premature=""
+            if IFS= read -r -t 0.10 premature; then
+              print -r -- usage-before-initialize-response >> \(eventsPath)
+            fi
+            print -r -- \(shellQuote(initializationResponse))
+            if [[ -z $premature ]]; then
+              IFS= read -r initialized
+            fi
+            IFS= read -r account
+            IFS= read -r rate_limits
+            typeset -F started=$EPOCHREALTIME
+            IFS= read -r -t \(responseDelay) extra
+            typeset -F elapsed=$(( EPOCHREALTIME - started ))
+            if (( elapsed < \(max(responseDelay / 3, 0.01)) )); then
+              print -r -- stdin-closed-before-usage-responses >> \(eventsPath)
+            fi
+            print -r -- '{"jsonrpc":"2.0","id":1,"result":{"account":{"type":"chatgpt"}}}'
+            print -r -- '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":24,"windowDurationMins":300,"resetsAt":1785171600},"secondary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1785664800}},"rateLimitsByLimitId":{}}}'
+            """
+        }
+    }
+
+    static func makeInitializationErrorThenDelay(delay: TimeInterval) throws -> Self {
+        try makeScript { _ in
+            """
+            IFS= read -r initialize
+            print -r -- '{"jsonrpc":"2.0","id":0,"error":{"code":-32000,"message":"denied"}}'
+            sleep \(delay)
+            """
+        }
+    }
+
+    static func makePipeRetainingDescendant(retention: TimeInterval) throws -> Self {
+        try makeScript { _ in
+            """
+            trap '' TERM
+            ( sleep \(retention) ) &
+            sleep \(retention)
+            """
+        }
+    }
+
+    func events() throws -> [String] {
+        String(decoding: try Data(contentsOf: eventsURL), as: UTF8.self)
+            .split(separator: "\n")
+            .map(String.init)
+    }
+
+    private static func makeScript(body: (String) -> String) throws -> Self {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-codex-app-server-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: false)
+        let executableURL = directoryURL.appendingPathComponent("codex")
+        let eventsURL = directoryURL.appendingPathComponent("events.log")
+        let script = """
+        #!/bin/zsh
+        set -u
+        zmodload zsh/datetime
+        \(body(shellQuote(eventsURL.path)))
+        """
+        try Data(script.utf8).write(to: executableURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executableURL.path)
+        return Self(directoryURL: directoryURL, executableURL: executableURL, eventsURL: eventsURL)
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }
 
@@ -422,26 +793,135 @@ final class ProviderUsageStoreTests: XCTestCase {
     }
 }
 
+@MainActor
 final class SidebarQuotaPresentationTests: XCTestCase {
-    func testUnavailableProviderRemainsVisibleBesideAnotherProvidersUsage() {
-        let claude = ProviderUsageSnapshot(
-            provider: .claude,
-            windows: [
+    private func snapshot(
+        provider: ProviderUsageProvider,
+        windowCount: Int = 1
+    ) -> ProviderUsageSnapshot {
+        ProviderUsageSnapshot(
+            provider: provider,
+            windows: (0..<windowCount).map { index in
                 ProviderUsageWindow(
-                    id: "claude.five_hour",
-                    label: "5h",
-                    usedPercent: 17,
-                    resetsAt: Date(timeIntervalSince1970: 1_785_171_600)
-                ),
-            ]
+                    id: "\(provider).\(index)",
+                    label: index.isMultiple(of: 2) ? "5h" : "7d",
+                    usedPercent: 17 + index,
+                    resetsAt: Date(timeIntervalSince1970: 1_785_171_600 + Double(index * 3_600))
+                )
+            }
         )
+    }
 
-        let presentation = SidebarQuotaPresentation(
+    func testSignedOutProvidersAreOmittedWhileSignedInFetchFailuresRemainVisible() {
+        let claude = snapshot(provider: .claude)
+
+        let signedOutPresentation = SidebarQuotaPresentation(
             results: [.available(claude), .unavailable(.codex)]
         )
+        XCTAssertEqual(signedOutPresentation.availableSnapshots.map(\.provider), [.claude])
+        XCTAssertTrue(signedOutPresentation.unavailableProviders.isEmpty)
 
-        XCTAssertEqual(presentation.availableSnapshots.map(\.provider), [.claude])
-        XCTAssertEqual(presentation.unavailableProviders, [.codex])
-        XCTAssertTrue(presentation.failures.isEmpty)
+        let failedPresentation = SidebarQuotaPresentation(
+            results: [.available(claude), .failed(.codex, "Codex usage could not be read.")]
+        )
+        XCTAssertEqual(failedPresentation.failures.map(\.provider), [.codex])
+        XCTAssertEqual(failedPresentation.failures.first?.message, "Codex usage could not be read.")
+    }
+
+    func testEmptyStateAppearsOnlyWhenNoAvailableUsageOrGenuineFailureExists() {
+        let allSignedOut = SidebarQuotaPresentation(
+            results: [.unavailable(.claude), .unavailable(.codex)]
+        )
+        XCTAssertTrue(allSignedOut.showsEmptyState)
+        XCTAssertTrue(allSignedOut.unavailableProviders.isEmpty)
+
+        let genuineFailure = SidebarQuotaPresentation(
+            results: [.unavailable(.claude), .failed(.codex, "Authenticated read failed")]
+        )
+        XCTAssertFalse(
+            genuineFailure.showsEmptyState,
+            "A visible authenticated-provider failure must not be mislabeled as no usage available"
+        )
+        XCTAssertEqual(genuineFailure.failures.map(\.provider), [.codex])
+    }
+
+    func testPopoverFittingHeightTracksVisibleContentAndCapsOversizedResults() async {
+        let oneProviderHeight = await fittingHeight(
+            results: [.available(snapshot(provider: .claude, windowCount: 2))]
+        )
+        let twoProviderHeight = await fittingHeight(
+            results: [
+                .available(snapshot(provider: .claude, windowCount: 2)),
+                .available(snapshot(provider: .codex, windowCount: 2)),
+            ]
+        )
+        let oversizedHeight = await fittingHeight(
+            results: [.available(snapshot(provider: .codex, windowCount: 30))]
+        )
+
+        XCTAssertLessThan(oneProviderHeight, twoProviderHeight)
+        XCTAssertLessThan(oneProviderHeight, 340)
+        XCTAssertLessThan(twoProviderHeight, 340)
+        XCTAssertGreaterThan(oversizedHeight, twoProviderHeight)
+        XCTAssertLessThanOrEqual(oversizedHeight, 480)
+    }
+
+    func testOpenPopoverResizesWhenLoadingBecomesProviderResults() async throws {
+        let fetcher = ControllableProviderUsageFetcher(provider: .claude)
+        let store = ProviderUsageStore(fetchers: [fetcher])
+        let refresh = Task { await store.refresh() }
+        await fetcher.waitUntilCallCount(1)
+        let sizingDriver = SidebarPopoverSizingTestDriver(
+            rootView: AnyView(SidebarQuotaFooter(store: store))
+        )
+        let loadingSize = sizingDriver.installPopover()
+
+        await fetcher.complete(
+            callID: 0,
+            with: .available(snapshot(provider: .claude, windowCount: 2))
+        )
+        await refresh.value
+        sizingDriver.updateRootView(AnyView(SidebarQuotaFooter(store: store)))
+        let resultsSize = try XCTUnwrap(sizingDriver.contentSize)
+
+        XCTAssertNotEqual(loadingSize.height, resultsSize.height)
+        XCTAssertLessThan(resultsSize.height, 340)
+    }
+
+    func testHelpPopoverKeepsANonzeroNaturalFittingSize() {
+        let size = SidebarHelpPopoverSizingTestDriver.fittingSize()
+
+        XCTAssertGreaterThan(size.width, 0)
+        XCTAssertGreaterThan(size.height, 0)
+    }
+
+    func testUsagePopoverDoesNotExposeAManualRefreshControl() {
+        XCTAssertFalse(
+            SidebarQuotaFooter.showsManualRefreshControl,
+            "Opening the popover performs the refresh; a second refresh control makes freshness ambiguous"
+        )
+    }
+
+    func testFooterControlsKeepAccessibleTargetsOnATrafficLightVisualPitch() {
+        let buttonSize = SidebarFooterControlLayout.buttonSize
+        let helpCenter = buttonSize / 2
+            + SidebarFooterControlLayout.helpIconOffset(clustersWithUsage: true)
+        let usageCenter = buttonSize + buttonSize / 2
+            + SidebarFooterControlLayout.usageIconOffset
+
+        XCTAssertGreaterThanOrEqual(buttonSize, 44)
+        XCTAssertEqual(usageCenter - helpCenter, SidebarFooterControlLayout.visualPitch)
+        XCTAssertEqual(SidebarFooterControlLayout.helpIconOffset(clustersWithUsage: false), 0)
+    }
+
+    private func fittingHeight(results: [ProviderUsageResult]) async -> CGFloat {
+        let fetchers: [any ProviderUsageFetching] = results.map { result in
+            CountingProviderUsageFetcher(provider: result.provider, result: result)
+        }
+        let store = ProviderUsageStore(fetchers: fetchers)
+        await store.refresh()
+        let controller = NSHostingController(rootView: SidebarQuotaFooter(store: store))
+        controller.view.layoutSubtreeIfNeeded()
+        return ceil(controller.view.fittingSize.height)
     }
 }

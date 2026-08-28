@@ -227,26 +227,226 @@ enum ClaudeUsageSnapshotParser {
 struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
     let provider = ProviderUsageProvider.claude
 
+    private static let maximumCacheBytes = 1_048_576
+    private static let maximumAuthResponseBytes = 65_536
+    private static let maximumCacheAge: TimeInterval = 3_600
+
     func fetch() async -> ProviderUsageResult {
+        guard let executableURL = Self.resolveClaudeExecutable() else {
+            return .unavailable(.claude)
+        }
+        let cacheURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/tmp/rate-limits.json")
+        return await Self.fetch(
+            executableURL: executableURL,
+            cacheURL: cacheURL,
+            timeout: 5,
+            now: Date()
+        )
+    }
+
+    private static func fetch(
+        executableURL: URL,
+        cacheURL: URL,
+        timeout: TimeInterval,
+        now: Date
+    ) async -> ProviderUsageResult {
+        switch await authStatus(executableURL: executableURL, timeout: timeout) {
+        case .loggedOut:
+            return .unavailable(.claude)
+        case .failed:
+            return .failed(
+                .claude,
+                String(
+                    localized: "sidebar.usage.error.claudeRead",
+                    defaultValue: "Claude usage could not be read."
+                )
+            )
+        case .loggedIn:
+            return await fetchCache(fileURL: cacheURL, now: now)
+        }
+    }
+
+    private static func fetchCache(fileURL: URL, now: Date) async -> ProviderUsageResult {
         await Task.detached(priority: .utility) {
-            let fileURL = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".claude/tmp/rate-limits.json")
-            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            guard let data = readSafeCache(at: fileURL),
+                  let snapshot = ClaudeQuotaSnapshotParser.parse(data: data),
+                  snapshot.updatedAt <= now.addingTimeInterval(60),
+                  now.timeIntervalSince(snapshot.updatedAt) <= maximumCacheAge else {
                 return .unavailable(.claude)
             }
-
-            do {
-                return ClaudeUsageSnapshotParser.parse(data: try Data(contentsOf: fileURL))
-            } catch {
-                return .failed(
-                    .claude,
-                    String(
-                        localized: "sidebar.usage.error.claudeRead",
-                        defaultValue: "Claude usage could not be read."
-                    )
-                )
-            }
+            return ClaudeUsageSnapshotParser.parse(data: data)
         }.value
+    }
+
+    private enum AuthStatus {
+        case loggedIn
+        case loggedOut
+        case failed
+    }
+
+    private actor BoundedCapture {
+        private var data = Data()
+        private var isFinished = false
+        private var failed = false
+
+        func append(_ byte: UInt8) {
+            guard !failed else { return }
+            guard data.count < ClaudeProviderUsageFetcher.maximumAuthResponseBytes else {
+                data.removeAll(keepingCapacity: false)
+                failed = true
+                return
+            }
+            data.append(byte)
+        }
+
+        func finish(readFailed: Bool) {
+            failed = failed || readFailed
+            isFinished = true
+        }
+
+        func snapshot() -> (data: Data, isFinished: Bool, failed: Bool) {
+            (data, isFinished, failed)
+        }
+    }
+
+    private static func authStatus(executableURL: URL, timeout: TimeInterval) async -> AuthStatus {
+        let process = Process()
+        let stdout = Pipe()
+        process.executableURL = executableURL
+        process.arguments = ["auth", "status", "--json"]
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            try? stdout.fileHandleForWriting.close()
+        } catch {
+            return .failed
+        }
+
+        let capture = BoundedCapture()
+        let reader = Task {
+            do {
+                for try await byte in stdout.fileHandleForReading.bytes {
+                    await capture.append(byte)
+                }
+                await capture.finish(readFailed: false)
+            } catch {
+                await capture.finish(readFailed: !Task.isCancelled)
+            }
+        }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .milliseconds(Int64(max(timeout, 0) * 1_000)))
+        var snapshot = await capture.snapshot()
+        while !snapshot.isFinished, clock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(10))
+            snapshot = await capture.snapshot()
+        }
+
+        if snapshot.isFinished, !snapshot.failed {
+            while process.isRunning, clock.now < deadline, !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }
+        if process.isRunning {
+            terminate(process)
+        }
+        if !snapshot.isFinished {
+            try? stdout.fileHandleForReading.close()
+        }
+        reader.cancel()
+        _ = await reader.value
+
+        guard !Task.isCancelled,
+              snapshot.isFinished,
+              !snapshot.failed,
+              !process.isRunning else {
+            return .failed
+        }
+        guard process.terminationStatus == 0,
+              let object = try? JSONSerialization.jsonObject(with: snapshot.data) as? [String: Any],
+              let loggedIn = object["loggedIn"] as? Bool else {
+            return .failed
+        }
+        return loggedIn ? .loggedIn : .loggedOut
+    }
+
+    private static func readSafeCache(at url: URL) -> Data? {
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { Darwin.close(descriptor) }
+
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              metadata.st_mode & S_IFMT == S_IFREG,
+              metadata.st_size >= 0,
+              metadata.st_size <= maximumCacheBytes else {
+            return nil
+        }
+
+        var data = Data()
+        data.reserveCapacity(Int(metadata.st_size))
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count == 0 { break }
+            guard count > 0, data.count + count <= maximumCacheBytes else { return nil }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+
+    #if DEBUG
+    static func fetchForTesting(
+        executableURL: URL,
+        cacheURL: URL,
+        timeout: TimeInterval,
+        now: Date
+    ) async -> ProviderUsageResult {
+        await fetch(
+            executableURL: executableURL,
+            cacheURL: cacheURL,
+            timeout: timeout,
+            now: now
+        )
+    }
+#endif
+
+    private static func terminate(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let deadline = Date().addingTimeInterval(0.1)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if process.isRunning {
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        }
+    }
+
+    private static func resolveClaudeExecutable() -> URL? {
+        let fileManager = FileManager.default
+        var candidates: [String] = []
+        if let path = ProcessInfo.processInfo.environment["PATH"] {
+            candidates.append(contentsOf: path.split(separator: ":").map { "\($0)/claude" })
+        }
+
+        let home = fileManager.homeDirectoryForCurrentUser.path
+        candidates.append(contentsOf: [
+            "\(home)/.local/bin/claude",
+            "\(home)/.bun/bin/claude",
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+        ])
+
+        var seen: Set<String> = []
+        for candidate in candidates where seen.insert(candidate).inserted {
+            if fileManager.isExecutableFile(atPath: candidate) {
+                return URL(fileURLWithPath: candidate)
+            }
+        }
+        return nil
     }
 }
 
@@ -456,7 +656,11 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
             return .unavailable(.codex)
         }
 
-        switch await Self.runAppServer(executableURL: executableURL) {
+        return await Self.fetch(executableURL: executableURL, timeout: 5)
+    }
+
+    private static func fetch(executableURL: URL, timeout: TimeInterval) async -> ProviderUsageResult {
+        switch await Self.runAppServer(executableURL: executableURL, timeout: timeout) {
         case let .responses(account, rateLimits):
             return CodexUsageSnapshotParser.parse(accountData: account, rateLimitsData: rateLimits)
         case .unavailable:
@@ -472,20 +676,78 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
         }
     }
 
+    #if DEBUG
+    static func fetchForTesting(executableURL: URL, timeout: TimeInterval) async -> ProviderUsageResult {
+        await fetch(executableURL: executableURL, timeout: timeout)
+    }
+    #endif
+
     private enum AppServerOutcome {
         case responses(account: Data, rateLimits: Data)
         case unavailable
         case failed
     }
 
+    private enum InitializeState: Equatable, Sendable {
+        case pending
+        case succeeded
+        case failed
+    }
+
     private struct CollectedResponses: Sendable {
+        var initializeState = InitializeState.pending
         var account: Data?
         var rateLimits: Data?
         var exceededCaptureLimit = false
         var readFailed = false
+        var finished = false
     }
 
-    private static func runAppServer(executableURL: URL) async -> AppServerOutcome {
+    private actor AppServerResponseInbox {
+        private var responses = CollectedResponses()
+
+        func consume(_ line: Data) {
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let responseID = CodexProviderUsageFetcher.rpcID(object["id"]) else {
+                return
+            }
+
+            switch responseID {
+            case 0:
+                if object["error"] != nil {
+                    responses.initializeState = .failed
+                } else if object["result"] is [String: Any] {
+                    responses.initializeState = .succeeded
+                } else {
+                    responses.initializeState = .failed
+                }
+            case 1 where responses.initializeState == .succeeded:
+                responses.account = CodexProviderUsageFetcher.sanitizedAccountEnvelope(object)
+            case 2 where responses.initializeState == .succeeded:
+                responses.rateLimits = try? JSONSerialization.data(withJSONObject: object)
+            default:
+                break
+            }
+        }
+
+        func markExceededCaptureLimit() {
+            responses.exceededCaptureLimit = true
+        }
+
+        func finish(readFailed: Bool) {
+            responses.readFailed = responses.readFailed || readFailed
+            responses.finished = true
+        }
+
+        func snapshot() -> CollectedResponses {
+            responses
+        }
+    }
+
+    private static func runAppServer(
+        executableURL: URL,
+        timeout: TimeInterval
+    ) async -> AppServerOutcome {
         let process = Process()
         let stdin = Pipe()
         let stdout = Pipe()
@@ -499,52 +761,88 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
 
         do {
             try process.run()
+            try? stdout.fileHandleForWriting.close()
+            try? stderr.fileHandleForWriting.close()
         } catch {
             return .failed
         }
 
-        async let collectedResponses = collectResponses(from: stdout.fileHandleForReading)
-        async let drainedStderr: Void = drain(stderr.fileHandleForReading)
+        let inbox = AppServerResponseInbox()
+        let responseReader = Task {
+            await collectResponses(from: stdout.fileHandleForReading, into: inbox)
+        }
+        let stderrReader = Task {
+            await drain(stderr.fileHandleForReading)
+        }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .milliseconds(Int64(max(timeout, 0) * 1_000)))
+        var outcome = AppServerOutcome.failed
 
         do {
-            let input = try requestPayload()
-            try stdin.fileHandleForWriting.write(contentsOf: input)
-            try stdin.fileHandleForWriting.close()
+            try stdin.fileHandleForWriting.write(contentsOf: initializeRequestPayload())
+
+            var responses = await inbox.snapshot()
+            while responses.initializeState == .pending,
+                  !responses.exceededCaptureLimit,
+                  !responses.readFailed,
+                  !responses.finished,
+                  clock.now < deadline,
+                  !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(10))
+                responses = await inbox.snapshot()
+            }
+
+            if responses.initializeState == .succeeded,
+               !responses.exceededCaptureLimit,
+               !responses.readFailed,
+               !Task.isCancelled,
+               clock.now < deadline {
+                try stdin.fileHandleForWriting.write(contentsOf: usageRequestPayload())
+
+                responses = await inbox.snapshot()
+                while (responses.account == nil || responses.rateLimits == nil),
+                      !responses.exceededCaptureLimit,
+                      !responses.readFailed,
+                      clock.now < deadline,
+                      !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(10))
+                    responses = await inbox.snapshot()
+                }
+
+                if let account = responses.account,
+                   let rateLimits = responses.rateLimits,
+                   !responses.exceededCaptureLimit,
+                   !responses.readFailed,
+                   !Task.isCancelled {
+                    outcome = .responses(account: account, rateLimits: rateLimits)
+                }
+            }
         } catch {
-            terminate(process)
-            _ = await collectedResponses
-            await drainedStderr
-            return .failed
+            outcome = .failed
         }
 
-        let deadline = Date().addingTimeInterval(5)
-        while process.isRunning, Date() < deadline, !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
+        try? stdin.fileHandleForWriting.close()
         if process.isRunning {
             terminate(process)
         }
-        let responses = await collectedResponses
-        await drainedStderr
+        try? stdout.fileHandleForReading.close()
+        try? stderr.fileHandleForReading.close()
+        responseReader.cancel()
+        stderrReader.cancel()
+        _ = await responseReader.value
+        _ = await stderrReader.value
 
-        guard !Task.isCancelled,
-              !responses.exceededCaptureLimit,
-              !responses.readFailed else {
-            return .failed
-        }
-        guard let accountResponse = responses.account,
-              let rateLimitsResponse = responses.rateLimits else {
-            return process.terminationStatus == 127 ? .unavailable : .failed
-        }
-        return .responses(account: accountResponse, rateLimits: rateLimitsResponse)
+        return Task.isCancelled ? .failed : outcome
     }
 
     /// Reads JSONL incrementally and retains only the two bounded response envelopes.
     /// The account envelope is reduced to an authenticated/null marker before storage,
     /// so email and other account identifiers never leave the transient input line.
-    private static func collectResponses(from handle: FileHandle) async -> CollectedResponses {
+    private static func collectResponses(
+        from handle: FileHandle,
+        into inbox: AppServerResponseInbox
+    ) async {
         let maximumCapturedBytes = 1_048_576
-        var result = CollectedResponses()
         var line = Data()
         var receivedBytes = 0
 
@@ -552,38 +850,23 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
             for try await byte in handle.bytes {
                 receivedBytes += 1
                 if receivedBytes > maximumCapturedBytes {
-                    result.exceededCaptureLimit = true
-                    line.removeAll(keepingCapacity: false)
-                    continue
+                    await inbox.markExceededCaptureLimit()
+                    break
                 }
 
                 if byte == 0x0A {
-                    consumeResponseLine(line, into: &result)
+                    await inbox.consume(line)
                     line.removeAll(keepingCapacity: true)
                 } else {
                     line.append(byte)
                 }
             }
-            if !line.isEmpty, !result.exceededCaptureLimit {
-                consumeResponseLine(line, into: &result)
+            if !line.isEmpty, receivedBytes <= maximumCapturedBytes {
+                await inbox.consume(line)
             }
+            await inbox.finish(readFailed: false)
         } catch {
-            result.readFailed = true
-        }
-        return result
-    }
-
-    private static func consumeResponseLine(_ line: Data, into responses: inout CollectedResponses) {
-        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-              let responseID = rpcID(object["id"]),
-              responseID == 1 || responseID == 2 else {
-            return
-        }
-
-        if responseID == 1 {
-            responses.account = sanitizedAccountEnvelope(object)
-        } else {
-            responses.rateLimits = try? JSONSerialization.data(withJSONObject: object)
+            await inbox.finish(readFailed: !Task.isCancelled)
         }
     }
 
@@ -616,21 +899,26 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
         }
     }
 
-    private static func requestPayload() throws -> Data {
-        let messages: [[String: Any]] = [
-            [
-                "jsonrpc": "2.0",
-                "id": 0,
-                "method": "initialize",
-                "params": [
-                    "clientInfo": [
-                        "name": "programa",
-                        "title": "Programa",
-                        "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
-                    ],
-                    "capabilities": [String: Any](),
+    private static func initializeRequestPayload() throws -> Data {
+        var payload = try JSONSerialization.data(withJSONObject: [
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": [
+                "clientInfo": [
+                    "name": "programa",
+                    "title": "Programa",
+                    "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
                 ],
+                "capabilities": [String: Any](),
             ],
+        ])
+        payload.append(0x0A)
+        return payload
+    }
+
+    private static func usageRequestPayload() throws -> Data {
+        let messages: [[String: Any]] = [
             [
                 "jsonrpc": "2.0",
                 "method": "initialized",
@@ -672,13 +960,13 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
     private static func terminate(_ process: Process) {
         guard process.isRunning else { return }
         process.terminate()
-        let graceDeadline = Date().addingTimeInterval(0.25)
+        let graceDeadline = Date().addingTimeInterval(0.1)
         while process.isRunning, Date() < graceDeadline {
             Thread.sleep(forTimeInterval: 0.01)
         }
         if process.isRunning {
             _ = Darwin.kill(process.processIdentifier, SIGKILL)
-            let killDeadline = Date().addingTimeInterval(0.25)
+            let killDeadline = Date().addingTimeInterval(0.1)
             while process.isRunning, Date() < killDeadline {
                 Thread.sleep(forTimeInterval: 0.01)
             }

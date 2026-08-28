@@ -445,11 +445,8 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
         line: UInt = #line
     ) async throws {
         _ = try await panel.evaluateJavaScript(setupScript)
-        let fullHTML = try XCTUnwrap(
-            try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)") as? String,
-            file: file,
-            line: line
-        )
+        let fullHTMLValue = try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)") as? String
+        let fullHTML = try XCTUnwrap(fullHTMLValue, file: file, line: line)
         XCTAssertGreaterThan(fullHTML.count, TerminalController.v2BrowserSnapshotHTMLCharacterLimit, file: file, line: line)
 
         let result = try await snapshot(panel)
@@ -592,9 +589,8 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
             """
         )
         let expectedNodeCount = try XCTUnwrap(expectedNodeCountValue as? Int)
-        let expectedScopedHTML = try XCTUnwrap(
-            try await panel.evaluateJavaScript("document.getElementById('snapshot-scope').outerHTML") as? String
-        )
+        let expectedScopedHTMLValue = try await panel.evaluateJavaScript("document.getElementById('snapshot-scope').outerHTML") as? String
+        let expectedScopedHTML = try XCTUnwrap(expectedScopedHTMLValue)
 
         let result = try await snapshot(panel, scopeSelector: "#snapshot-scope")
         let sentinelValue = try await panel.evaluateJavaScript("window.__programaLaterSiblingTouches")
@@ -633,9 +629,8 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
             true;
             """
         )
-        let expectedHTML = try XCTUnwrap(
-            try await panel.evaluateJavaScript("document.getElementById('a').outerHTML") as? String
-        )
+        let expectedHTMLValue = try await panel.evaluateJavaScript("document.getElementById('a').outerHTML") as? String
+        let expectedHTML = try XCTUnwrap(expectedHTMLValue)
 
         let result = try await snapshot(panel, scopeSelector: "#a, #b")
         let returnedEntries = try entries(in: result)
@@ -770,22 +765,21 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
             TerminalController.shared.v2BrowserFrameSelectorBySurface.removeValue(forKey: panel.id)
             panel.close()
         }
-        let frameState = try XCTUnwrap(
-            try await panel.evaluateJavaScript(
-                """
-                document.body.innerHTML = '';
-                const frame = document.createElement('iframe');
-                frame.id = 'selected-frame';
-                document.body.appendChild(frame);
-                frame.contentWindow.location.hash = 'selected-child-document';
-                const childDocument = frame.contentDocument;
-                childDocument.open();
-                childDocument.write('<!doctype html><html><head><title>Child title</title></head><body><button id="child-frame-button" data-identity="child-button"><span>Child action</span></button></body></html>');
-                childDocument.close();
-                ({ url: String(childDocument.location.href), title: childDocument.title });
-                """
-            ) as? [String: Any]
-        )
+        let frameStateValue = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '';
+            const frame = document.createElement('iframe');
+            frame.id = 'selected-frame';
+            document.body.appendChild(frame);
+            frame.contentWindow.location.hash = 'selected-child-document';
+            const childDocument = frame.contentDocument;
+            childDocument.open();
+            childDocument.write('<!doctype html><html><head><title>Child title</title></head><body><button id="child-frame-button" data-identity="child-button"><span>Child action</span></button></body></html>');
+            childDocument.close();
+            ({ url: String(childDocument.location.href), title: childDocument.title });
+            """
+        ) as? [String: Any]
+        let frameState = try XCTUnwrap(frameStateValue)
         let expectedURL = try XCTUnwrap(frameState["url"] as? String)
         TerminalController.shared.v2BrowserFrameSelectorBySurface[panel.id] = "#selected-frame"
 
@@ -1135,9 +1129,8 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
             true;
             """
         )
-        let nativeHTML = try XCTUnwrap(
-            try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)") as? String
-        )
+        let nativeHTMLValue = try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)") as? String
+        let nativeHTML = try XCTUnwrap(nativeHTMLValue)
 
         let result = try await snapshot(panel)
         let html = try XCTUnwrap(result["html"] as? String)
@@ -1188,9 +1181,8 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
             true;
             """
         )
-        let nativeHTML = try XCTUnwrap(
-            try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)") as? String
-        )
+        let nativeHTMLValue = try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)") as? String
+        let nativeHTML = try XCTUnwrap(nativeHTMLValue)
 
         let result = try await snapshot(panel)
         let foreignEntry = try XCTUnwrap(try entries(in: result).first { $0["name"] as? String == "Foreign action" })
@@ -1319,11 +1311,10 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
         guard case .succeeded = outcome else {
             return XCTFail("The trusted generated action must succeed despite the page-world override: \(outcome)")
         }
-        let clickState = try XCTUnwrap(
-            try await panel.evaluateJavaScript(
-                "({ trusted: document.getElementById('trusted-action').dataset.clicked, attacker: document.getElementById('attacker-action').dataset.clicked })"
-            ) as? [String: Any]
-        )
+        let clickStateValue = try await panel.evaluateJavaScript(
+            "({ trusted: document.getElementById('trusted-action').dataset.clicked, attacker: document.getElementById('attacker-action').dataset.clicked })"
+        ) as? [String: Any]
+        let clickState = try XCTUnwrap(clickStateValue)
 
         XCTAssertEqual(clickState["trusted"] as? String, "1")
         XCTAssertEqual(clickState["attacker"] as? String, "0")

@@ -999,6 +999,55 @@ final class ProgramaWebViewContextMenuTests: XCTestCase {
         return event
     }
 
+    func testGoogleRedirectNormalizationHandlesDuplicateQueryItems() {
+        let webView = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let redirect = URL(string: "https://www.google.com/url?q=https%3A%2F%2Fa.example%2Fx&q=https%3A%2F%2Fb.example%2Fy")!
+
+        XCTAssertEqual(
+            webView.normalizedLinkedDownloadURLForTesting(redirect).absoluteString,
+            "https://a.example/x"
+        )
+    }
+
+    func testGoogleRedirectNormalizationSkipsInvalidDuplicateBeforeValidValue() {
+        let webView = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let redirect = URL(string: "https://www.google.com/url?q=javascript%3Aalert%281%29&q=https%3A%2F%2Fsafe.example%2Fasset")!
+
+        XCTAssertEqual(
+            webView.normalizedLinkedDownloadURLForTesting(redirect).absoluteString,
+            "https://safe.example/asset"
+        )
+    }
+
+    func testGoogleRedirectNormalizationPreservesCandidatePriority() {
+        let webView = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let redirect = URL(string: "https://www.google.com/url?q=https%3A%2F%2Fq.example%2Fasset&url=https%3A%2F%2Furl.example%2Fasset&mediaurl=https%3A%2F%2Fmedia.example%2Fasset&imgurl=https%3A%2F%2Fimage.example%2Fasset")!
+
+        XCTAssertEqual(
+            webView.normalizedLinkedDownloadURLForTesting(redirect).absoluteString,
+            "https://image.example/asset"
+        )
+    }
+
+    func testGoogleRedirectNormalizationPreservesEmbeddedQueryEncoding() {
+        let webView = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let redirect = URL(string: "https://www.google.com/url?q=https%3A%2F%2Fexample.com%2Ffile%3Ftoken%3Da%2526b")!
+
+        XCTAssertEqual(
+            webView.normalizedLinkedDownloadURLForTesting(redirect).absoluteString,
+            "https://example.com/file?token=a%26b"
+        )
+    }
+
+    func testGoogleRedirectNormalizationPreservesUnresolvedURLs() {
+        let webView = ProgramaWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let nonGoogleURL = URL(string: "https://example.com/url?q=https%3A%2F%2Fasset.example%2Fx")!
+        let unsupportedGoogleURL = URL(string: "https://www.google.com/url?q=javascript%3Aalert%281%29")!
+
+        XCTAssertEqual(webView.normalizedLinkedDownloadURLForTesting(nonGoogleURL), nonGoogleURL)
+        XCTAssertEqual(webView.normalizedLinkedDownloadURLForTesting(unsupportedGoogleURL), unsupportedGoogleURL)
+    }
+
     func testWillOpenMenuAddsOpenLinkInDefaultBrowserAndRoutesSelectionToDefaultBrowserOpener() {
         _ = NSApplication.shared
         let webView = ProgramaWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: WKWebViewConfiguration())

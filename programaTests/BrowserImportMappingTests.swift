@@ -278,7 +278,7 @@ final class BrowserImportMappingTests: XCTestCase {
 
         XCTAssertEqual(
             filters,
-            ["xn--bcher-kva.de"],
+            ["bücher.de"],
             "Unicode and Punycode spellings of one domain must produce one canonical import filter"
         )
     }

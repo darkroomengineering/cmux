@@ -596,14 +596,14 @@ final class MobileBridgeConnectionRegistryTests: XCTestCase {
             ticket: ticket,
             close: connection.closeAction,
             beforeRegister: {
-                trustedEndpoints.withLock { $0.insert("endpoint-E") }
+                trustedEndpoints.withLock { _ = $0.insert("endpoint-E") }
                 return true
             }
         ))
         let claimedActions = registry.revoke(
             endpointId: "endpoint-E",
             beforeClaim: {
-                trustedEndpoints.withLock { $0.remove("endpoint-E") }
+                trustedEndpoints.withLock { _ = $0.remove("endpoint-E") }
             }
         )
 
@@ -626,7 +626,7 @@ final class MobileBridgeConnectionRegistryTests: XCTestCase {
         XCTAssertTrue(registry.revoke(
             endpointId: "endpoint-E",
             beforeClaim: {
-                trustedEndpoints.withLock { $0.remove("endpoint-E") }
+                trustedEndpoints.withLock { _ = $0.remove("endpoint-E") }
             }
         ).isEmpty)
         let result = registry.registerIfCurrent(
@@ -634,7 +634,7 @@ final class MobileBridgeConnectionRegistryTests: XCTestCase {
             ticket: ticket,
             close: connection.closeAction,
             beforeRegister: {
-                trustedEndpoints.withLock { $0.insert("endpoint-E") }
+                trustedEndpoints.withLock { _ = $0.insert("endpoint-E") }
                 return true
             }
         )
@@ -661,7 +661,7 @@ final class MobileBridgeConnectionRegistryTests: XCTestCase {
             ticket: ticket,
             close: connection.closeAction,
             beforeRegister: {
-                trustedEndpoints.withLock { $0.insert("endpoint-E") }
+                trustedEndpoints.withLock { _ = $0.insert("endpoint-E") }
                 return true
             }
         )

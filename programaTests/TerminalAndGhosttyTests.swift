@@ -5024,6 +5024,206 @@ final class TerminalControllerV2BrowserStateRestoreTests: XCTestCase {
             "Ambiguous duplicate identities must be resolved before an unordered cookie-store batch begins"
         )
     }
+
+    private func encodedState(
+        url: URL? = URL(string: "https://example.com/restored"),
+        cookies: [[String: Any]]? = nil,
+        localStorage: [String: String] = ["theme": "dark"],
+        sessionStorage: [String: String] = ["step": "1"],
+        frameSelector: String? = "#checkout",
+        limits: Limits? = nil
+    ) -> Result<Data, TerminalController.V2BrowserStateRestoreFailure> {
+        TerminalController.V2BrowserStateRestorer.encodeDocument(
+            url: url,
+            cookies: cookies ?? [[
+                "name": "session",
+                "value": "token",
+                "domain": "example.com",
+                "path": "/",
+            ]],
+            storage: [
+                "local": localStorage,
+                "session": sessionStorage,
+            ],
+            frameSelector: frameSelector,
+            limits: limits ?? constrainedLimits
+        )
+    }
+
+    private func encodedFailure(
+        _ result: Result<Data, TerminalController.V2BrowserStateRestoreFailure>,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> TerminalController.V2BrowserStateRestoreFailure? {
+        switch result {
+        case .success:
+            XCTFail("Expected browser state save encoding to fail", file: file, line: line)
+            return nil
+        case .failure(let failure):
+            return failure
+        }
+    }
+
+    func testSavedStateRoundTripsAtLoaderBoundaries() throws {
+        let cookies = (0 ..< constrainedLimits.cookieCountLimit).map { index in
+            ["name": "cookie-\(index)", "value": "v", "domain": "example.com", "path": "/"]
+        }
+        let localStorage = Dictionary(
+            uniqueKeysWithValues: (0 ..< constrainedLimits.storageEntryCountLimit).map { index in
+                (
+                    String(repeating: "k", count: constrainedLimits.storageKeyByteLimit - 1) + "\(index)",
+                    String(repeating: "v", count: constrainedLimits.storageValueByteLimit)
+                )
+            }
+        )
+        let frameSelector = String(repeating: "f", count: constrainedLimits.frameSelectorByteLimit)
+
+        let encoded: Data
+        switch encodedState(
+            cookies: cookies,
+            localStorage: localStorage,
+            sessionStorage: [:],
+            frameSelector: frameSelector
+        ) {
+        case .success(let data):
+            encoded = data
+        case .failure(let failure):
+            return XCTFail("A saved state at every loader boundary must encode: \(failure)")
+        }
+
+        switch TerminalController.V2BrowserStateRestorer.prepare(
+            data: encoded,
+            limits: constrainedLimits
+        ) {
+        case .success(let prepared):
+            XCTAssertEqual(prepared.cookies.count, constrainedLimits.cookieCountLimit)
+            XCTAssertEqual(prepared.storage.local, localStorage)
+            XCTAssertEqual(prepared.frameSelector, frameSelector)
+        case .failure(let failure):
+            XCTFail("Every successful save must round-trip through the loader: \(failure)")
+        }
+
+        let exactDocumentLimits = Limits(
+            documentByteLimit: encoded.count,
+            urlByteLimit: constrainedLimits.urlByteLimit,
+            cookieCountLimit: constrainedLimits.cookieCountLimit,
+            storageEntryCountLimit: constrainedLimits.storageEntryCountLimit,
+            storageKeyByteLimit: constrainedLimits.storageKeyByteLimit,
+            storageValueByteLimit: constrainedLimits.storageValueByteLimit,
+            frameSelectorByteLimit: constrainedLimits.frameSelectorByteLimit
+        )
+        switch encodedState(
+            cookies: cookies,
+            localStorage: localStorage,
+            sessionStorage: [:],
+            frameSelector: frameSelector,
+            limits: exactDocumentLimits
+        ) {
+        case .success(let data):
+            XCTAssertEqual(data.count, encoded.count)
+        case .failure(let failure):
+            XCTFail("A state exactly at the document byte limit must save: \(failure)")
+        }
+    }
+
+    func testStateSaveRejectsBlankAndOversizedDocumentsBeforeWriting() throws {
+        XCTAssertEqual(encodedFailure(encodedState(url: nil))?.code, .invalidURL)
+        XCTAssertEqual(encodedFailure(encodedState(url: URL(string: "about:blank")))?.code, .invalidURL)
+        let oversizedURL = try XCTUnwrap(
+            URL(string: "https://example.com/\(String(repeating: "u", count: constrainedLimits.urlByteLimit))")
+        )
+        XCTAssertEqual(encodedFailure(encodedState(url: oversizedURL))?.code, .invalidURL)
+
+        let tooManyCookies = (0 ... constrainedLimits.cookieCountLimit).map { index in
+            ["name": "cookie-\(index)", "value": "v", "domain": "example.com", "path": "/"]
+        }
+        XCTAssertEqual(
+            encodedFailure(encodedState(cookies: tooManyCookies))?.code,
+            .cookieLimitExceeded
+        )
+        XCTAssertEqual(
+            encodedFailure(encodedState(
+                localStorage: Dictionary(
+                    uniqueKeysWithValues: (0 ... constrainedLimits.storageEntryCountLimit).map { ("k\($0)", "v") }
+                ),
+                sessionStorage: [:]
+            ))?.code,
+            .storageEntryLimitExceeded
+        )
+        XCTAssertEqual(
+            encodedFailure(encodedState(
+                localStorage: [String(repeating: "k", count: constrainedLimits.storageKeyByteLimit + 1): "v"],
+                sessionStorage: [:]
+            ))?.code,
+            .storageKeyTooLarge
+        )
+        XCTAssertEqual(
+            encodedFailure(encodedState(
+                localStorage: ["key": String(repeating: "v", count: constrainedLimits.storageValueByteLimit + 1)],
+                sessionStorage: [:]
+            ))?.code,
+            .storageValueTooLarge
+        )
+        XCTAssertEqual(
+            encodedFailure(encodedState(
+                frameSelector: String(repeating: "f", count: constrainedLimits.frameSelectorByteLimit + 1)
+            ))?.code,
+            .frameSelectorTooLarge
+        )
+
+        let validData = try XCTUnwrap(try? encodedState().get())
+        let tooSmallDocumentLimits = Limits(
+            documentByteLimit: validData.count - 1,
+            urlByteLimit: constrainedLimits.urlByteLimit,
+            cookieCountLimit: constrainedLimits.cookieCountLimit,
+            storageEntryCountLimit: constrainedLimits.storageEntryCountLimit,
+            storageKeyByteLimit: constrainedLimits.storageKeyByteLimit,
+            storageValueByteLimit: constrainedLimits.storageValueByteLimit,
+            frameSelectorByteLimit: constrainedLimits.frameSelectorByteLimit
+        )
+        XCTAssertEqual(
+            encodedFailure(encodedState(limits: tooSmallDocumentLimits))?.code,
+            .documentTooLarge
+        )
+    }
+
+    func testStorageMutationCallbackKeepsSharedStoreLeasedAfterRestoreTimeout() throws {
+        let coordinator = TerminalController.V2BrowserStateRestoreLeaseCoordinator()
+        let store = WKWebsiteDataStore.nonPersistent()
+        let storeID = ObjectIdentifier(store)
+        let firstLease = try XCTUnwrap(
+            coordinator.acquire(dataStoreID: storeID, generation: UUID())
+        )
+
+        XCTAssertTrue(coordinator.beginPendingMutation(firstLease), "Cookie writes are in flight")
+        XCTAssertTrue(coordinator.beginPendingMutation(firstLease), "The storage JavaScript callback is in flight")
+        coordinator.release(firstLease)
+        XCTAssertEqual(
+            coordinator.state(dataStoreID: storeID),
+            .taintedByUndrainedMutationCallbacks,
+            "If WebKit never invokes the callback, the store must remain explicitly tainted and busy rather than overlap a later restore"
+        )
+
+        XCTAssertTrue(coordinator.endPendingMutation(firstLease), "Cookie callbacks drained")
+        XCTAssertEqual(coordinator.state(dataStoreID: storeID), .taintedByUndrainedMutationCallbacks)
+        XCTAssertNil(
+            coordinator.acquire(dataStoreID: storeID, generation: UUID()),
+            "A timed-out restore must keep the store fenced until its late storage callback drains"
+        )
+
+        XCTAssertTrue(coordinator.endPendingMutation(firstLease), "The late storage callback drained")
+        XCTAssertEqual(coordinator.state(dataStoreID: storeID), .available)
+        let secondGeneration = UUID()
+        let secondLease = try XCTUnwrap(
+            coordinator.acquire(dataStoreID: storeID, generation: secondGeneration)
+        )
+        XCTAssertFalse(
+            coordinator.endPendingMutation(firstLease),
+            "A duplicate storage callback must not release a newer restore lease"
+        )
+        XCTAssertTrue(coordinator.isValid(secondLease, currentGeneration: secondGeneration))
+        coordinator.release(secondLease)
+    }
 }
 
 // MARK: - V2 Browser Download Event Invariants
@@ -5221,6 +5421,7 @@ final class TerminalControllerV2BrowserDownloadEventTests: XCTestCase {
             XCTFail("The only active event-mode wait must not report busy")
         }
     }
+
 }
 
 // MARK: - V2 Browser Automation Ref Invariants (audit M6a / M8)
