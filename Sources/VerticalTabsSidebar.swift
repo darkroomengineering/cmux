@@ -296,6 +296,8 @@ struct VerticalTabsSidebar: View {
                                     lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
                                     showsModifierShortcutHints: modifierKeyMonitor.isModifierPressed,
                                     dragAutoScrollController: dragAutoScrollController,
+                                    draggedTabIdSnapshot: draggedTabId,
+                                    dropIndicatorSnapshot: dropIndicator,
                                     draggedTabId: $draggedTabId,
                                     dropIndicator: $dropIndicator,
                                     contextMenuWorkspaceIds: contextMenuWorkspaceIds,

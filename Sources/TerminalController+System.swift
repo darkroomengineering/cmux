@@ -5,164 +5,68 @@ import Foundation
 import Bonsplit
 import WebKit
 
+private struct SystemIdentifyInput: Sendable {
+    let windowId: UUID?
+    let workspaceId: UUID?
+    let surfaceId: UUID?
+    let callerWorkspaceId: UUID?
+    let callerSurfaceId: UUID?
+}
+
+private struct SystemIdentifySnapshot {
+    let focused: [String: Any]
+    let caller: [String: Any]?
+    let focusedWindowId: UUID?
+}
+
+private struct SystemTreeInput: Sendable {
+    let workspaceFilter: UUID?
+    let includeAllWindows: Bool
+    let identify: SystemIdentifyInput
+}
+
+private struct SystemTreeSnapshot {
+    let focused: [String: Any]
+    let caller: [String: Any]?
+    let windows: [[String: Any]]
+    let workspaceFound: Bool
+}
+
 extension TerminalController {
-    func v2Identify(params: [String: Any]) -> [String: Any] {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
+    nonisolated func v2Identify(params: [String: Any], requestPolicy: SocketRequestPolicy) -> [String: Any] {
+        let input = v2SystemIdentifyInput(params: params)
+        guard let snapshot = v2MainSync({ self.v2SystemIdentifySnapshot(input: input) }) else {
             return [
-                "socket_path": socketPath,
+                "socket_path": requestPolicy.socketPath,
                 "focused": NSNull(),
                 "caller": NSNull()
             ]
         }
 
-        var focused: [String: Any] = [:]
-        v2MainSync {
-            let windowId = v2ResolveWindowId(tabManager: tabManager)
-            if let wsId = tabManager.selectedTabId,
-               let ws = tabManager.tabs.first(where: { $0.id == wsId }) {
-                let paneUUID = ws.bonsplitController.focusedPaneId?.id
-                let surfaceUUID = ws.focusedPanelId
-                focused = [
-                    "window_id": v2OrNull(windowId?.uuidString),
-                    "window_ref": v2Ref(kind: .window, uuid: windowId),
-                    "workspace_id": wsId.uuidString,
-                    "workspace_ref": v2Ref(kind: .workspace, uuid: wsId),
-                    "pane_id": v2OrNull(paneUUID?.uuidString),
-                    "pane_ref": v2Ref(kind: .pane, uuid: paneUUID),
-                    "surface_id": v2OrNull(surfaceUUID?.uuidString),
-                    "surface_ref": v2Ref(kind: .surface, uuid: surfaceUUID),
-                    "tab_id": v2OrNull(surfaceUUID?.uuidString),
-                    "tab_ref": v2TabRef(uuid: surfaceUUID),
-                    "surface_type": v2OrNull(surfaceUUID.flatMap { ws.panels[$0]?.panelType.rawValue }),
-                    "is_browser_surface": v2OrNull(surfaceUUID.flatMap { ws.panels[$0]?.panelType == .browser })
-                ]
-            } else {
-                focused = [
-                    "window_id": v2OrNull(windowId?.uuidString),
-                    "window_ref": v2Ref(kind: .window, uuid: windowId)
-                ]
-            }
-        }
-
-        // Optionally validate a caller-provided location (useful for agents calling from inside a surface).
-        var resolvedCaller: [String: Any]? = nil
-        if let callerObj = params["caller"] as? [String: Any],
-           let wsId = v2UUIDAny(callerObj["workspace_id"]) {
-            let surfaceId = v2UUIDAny(callerObj["surface_id"]) ?? v2UUIDAny(callerObj["tab_id"])
-            v2MainSync {
-                let callerTabManager = AppDelegate.shared?.tabManagerFor(tabId: wsId) ?? tabManager
-                if let ws = callerTabManager.tabs.first(where: { $0.id == wsId }) {
-                    let callerWindowId = v2ResolveWindowId(tabManager: callerTabManager)
-                    var payload: [String: Any] = [
-                        "window_id": v2OrNull(callerWindowId?.uuidString),
-                        "window_ref": v2Ref(kind: .window, uuid: callerWindowId),
-                        "workspace_id": wsId.uuidString,
-                        "workspace_ref": v2Ref(kind: .workspace, uuid: wsId)
-                    ]
-
-                    if let surfaceId, ws.panels[surfaceId] != nil {
-                        let paneUUID = ws.paneId(forPanelId: surfaceId)?.id
-                        payload["surface_id"] = surfaceId.uuidString
-                        payload["surface_ref"] = v2Ref(kind: .surface, uuid: surfaceId)
-                        payload["tab_id"] = surfaceId.uuidString
-                        payload["tab_ref"] = v2TabRef(uuid: surfaceId)
-                        payload["surface_type"] = v2OrNull(ws.panels[surfaceId]?.panelType.rawValue)
-                        payload["is_browser_surface"] = v2OrNull(ws.panels[surfaceId]?.panelType == .browser)
-                        payload["pane_id"] = v2OrNull(paneUUID?.uuidString)
-                        payload["pane_ref"] = v2Ref(kind: .pane, uuid: paneUUID)
-                    } else {
-                        payload["surface_id"] = NSNull()
-                        payload["surface_ref"] = NSNull()
-                        payload["tab_id"] = NSNull()
-                        payload["tab_ref"] = NSNull()
-                        payload["surface_type"] = NSNull()
-                        payload["is_browser_surface"] = NSNull()
-                        payload["pane_id"] = NSNull()
-                        payload["pane_ref"] = NSNull()
-                    }
-                    resolvedCaller = payload
-                }
-            }
-        }
-
         return [
-            "socket_path": socketPath,
-            "focused": focused.isEmpty ? NSNull() : focused,
-            "caller": v2OrNull(resolvedCaller)
+            "socket_path": requestPolicy.socketPath,
+            "focused": snapshot.focused.isEmpty ? NSNull() : snapshot.focused,
+            "caller": v2OrNull(snapshot.caller)
         ]
     }
 
-    func v2SystemTree(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2SystemTree(params: [String: Any], requestPolicy: SocketRequestPolicy) -> V2CallResult {
         let workspaceFilter = v2UUID(params, "workspace_id")
         if params["workspace_id"] != nil && workspaceFilter == nil {
             return v2InvalidParam("workspace_id")
         }
         let includeAllWindows = v2Bool(params, "all_windows") ?? false
-
-        var identifyParams: [String: Any] = [:]
-        if let caller = params["caller"] as? [String: Any], !caller.isEmpty {
-            identifyParams["caller"] = caller
-        }
-        let identifyPayload = v2Identify(params: identifyParams)
-        let focused = identifyPayload["focused"] as? [String: Any] ?? [:]
-        let caller = identifyPayload["caller"] as? [String: Any] ?? [:]
-        let focusedWindowId = v2UUIDAny(focused["window_id"]) ?? v2UUIDAny(focused["window_ref"])
-
-        var windowNodes: [[String: Any]] = []
-        var workspaceFound = (workspaceFilter == nil)
-
-        v2MainSync {
-            guard let app = AppDelegate.shared else { return }
-            let summaries = app.listMainWindowSummaries()
-            let defaultWindowId = focusedWindowId ?? summaries.first?.windowId
-
-            for (windowIndex, summary) in summaries.enumerated() {
-                guard let manager = app.tabManagerFor(windowId: summary.windowId) else { continue }
-
-                if let workspaceFilter {
-                    guard let workspaceIndex = manager.tabs.firstIndex(where: { $0.id == workspaceFilter }) else {
-                        continue
-                    }
-                    let workspace = manager.tabs[workspaceIndex]
-                    let workspaceNode = v2TreeWorkspaceNode(
-                        workspace: workspace,
-                        index: workspaceIndex,
-                        selected: workspace.id == manager.selectedTabId
-                    )
-                    windowNodes = [
-                        v2TreeWindowNode(
-                            summary: summary,
-                            index: windowIndex,
-                            workspaceNodes: [workspaceNode]
-                        )
-                    ]
-                    workspaceFound = true
-                    break
-                }
-
-                if !includeAllWindows && summary.windowId != defaultWindowId {
-                    continue
-                }
-
-                let workspaceNodesForWindow = manager.tabs.enumerated().map { workspaceIndex, workspace in
-                    v2TreeWorkspaceNode(
-                        workspace: workspace,
-                        index: workspaceIndex,
-                        selected: workspace.id == manager.selectedTabId
-                    )
-                }
-
-                windowNodes.append(
-                    v2TreeWindowNode(
-                        summary: summary,
-                        index: windowIndex,
-                        workspaceNodes: workspaceNodesForWindow
-                    )
-                )
-            }
+        let caller = params["caller"] as? [String: Any]
+        let identifyInput = v2SystemIdentifyInput(caller: caller?.isEmpty == false ? caller : nil)
+        let snapshot = v2MainSync {
+            self.v2SystemTreeSnapshot(input: SystemTreeInput(
+                workspaceFilter: workspaceFilter,
+                includeAllWindows: includeAllWindows,
+                identify: identifyInput
+            ))
         }
 
-        if let workspaceFilter, !workspaceFound {
+        if let workspaceFilter, !snapshot.workspaceFound {
             return .err(
                 code: "not_found",
                 message: "Workspace not found",
@@ -174,10 +78,178 @@ extension TerminalController {
         }
 
         return .ok([
-            "active": focused.isEmpty ? (NSNull() as Any) : focused,
-            "caller": caller.isEmpty ? (NSNull() as Any) : caller,
-            "windows": windowNodes
+            "active": snapshot.focused.isEmpty ? (NSNull() as Any) : snapshot.focused,
+            "caller": v2OrNull(snapshot.caller),
+            "windows": snapshot.windows
         ])
+    }
+
+    private nonisolated func v2SystemIdentifyInput(
+        params: [String: Any] = [:],
+        caller: [String: Any]? = nil
+    ) -> SystemIdentifyInput {
+        let callerObject = caller ?? (params["caller"] as? [String: Any])
+        return SystemIdentifyInput(
+            windowId: v2UUID(params, "window_id"),
+            workspaceId: v2UUID(params, "workspace_id"),
+            surfaceId: v2UUID(params, "surface_id") ?? v2UUID(params, "tab_id"),
+            callerWorkspaceId: v2UUIDAny(callerObject?["workspace_id"]),
+            callerSurfaceId: v2UUIDAny(callerObject?["surface_id"])
+                ?? v2UUIDAny(callerObject?["tab_id"])
+        )
+    }
+
+    @MainActor
+    private func v2SystemIdentifySnapshot(input: SystemIdentifyInput) -> SystemIdentifySnapshot? {
+        let manager: TabManager?
+        if let windowId = input.windowId {
+            manager = AppDelegate.shared?.tabManagerFor(windowId: windowId)
+        } else {
+            var resolvedManager: TabManager?
+            if let workspaceId = input.workspaceId {
+                resolvedManager = AppDelegate.shared?.tabManagerFor(tabId: workspaceId)
+            }
+            if resolvedManager == nil, let surfaceId = input.surfaceId {
+                resolvedManager = AppDelegate.shared?.locateSurface(surfaceId: surfaceId)?.tabManager
+            }
+            manager = resolvedManager ?? tabManager
+        }
+        guard let manager else { return nil }
+
+        let windowId = AppDelegate.shared?.windowId(for: manager)
+        let focused: [String: Any]
+        if let workspaceId = manager.selectedTabId,
+           let workspace = manager.tabs.first(where: { $0.id == workspaceId }) {
+            let paneId = workspace.bonsplitController.focusedPaneId?.id
+            let surfaceId = workspace.focusedPanelId
+            focused = [
+                "window_id": v2OrNull(windowId?.uuidString),
+                "window_ref": v2Ref(kind: .window, uuid: windowId),
+                "workspace_id": workspaceId.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId),
+                "pane_id": v2OrNull(paneId?.uuidString),
+                "pane_ref": v2Ref(kind: .pane, uuid: paneId),
+                "surface_id": v2OrNull(surfaceId?.uuidString),
+                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+                "tab_id": v2OrNull(surfaceId?.uuidString),
+                "tab_ref": v2TabRef(uuid: surfaceId),
+                "surface_type": v2OrNull(surfaceId.flatMap { workspace.panels[$0]?.panelType.rawValue }),
+                "is_browser_surface": v2OrNull(surfaceId.flatMap { workspace.panels[$0]?.panelType == .browser })
+            ]
+        } else {
+            focused = [
+                "window_id": v2OrNull(windowId?.uuidString),
+                "window_ref": v2Ref(kind: .window, uuid: windowId)
+            ]
+        }
+
+        var callerPayload: [String: Any]?
+        if let callerWorkspaceId = input.callerWorkspaceId {
+            let callerManager = AppDelegate.shared?.tabManagerFor(tabId: callerWorkspaceId) ?? manager
+            if let workspace = callerManager.tabs.first(where: { $0.id == callerWorkspaceId }) {
+                let callerWindowId = AppDelegate.shared?.windowId(for: callerManager)
+                var payload: [String: Any] = [
+                    "window_id": v2OrNull(callerWindowId?.uuidString),
+                    "window_ref": v2Ref(kind: .window, uuid: callerWindowId),
+                    "workspace_id": callerWorkspaceId.uuidString,
+                    "workspace_ref": v2Ref(kind: .workspace, uuid: callerWorkspaceId)
+                ]
+
+                if let callerSurfaceId = input.callerSurfaceId,
+                   workspace.panels[callerSurfaceId] != nil {
+                    let paneId = workspace.paneId(forPanelId: callerSurfaceId)?.id
+                    payload["surface_id"] = callerSurfaceId.uuidString
+                    payload["surface_ref"] = v2Ref(kind: .surface, uuid: callerSurfaceId)
+                    payload["tab_id"] = callerSurfaceId.uuidString
+                    payload["tab_ref"] = v2TabRef(uuid: callerSurfaceId)
+                    payload["surface_type"] = v2OrNull(workspace.panels[callerSurfaceId]?.panelType.rawValue)
+                    payload["is_browser_surface"] = v2OrNull(workspace.panels[callerSurfaceId]?.panelType == .browser)
+                    payload["pane_id"] = v2OrNull(paneId?.uuidString)
+                    payload["pane_ref"] = v2Ref(kind: .pane, uuid: paneId)
+                } else {
+                    payload["surface_id"] = NSNull()
+                    payload["surface_ref"] = NSNull()
+                    payload["tab_id"] = NSNull()
+                    payload["tab_ref"] = NSNull()
+                    payload["surface_type"] = NSNull()
+                    payload["is_browser_surface"] = NSNull()
+                    payload["pane_id"] = NSNull()
+                    payload["pane_ref"] = NSNull()
+                }
+                callerPayload = payload
+            }
+        }
+
+        return SystemIdentifySnapshot(
+            focused: focused,
+            caller: callerPayload,
+            focusedWindowId: windowId
+        )
+    }
+
+    @MainActor
+    private func v2SystemTreeSnapshot(input: SystemTreeInput) -> SystemTreeSnapshot {
+        let identifySnapshot = v2SystemIdentifySnapshot(input: input.identify)
+        let focused = identifySnapshot?.focused ?? [:]
+        let caller = identifySnapshot?.caller
+        var windows: [[String: Any]] = []
+        var workspaceFound = (input.workspaceFilter == nil)
+
+        if let app = AppDelegate.shared {
+            let summaries = app.listMainWindowSummaries()
+            let defaultWindowId = identifySnapshot?.focusedWindowId ?? summaries.first?.windowId
+
+            for (windowIndex, summary) in summaries.enumerated() {
+                guard let manager = app.tabManagerFor(windowId: summary.windowId) else { continue }
+
+                if let workspaceFilter = input.workspaceFilter {
+                    guard let workspaceIndex = manager.tabs.firstIndex(where: { $0.id == workspaceFilter }) else {
+                        continue
+                    }
+                    let workspace = manager.tabs[workspaceIndex]
+                    let workspaceNode = v2TreeWorkspaceNode(
+                        workspace: workspace,
+                        index: workspaceIndex,
+                        selected: workspace.id == manager.selectedTabId
+                    )
+                    windows = [
+                        v2TreeWindowNode(
+                            summary: summary,
+                            index: windowIndex,
+                            workspaceNodes: [workspaceNode]
+                        )
+                    ]
+                    workspaceFound = true
+                    break
+                }
+
+                if !input.includeAllWindows && summary.windowId != defaultWindowId {
+                    continue
+                }
+
+                let workspaceNodes = manager.tabs.enumerated().map { workspaceIndex, workspace in
+                    v2TreeWorkspaceNode(
+                        workspace: workspace,
+                        index: workspaceIndex,
+                        selected: workspace.id == manager.selectedTabId
+                    )
+                }
+                windows.append(
+                    v2TreeWindowNode(
+                        summary: summary,
+                        index: windowIndex,
+                        workspaceNodes: workspaceNodes
+                    )
+                )
+            }
+        }
+
+        return SystemTreeSnapshot(
+            focused: focused,
+            caller: caller,
+            windows: windows,
+            workspaceFound: workspaceFound
+        )
     }
 
     private func v2TreeWindowNode(
@@ -290,21 +362,21 @@ extension TerminalController {
             "panes": panes
         ]
     }
-    func v2FeedbackOpen(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2FeedbackOpen(params: [String: Any]) -> V2CallResult {
         let workspaceId = v2UUID(params, "workspace_id")
         let windowId = v2UUID(params, "window_id")
         let shouldActivate = v2FocusAllowed(requested: v2Bool(params, "activate") ?? false)
-        DispatchQueue.main.async {
-            let targetWindow: NSWindow?
-            if let windowId, let app = AppDelegate.shared {
-                targetWindow = app.mainWindow(for: windowId)
-            } else if let workspaceId, let app = AppDelegate.shared {
-                targetWindow = app.mainWindowContainingWorkspace(workspaceId)
-            } else {
-                targetWindow = nil
-            }
-
+        DispatchQueue.main.async { @MainActor in
             if shouldActivate {
+                let targetWindow: NSWindow?
+                if let windowId, let app = AppDelegate.shared {
+                    targetWindow = app.mainWindow(for: windowId)
+                } else if let workspaceId, let app = AppDelegate.shared {
+                    targetWindow = app.mainWindowContainingWorkspace(workspaceId)
+                } else {
+                    targetWindow = nil
+                }
+
                 if let targetWindow {
                     targetWindow.makeKeyAndOrderFront(nil)
                     NSRunningApplication.current.activate(options: [.activateAllWindows])
@@ -318,21 +390,22 @@ extension TerminalController {
         return .ok(["opened": true])
     }
 
-    func v2SettingsOpen(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2SettingsOpen(params: [String: Any]) -> V2CallResult {
         let targetRaw = v2String(params, "target")
         let shouldActivate = v2FocusAllowed(requested: v2Bool(params, "activate") ?? true)
+        let keyboardShortcutsTarget = SettingsNavigationTarget.keyboardShortcuts.rawValue
 
-        let navigationTarget: SettingsNavigationTarget?
         switch targetRaw {
         case nil:
-            navigationTarget = nil
-        case SettingsNavigationTarget.keyboardShortcuts.rawValue:
-            navigationTarget = .keyboardShortcuts
+            break
+        case keyboardShortcutsTarget:
+            break
         default:
             return .err(code: "invalid_params", message: "Unknown settings target", data: ["target": targetRaw ?? ""])
         }
 
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { @MainActor in
+            let navigationTarget = targetRaw.flatMap { SettingsNavigationTarget(rawValue: $0) }
             if shouldActivate {
                 AppDelegate.presentPreferencesWindow(navigationTarget: navigationTarget)
             } else {
@@ -341,11 +414,11 @@ extension TerminalController {
         }
         return .ok([
             "opened": true,
-            "target": navigationTarget?.rawValue ?? "general",
+            "target": targetRaw ?? "general",
         ])
     }
 
-    func v2FeedbackSubmit(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2FeedbackSubmit(params: [String: Any]) -> V2CallResult {
         return .err(
             code: "feedback_disabled",
             message: "feedback submission is disabled; report issues at https://github.com/darkroomengineering/programa/issues",
@@ -355,36 +428,37 @@ extension TerminalController {
 
     // MARK: - V2 App Focus Methods
 
-    func v2AppFocusOverride(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2AppFocusOverride(params: [String: Any]) -> V2CallResult {
         // Accept either:
         // - state: "active" | "inactive" | "clear"
         // - focused: true/false/null
+        let requestedOverride: Bool?
         if let state = v2String(params, "state")?.lowercased() {
             switch state {
             case "active":
-                AppFocusState.overrideIsFocused = true
+                requestedOverride = true
             case "inactive":
-                AppFocusState.overrideIsFocused = false
+                requestedOverride = false
             case "clear", "none":
-                AppFocusState.overrideIsFocused = nil
+                requestedOverride = nil
             default:
                 return .err(code: "invalid_params", message: "Invalid state (active|inactive|clear)", data: ["state": state])
             }
         } else if params.keys.contains("focused") {
-            if let focused = v2Bool(params, "focused") {
-                AppFocusState.overrideIsFocused = focused
-            } else {
-                AppFocusState.overrideIsFocused = nil
-            }
+            requestedOverride = v2Bool(params, "focused")
         } else {
             return .err(code: "invalid_params", message: "Missing state or focused", data: nil)
         }
 
-        let overrideVal: Any = v2OrNull(AppFocusState.overrideIsFocused.map { $0 as Any })
+        let appliedOverride: Bool? = v2MainSync {
+            AppFocusState.overrideIsFocused = requestedOverride
+            return AppFocusState.overrideIsFocused
+        }
+        let overrideVal: Any = v2OrNull(appliedOverride.map { $0 as Any })
         return .ok(["override": overrideVal])
     }
 
-    func v2AppSimulateActive() -> V2CallResult {
+    nonisolated func v2AppSimulateActive() -> V2CallResult {
         v2MainSync {
             AppDelegate.shared?.applicationDidBecomeActive(
                 Notification(name: NSApplication.didBecomeActiveNotification)
@@ -396,7 +470,7 @@ extension TerminalController {
     /// Mirrors v1's `reload_config`: this is a rare, user/agent-triggered configuration
     /// reload rather than high-frequency telemetry, so — matching the v1 handler, which
     /// itself calls `v2MainSync` directly — it is allowed to synchronize with the main actor.
-    func v2AppReloadConfig(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2AppReloadConfig(params: [String: Any]) -> V2CallResult {
         v2MainSync {
             GhosttyApp.shared.reloadConfiguration(source: "socket.v2.app.reload_config")
         }
@@ -406,7 +480,7 @@ extension TerminalController {
     /// Read-only `NSWorkspace`/filesystem queries, no arguments, no AppKit UI
     /// mutation -- per the socket command threading policy this runs off-main
     /// (no `v2MainSync`), same as other query commands.
-    func v2AppBrowsers() -> V2CallResult {
+    nonisolated func v2AppBrowsers() -> V2CallResult {
         let statuses = BrowserAvailability.detectStatuses()
         let defaultBrowser = BrowserAvailability.resolveDefaultBrowser()
         let browsers: [[String: Any]] = statuses.map { status in

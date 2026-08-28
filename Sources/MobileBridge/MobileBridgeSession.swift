@@ -151,7 +151,7 @@ enum MobileBridgeSession {
         // after handing it off.
         let remoteFD = pipe.remoteFD
         Thread.detachNewThread {
-            TerminalController.shared.handleClient(remoteFD, peerPid: getpid(), ignoresListenerState: true)
+            TerminalController.shared.handleClient(remoteFD, peerPid: getpid(), source: .mobileBridge)
         }
 
         await pump(

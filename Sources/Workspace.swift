@@ -613,7 +613,27 @@ final class Workspace: Identifiable, ObservableObject {
         let splitPanelId: UUID
     }
 
-    struct DetachedSurfaceTransfer {
+    struct DetachedSurfaceAttachmentTarget {
+        let workspace: Workspace
+        let paneId: PaneID
+        let index: Int?
+        let focus: Bool
+    }
+
+    enum DetachedSurfaceResolutionResult {
+        case attachedPrimary(UUID)
+        case attachedRollback(UUID)
+        case finalized
+    }
+
+    @MainActor
+    final class DetachedSurfaceTransfer {
+        private enum State {
+            case pending
+            case attached(UUID)
+            case finalized
+        }
+
         let panelId: UUID
         let panel: any Panel
         let title: String
@@ -629,27 +649,106 @@ final class Workspace: Identifiable, ObservableObject {
         let manuallyUnread: Bool
         let isRemoteTerminal: Bool
         let remoteRelayPort: Int?
-        let remoteCleanupConfiguration: WorkspaceRemoteConfiguration?
+        private(set) var remoteConfigurationIdentity: WorkspaceRemoteConfiguration?
+        private(set) var remoteCleanupConfiguration: WorkspaceRemoteConfiguration?
+        private var state: State = .pending
 
+        init(
+            panelId: UUID,
+            panel: any Panel,
+            title: String,
+            icon: String?,
+            iconImageData: Data?,
+            kind: String?,
+            isLoading: Bool,
+            isPinned: Bool,
+            directory: String?,
+            ttyName: String?,
+            cachedTitle: String?,
+            customTitle: String?,
+            manuallyUnread: Bool,
+            isRemoteTerminal: Bool,
+            remoteRelayPort: Int?,
+            remoteCleanupConfiguration: WorkspaceRemoteConfiguration?
+        ) {
+            self.panelId = panelId
+            self.panel = panel
+            self.title = title
+            self.icon = icon
+            self.iconImageData = iconImageData
+            self.kind = kind
+            self.isLoading = isLoading
+            self.isPinned = isPinned
+            self.directory = directory
+            self.ttyName = ttyName
+            self.cachedTitle = cachedTitle
+            self.customTitle = customTitle
+            self.manuallyUnread = manuallyUnread
+            self.isRemoteTerminal = isRemoteTerminal
+            self.remoteRelayPort = remoteRelayPort
+            self.remoteConfigurationIdentity = remoteCleanupConfiguration
+            self.remoteCleanupConfiguration = remoteCleanupConfiguration
+        }
+
+        @discardableResult
+        func withRemoteConfigurationIdentity(_ configuration: WorkspaceRemoteConfiguration?) -> Self {
+            guard case .pending = state else { return self }
+            remoteConfigurationIdentity = configuration
+            return self
+        }
+
+        @discardableResult
         func withRemoteCleanupConfiguration(_ configuration: WorkspaceRemoteConfiguration?) -> Self {
-            Self(
-                panelId: panelId,
-                panel: panel,
-                title: title,
-                icon: icon,
-                iconImageData: iconImageData,
-                kind: kind,
-                isLoading: isLoading,
-                isPinned: isPinned,
-                directory: directory,
-                ttyName: ttyName,
-                cachedTitle: cachedTitle,
-                customTitle: customTitle,
-                manuallyUnread: manuallyUnread,
-                isRemoteTerminal: isRemoteTerminal,
-                remoteRelayPort: remoteRelayPort,
-                remoteCleanupConfiguration: configuration
-            )
+            guard case .pending = state else { return self }
+            remoteCleanupConfiguration = configuration
+            return self
+        }
+
+        fileprivate var isPending: Bool {
+            if case .pending = state { return true }
+            return false
+        }
+
+        fileprivate func markAttached(to workspaceId: UUID) -> Bool {
+            guard case .pending = state else { return false }
+            state = .attached(workspaceId)
+            return true
+        }
+
+        func resolve(
+            primary: DetachedSurfaceAttachmentTarget,
+            rollback: DetachedSurfaceAttachmentTarget?
+        ) -> DetachedSurfaceResolutionResult {
+            guard isPending else { return .finalized }
+            if let panelId = primary.workspace.attachDetachedSurface(
+                self,
+                inPane: primary.paneId,
+                atIndex: primary.index,
+                focus: primary.focus
+            ) {
+                return .attachedPrimary(panelId)
+            }
+            if let rollback,
+               let panelId = rollback.workspace.attachDetachedSurface(
+                self,
+                inPane: rollback.paneId,
+                atIndex: rollback.index,
+                focus: rollback.focus
+               ) {
+                return .attachedRollback(panelId)
+            }
+            finalizePermanently()
+            return .finalized
+        }
+
+        func finalizePermanently() {
+            guard case .pending = state else { return }
+            state = .finalized
+            if let remoteCleanupConfiguration {
+                Workspace.requestSSHControlMasterCleanupIfNeeded(configuration: remoteCleanupConfiguration)
+            }
+            panel.close()
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: panelId)
         }
     }
 
@@ -1197,7 +1296,16 @@ final class Workspace: Identifiable, ObservableObject {
         for (panelId, panel) in panelEntries {
             panelSubscriptions.removeValue(forKey: panelId)
             PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)
+            if let cleanupConfiguration = transferredRemoteCleanupConfigurationsByPanelId.removeValue(forKey: panelId) {
+                Self.requestSSHControlMasterCleanupIfNeeded(configuration: cleanupConfiguration)
+            }
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: panelId)
             panel.close()
+        }
+        let residualCleanupConfigurations = Array(transferredRemoteCleanupConfigurationsByPanelId.values)
+        transferredRemoteCleanupConfigurationsByPanelId.removeAll(keepingCapacity: false)
+        for cleanupConfiguration in residualCleanupConfigurations {
+            Self.requestSSHControlMasterCleanupIfNeeded(configuration: cleanupConfiguration)
         }
 
         panels.removeAll(keepingCapacity: false)
@@ -1629,7 +1737,7 @@ final class Workspace: Identifiable, ObservableObject {
         defer { activeDetachCloseTransactions = max(0, activeDetachCloseTransactions - 1) }
         guard bonsplitController.closeTab(tabId) else {
             detachingTabIds.remove(tabId)
-            pendingDetachedSurfaces.removeValue(forKey: tabId)
+            pendingDetachedSurfaces.removeValue(forKey: tabId)?.finalizePermanently()
             forceCloseTabIds.remove(tabId)
 #if DEBUG
             dlog(
@@ -1641,10 +1749,13 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         var detached = pendingDetachedSurfaces.removeValue(forKey: tabId)
-        if shouldSkipControlMasterCleanupAfterDetach, let detachedTransfer = detached, detachedTransfer.isRemoteTerminal {
-            skipControlMasterCleanupAfterDetachedRemoteTransfer = true
-            if detachedTransfer.remoteCleanupConfiguration == nil {
-                detached = detachedTransfer.withRemoteCleanupConfiguration(remoteConfiguration)
+        if let detachedTransfer = detached, detachedTransfer.isRemoteTerminal {
+            detached = detachedTransfer.withRemoteConfigurationIdentity(remoteConfiguration)
+            if shouldSkipControlMasterCleanupAfterDetach {
+                skipControlMasterCleanupAfterDetachedRemoteTransfer = true
+                if detachedTransfer.remoteCleanupConfiguration == nil {
+                    detached = detachedTransfer.withRemoteCleanupConfiguration(remoteConfiguration)
+                }
             }
         }
 #if DEBUG
@@ -1671,6 +1782,7 @@ final class Workspace: Identifiable, ObservableObject {
             "pane=\(paneId.id.uuidString.prefix(5)) index=\(index.map(String.init) ?? "nil") focus=\(focus ? 1 : 0)"
         )
 #endif
+        guard detached.isPending else { return nil }
         guard bonsplitController.allPaneIds.contains(paneId) else {
 #if DEBUG
             dlog(
@@ -1764,8 +1876,8 @@ final class Workspace: Identifiable, ObservableObject {
 
         surfaceIdToPanelId[newTabId] = detached.panelId
         let didAdoptWorkspaceRemoteTracking =
-            detached.isRemoteTerminal
-            && detached.remoteRelayPort == remoteConfiguration?.relayPort
+            detached.remoteConfigurationIdentity != nil
+            && detached.remoteConfigurationIdentity == remoteConfiguration
         if didAdoptWorkspaceRemoteTracking {
             trackRemoteTerminalSurface(detached.panelId)
         }
@@ -1794,6 +1906,7 @@ final class Workspace: Identifiable, ObservableObject {
             scheduleFocusReconcile()
         }
         scheduleTerminalGeometryReconcile()
+        guard detached.markAttached(to: id) else { return nil }
 
 #if DEBUG
         dlog(

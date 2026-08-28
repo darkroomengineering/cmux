@@ -1,19 +1,130 @@
 import Bonsplit
 import Foundation
 
-// Agent diff review panel socket API (docs/plans/diff-review-panel.md §2). Mirrors
-// `v2MarkdownOpen`'s (TerminalController+BrowserAutomation.swift) and `v2SurfaceSendText`'s
-// (TerminalController+Surface.swift) exact patterns.
+// Agent diff review panel socket API (docs/plans/diff-review-panel.md §2).
 //
-// Threading: `review.open`/`review.refresh` compute the actual `git diff` snapshot
-// (`ReviewDiffProber.diffSnapshot`) OUTSIDE any `v2MainSync` hop, on the calling (already
-// off-main) socket-handling thread -- so the main thread is never blocked on git subprocess
-// I/O, while the socket response can still report an accurate `diffable_file_count` because the
-// snapshot is computed synchronously before the response is built. `review.comment.*` and
-// `review.send_comments` are pure in-memory mutations on the review panel's own `@MainActor`
-// state, so they still require a (fast, git-free) `v2MainSync` hop -- `ReviewPanel` is
-// `@MainActor`-isolated like every other `Panel`.
+// Threading: every handler orchestrates from the calling socket thread. Main-actor hops resolve
+// or mutate UI-owned TabManager/Workspace/ReviewPanel state and return checked Sendable values;
+// no UI-owned object crosses a hop. `review.open`/`review.refresh` run git subprocess I/O between
+// those hops, so the main thread is never blocked on probing. Comment operations use one bounded,
+// git-free mutation hop after pinning the exact window/workspace/panel IDs.
+
+private struct ReviewOpenContext: Sendable {
+    let windowId: UUID?
+    let workspaceId: UUID
+    let sourceSurfaceId: UUID
+    let sourcePaneId: UUID?
+    let directory: String
+    let mode: ReviewDiffMode
+    let baseBranch: String
+    let focusRequested: Bool
+    let horizontal: Bool
+    let insertFirst: Bool
+}
+
+private enum ReviewOpenResolution: Sendable {
+    case tabManagerUnavailable
+    case invalidMode(String)
+    case workspaceNotFound
+    case noFocusedSurface
+    case sourceSurfaceNotFound(UUID)
+    case invalidDirection(String)
+    case ready(ReviewOpenContext)
+}
+
+private struct ReviewOpenResult: Sendable {
+    let windowId: UUID?
+    let workspaceId: UUID
+    let paneId: UUID?
+    let surfaceId: UUID
+    let baseBranch: String
+}
+
+private enum ReviewOpenCreation: Sendable {
+    case workspaceNotFound
+    case sourceSurfaceNotFound
+    case splitFailed
+    case created(ReviewOpenResult)
+}
+
+private struct ReviewWorkspaceContext: Sendable {
+    let windowId: UUID?
+    let workspaceId: UUID
+}
+
+private struct ReviewPanelContext: Sendable {
+    let workspace: ReviewWorkspaceContext
+    let panelId: UUID
+}
+
+private struct ReviewRefreshContext: Sendable {
+    let target: ReviewPanelContext
+    let directory: String
+    let mode: ReviewDiffMode
+    let baseBranch: String
+}
+
+private enum ReviewPanelResolution<Context: Sendable>: Sendable {
+    case tabManagerUnavailable
+    case workspaceNotFound
+    case panelNotFound
+    case ready(Context)
+}
+
+private enum ReviewPanelOperation<Value: Sendable>: Sendable {
+    case workspaceNotFound
+    case panelNotFound
+    case value(Value)
+}
+
+private enum ReviewCommentRemoveResult: Sendable {
+    case removed
+    case commentNotFound
+}
+
+private enum ReviewCommentAddInput: Sendable {
+    case invalid(String)
+    case valid(filePath: String, startLine: Int, endLine: Int, text: String)
+}
+
+private enum ReviewCommentRemoveInput: Sendable {
+    case invalid(String)
+    case valid(id: UUID, rawId: String)
+}
+
+private enum ReviewCommentOperation<Value: Sendable>: Sendable {
+    case tabManagerUnavailable
+    case workspaceNotFound
+    case panelNotFound
+    case value(Value)
+}
+
+private enum ReviewValidatedCommentOperation<Value: Sendable>: Sendable {
+    case tabManagerUnavailable
+    case invalidParams(String)
+    case workspaceNotFound
+    case panelNotFound
+    case value(Value)
+}
+
+private struct ReviewCommentWireValue: Sendable {
+    let id: UUID
+    let filePath: String
+    let startLine: Int
+    let endLine: Int
+    let text: String
+    let createdAt: Int
+    let isStale: Bool
+}
+
+private struct ReviewSendResult: Sendable {
+    let sentCount: Int
+    let sourceSurfaceId: UUID
+    let windowId: UUID?
+}
+
 extension TerminalController {
+    @MainActor
     private func v2ResolveReviewPanel(params: [String: Any], workspace ws: Workspace) -> ReviewPanel? {
         if let surfaceId = v2UUID(params, "surface_id") {
             return ws.reviewPanel(for: surfaceId)
@@ -24,283 +135,433 @@ extension TerminalController {
         return ws.panels.values.compactMap { $0 as? ReviewPanel }.first
     }
 
-    func v2ReviewOpen(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+    @MainActor
+    private func v2ReviewWorkspace(context: ReviewWorkspaceContext) -> (TabManager, Workspace)? {
+        let tabManager: TabManager?
+        if let windowId = context.windowId {
+            tabManager = AppDelegate.shared?.tabManagerFor(windowId: windowId)
+        } else {
+            tabManager = AppDelegate.shared?.tabManagerFor(tabId: context.workspaceId)
+                ?? self.tabManager
         }
+        guard let tabManager,
+              let workspace = tabManager.tabs.first(where: { $0.id == context.workspaceId }) else {
+            return nil
+        }
+        return (tabManager, workspace)
+    }
 
+    nonisolated func v2ReviewOpen(params: [String: Any]) -> V2CallResult {
         let modeRaw = v2String(params, "mode") ?? "uncommitted"
-        guard let mode = ReviewDiffMode(rawValue: modeRaw) else {
-            return .err(code: "invalid_params", message: "Invalid mode '\(modeRaw)' (uncommitted|branch)", data: nil)
-        }
         let baseBranch = v2String(params, "base_branch") ?? "origin/main"
         let focusRequested = v2Bool(params, "focus") ?? false
 
-        // Hop 1 (main actor): resolve workspace/source surface/directory/pane ids only -- no
-        // panel creation yet, so we can fail fast with `unavailable` before creating a split.
-        var resolveError: V2CallResult?
-        var sourceSurfaceId: UUID?
-        var sourcePaneUUID: UUID?
-        var directory: String?
-        var orientation: SplitOrientation?
-        var insertFirst = false
-
-        v2MainSync {
-            guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
-                resolveError = .err(code: "not_found", message: "Workspace not found", data: nil)
-                return
+        let resolution: ReviewOpenResolution = v2MainSync {
+            guard let tabManager = self.v2ResolveTabManager(params: params) else {
+                return .tabManagerUnavailable
             }
-            let resolvedSourceSurfaceId = self.v2UUID(params, "surface_id") ?? ws.focusedPanelId
-            guard let resolvedSourceSurfaceId else {
-                resolveError = .err(code: "not_found", message: "No focused surface to review", data: nil)
-                return
+            guard let mode = ReviewDiffMode(rawValue: modeRaw) else {
+                return .invalidMode(modeRaw)
             }
-            guard ws.panels[resolvedSourceSurfaceId] != nil else {
-                resolveError = .err(
-                    code: "not_found",
-                    message: "Source surface not found",
-                    data: ["surface_id": resolvedSourceSurfaceId.uuidString]
-                )
-                return
+            guard let workspace = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .workspaceNotFound
+            }
+            let sourceSurfaceId = self.v2UUID(params, "surface_id") ?? workspace.focusedPanelId
+            guard let sourceSurfaceId else {
+                return .noFocusedSurface
+            }
+            guard workspace.panels[sourceSurfaceId] != nil else {
+                return .sourceSurfaceNotFound(sourceSurfaceId)
             }
 
-            let directionStr = self.v2String(params, "direction") ?? "right"
-            guard let direction = self.parseSplitDirection(directionStr) else {
-                resolveError = .err(code: "invalid_params", message: "Invalid direction '\(directionStr)' (left|right|up|down)", data: nil)
-                return
+            let directionRaw = self.v2String(params, "direction") ?? "right"
+            guard let direction = self.parseSplitDirection(directionRaw) else {
+                return .invalidDirection(directionRaw)
             }
 
-            sourceSurfaceId = resolvedSourceSurfaceId
-            sourcePaneUUID = ws.paneId(forPanelId: resolvedSourceSurfaceId)?.id
-            directory = ws.panelDirectories[resolvedSourceSurfaceId] ?? ws.currentDirectory
-            orientation = direction.isHorizontal ? .horizontal : .vertical
-            insertFirst = (direction == .left || direction == .up)
-        }
-        if let resolveError { return resolveError }
-        guard let sourceSurfaceId, let directory, let orientation else {
-            return .err(code: "internal_error", message: "Failed to resolve review target", data: nil)
-        }
-
-        // Fail fast if the resolved directory isn't inside a git worktree at all, before
-        // creating any split.
-        guard ReviewDiffProber.repositoryRoot(directory: directory) != nil else {
-            return .err(code: "unavailable", message: "Not a git repository: \(directory)", data: ["directory": directory])
-        }
-
-        // Off-main: compute the first diff snapshot synchronously (see file header).
-        let snapshot = ReviewDiffProber.diffSnapshot(directory: directory, mode: mode, baseBranch: baseBranch)
-
-        // Hop 2 (main actor): create the split + panel, apply the snapshot, build the response.
-        var result: V2CallResult = .err(code: "internal_error", message: "Failed to create review panel", data: nil)
-        v2MainSync {
-            guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
-                result = .err(code: "not_found", message: "Workspace not found", data: nil)
-                return
-            }
-
-            // Per the "Socket focus policy" (root CLAUDE.md) and docs/plans/diff-review-panel.md
-            // §2: `focus:false` (the default) must not activate the app or move focus at all.
-            if focusRequested {
-                self.v2MaybeFocusWindow(for: tabManager)
-                self.v2MaybeSelectWorkspace(tabManager, workspace: ws)
-            }
-
-            let created = ws.newReviewSplit(
-                from: sourceSurfaceId,
-                orientation: orientation,
-                insertFirst: insertFirst,
+            return .ready(ReviewOpenContext(
+                windowId: AppDelegate.shared?.windowId(for: tabManager),
+                workspaceId: workspace.id,
+                sourceSurfaceId: sourceSurfaceId,
+                sourcePaneId: workspace.paneId(forPanelId: sourceSurfaceId)?.id,
+                directory: workspace.panelDirectories[sourceSurfaceId] ?? workspace.currentDirectory,
                 mode: mode,
                 baseBranch: baseBranch,
-                focus: self.v2FocusAllowed(requested: focusRequested)
+                focusRequested: focusRequested,
+                horizontal: direction.isHorizontal,
+                insertFirst: direction == .left || direction == .up
+            ))
+        }
+
+        let context: ReviewOpenContext
+        switch resolution {
+        case .tabManagerUnavailable:
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        case .invalidMode(let raw):
+            return .err(code: "invalid_params", message: "Invalid mode '\(raw)' (uncommitted|branch)", data: nil)
+        case .workspaceNotFound:
+            return .err(code: "not_found", message: "Workspace not found", data: nil)
+        case .noFocusedSurface:
+            return .err(code: "not_found", message: "No focused surface to review", data: nil)
+        case .sourceSurfaceNotFound(let surfaceId):
+            return .err(
+                code: "not_found",
+                message: "Source surface not found",
+                data: ["surface_id": surfaceId.uuidString]
             )
-            guard let created else {
-                result = .err(code: "internal_error", message: "Failed to create review panel", data: nil)
-                return
+        case .invalidDirection(let raw):
+            return .err(code: "invalid_params", message: "Invalid direction '\(raw)' (left|right|up|down)", data: nil)
+        case .ready(let resolved):
+            context = resolved
+        }
+
+        // Off-main: the snapshot's repository lookup is also the pre-split git-repository gate,
+        // avoiding the previous duplicate `git rev-parse --show-toplevel` subprocess.
+        let snapshot = ReviewDiffProber.diffSnapshot(
+            directory: context.directory,
+            mode: context.mode,
+            baseBranch: context.baseBranch
+        )
+        if snapshot.error == .notGitRepository {
+            return .err(
+                code: "unavailable",
+                message: "Not a git repository: \(context.directory)",
+                data: ["directory": context.directory]
+            )
+        }
+
+        let creation: ReviewOpenCreation = v2MainSync {
+            let target = ReviewWorkspaceContext(
+                windowId: context.windowId,
+                workspaceId: context.workspaceId
+            )
+            guard let (tabManager, workspace) = self.v2ReviewWorkspace(context: target) else {
+                return .workspaceNotFound
+            }
+            guard workspace.panels[context.sourceSurfaceId] != nil else {
+                return .sourceSurfaceNotFound
+            }
+
+            // Per the socket focus policy, the default focus:false path does not activate the
+            // app or change workspace selection. The explicit focus path keeps its original
+            // focus-window, select-workspace, then create-and-focus ordering.
+            if context.focusRequested {
+                self.v2MaybeFocusWindow(for: tabManager)
+                self.v2MaybeSelectWorkspace(tabManager, workspace: workspace)
+            }
+
+            let orientation: SplitOrientation = context.horizontal ? .horizontal : .vertical
+            guard let created = workspace.newReviewSplit(
+                from: context.sourceSurfaceId,
+                orientation: orientation,
+                insertFirst: context.insertFirst,
+                mode: context.mode,
+                baseBranch: context.baseBranch,
+                focus: self.v2FocusAllowed(requested: context.focusRequested)
+            ) else {
+                return .splitFailed
             }
             created.apply(snapshot: snapshot)
 
-            let targetPaneUUID = ws.paneId(forPanelId: created.id)?.id
-            let windowId = self.v2ResolveWindowId(tabManager: tabManager)
-            result = .ok([
-                "window_id": self.v2OrNull(windowId?.uuidString),
-                "window_ref": self.v2Ref(kind: .window, uuid: windowId),
-                "workspace_id": ws.id.uuidString,
-                "workspace_ref": self.v2Ref(kind: .workspace, uuid: ws.id),
-                "pane_id": self.v2OrNull(targetPaneUUID?.uuidString),
-                "pane_ref": self.v2Ref(kind: .pane, uuid: targetPaneUUID),
-                "surface_id": created.id.uuidString,
-                "surface_ref": self.v2Ref(kind: .surface, uuid: created.id),
-                "source_surface_id": sourceSurfaceId.uuidString,
-                "source_surface_ref": self.v2Ref(kind: .surface, uuid: sourceSurfaceId),
-                "source_pane_id": self.v2OrNull(sourcePaneUUID?.uuidString),
-                "source_pane_ref": self.v2Ref(kind: .pane, uuid: sourcePaneUUID),
-                "mode": mode.rawValue,
+            return .created(ReviewOpenResult(
+                windowId: AppDelegate.shared?.windowId(for: tabManager),
+                workspaceId: workspace.id,
+                paneId: workspace.paneId(forPanelId: created.id)?.id,
+                surfaceId: created.id,
+                baseBranch: created.baseBranch
+            ))
+        }
+
+        switch creation {
+        case .workspaceNotFound:
+            return .err(code: "not_found", message: "Workspace not found", data: nil)
+        case .sourceSurfaceNotFound:
+            return .err(
+                code: "not_found",
+                message: "Source surface not found",
+                data: ["surface_id": context.sourceSurfaceId.uuidString]
+            )
+        case .splitFailed:
+            return .err(code: "internal_error", message: "Failed to create review panel", data: nil)
+        case .created(let created):
+            return .ok([
+                "window_id": v2OrNull(created.windowId?.uuidString),
+                "window_ref": v2Ref(kind: .window, uuid: created.windowId),
+                "workspace_id": created.workspaceId.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: created.workspaceId),
+                "pane_id": v2OrNull(created.paneId?.uuidString),
+                "pane_ref": v2Ref(kind: .pane, uuid: created.paneId),
+                "surface_id": created.surfaceId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: created.surfaceId),
+                "source_surface_id": context.sourceSurfaceId.uuidString,
+                "source_surface_ref": v2Ref(kind: .surface, uuid: context.sourceSurfaceId),
+                "source_pane_id": v2OrNull(context.sourcePaneId?.uuidString),
+                "source_pane_ref": v2Ref(kind: .pane, uuid: context.sourcePaneId),
+                "mode": context.mode.rawValue,
                 "base_branch": created.baseBranch,
                 "diffable_file_count": snapshot.diffableFileCount,
                 "file_count": snapshot.files.count
             ])
         }
-        return result
     }
 
-    func v2ReviewRefresh(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
+    nonisolated func v2ReviewRefresh(params: [String: Any]) -> V2CallResult {
+        let resolution: ReviewPanelResolution<ReviewRefreshContext> = v2MainSync {
+            guard let tabManager = self.v2ResolveTabManager(params: params) else {
+                return .tabManagerUnavailable
+            }
+            guard let workspace = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .workspaceNotFound
+            }
+            guard let panel = self.v2ResolveReviewPanel(params: params, workspace: workspace) else {
+                return .panelNotFound
+            }
+            return .ready(ReviewRefreshContext(
+                target: ReviewPanelContext(
+                    workspace: ReviewWorkspaceContext(
+                        windowId: AppDelegate.shared?.windowId(for: tabManager),
+                        workspaceId: workspace.id
+                    ),
+                    panelId: panel.id
+                ),
+                directory: panel.directory,
+                mode: panel.mode,
+                baseBranch: panel.baseBranch
+            ))
+        }
+
+        let context: ReviewRefreshContext
+        switch resolution {
+        case .tabManagerUnavailable:
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        case .workspaceNotFound:
+            return .err(code: "not_found", message: "Workspace not found", data: nil)
+        case .panelNotFound:
+            return .err(code: "not_found", message: "Review panel not found", data: nil)
+        case .ready(let resolved):
+            context = resolved
         }
 
-        var resolveError: V2CallResult?
-        var reviewPanel: ReviewPanel?
-        v2MainSync {
-            guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
-                resolveError = .err(code: "not_found", message: "Workspace not found", data: nil)
-                return
+        let snapshot = ReviewDiffProber.diffSnapshot(
+            directory: context.directory,
+            mode: context.mode,
+            baseBranch: context.baseBranch
+        )
+
+        let applied: ReviewPanelOperation<Void> = v2MainSync {
+            guard let (_, workspace) = self.v2ReviewWorkspace(context: context.target.workspace) else {
+                return .workspaceNotFound
             }
-            guard let panel = self.v2ResolveReviewPanel(params: params, workspace: ws) else {
-                resolveError = .err(code: "not_found", message: "Review panel not found", data: nil)
-                return
+            guard let panel = workspace.reviewPanel(for: context.target.panelId) else {
+                return .panelNotFound
             }
-            reviewPanel = panel
-        }
-        if let resolveError { return resolveError }
-        guard let reviewPanel else {
-            return .err(code: "internal_error", message: "Failed to resolve review panel", data: nil)
+            panel.apply(snapshot: snapshot)
+            return .value(())
         }
 
-        // Off-main, mirroring `review.open` (see file header).
-        let snapshot = ReviewDiffProber.diffSnapshot(directory: reviewPanel.directory, mode: reviewPanel.mode, baseBranch: reviewPanel.baseBranch)
-
-        var result: V2CallResult = .err(code: "internal_error", message: "Failed to refresh review panel", data: nil)
-        v2MainSync {
-            reviewPanel.apply(snapshot: snapshot)
-            result = .ok([
+        switch applied {
+        case .workspaceNotFound:
+            return .err(code: "not_found", message: "Workspace not found", data: nil)
+        case .panelNotFound:
+            return .err(code: "not_found", message: "Review panel not found", data: nil)
+        case .value:
+            return .ok([
                 "file_count": snapshot.files.count,
                 "diffable_file_count": snapshot.diffableFileCount,
                 "generated_at": Int(snapshot.generatedAt.timeIntervalSince1970)
             ])
         }
-        return result
     }
 
-    func v2ReviewCommentAdd(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-        guard let filePath = v2String(params, "file_path"), !filePath.isEmpty else {
-            return .err(code: "invalid_params", message: "Missing file_path", data: nil)
-        }
-        guard let startLine = v2Int(params, "start_line"), startLine > 0 else {
-            return .err(code: "invalid_params", message: "Missing or invalid start_line", data: nil)
-        }
-        let endLine = v2Int(params, "end_line") ?? startLine
-        guard endLine >= startLine else {
-            return .err(code: "invalid_params", message: "end_line must be >= start_line", data: nil)
-        }
-        guard let text = v2String(params, "text"), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .err(code: "invalid_params", message: "Missing text", data: nil)
+    nonisolated func v2ReviewCommentAdd(params: [String: Any]) -> V2CallResult {
+        let input: ReviewCommentAddInput
+        if let filePath = v2String(params, "file_path"), !filePath.isEmpty {
+            if let startLine = v2Int(params, "start_line"), startLine > 0 {
+                let endLine = v2Int(params, "end_line") ?? startLine
+                if endLine >= startLine {
+                    if let text = v2String(params, "text"),
+                       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        input = .valid(
+                            filePath: filePath,
+                            startLine: startLine,
+                            endLine: endLine,
+                            text: text
+                        )
+                    } else {
+                        input = .invalid("Missing text")
+                    }
+                } else {
+                    input = .invalid("end_line must be >= start_line")
+                }
+            } else {
+                input = .invalid("Missing or invalid start_line")
+            }
+        } else {
+            input = .invalid("Missing file_path")
         }
 
-        var result: V2CallResult = .err(code: "not_found", message: "Review panel not found", data: nil)
-        v2MainSync {
-            guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
-                result = .err(code: "not_found", message: "Workspace not found", data: nil)
-                return
+        let outcome: ReviewValidatedCommentOperation<UUID> = v2MainSync {
+            guard let tabManager = self.v2ResolveTabManager(params: params) else {
+                return .tabManagerUnavailable
             }
-            guard let reviewPanel = self.v2ResolveReviewPanel(params: params, workspace: ws) else {
-                result = .err(code: "not_found", message: "Review panel not found", data: nil)
-                return
+            guard case .valid(let filePath, let startLine, let endLine, let text) = input else {
+                guard case .invalid(let message) = input else { preconditionFailure() }
+                return .invalidParams(message)
             }
-            let comment = reviewPanel.addComment(filePath: filePath, startLine: startLine, endLine: endLine, text: text)
-            result = .ok(["comment_id": comment.id.uuidString])
+            guard let workspace = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .workspaceNotFound
+            }
+            guard let panel = self.v2ResolveReviewPanel(params: params, workspace: workspace) else {
+                return .panelNotFound
+            }
+            return .value(panel.addComment(
+                filePath: filePath,
+                startLine: startLine,
+                endLine: endLine,
+                text: text
+            ).id)
         }
-        return result
+
+        switch outcome {
+        case .tabManagerUnavailable:
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        case .invalidParams(let message):
+            return .err(code: "invalid_params", message: message, data: nil)
+        case .workspaceNotFound:
+            return .err(code: "not_found", message: "Workspace not found", data: nil)
+        case .panelNotFound:
+            return .err(code: "not_found", message: "Review panel not found", data: nil)
+        case .value(let commentId):
+            return .ok(["comment_id": commentId.uuidString])
+        }
     }
 
-    func v2ReviewCommentRemove(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-        guard let commentIdString = v2String(params, "comment_id"), let commentId = UUID(uuidString: commentIdString) else {
-            return .err(code: "invalid_params", message: "Missing or invalid comment_id", data: nil)
+    nonisolated func v2ReviewCommentRemove(params: [String: Any]) -> V2CallResult {
+        let input: ReviewCommentRemoveInput
+        if let rawId = v2String(params, "comment_id"), let id = UUID(uuidString: rawId) {
+            input = .valid(id: id, rawId: rawId)
+        } else {
+            input = .invalid("Missing or invalid comment_id")
         }
 
-        var result: V2CallResult = .err(code: "not_found", message: "Review panel not found", data: nil)
-        v2MainSync {
-            guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
-                result = .err(code: "not_found", message: "Workspace not found", data: nil)
-                return
+        let outcome: ReviewValidatedCommentOperation<(ReviewCommentRemoveResult, String)> = v2MainSync {
+            guard let tabManager = self.v2ResolveTabManager(params: params) else {
+                return .tabManagerUnavailable
             }
-            guard let reviewPanel = self.v2ResolveReviewPanel(params: params, workspace: ws) else {
-                result = .err(code: "not_found", message: "Review panel not found", data: nil)
-                return
+            guard case .valid(let commentId, let rawId) = input else {
+                guard case .invalid(let message) = input else { preconditionFailure() }
+                return .invalidParams(message)
             }
-            guard reviewPanel.removeComment(id: commentId) else {
-                result = .err(code: "not_found", message: "Comment not found", data: ["comment_id": commentIdString])
-                return
+            guard let workspace = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .workspaceNotFound
             }
-            result = .ok(["ok": true])
+            guard let panel = self.v2ResolveReviewPanel(params: params, workspace: workspace) else {
+                return .panelNotFound
+            }
+            let result: ReviewCommentRemoveResult = panel.removeComment(id: commentId) ? .removed : .commentNotFound
+            return .value((result, rawId))
         }
-        return result
+
+        switch outcome {
+        case .tabManagerUnavailable:
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        case .invalidParams(let message):
+            return .err(code: "invalid_params", message: message, data: nil)
+        case .workspaceNotFound:
+            return .err(code: "not_found", message: "Workspace not found", data: nil)
+        case .panelNotFound:
+            return .err(code: "not_found", message: "Review panel not found", data: nil)
+        case .value((.commentNotFound, let rawId)):
+            return .err(code: "not_found", message: "Comment not found", data: ["comment_id": rawId])
+        case .value((.removed, _)):
+            return .ok(["ok": true])
+        }
     }
 
-    func v2ReviewCommentList(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+    nonisolated func v2ReviewCommentList(params: [String: Any]) -> V2CallResult {
+        let outcome: ReviewCommentOperation<[ReviewCommentWireValue]> = v2MainSync {
+            guard let tabManager = self.v2ResolveTabManager(params: params) else {
+                return .tabManagerUnavailable
+            }
+            guard let workspace = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .workspaceNotFound
+            }
+            guard let panel = self.v2ResolveReviewPanel(params: params, workspace: workspace) else {
+                return .panelNotFound
+            }
+            return .value(panel.comments.map { comment in
+                ReviewCommentWireValue(
+                    id: comment.id,
+                    filePath: comment.filePath,
+                    startLine: comment.startLine,
+                    endLine: comment.endLine,
+                    text: comment.text,
+                    createdAt: Int(comment.createdAt.timeIntervalSince1970),
+                    isStale: comment.isStale
+                )
+            })
         }
 
-        var result: V2CallResult = .err(code: "not_found", message: "Review panel not found", data: nil)
-        v2MainSync {
-            guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
-                result = .err(code: "not_found", message: "Workspace not found", data: nil)
-                return
-            }
-            guard let reviewPanel = self.v2ResolveReviewPanel(params: params, workspace: ws) else {
-                result = .err(code: "not_found", message: "Review panel not found", data: nil)
-                return
-            }
-            let comments: [[String: Any]] = reviewPanel.comments.map { comment in
+        switch outcome {
+        case .tabManagerUnavailable:
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        case .workspaceNotFound:
+            return .err(code: "not_found", message: "Workspace not found", data: nil)
+        case .panelNotFound:
+            return .err(code: "not_found", message: "Review panel not found", data: nil)
+        case .value(let comments):
+            return .ok(["comments": comments.map { comment in
                 [
                     "id": comment.id.uuidString,
                     "file_path": comment.filePath,
                     "start_line": comment.startLine,
                     "end_line": comment.endLine,
                     "text": comment.text,
-                    "created_at": Int(comment.createdAt.timeIntervalSince1970),
+                    "created_at": comment.createdAt,
                     "is_stale": comment.isStale
-                ]
-            }
-            result = .ok(["comments": comments])
+                ] as [String: Any]
+            }])
         }
-        return result
     }
 
-    func v2ReviewSendComments(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
+    nonisolated func v2ReviewSendComments(params: [String: Any]) -> V2CallResult {
         let preamble = v2String(params, "preamble")
 
-        var result: V2CallResult = .err(code: "not_found", message: "Review panel not found", data: nil)
-        v2MainSync {
-            guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
-                result = .err(code: "not_found", message: "Workspace not found", data: nil)
-                return
+        let outcome: ReviewCommentOperation<ReviewSendResult> = v2MainSync {
+            guard let tabManager = self.v2ResolveTabManager(params: params) else {
+                return .tabManagerUnavailable
             }
-            guard let reviewPanel = self.v2ResolveReviewPanel(params: params, workspace: ws) else {
-                result = .err(code: "not_found", message: "Review panel not found", data: nil)
-                return
+            guard let workspace = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .workspaceNotFound
             }
-            let sourceSurfaceId = reviewPanel.sourceSurfaceId
-            // Sending zero comments is a no-op, not a failure -- see docs/plans/diff-review-panel.md §2.
-            let sentCount = reviewPanel.sendPendingComments(preamble: preamble)
-            let windowId = self.v2ResolveWindowId(tabManager: tabManager)
-            result = .ok([
-                "sent_count": sentCount,
-                "target_surface_id": sourceSurfaceId.uuidString,
-                "target_surface_ref": self.v2Ref(kind: .surface, uuid: sourceSurfaceId),
-                "window_id": self.v2OrNull(windowId?.uuidString),
-                "window_ref": self.v2Ref(kind: .window, uuid: windowId)
+            guard let panel = self.v2ResolveReviewPanel(params: params, workspace: workspace) else {
+                return .panelNotFound
+            }
+            let sourceSurfaceId = panel.sourceSurfaceId
+            // Sending zero comments is a no-op, not a failure.
+            let sentCount = panel.sendPendingComments(preamble: preamble)
+            return .value(ReviewSendResult(
+                sentCount: sentCount,
+                sourceSurfaceId: sourceSurfaceId,
+                windowId: AppDelegate.shared?.windowId(for: tabManager)
+            ))
+        }
+
+        switch outcome {
+        case .tabManagerUnavailable:
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        case .workspaceNotFound:
+            return .err(code: "not_found", message: "Workspace not found", data: nil)
+        case .panelNotFound:
+            return .err(code: "not_found", message: "Review panel not found", data: nil)
+        case .value(let sent):
+            return .ok([
+                "sent_count": sent.sentCount,
+                "target_surface_id": sent.sourceSurfaceId.uuidString,
+                "target_surface_ref": v2Ref(kind: .surface, uuid: sent.sourceSurfaceId),
+                "window_id": v2OrNull(sent.windowId?.uuidString),
+                "window_ref": v2Ref(kind: .window, uuid: sent.windowId)
             ])
         }
-        return result
     }
 }

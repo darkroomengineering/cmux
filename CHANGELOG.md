@@ -8,15 +8,21 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 
 ### Fixed
 - Provider usage now completes the Codex app-server handshake before reading limits, verifies Claude's current login before trusting its bounded fresh cache, hides signed-out providers, refreshes whenever its compact sidebar control opens, and sizes the popover to its visible content.
+- The provider usage popover no longer reports that Claude and Codex usage could not be read: reading the Codex app server's silent stderr through `FileHandle.bytes` blocked Foundation's shared pipe reader, so both probes timed out together. A signed-out Claude CLI now hides the provider instead of showing an error, and the sidebar help and usage icons sit on a slightly wider pitch.
 - Browser context-menu actions no longer crash when a Google redirect contains repeated query parameters.
 - Crash recovery no longer opens a second window full of empty workspaces when only some detached terminal sessions can be reattached. The recovery window now contains only live recovered sessions and closes when none recover.
 - Closing a window now tears down every timer, observer, task, panel, and workspace it owns, so closed windows cannot keep empty workspaces alive or reappear in a later session snapshot.
 - The title-bar hide-sidebar button now always toggles the sidebar belonging to its own window instead of relying on whichever window was last active.
 - Provider usage is now available on demand from a sidebar icon and shows every signed-in supported provider, without continuously polling while the popover is closed.
 - Browser downloads now keep the completed temporary file available when moving it to the destination fails, so a finalization error cannot silently discard the download.
+- An ordinary documentation-only commit on `main` can no longer strand the latest green app revision; it now starts CI and can drive the exact-tip release pipeline.
+- Browser automation now reuses element references within a page, caps their count and selector bytes, bounds DOM visits and every snapshot payload field, preserves state across successful tab transfers, and finalizes failed transfers or closed tabs, workspaces, and windows exactly once.
 - Revoking a paired mobile device now also blocks connections still being admitted, and disabling the bridge closes active phone sessions.
 - An unreadable browser history file no longer causes repeated disk reads on every omnibar keystroke.
 - Clearing browser history now stays cleared after a temporary disk deletion failure or app termination.
+- Escape now cancels in-progress terminal input for Japanese, Chinese, and Korean keyboards even while the command palette is still opening or has just closed.
+- Cmd+D now confirms only the close alert in the window that received the shortcut, so another window's alert can no longer close the wrong tab or steal a split command.
+- Launching two copies of Programa at nearly the same time now deterministically keeps the newer instance instead of allowing both processes to terminate each other.
 - Browser imports now treat Unicode domains and their Punycode forms as the same filter, so internationalized domains no longer silently import zero matching cookies or history entries.
 - Socket automation no longer hangs on split Unicode requests or unsubscribe races, and malformed telemetry can no longer crash the app or grow retained workspace state without bounds.
 - Large command output no longer deadlocks the CLI or background Git checks, and stalled Git probes now time out instead of accumulating work.

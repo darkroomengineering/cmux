@@ -272,7 +272,7 @@ Request params:
 | `workspace_id` / `surface_id` | string (id or ref) | no | Same resolution as other `surface.*` methods; defaults to the current workspace's focused surface. |
 | `text` | string | yes | The prompt. Enter is always submitted after it (trailing whitespace/newlines in `text` are trimmed first, so this never sends a stray blank line) — callers don't pass their own line ending. |
 | `timeout_ms` | int | no | Overall budget for the agent to finish. Default `120000`. Also accepts `timeout`. |
-| `working_grace_ms` | int | no | How long to wait for the agent to report it started working before giving up on observing that transition. Default `3000`. |
+| `working_grace_ms` | int | no | How long to wait for the agent to report it started working before giving up on observing that transition, capped by the remaining overall `timeout_ms` budget. Default `3000`. |
 
 Response (`ok: true`):
 
@@ -302,12 +302,13 @@ hooks were never installed for this surface.
    registered via `AgentStateWaitRegistry`. This closes the race where a hook reacts to the
    injected text before a separately-registered watcher would exist (the same atomic
    check+register pattern `surface.wait` uses).
-2. **Grace window (`working_grace_ms`).** Wait for the `working` transition.
+2. **Grace window (`working_grace_ms`).** Wait for the `working` transition, capped by the
+   remaining overall `timeout_ms` budget.
    - Observed → go to step 3.
-   - Not observed by the time the grace window elapses → there is nothing further useful to
-     wait for, so resolve immediately using whatever `agent_state` the surface already has
-     (`working_observed: false`). This is deliberately not a hard error: a prompt can finish
-     faster than the grace window, or a hook simply may not fire for a trivial prompt.
+   - Not observed by the time the grace window or overall deadline elapses → there is nothing
+     further useful to wait for, so resolve immediately using whatever `agent_state` the surface
+     already has (`working_observed: false`). This is deliberately not a timeout error: a prompt
+     can finish faster than the grace window, or a hook simply may not fire for a trivial prompt.
 3. **Wait for idle.** Having observed `working`, wait — for the *remaining* overall
    `timeout_ms` budget — for `agent_state` to reach `idle` (the same no-state-is-idle rule as
    `surface.wait` applies: a hook that clears its own state on session end also counts).

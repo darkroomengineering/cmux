@@ -14,11 +14,11 @@ extension TerminalController {
     // workspace/surface the same way the v1 explicit-scope fast paths do (`AppDelegate.shared?
     // .tabManagerFor(tabId:)` + linear tab lookup) but dispatch the mutation asynchronously and
     // return an optimistic `ok` result immediately, matching v1's fire-and-forget "OK" semantics.
-    private func v2ScheduleTelemetryMutation(
+    private nonisolated func v2ScheduleTelemetryMutation(
         workspaceId: UUID,
-        _ mutation: @escaping (TabManager, Workspace) -> Void
+        _ mutation: @escaping @MainActor @Sendable (TabManager, Workspace) -> Void
     ) {
-        DispatchQueue.main.async { [weak self] in
+        DispatchQueue.main.async { @MainActor [weak self] in
             // Prefer explicit window-routed lookup (mirrors `v2ResolveTabManager`), but fall
             // back to `self.tabManager` — the TabManager registered via `start(tabManager:)`.
             // Without this fallback, a workspace that only exists in the TabManager passed to
@@ -34,10 +34,10 @@ extension TerminalController {
         }
     }
 
-    private func v2ScheduleSurfaceTelemetryMutation(
+    private nonisolated func v2ScheduleSurfaceTelemetryMutation(
         workspaceId: UUID,
         surfaceId: UUID,
-        _ mutation: @escaping (TabManager, Workspace, UUID) -> Void
+        _ mutation: @escaping @MainActor @Sendable (TabManager, Workspace, UUID) -> Void
     ) {
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { tabManager, tab in
             let validSurfaceIds = Set(tab.panels.keys)
@@ -46,11 +46,11 @@ extension TerminalController {
             mutation(tabManager, tab, surfaceId)
         }
     }
-    func v2SurfaceReportTTY(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceReportTTY(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        let requestedSurfaceId = v2UUID(params, "surface_id")
+        let requestedSurfaceId = v2CachedUUID(params, "surface_id")
         if v2HasNonNullParam(params, "surface_id"), requestedSurfaceId == nil {
             return v2InvalidParam("surface_id")
         }
@@ -104,11 +104,11 @@ extension TerminalController {
         ])
     }
 
-    func v2SurfacePortsKick(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfacePortsKick(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        let requestedSurfaceId = v2UUID(params, "surface_id")
+        let requestedSurfaceId = v2CachedUUID(params, "surface_id")
         if v2HasNonNullParam(params, "surface_id"), requestedSurfaceId == nil {
             return v2InvalidParam("surface_id")
         }
@@ -175,11 +175,11 @@ extension TerminalController {
     // fallback), so they always take the async fast path v1 took when both --tab and --panel
     // were supplied explicitly.
 
-    func v2SurfaceReportPwd(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceReportPwd(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
+        guard let surfaceId = v2CachedUUID(params, "surface_id") else {
             return v2InvalidParam("surface_id")
         }
         guard let path = v2RawString(params, "path")?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -207,11 +207,11 @@ extension TerminalController {
         ])
     }
 
-    func v2SurfaceReportShellState(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceReportShellState(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
+        guard let surfaceId = v2CachedUUID(params, "surface_id") else {
             return v2InvalidParam("surface_id")
         }
         guard let rawState = v2RawString(params, "state"),
@@ -253,11 +253,11 @@ extension TerminalController {
         return .ok(baseResult)
     }
 
-    func v2SurfaceReportGitBranch(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceReportGitBranch(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
+        guard let surfaceId = v2CachedUUID(params, "surface_id") else {
             return v2InvalidParam("surface_id")
         }
         guard let branch = v2RawString(params, "branch")?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -287,11 +287,11 @@ extension TerminalController {
         ])
     }
 
-    func v2SurfaceClearGitBranch(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceClearGitBranch(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
+        guard let surfaceId = v2CachedUUID(params, "surface_id") else {
             return v2InvalidParam("surface_id")
         }
 
@@ -310,11 +310,11 @@ extension TerminalController {
     /// Reports a lifecycle-hook-driven agent activity state for a surface (issue #164, v1
     /// hook tier). Called exclusively by the shipped Claude Code/Codex/OpenCode hook
     /// wrappers (CLI+Hooks.swift) — there is no heuristic/screen-rule fallback in this tier.
-    func v2SurfaceReportAgentState(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceReportAgentState(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
+        guard let surfaceId = v2CachedUUID(params, "surface_id") else {
             return v2InvalidParam("surface_id")
         }
         guard let rawState = v2RawString(params, "state"),
@@ -350,11 +350,11 @@ extension TerminalController {
         ])
     }
 
-    func v2SurfaceClearAgentState(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceClearAgentState(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
+        guard let surfaceId = v2CachedUUID(params, "surface_id") else {
             return v2InvalidParam("surface_id")
         }
 
@@ -370,11 +370,11 @@ extension TerminalController {
         ])
     }
 
-    func v2SurfaceReportPullRequest(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceReportPullRequest(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
+        guard let surfaceId = v2CachedUUID(params, "surface_id") else {
             return v2InvalidParam("surface_id")
         }
         guard let number = v2Int(params, "number"), number > 0 else {
@@ -431,7 +431,7 @@ extension TerminalController {
             )
         }
 
-        v2ScheduleSurfaceTelemetryMutation(workspaceId: workspaceId, surfaceId: surfaceId) { _, tab, sid in
+        v2ScheduleSurfaceTelemetryMutation(workspaceId: workspaceId, surfaceId: surfaceId) { [checks] _, tab, sid in
             guard Self.shouldReplacePullRequest(
                 current: tab.panelPullRequests[sid],
                 number: number,
@@ -468,11 +468,11 @@ extension TerminalController {
         ])
     }
 
-    func v2SurfaceClearPullRequest(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceClearPullRequest(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
+        guard let surfaceId = v2CachedUUID(params, "surface_id") else {
             return v2InvalidParam("surface_id")
         }
 
@@ -488,12 +488,20 @@ extension TerminalController {
         ])
     }
 
-    func v2SurfaceReportPorts(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceReportPorts(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
+        guard let surfaceId = v2CachedUUID(params, "surface_id") else {
             return v2InvalidParam("surface_id")
+        }
+        if let rawPortValues = params["ports"] as? [Any],
+           rawPortValues.count > SidebarTelemetryLimits.maxReportedPorts {
+            return .err(
+                code: "invalid_params",
+                message: "ports exceeds the limit of 65535 entries",
+                data: nil
+            )
         }
         guard let rawPorts = v2IntArray(params, "ports"), !rawPorts.isEmpty else {
             return v2InvalidParam("ports")
@@ -501,12 +509,11 @@ extension TerminalController {
         guard rawPorts.allSatisfy({ $0 > 0 && $0 <= 65535 }) else {
             return .err(code: "invalid_params", message: "Invalid port — must be 1-65535", data: nil)
         }
+        let ports = Array(Set(rawPorts)).sorted()
 
         v2ScheduleSurfaceTelemetryMutation(workspaceId: workspaceId, surfaceId: surfaceId) { _, tab, sid in
-            guard Self.shouldReplacePorts(current: tab.surfaceListeningPorts[sid], next: rawPorts) else {
-                return
-            }
-            tab.surfaceListeningPorts[sid] = rawPorts
+            guard tab.surfaceListeningPorts[sid] != ports else { return }
+            tab.surfaceListeningPorts[sid] = ports
             tab.recomputeListeningPorts()
         }
 
@@ -515,15 +522,15 @@ extension TerminalController {
             "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId),
             "surface_id": surfaceId.uuidString,
             "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
-            "ports": rawPorts,
+            "ports": ports,
         ])
     }
 
-    func v2SurfaceClearPorts(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2SurfaceClearPorts(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
-        let requestedSurfaceId = v2UUID(params, "surface_id")
+        let requestedSurfaceId = v2CachedUUID(params, "surface_id")
         if v2HasNonNullParam(params, "surface_id"), requestedSurfaceId == nil {
             return v2InvalidParam("surface_id")
         }
@@ -593,8 +600,8 @@ extension TerminalController {
     // reads (list_status/list_log/sidebar_state) are exact-snapshot queries and use the
     // v2MainSync pattern shared by sibling v2 read methods.
 
-    func v2WorkspaceSetStatus(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2WorkspaceSetStatus(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
         guard let key = v2String(params, "key") else {
@@ -683,7 +690,7 @@ extension TerminalController {
             pidValue = pid_t(rawPid)
         }
 
-        v2ScheduleTelemetryMutation(workspaceId: workspaceId) { [weak self] _, tab in
+        v2ScheduleTelemetryMutation(workspaceId: workspaceId) { [weak self, priority, url, pidValue] _, tab in
             guard let self else { return }
             guard Self.shouldReplaceStatusEntry(
                 current: tab.statusEntries[key],
@@ -727,8 +734,8 @@ extension TerminalController {
         ])
     }
 
-    func v2WorkspaceClearStatus(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2WorkspaceClearStatus(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
         guard let key = v2String(params, "key") else {
@@ -752,14 +759,14 @@ extension TerminalController {
         ])
     }
 
-    func v2WorkspaceListStatus(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-
-        var result: V2CallResult = .err(code: "not_found", message: "Workspace not found", data: nil)
-        v2MainSync {
-            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else { return }
+    nonisolated func v2WorkspaceListStatus(params: [String: Any]) -> V2CallResult {
+        return v2MainSync {
+            guard let tabManager = v2ResolveTabManager(params: params) else {
+                return .err(code: "unavailable", message: "TabManager not available", data: nil)
+            }
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .err(code: "not_found", message: "Workspace not found", data: nil)
+            }
             let entries: [[String: Any]] = ws.sidebarStatusEntriesInDisplayOrder().map { entry in
                 [
                     "key": entry.key,
@@ -771,17 +778,16 @@ extension TerminalController {
                     "format": entry.format.rawValue,
                 ]
             }
-            result = .ok([
+            return .ok([
                 "workspace_id": ws.id.uuidString,
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "entries": entries,
             ])
         }
-        return result
     }
 
-    func v2WorkspaceLog(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2WorkspaceLog(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
         guard let message = v2RawString(params, "message"), !message.isEmpty else {
@@ -829,8 +835,8 @@ extension TerminalController {
         ])
     }
 
-    func v2WorkspaceClearLog(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2WorkspaceClearLog(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
 
@@ -845,22 +851,23 @@ extension TerminalController {
         ])
     }
 
-    func v2WorkspaceListLog(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-
-        var limit: Int?
-        if v2HasNonNullParam(params, "limit") {
-            guard let parsedLimit = v2Int(params, "limit"), parsedLimit >= 0 else {
-                return .err(code: "invalid_params", message: "Invalid limit — must be >= 0", data: nil)
+    nonisolated func v2WorkspaceListLog(params: [String: Any]) -> V2CallResult {
+        return v2MainSync {
+            guard let tabManager = v2ResolveTabManager(params: params) else {
+                return .err(code: "unavailable", message: "TabManager not available", data: nil)
             }
-            limit = parsedLimit
-        }
 
-        var result: V2CallResult = .err(code: "not_found", message: "Workspace not found", data: nil)
-        v2MainSync {
-            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else { return }
+            var limit: Int?
+            if v2HasNonNullParam(params, "limit") {
+                guard let parsedLimit = v2Int(params, "limit"), parsedLimit >= 0 else {
+                    return .err(code: "invalid_params", message: "Invalid limit — must be >= 0", data: nil)
+                }
+                limit = parsedLimit
+            }
+
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .err(code: "not_found", message: "Workspace not found", data: nil)
+            }
             let source = limit.map { Array(ws.logEntries.suffix($0)) } ?? ws.logEntries
             let entries: [[String: Any]] = source.map { entry in
                 [
@@ -870,17 +877,16 @@ extension TerminalController {
                     "timestamp": entry.timestamp.timeIntervalSince1970,
                 ]
             }
-            result = .ok([
+            return .ok([
                 "workspace_id": ws.id.uuidString,
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "entries": entries,
             ])
         }
-        return result
     }
 
-    func v2WorkspaceSetProgress(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2WorkspaceSetProgress(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
         guard let rawValue = v2Double(params, "value"), rawValue.isFinite else {
@@ -914,8 +920,8 @@ extension TerminalController {
         ])
     }
 
-    func v2WorkspaceClearProgress(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2WorkspaceClearProgress(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
 
@@ -930,14 +936,14 @@ extension TerminalController {
         ])
     }
 
-    func v2WorkspaceSidebarState(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-
-        var result: V2CallResult = .err(code: "not_found", message: "Workspace not found", data: nil)
-        v2MainSync {
-            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else { return }
+    nonisolated func v2WorkspaceSidebarState(params: [String: Any]) -> V2CallResult {
+        return v2MainSync {
+            guard let tabManager = v2ResolveTabManager(params: params) else {
+                return .err(code: "unavailable", message: "TabManager not available", data: nil)
+            }
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .err(code: "not_found", message: "Workspace not found", data: nil)
+            }
 
             var focusedCwd: Any = NSNull()
             if let focused = ws.focusedPanelId, let focusedDir = ws.panelDirectories[focused] {
@@ -986,7 +992,7 @@ extension TerminalController {
                 ["message": entry.message, "level": entry.level.rawValue, "source": v2OrNull(entry.source)]
             }
 
-            result = .ok([
+            return .ok([
                 "workspace_id": ws.id.uuidString,
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "color": v2OrNull(ws.customColor),
@@ -1004,11 +1010,10 @@ extension TerminalController {
                 "recent_log_entries": recentLogEntries,
             ])
         }
-        return result
     }
 
-    func v2WorkspaceClearAgentPID(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2WorkspaceClearAgentPID(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
         guard let key = v2String(params, "key") else {
@@ -1038,8 +1043,8 @@ extension TerminalController {
     /// Mirrors v1's `set_agent_pid <key> <pid> [--tab=X]`: registers a PID for stale-session
     /// detection/OSC suppression without setting a visible status entry (unlike
     /// `workspace.set_status`, which also accepts an optional `pid`).
-    func v2WorkspaceSetAgentPID(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2WorkspaceSetAgentPID(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
         guard let key = v2String(params, "key") else {
@@ -1080,8 +1085,8 @@ extension TerminalController {
     /// Mirrors v1's `report_meta_block <key> [--priority=N] [--tab=X] -- <markdown>`: sets a
     /// freeform sidebar markdown block, distinct from `workspace.set_status`'s single-line
     /// key/value entries.
-    func v2WorkspaceReportMetaBlock(params: [String: Any]) -> V2CallResult {
-        guard let workspaceId = v2UUID(params, "workspace_id") else {
+    nonisolated func v2WorkspaceReportMetaBlock(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2CachedUUID(params, "workspace_id") else {
             return v2InvalidParam("workspace_id")
         }
         guard let key = v2String(params, "key") else {
@@ -1121,7 +1126,7 @@ extension TerminalController {
             priority = max(-9999, min(9999, rawPriority))
         }
 
-        v2ScheduleTelemetryMutation(workspaceId: workspaceId) { _, tab in
+        v2ScheduleTelemetryMutation(workspaceId: workspaceId) { [priority] _, tab in
             guard Self.shouldReplaceMetadataBlock(
                 current: tab.metadataBlocks[key],
                 key: key,
@@ -1152,65 +1157,62 @@ extension TerminalController {
     /// `DispatchQueue.main.sync` implementation — it resolves and mutates on the main actor via
     /// `v2MainSync` rather than firing an async `v2ScheduleTelemetryMutation`. This is a rare,
     /// agent/test-triggered command, not a high-frequency telemetry path.
-    func v2WorkspaceClearMetaBlock(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-        guard let key = v2String(params, "key") else {
-            return .err(code: "invalid_params", message: "Missing key", data: nil)
-        }
-
-        var result: V2CallResult = .err(code: "not_found", message: "Workspace not found", data: nil)
-        v2MainSync {
-            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else { return }
+    nonisolated func v2WorkspaceClearMetaBlock(params: [String: Any]) -> V2CallResult {
+        return v2MainSync {
+            guard let tabManager = v2ResolveTabManager(params: params) else {
+                return .err(code: "unavailable", message: "TabManager not available", data: nil)
+            }
+            guard let key = v2String(params, "key") else {
+                return .err(code: "invalid_params", message: "Missing key", data: nil)
+            }
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .err(code: "not_found", message: "Workspace not found", data: nil)
+            }
             let found = ws.metadataBlocks.removeValue(forKey: key) != nil
-            result = .ok([
+            return .ok([
                 "workspace_id": ws.id.uuidString,
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "key": key,
                 "found": found,
             ])
         }
-        return result
     }
 
     /// Mirrors v1's `list_meta_blocks [--tab=X]`.
-    func v2WorkspaceListMetaBlocks(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-
-        var result: V2CallResult = .err(code: "not_found", message: "Workspace not found", data: nil)
-        v2MainSync {
-            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else { return }
+    nonisolated func v2WorkspaceListMetaBlocks(params: [String: Any]) -> V2CallResult {
+        return v2MainSync {
+            guard let tabManager = v2ResolveTabManager(params: params) else {
+                return .err(code: "unavailable", message: "TabManager not available", data: nil)
+            }
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .err(code: "not_found", message: "Workspace not found", data: nil)
+            }
             let blocks: [[String: Any]] = ws.sidebarMetadataBlocksInDisplayOrder().map { block in
                 ["key": block.key, "markdown": block.markdown, "priority": block.priority]
             }
-            result = .ok([
+            return .ok([
                 "workspace_id": ws.id.uuidString,
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "blocks": blocks,
             ])
         }
-        return result
     }
 
     /// Mirrors v1's `reset_sidebar [--tab=X]`.
-    func v2WorkspaceResetSidebar(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-
-        var result: V2CallResult = .err(code: "not_found", message: "Workspace not found", data: nil)
-        v2MainSync {
-            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else { return }
+    nonisolated func v2WorkspaceResetSidebar(params: [String: Any]) -> V2CallResult {
+        return v2MainSync {
+            guard let tabManager = v2ResolveTabManager(params: params) else {
+                return .err(code: "unavailable", message: "TabManager not available", data: nil)
+            }
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                return .err(code: "not_found", message: "Workspace not found", data: nil)
+            }
             ws.resetSidebarContext(reason: "v2.workspace.reset_sidebar")
-            result = .ok([
+            return .ok([
                 "workspace_id": ws.id.uuidString,
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
             ])
         }
-        return result
     }
     private func refreshTrackedAgentPorts(for tab: Workspace) {
         let agentPIDs = Set(tab.agentPIDs.values.compactMap { $0 > 0 ? Int($0) : nil })

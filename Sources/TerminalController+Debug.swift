@@ -73,7 +73,7 @@ extension TerminalController {
 #if DEBUG
     // MARK: - V2 Debug / Test-only Methods
 
-    func v2DebugGlassSet(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugGlassSet(params: [String: Any]) -> V2CallResult {
         guard let rawSurface = v2String(params, "surface"),
               let surface = ProgramaGlassSurface(commandValue: rawSurface),
               let enabled = params["enabled"] as? Bool else {
@@ -84,22 +84,26 @@ extension TerminalController {
             )
         }
 
-        ProgramaGlassSettings.setDebugEnabled(enabled, for: surface)
-        return .ok(["surface": surface.rawValue, "enabled": enabled])
+        return v2MainSync {
+            ProgramaGlassSettings.setDebugEnabled(enabled, for: surface)
+            return .ok(["surface": surface.rawValue, "enabled": enabled])
+        }
     }
 
-    func v2DebugShortcutSet(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugShortcutSet(params: [String: Any]) -> V2CallResult {
         guard let name = v2String(params, "name"),
               let combo = v2String(params, "combo") else {
             return .err(code: "invalid_params", message: "Missing name/combo", data: nil)
         }
-        let resp = setShortcut("\(name) \(combo)")
-        return resp == "OK"
-            ? .ok([:])
-            : .err(code: "internal_error", message: resp, data: nil)
+        return v2MainSync {
+            let resp = setShortcut("\(name) \(combo)")
+            return resp == "OK"
+                ? .ok([:])
+                : .err(code: "internal_error", message: resp, data: nil)
+        }
     }
 
-    func v2DebugShortcutSimulate(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugShortcutSimulate(params: [String: Any]) -> V2CallResult {
         guard let combo = v2String(params, "combo") else {
             return .err(code: "invalid_params", message: "Missing combo", data: nil)
         }
@@ -109,75 +113,67 @@ extension TerminalController {
             : .err(code: "internal_error", message: resp, data: nil)
     }
 
-    func v2DebugType(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugType(params: [String: Any]) -> V2CallResult {
         guard let text = params["text"] as? String else {
             return .err(code: "invalid_params", message: "Missing text", data: nil)
         }
 
-        var result: V2CallResult = .err(code: "internal_error", message: "No window", data: nil)
-        DispatchQueue.main.sync {
+        return v2MainSync {
             guard let window = NSApp.keyWindow
                 ?? NSApp.mainWindow
                 ?? NSApp.windows.first(where: { $0.isVisible })
                 ?? NSApp.windows.first else {
-                result = .err(code: "not_found", message: "No window", data: nil)
-                return
+                return .err(code: "not_found", message: "No window", data: nil)
             }
             if socketCommandAllowsInAppFocusMutations() {
                 NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
             }
             guard let fr = window.firstResponder else {
-                result = .err(code: "not_found", message: "No first responder", data: nil)
-                return
+                return .err(code: "not_found", message: "No first responder", data: nil)
             }
             if let client = fr as? NSTextInputClient {
                 client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
-                result = .ok([:])
-                return
+                return .ok([:])
             }
             fr.insertText(text)
-            result = .ok([:])
+            return .ok([:])
         }
-        return result
     }
 
-    func v2DebugActivateApp() -> V2CallResult {
+    nonisolated func v2DebugActivateApp() -> V2CallResult {
         let resp = activateApp()
         return resp == "OK" ? .ok([:]) : .err(code: "internal_error", message: resp, data: nil)
     }
 
-    func v2DebugToggleCommandPalette(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugToggleCommandPalette(params: [String: Any]) -> V2CallResult {
         let requestedWindowId = v2UUID(params, "window_id")
-        var result: V2CallResult = .ok([:])
-        v2MainSync {
+        return v2MainSync {
             let targetWindow: NSWindow?
             if let requestedWindowId {
                 guard let window = AppDelegate.shared?.mainWindow(for: requestedWindowId) else {
-                    result = .err(
+                    return .err(
                         code: "not_found",
                         message: "Window not found",
                         data: ["window_id": requestedWindowId.uuidString, "window_ref": v2Ref(kind: .window, uuid: requestedWindowId)]
                     )
-                    return
                 }
                 targetWindow = window
             } else {
                 targetWindow = NSApp.keyWindow ?? NSApp.mainWindow
             }
             NotificationCenter.default.post(name: .commandPaletteToggleRequested, object: targetWindow)
+            return .ok([:])
         }
-        return result
     }
 
-    func v2DebugOpenCommandPaletteRenameTabInput(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugOpenCommandPaletteRenameTabInput(params: [String: Any]) -> V2CallResult {
         let requestedWindowId = v2UUID(params, "window_id")
-        var result: V2CallResult = .ok([:])
-        DispatchQueue.main.sync {
+        return v2MainSync {
             let targetWindow: NSWindow?
             if let requestedWindowId {
                 guard let window = AppDelegate.shared?.mainWindow(for: requestedWindowId) else {
-                    result = .err(
+                    return .err(
                         code: "not_found",
                         message: "Window not found",
                         data: [
@@ -185,96 +181,86 @@ extension TerminalController {
                             "window_ref": v2Ref(kind: .window, uuid: requestedWindowId)
                         ]
                     )
-                    return
                 }
                 targetWindow = window
             } else {
                 targetWindow = NSApp.keyWindow ?? NSApp.mainWindow
             }
             NotificationCenter.default.post(name: .commandPaletteRenameTabRequested, object: targetWindow)
+            return .ok([:])
         }
-        return result
     }
 
-    func v2DebugCommandPaletteVisible(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugCommandPaletteVisible(params: [String: Any]) -> V2CallResult {
         guard let windowId = v2UUID(params, "window_id") else {
             return v2InvalidParam("window_id")
         }
-        var visible = false
-        DispatchQueue.main.sync {
-            visible = AppDelegate.shared?.isCommandPaletteVisible(windowId: windowId) ?? false
+        return v2MainSync {
+            let visible = AppDelegate.shared?.isCommandPaletteVisible(windowId: windowId) ?? false
+            return .ok([
+                "window_id": windowId.uuidString,
+                "window_ref": v2Ref(kind: .window, uuid: windowId),
+                "visible": visible
+            ])
         }
-        return .ok([
-            "window_id": windowId.uuidString,
-            "window_ref": v2Ref(kind: .window, uuid: windowId),
-            "visible": visible
-        ])
     }
 
-    func v2DebugCommandPaletteSelection(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugCommandPaletteSelection(params: [String: Any]) -> V2CallResult {
         guard let windowId = v2UUID(params, "window_id") else {
             return v2InvalidParam("window_id")
         }
-        var visible = false
-        var selectedIndex = 0
-        DispatchQueue.main.sync {
-            visible = AppDelegate.shared?.isCommandPaletteVisible(windowId: windowId) ?? false
-            selectedIndex = AppDelegate.shared?.commandPaletteSelectionIndex(windowId: windowId) ?? 0
+        return v2MainSync {
+            let visible = AppDelegate.shared?.isCommandPaletteVisible(windowId: windowId) ?? false
+            let selectedIndex = AppDelegate.shared?.commandPaletteSelectionIndex(windowId: windowId) ?? 0
+            return .ok([
+                "window_id": windowId.uuidString,
+                "window_ref": v2Ref(kind: .window, uuid: windowId),
+                "visible": visible,
+                "selected_index": max(0, selectedIndex)
+            ])
         }
-        return .ok([
-            "window_id": windowId.uuidString,
-            "window_ref": v2Ref(kind: .window, uuid: windowId),
-            "visible": visible,
-            "selected_index": max(0, selectedIndex)
-        ])
     }
 
-    func v2DebugCommandPaletteResults(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugCommandPaletteResults(params: [String: Any]) -> V2CallResult {
         guard let windowId = v2UUID(params, "window_id") else {
             return v2InvalidParam("window_id")
         }
         let requestedLimit = params["limit"] as? Int
         let limit = max(1, min(100, requestedLimit ?? 20))
 
-        var visible = false
-        var selectedIndex = 0
-        var snapshot = CommandPaletteDebugSnapshot.empty
+        return v2MainSync {
+            let visible = AppDelegate.shared?.isCommandPaletteVisible(windowId: windowId) ?? false
+            let selectedIndex = AppDelegate.shared?.commandPaletteSelectionIndex(windowId: windowId) ?? 0
+            let snapshot = AppDelegate.shared?.commandPaletteSnapshot(windowId: windowId) ?? .empty
+            let rows = Array(snapshot.results.prefix(limit)).map { row in
+                [
+                    "command_id": row.commandId,
+                    "title": row.title,
+                    "shortcut_hint": v2OrNull(row.shortcutHint),
+                    "trailing_label": v2OrNull(row.trailingLabel),
+                    "score": row.score
+                ] as [String: Any]
+            }
 
-        DispatchQueue.main.sync {
-            visible = AppDelegate.shared?.isCommandPaletteVisible(windowId: windowId) ?? false
-            selectedIndex = AppDelegate.shared?.commandPaletteSelectionIndex(windowId: windowId) ?? 0
-            snapshot = AppDelegate.shared?.commandPaletteSnapshot(windowId: windowId) ?? .empty
+            return .ok([
+                "window_id": windowId.uuidString,
+                "window_ref": v2Ref(kind: .window, uuid: windowId),
+                "visible": visible,
+                "selected_index": max(0, selectedIndex),
+                "query": snapshot.query,
+                "mode": snapshot.mode,
+                "results": rows
+            ])
         }
-
-        let rows = Array(snapshot.results.prefix(limit)).map { row in
-            [
-                "command_id": row.commandId,
-                "title": row.title,
-                "shortcut_hint": v2OrNull(row.shortcutHint),
-                "trailing_label": v2OrNull(row.trailingLabel),
-                "score": row.score
-            ] as [String: Any]
-        }
-
-        return .ok([
-            "window_id": windowId.uuidString,
-            "window_ref": v2Ref(kind: .window, uuid: windowId),
-            "visible": visible,
-            "selected_index": max(0, selectedIndex),
-            "query": snapshot.query,
-            "mode": snapshot.mode,
-            "results": rows
-        ])
     }
 
-    func v2DebugCommandPaletteRenameInputInteraction(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugCommandPaletteRenameInputInteraction(params: [String: Any]) -> V2CallResult {
         let requestedWindowId = v2UUID(params, "window_id")
-        var result: V2CallResult = .ok([:])
-        DispatchQueue.main.sync {
+        return v2MainSync {
             let targetWindow: NSWindow?
             if let requestedWindowId {
                 guard let window = AppDelegate.shared?.mainWindow(for: requestedWindowId) else {
-                    result = .err(
+                    return .err(
                         code: "not_found",
                         message: "Window not found",
                         data: [
@@ -282,25 +268,23 @@ extension TerminalController {
                             "window_ref": v2Ref(kind: .window, uuid: requestedWindowId)
                         ]
                     )
-                    return
                 }
                 targetWindow = window
             } else {
                 targetWindow = NSApp.keyWindow ?? NSApp.mainWindow
             }
             NotificationCenter.default.post(name: .commandPaletteRenameInputInteractionRequested, object: targetWindow)
+            return .ok([:])
         }
-        return result
     }
 
-    func v2DebugCommandPaletteRenameInputDeleteBackward(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugCommandPaletteRenameInputDeleteBackward(params: [String: Any]) -> V2CallResult {
         let requestedWindowId = v2UUID(params, "window_id")
-        var result: V2CallResult = .ok([:])
-        DispatchQueue.main.sync {
+        return v2MainSync {
             let targetWindow: NSWindow?
             if let requestedWindowId {
                 guard let window = AppDelegate.shared?.mainWindow(for: requestedWindowId) else {
-                    result = .err(
+                    return .err(
                         code: "not_found",
                         message: "Window not found",
                         data: [
@@ -308,46 +292,42 @@ extension TerminalController {
                             "window_ref": v2Ref(kind: .window, uuid: requestedWindowId)
                         ]
                     )
-                    return
                 }
                 targetWindow = window
             } else {
                 targetWindow = NSApp.keyWindow ?? NSApp.mainWindow
             }
             NotificationCenter.default.post(name: .commandPaletteRenameInputDeleteBackwardRequested, object: targetWindow)
+            return .ok([:])
         }
-        return result
     }
 
-    func v2DebugCommandPaletteRenameInputSelection(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugCommandPaletteRenameInputSelection(params: [String: Any]) -> V2CallResult {
         guard let windowId = v2UUID(params, "window_id") else {
             return v2InvalidParam("window_id")
         }
 
-        var result: V2CallResult = .ok([
-            "window_id": windowId.uuidString,
-            "window_ref": v2Ref(kind: .window, uuid: windowId),
-            "focused": false,
-            "selection_location": 0,
-            "selection_length": 0,
-            "text_length": 0
-        ])
-
-        DispatchQueue.main.sync {
+        return v2MainSync {
             guard let window = AppDelegate.shared?.mainWindow(for: windowId) else {
-                result = .err(
+                return .err(
                     code: "not_found",
                     message: "Window not found",
                     data: ["window_id": windowId.uuidString, "window_ref": v2Ref(kind: .window, uuid: windowId)]
                 )
-                return
             }
             guard let editor = window.firstResponder as? NSTextView, editor.isFieldEditor else {
-                return
+                return .ok([
+                    "window_id": windowId.uuidString,
+                    "window_ref": v2Ref(kind: .window, uuid: windowId),
+                    "focused": false,
+                    "selection_location": 0,
+                    "selection_length": 0,
+                    "text_length": 0
+                ])
             }
             let selectedRange = editor.selectedRange()
             let textLength = (editor.string as NSString).length
-            result = .ok([
+            return .ok([
                 "window_id": windowId.uuidString,
                 "window_ref": v2Ref(kind: .window, uuid: windowId),
                 "focused": true,
@@ -356,74 +336,70 @@ extension TerminalController {
                 "text_length": max(0, textLength)
             ])
         }
-
-        return result
     }
 
-    func v2DebugBrowserAddressBarFocused(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugBrowserAddressBarFocused(params: [String: Any]) -> V2CallResult {
         let requestedSurfaceId = v2UUID(params, "surface_id") ?? v2UUID(params, "panel_id")
-        var focusedSurfaceId: UUID?
-        DispatchQueue.main.sync {
-            focusedSurfaceId = AppDelegate.shared?.focusedBrowserAddressBarPanelId()
+        return v2MainSync {
+            let focusedSurfaceId = AppDelegate.shared?.focusedBrowserAddressBarPanelId()
+            var payload: [String: Any] = [
+                "focused_surface_id": v2OrNull(focusedSurfaceId?.uuidString),
+                "focused_surface_ref": v2Ref(kind: .surface, uuid: focusedSurfaceId),
+                "focused_panel_id": v2OrNull(focusedSurfaceId?.uuidString),
+                "focused_panel_ref": v2Ref(kind: .surface, uuid: focusedSurfaceId),
+                "focused": focusedSurfaceId != nil
+            ]
+
+            if let requestedSurfaceId {
+                payload["surface_id"] = requestedSurfaceId.uuidString
+                payload["surface_ref"] = v2Ref(kind: .surface, uuid: requestedSurfaceId)
+                payload["panel_id"] = requestedSurfaceId.uuidString
+                payload["panel_ref"] = v2Ref(kind: .surface, uuid: requestedSurfaceId)
+                payload["focused"] = (focusedSurfaceId == requestedSurfaceId)
+            }
+
+            return .ok(payload)
         }
-
-        var payload: [String: Any] = [
-            "focused_surface_id": v2OrNull(focusedSurfaceId?.uuidString),
-            "focused_surface_ref": v2Ref(kind: .surface, uuid: focusedSurfaceId),
-            "focused_panel_id": v2OrNull(focusedSurfaceId?.uuidString),
-            "focused_panel_ref": v2Ref(kind: .surface, uuid: focusedSurfaceId),
-            "focused": focusedSurfaceId != nil
-        ]
-
-        if let requestedSurfaceId {
-            payload["surface_id"] = requestedSurfaceId.uuidString
-            payload["surface_ref"] = v2Ref(kind: .surface, uuid: requestedSurfaceId)
-            payload["panel_id"] = requestedSurfaceId.uuidString
-            payload["panel_ref"] = v2Ref(kind: .surface, uuid: requestedSurfaceId)
-            payload["focused"] = (focusedSurfaceId == requestedSurfaceId)
-        }
-
-        return .ok(payload)
     }
 
-    func v2DebugBrowserFavicon(params: [String: Any]) -> V2CallResult {
-        return v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
-            let pngData = browserPanel.faviconPNGData
+    nonisolated func v2DebugBrowserFavicon(params: [String: Any]) -> V2CallResult {
+        return v2MainSync {
+            v2BrowserWithPanel(params: params) { _, ws, surfaceId, browserPanel in
+                let pngData = browserPanel.faviconPNGData
+                return .ok([
+                    "workspace_id": ws.id.uuidString,
+                    "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                    "surface_id": surfaceId.uuidString,
+                    "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+                    "has_favicon": pngData != nil,
+                    "png_base64": pngData?.base64EncodedString() ?? "",
+                    "current_url": v2OrNull(browserPanel.currentURL?.absoluteString)
+                ])
+            }
+        }
+    }
+
+    nonisolated func v2DebugSidebarVisible(params: [String: Any]) -> V2CallResult {
+        guard let windowId = v2UUID(params, "window_id") else {
+            return v2InvalidParam("window_id")
+        }
+        return v2MainSync {
+            guard let visible = AppDelegate.shared?.sidebarVisibility(windowId: windowId) else {
+                return .err(
+                    code: "not_found",
+                    message: "Window not found",
+                    data: ["window_id": windowId.uuidString, "window_ref": v2Ref(kind: .window, uuid: windowId)]
+                )
+            }
             return .ok([
-                "workspace_id": ws.id.uuidString,
-                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
-                "surface_id": surfaceId.uuidString,
-                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
-                "has_favicon": pngData != nil,
-                "png_base64": pngData?.base64EncodedString() ?? "",
-                "current_url": v2OrNull(browserPanel.currentURL?.absoluteString)
+                "window_id": windowId.uuidString,
+                "window_ref": v2Ref(kind: .window, uuid: windowId),
+                "visible": visible
             ])
         }
     }
 
-    func v2DebugSidebarVisible(params: [String: Any]) -> V2CallResult {
-        guard let windowId = v2UUID(params, "window_id") else {
-            return v2InvalidParam("window_id")
-        }
-        var visibility: Bool?
-        DispatchQueue.main.sync {
-            visibility = AppDelegate.shared?.sidebarVisibility(windowId: windowId)
-        }
-        guard let visible = visibility else {
-            return .err(
-                code: "not_found",
-                message: "Window not found",
-                data: ["window_id": windowId.uuidString, "window_ref": v2Ref(kind: .window, uuid: windowId)]
-            )
-        }
-        return .ok([
-            "window_id": windowId.uuidString,
-            "window_ref": v2Ref(kind: .window, uuid: windowId),
-            "visible": visible
-        ])
-    }
-
-    func v2DebugIsTerminalFocused(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugIsTerminalFocused(params: [String: Any]) -> V2CallResult {
         guard let surfaceId = v2String(params, "surface_id") else {
             return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
         }
@@ -434,7 +410,7 @@ extension TerminalController {
         return .ok(["focused": resp.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true"])
     }
 
-    func v2DebugReadTerminalText(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugReadTerminalText(params: [String: Any]) -> V2CallResult {
         let surfaceArg = v2String(params, "surface_id") ?? ""
         let resp = readTerminalText(surfaceArg)
         guard resp.hasPrefix("OK ") else {
@@ -444,7 +420,7 @@ extension TerminalController {
         return .ok(["base64": b64])
     }
 
-    func v2DebugRenderStats(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugRenderStats(params: [String: Any]) -> V2CallResult {
         let surfaceArg = v2String(params, "surface_id") ?? ""
         let resp = renderStats(surfaceArg)
         guard resp.hasPrefix("OK ") else {
@@ -458,7 +434,7 @@ extension TerminalController {
         return .ok(["stats": obj])
     }
 
-    func v2DebugLayout() -> V2CallResult {
+    nonisolated func v2DebugLayout() -> V2CallResult {
         let resp = layoutDebug()
         guard resp.hasPrefix("OK ") else {
             return .err(code: "internal_error", message: resp, data: nil)
@@ -471,7 +447,7 @@ extension TerminalController {
         return .ok(["layout": obj])
     }
 
-    func v2DebugPortalStats() -> V2CallResult {
+    nonisolated func v2DebugPortalStats() -> V2CallResult {
         let payload: [String: Any] = v2MainSync {
             TerminalWindowPortalRegistry.debugPortalStats()
         }
@@ -481,7 +457,7 @@ extension TerminalController {
     /// Dumps the key window's AppKit view tree with frames, visibility, and any
     /// opaque layer background — chrome-layering bugs (a stray view painting
     /// over content) are otherwise invisible to log-based diagnosis.
-    func v2DebugViewTree() -> V2CallResult {
+    nonisolated func v2DebugViewTree() -> V2CallResult {
         let lines: [String] = v2MainSync {
             guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }) else {
                 return []
@@ -491,6 +467,7 @@ extension TerminalController {
                 "WINDOW isOpaque=\(window.isOpaque) bg=\(window.backgroundColor.hexString())@\(String(format: "%.3f", window.backgroundColor.alphaComponent)) " +
                 "appearance=\(window.effectiveAppearance.name.rawValue)"
             )
+            @MainActor
             func walk(_ view: NSView, depth: Int) {
                 let frame = view.frame
                 var line = String(repeating: "  ", count: depth)
@@ -519,26 +496,26 @@ extension TerminalController {
         return .ok(["tree": lines])
     }
 
-    func v2DebugBonsplitUnderflowCount() -> V2CallResult {
+    nonisolated func v2DebugBonsplitUnderflowCount() -> V2CallResult {
         let resp = bonsplitUnderflowCount()
         guard resp.hasPrefix("OK ") else { return .err(code: "internal_error", message: resp, data: nil) }
         let n = Int(resp.split(separator: " ").last ?? "0") ?? 0
         return .ok(["count": n])
     }
 
-    func v2DebugResetBonsplitUnderflowCount() -> V2CallResult {
+    nonisolated func v2DebugResetBonsplitUnderflowCount() -> V2CallResult {
         let resp = resetBonsplitUnderflowCount()
         return resp == "OK" ? .ok([:]) : .err(code: "internal_error", message: resp, data: nil)
     }
 
-    func v2DebugEmptyPanelCount() -> V2CallResult {
+    nonisolated func v2DebugEmptyPanelCount() -> V2CallResult {
         let resp = emptyPanelCount()
         guard resp.hasPrefix("OK ") else { return .err(code: "internal_error", message: resp, data: nil) }
         let n = Int(resp.split(separator: " ").last ?? "0") ?? 0
         return .ok(["count": n])
     }
 
-    func v2DebugResetEmptyPanelCount() -> V2CallResult {
+    nonisolated func v2DebugResetEmptyPanelCount() -> V2CallResult {
         let resp = resetEmptyPanelCount()
         return resp == "OK" ? .ok([:]) : .err(code: "internal_error", message: resp, data: nil)
     }
@@ -560,35 +537,36 @@ extension TerminalController {
     // is main-thread-confined (see ProgramaDurationSamples), so the actual read
     // genuinely requires the main-thread hop rather than being fired there out of
     // habit.
-    func v2DebugSamplesStats(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugSamplesStats(params: [String: Any]) -> V2CallResult {
         let requestedBucket = v2String(params, "bucket")
-        var result: [String: Any] = [:]
-        DispatchQueue.main.sync {
+        let result: [String: Any] = v2MainSync {
+            var result: [String: Any] = [:]
             if let requestedBucket {
-                if let payload = self.samplesStatsPayload(for: requestedBucket) {
+                if let payload = samplesStatsPayload(for: requestedBucket) {
                     result[requestedBucket] = payload
                 }
             } else {
                 for name in ProgramaDurationSamples.shared.bucketNames() {
-                    if let payload = self.samplesStatsPayload(for: name) {
+                    if let payload = samplesStatsPayload(for: name) {
                         result[name] = payload
                     }
                 }
             }
+            return result
         }
         return .ok(result)
     }
 
-    func v2DebugSamplesReset(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugSamplesReset(params: [String: Any]) -> V2CallResult {
         let requestedBucket = v2String(params, "bucket")
-        DispatchQueue.main.sync {
+        v2MainSync {
             ProgramaDurationSamples.shared.reset(bucket: requestedBucket)
         }
         return .ok([:])
     }
 #endif
 
-    func v2DebugFocusNotification(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugFocusNotification(params: [String: Any]) -> V2CallResult {
         guard let wsId = v2String(params, "workspace_id") else {
             return .err(code: "invalid_params", message: "Missing workspace_id", data: nil)
         }
@@ -598,7 +576,7 @@ extension TerminalController {
         return resp == "OK" ? .ok([:]) : .err(code: "internal_error", message: resp, data: nil)
     }
 
-    func v2DebugFlashCount(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugFlashCount(params: [String: Any]) -> V2CallResult {
         guard let surfaceId = v2String(params, "surface_id") else {
             return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
         }
@@ -608,12 +586,12 @@ extension TerminalController {
         return .ok(["count": n])
     }
 
-    func v2DebugResetFlashCounts() -> V2CallResult {
+    nonisolated func v2DebugResetFlashCounts() -> V2CallResult {
         let resp = resetFlashCounts()
         return resp == "OK" ? .ok([:]) : .err(code: "internal_error", message: resp, data: nil)
     }
 
-    func v2DebugPanelSnapshot(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugPanelSnapshot(params: [String: Any]) -> V2CallResult {
         guard let surfaceId = v2String(params, "surface_id") else {
             return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
         }
@@ -635,7 +613,7 @@ extension TerminalController {
         ])
     }
 
-    func v2DebugPanelSnapshotReset(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugPanelSnapshotReset(params: [String: Any]) -> V2CallResult {
         guard let surfaceId = v2String(params, "surface_id") else {
             return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
         }
@@ -643,7 +621,7 @@ extension TerminalController {
         return resp == "OK" ? .ok([:]) : .err(code: "internal_error", message: resp, data: nil)
     }
 
-    func v2DebugScreenshot(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2DebugScreenshot(params: [String: Any]) -> V2CallResult {
         let label = v2String(params, "label") ?? ""
         let resp = captureScreenshot(label)
         guard resp.hasPrefix("OK ") else {
@@ -668,15 +646,13 @@ extension TerminalController {
         return lines.suffix(maxLines).joined(separator: "\n")
     }
 
-    private func readTerminalTextBase64(surfaceArg: String, includeScrollback: Bool = false, lineLimit: Int? = nil) -> String {
-        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
-
+    private nonisolated func readTerminalTextBase64(surfaceArg: String, includeScrollback: Bool = false, lineLimit: Int? = nil) -> String {
         let trimmedSurfaceArg = surfaceArg.trimmingCharacters(in: .whitespacesAndNewlines)
-        var result = "ERROR: No tab selected"
-        DispatchQueue.main.sync {
+        return v2MainSync {
+            guard let tabManager = self.tabManager else { return "ERROR: TabManager not available" }
             guard let tabId = tabManager.selectedTabId,
                   let tab = tabManager.tabs.first(where: { $0.id == tabId }) else {
-                return
+                return "ERROR: No tab selected"
             }
 
             let panelId: UUID?
@@ -688,17 +664,15 @@ extension TerminalController {
 
             guard let panelId,
                   let terminalPanel = tab.terminalPanel(for: panelId) else {
-                result = "ERROR: Terminal surface not found"
-                return
+                return "ERROR: Terminal surface not found"
             }
 
-            result = readTerminalTextBase64(
+            return readTerminalTextBase64(
                 terminalPanel: terminalPanel,
                 includeScrollback: includeScrollback,
                 lineLimit: lineLimit
             )
         }
-        return result
     }
 
 #if DEBUG
@@ -773,7 +747,7 @@ extension TerminalController {
         }
     }
 
-    private func simulateShortcut(_ args: String) -> String {
+    private nonisolated func simulateShortcut(_ args: String) -> String {
         let combo = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !combo.isEmpty else {
             return "ERROR: Usage: simulate_shortcut <combo>"
@@ -786,8 +760,7 @@ extension TerminalController {
         // before the main-thread event dispatch.
         let requestTimestamp = ProcessInfo.processInfo.systemUptime
 
-        var result = "ERROR: Failed to create event"
-        DispatchQueue.main.sync {
+        return v2MainSync {
             // Prefer the current active-tab-manager window so shortcut simulation stays
             // scoped to the intended window even when NSApp.keyWindow is stale.
             let targetWindow: NSWindow? = {
@@ -815,8 +788,7 @@ extension TerminalController {
                 isARepeat: false,
                 keyCode: parsed.keyCode
             ) else {
-                result = "ERROR: NSEvent.keyEvent returned nil"
-                return
+                return "ERROR: NSEvent.keyEvent returned nil"
             }
             let keyUpEvent = NSEvent.keyEvent(
                 with: .keyUp,
@@ -834,20 +806,18 @@ extension TerminalController {
             // app-level shortcut monitor (so tests are hermetic), while still falling back to the
             // normal responder chain for plain typing.
             if let delegate = AppDelegate.shared, delegate.debugHandleCustomShortcut(event: keyDownEvent) {
-                result = "OK"
-                return
+                return "OK"
             }
             NSApp.sendEvent(keyDownEvent)
             if let keyUpEvent {
                 NSApp.sendEvent(keyUpEvent)
             }
-            result = "OK"
+            return "OK"
         }
-        return result
     }
 
-    private func activateApp() -> String {
-        v2MainSync {
+    private nonisolated func activateApp() -> String {
+        return v2MainSync {
             NSApp.activate(ignoringOtherApps: true)
             NSApp.unhide(nil)
             let hasMainTerminalWindow = NSApp.windows.contains { window in
@@ -868,8 +838,8 @@ extension TerminalController {
                 ?? NSApp.windows.first {
                 window.makeKeyAndOrderFront(nil)
             }
+            return "OK"
         }
-        return "OK"
     }
 
     private func parseOverlayEventType(_ token: String) -> (isKnown: Bool, eventType: NSEvent.EventType?) {
@@ -983,31 +953,26 @@ extension TerminalController {
         return out
     }
 
-    private func isTerminalFocused(_ args: String) -> String {
-        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
-
+    private nonisolated func isTerminalFocused(_ args: String) -> String {
         let panelArg = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !panelArg.isEmpty else { return "ERROR: Usage: is_terminal_focused <panel_id|idx>" }
 
-        var result = "false"
-        DispatchQueue.main.sync {
+        return v2MainSync {
+            guard let tabManager = self.tabManager else { return "ERROR: TabManager not available" }
             guard let tabId = tabManager.selectedTabId,
                   let tab = tabManager.tabs.first(where: { $0.id == tabId }) else {
-                result = "false"
-                return
+                return "false"
             }
 
             guard let panelId = resolveSurfaceId(from: panelArg, tab: tab),
                   let terminalPanel = tab.terminalPanel(for: panelId) else {
-                result = "false"
-                return
+                return "false"
             }
-            result = terminalPanel.hostedView.isSurfaceViewFirstResponder() ? "true" : "false"
+            return terminalPanel.hostedView.isSurfaceViewFirstResponder() ? "true" : "false"
         }
-        return result
     }
 
-    private func readTerminalText(_ args: String) -> String {
+    private nonisolated func readTerminalText(_ args: String) -> String {
         readTerminalTextBase64(surfaceArg: args)
     }
 
@@ -1030,16 +995,14 @@ extension TerminalController {
         let isFirstResponder: Bool
     }
 
-    private func renderStats(_ args: String) -> String {
-        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
-
+    private nonisolated func renderStats(_ args: String) -> String {
         let panelArg = args.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        var result = "ERROR: No tab selected"
-        DispatchQueue.main.sync {
+        return v2MainSync {
+            guard let tabManager = self.tabManager else { return "ERROR: TabManager not available" }
             guard let tabId = tabManager.selectedTabId,
                   let tab = tabManager.tabs.first(where: { $0.id == tabId }) else {
-                return
+                return "ERROR: No tab selected"
             }
 
             let panelId: UUID?
@@ -1051,8 +1014,7 @@ extension TerminalController {
 
             guard let panelId,
                   let terminalPanel = tab.terminalPanel(for: panelId) else {
-                result = "ERROR: Terminal surface not found"
-                return
+                return "ERROR: Terminal surface not found"
             }
 
             let stats = terminalPanel.hostedView.debugRenderStats()
@@ -1078,14 +1040,11 @@ extension TerminalController {
             let encoder = JSONEncoder()
             guard let data = try? encoder.encode(payload),
                   let json = String(data: data, encoding: .utf8) else {
-                result = "ERROR: Failed to encode render_stats"
-                return
+                return "ERROR: Failed to encode render_stats"
             }
 
-            result = "OK \(json)"
+            return "OK \(json)"
         }
-
-        return result
     }
 
     private struct ParsedShortcutCombo {
@@ -1096,7 +1055,7 @@ extension TerminalController {
         let charactersIgnoringModifiers: String
     }
 
-    private func parseShortcutCombo(_ combo: String) -> ParsedShortcutCombo? {
+    private nonisolated func parseShortcutCombo(_ combo: String) -> ParsedShortcutCombo? {
         let raw = combo.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
 
@@ -1195,7 +1154,7 @@ extension TerminalController {
         )
     }
 
-    private func keyCodeForShortcutKey(_ key: String) -> UInt16? {
+    private nonisolated func keyCodeForShortcutKey(_ key: String) -> UInt16? {
         // Matches macOS ANSI key codes for common printable keys and a few named specials.
         switch key {
         case "a": return 0   // kVK_ANSI_A
@@ -1252,58 +1211,51 @@ extension TerminalController {
 #endif
 
 #if DEBUG
-    private func focusFromNotification(_ args: String) -> String {
-        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
+    private nonisolated func focusFromNotification(_ args: String) -> String {
         let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = trimmed.split(separator: " ", maxSplits: 1).map(String.init)
         let tabArg = parts.first ?? ""
         let surfaceArg = parts.count > 1 ? parts[1] : ""
 
-        var result = "OK"
-        v2MainSync {
+        return v2MainSync {
+            guard let tabManager = self.tabManager else { return "ERROR: TabManager not available" }
             guard let tab = resolveTab(from: tabArg, tabManager: tabManager) else {
-                result = "ERROR: Tab not found"
-                return
+                return "ERROR: Tab not found"
             }
             let surfaceId = surfaceArg.isEmpty ? nil : resolveSurfaceId(from: surfaceArg, tab: tab)
             if !surfaceArg.isEmpty && surfaceId == nil {
-                result = "ERROR: Surface not found"
-                return
+                return "ERROR: Surface not found"
             }
             if !tabManager.focusTabFromNotification(tab.id, surfaceId: surfaceId) {
-                result = "ERROR: Focus failed"
+                return "ERROR: Focus failed"
             }
+            return "OK"
         }
-        return result
     }
 
-    private func flashCount(_ args: String) -> String {
-        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
+    private nonisolated func flashCount(_ args: String) -> String {
         let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "ERROR: Missing surface id or index" }
 
-        var result = "ERROR: Surface not found"
-        DispatchQueue.main.sync {
+        return v2MainSync {
+            guard let tabManager = self.tabManager else { return "ERROR: TabManager not available" }
             guard let tabId = tabManager.selectedTabId,
                   let tab = tabManager.tabs.first(where: { $0.id == tabId }) else {
-                result = "ERROR: No tab selected"
-                return
+                return "ERROR: No tab selected"
             }
             guard let surfaceId = resolveSurfaceId(from: trimmed, tab: tab) else {
-                result = "ERROR: Surface not found"
-                return
+                return "ERROR: Surface not found"
             }
             let count = GhosttySurfaceScrollView.flashCount(for: surfaceId)
-            result = "OK \(count)"
+            return "OK \(count)"
         }
-        return result
     }
 
-    private func resetFlashCounts() -> String {
-        DispatchQueue.main.sync {
+    private nonisolated func resetFlashCounts() -> String {
+        return v2MainSync {
             GhosttySurfaceScrollView.resetFlashCounts()
+            return "OK"
         }
-        return "OK"
     }
 
 #if DEBUG
@@ -1314,36 +1266,67 @@ extension TerminalController {
         let rgba: Data
     }
 
+    private enum PanelSnapshotCaptureOutcome: Sendable {
+        case captured(panelId: UUID, image: CGImage)
+        case failed(String)
+    }
+
+    private enum PanelSnapshotResetOutcome: Sendable {
+        case resolved(UUID)
+        case failed(String)
+    }
+
+    private enum ScreenshotCaptureOutcome: Sendable {
+        case captured(CGImage)
+        case failed(String)
+    }
+
     /// Most tests run single-threaded but socket handlers can be invoked concurrently.
     /// Keep snapshot bookkeeping simple and thread-safe.
-    private static let panelSnapshotLock = NSLock()
-    private static var panelSnapshots: [UUID: PanelSnapshotState] = [:]
+    private nonisolated static let panelSnapshotLock = NSLock()
+    private nonisolated(unsafe) static var panelSnapshots: [UUID: PanelSnapshotState] = [:]
 
-    private func panelSnapshotReset(_ args: String) -> String {
-        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
+    static nonisolated func debugCaptureOutputURL(label: String, captureID: String) -> URL {
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-screenshots", isDirectory: true)
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedLabel.isEmpty else {
+            return outputDirectory.appendingPathComponent("\(captureID).png")
+        }
+        let safeLabel = DesignModeTextComposer.filenameSafeSelector(trimmedLabel)
+        return outputDirectory.appendingPathComponent("\(safeLabel)_\(captureID).png")
+    }
+
+    private nonisolated func panelSnapshotReset(_ args: String) -> String {
         let panelArg = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !panelArg.isEmpty else { return "ERROR: Usage: panel_snapshot_reset <panel_id|idx>" }
 
-        var result = "ERROR: No tab selected"
-        DispatchQueue.main.sync {
+        let outcome: PanelSnapshotResetOutcome = v2MainSync {
+            guard let tabManager = self.tabManager else {
+                return .failed("ERROR: TabManager not available")
+            }
             guard let tabId = tabManager.selectedTabId,
                   let tab = tabManager.tabs.first(where: { $0.id == tabId }) else {
-                return
+                return .failed("ERROR: No tab selected")
             }
             guard let panelId = resolveSurfaceId(from: panelArg, tab: tab) else {
-                result = "ERROR: Surface not found"
-                return
+                return .failed("ERROR: Surface not found")
             }
+            return .resolved(panelId)
+        }
+
+        switch outcome {
+        case .failed(let error):
+            return error
+        case .resolved(let panelId):
             Self.panelSnapshotLock.lock()
             Self.panelSnapshots.removeValue(forKey: panelId)
             Self.panelSnapshotLock.unlock()
-            result = "OK"
+            return "OK"
         }
-
-        return result
     }
 
-    private static func makePanelSnapshot(from cgImage: CGImage) -> PanelSnapshotState? {
+    private nonisolated static func makePanelSnapshot(from cgImage: CGImage) -> PanelSnapshotState? {
         let width = cgImage.width
         let height = cgImage.height
         guard width > 0, height > 0 else { return nil }
@@ -1373,7 +1356,7 @@ extension TerminalController {
         return PanelSnapshotState(width: width, height: height, bytesPerRow: bytesPerRow, rgba: data)
     }
 
-    private static func countChangedPixels(previous: PanelSnapshotState, current: PanelSnapshotState) -> Int {
+    private nonisolated static func countChangedPixels(previous: PanelSnapshotState, current: PanelSnapshotState) -> Int {
         // Any mismatch means we can't sensibly diff; treat as a fresh snapshot.
         guard previous.width == current.width,
               previous.height == current.height,
@@ -1409,8 +1392,7 @@ extension TerminalController {
         return changed
     }
 
-    private func panelSnapshot(_ args: String) -> String {
-        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
+    private nonisolated func panelSnapshot(_ args: String) -> String {
         let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "ERROR: Usage: panel_snapshot <panel_id|idx> [label]" }
 
@@ -1425,23 +1407,22 @@ extension TerminalController {
         let shortId = UUID().uuidString.prefix(8)
         let snapshotId = "\(timestamp)_\(shortId)"
 
-        let outputDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-screenshots")
+        let outputPath = Self.debugCaptureOutputURL(label: label, captureID: snapshotId)
+        let outputDir = outputPath.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
-        let filename = label.isEmpty ? "\(snapshotId).png" : "\(label)_\(snapshotId).png"
-        let outputPath = outputDir.appendingPathComponent(filename)
 
-        var result = "ERROR: No tab selected"
-        DispatchQueue.main.sync {
+        let capture: PanelSnapshotCaptureOutcome = v2MainSync {
+            guard let tabManager = self.tabManager else {
+                return .failed("ERROR: TabManager not available")
+            }
             guard let tabId = tabManager.selectedTabId,
                   let tab = tabManager.tabs.first(where: { $0.id == tabId }) else {
-                return
+                return .failed("ERROR: No tab selected")
             }
 
             guard let panelId = resolveSurfaceId(from: panelArg, tab: tab),
                   let terminalPanel = tab.terminalPanel(for: panelId) else {
-                result = "ERROR: Terminal surface not found"
-                return
+                return .failed("ERROR: Terminal surface not found")
             }
 
             // Capture the terminal's IOSurface directly, avoiding Screen Recording permissions.
@@ -1453,41 +1434,47 @@ extension TerminalController {
                 cgImage = view.debugCopyIOSurfaceCGImage()
             }
             guard let cgImage else {
-                result = "ERROR: Failed to capture panel image"
-                return
+                return .failed("ERROR: Failed to capture panel image")
             }
-
-            guard let current = Self.makePanelSnapshot(from: cgImage) else {
-                result = "ERROR: Failed to read panel pixels"
-                return
-            }
-
-            var changedPixels = -1
-            Self.panelSnapshotLock.lock()
-            if let previous = Self.panelSnapshots[panelId] {
-                changedPixels = Self.countChangedPixels(previous: previous, current: current)
-            }
-            Self.panelSnapshots[panelId] = current
-            Self.panelSnapshotLock.unlock()
-
-            // Save PNG for postmortem debugging.
-            let bitmap = NSBitmapImageRep(cgImage: cgImage)
-            guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
-                result = "ERROR: Failed to encode PNG"
-                return
-            }
-
-            do {
-                try pngData.write(to: outputPath)
-            } catch {
-                result = "ERROR: Failed to write file: \(error.localizedDescription)"
-                return
-            }
-
-            result = "OK \(panelId.uuidString) \(changedPixels) \(current.width) \(current.height) \(outputPath.path)"
+            return .captured(panelId: panelId, image: cgImage)
         }
 
-        return result
+        let panelId: UUID
+        let cgImage: CGImage
+        switch capture {
+        case .failed(let error):
+            return error
+        case .captured(let capturedPanelId, let capturedImage):
+            panelId = capturedPanelId
+            cgImage = capturedImage
+        }
+
+        guard let current = Self.makePanelSnapshot(from: cgImage) else {
+            return "ERROR: Failed to read panel pixels"
+        }
+
+        var changedPixels = -1
+        Self.panelSnapshotLock.lock()
+        if let previous = Self.panelSnapshots[panelId] {
+            changedPixels = Self.countChangedPixels(previous: previous, current: current)
+        }
+        Self.panelSnapshots[panelId] = current
+        Self.panelSnapshotLock.unlock()
+
+        // Save PNG for postmortem debugging. The baseline intentionally advances before
+        // encoding/writing so a failed diagnostic write still becomes the next comparison.
+        let bitmap = NSBitmapImageRep(cgImage: cgImage)
+        guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            return "ERROR: Failed to encode PNG"
+        }
+
+        do {
+            try pngData.write(to: outputPath)
+        } catch {
+            return "ERROR: Failed to write file: \(error.localizedDescription)"
+        }
+
+        return "OK \(panelId.uuidString) \(changedPixels) \(current.width) \(current.height) \(outputPath.path)"
     }
 #endif
 
@@ -1519,14 +1506,12 @@ extension TerminalController {
         let keyWindowNumber: Int?
     }
 
-    private func layoutDebug() -> String {
-        guard let tabManager = v2MainSync({ self.tabManager }) else { return "ERROR: TabManager not available" }
-
-        var result = "ERROR: No tab selected"
-        DispatchQueue.main.sync {
+    private nonisolated func layoutDebug() -> String {
+        return v2MainSync {
+            guard let tabManager = self.tabManager else { return "ERROR: TabManager not available" }
             guard let tabId = tabManager.selectedTabId,
                   let tab = tabManager.tabs.first(where: { $0.id == tabId }) else {
-                return
+                return "ERROR: No tab selected"
             }
 
             let layout = tab.bonsplitController.layoutSnapshot()
@@ -1535,6 +1520,7 @@ extension TerminalController {
                 paneFrames[pane.paneId] = pane.frame
             }
 
+            @MainActor
             func isHiddenOrAncestorHidden(_ view: NSView) -> Bool {
                 if view.isHidden { return true }
                 var current = view.superview
@@ -1545,6 +1531,7 @@ extension TerminalController {
                 return false
             }
 
+            @MainActor
             func windowFrame(for view: NSView) -> CGRect? {
                 guard view.window != nil else { return nil }
                 // Prefer the view's frame as laid out by its superview. Some AppKit views
@@ -1555,6 +1542,7 @@ extension TerminalController {
                 return view.convert(view.bounds, to: nil)
             }
 
+            @MainActor
             func splitViewInfos(for view: NSView) -> [LayoutDebugSplitView] {
                 var infos: [LayoutDebugSplitView] = []
                 var current: NSView? = view
@@ -1684,52 +1672,46 @@ extension TerminalController {
             let encoder = JSONEncoder()
             guard let data = try? encoder.encode(payload),
                   let json = String(data: data, encoding: .utf8) else {
-                result = "ERROR: Failed to encode layout_debug"
-                return
+                return "ERROR: Failed to encode layout_debug"
             }
 
-            result = "OK \(json)"
+            return "OK \(json)"
         }
-        return result
     }
 
-    private func emptyPanelCount() -> String {
-        var result = "OK 0"
-        DispatchQueue.main.sync {
-            result = "OK \(DebugUIEventCounters.emptyPanelAppearCount)"
+    private nonisolated func emptyPanelCount() -> String {
+        return v2MainSync {
+            "OK \(DebugUIEventCounters.emptyPanelAppearCount)"
         }
-        return result
     }
 
-    private func resetEmptyPanelCount() -> String {
-        DispatchQueue.main.sync {
+    private nonisolated func resetEmptyPanelCount() -> String {
+        return v2MainSync {
             DebugUIEventCounters.resetEmptyPanelAppearCount()
+            return "OK"
         }
-        return "OK"
     }
 
-    private func bonsplitUnderflowCount() -> String {
-        var result = "OK 0"
-        DispatchQueue.main.sync {
+    private nonisolated func bonsplitUnderflowCount() -> String {
+        return v2MainSync {
 #if DEBUG
-            result = "OK \(BonsplitDebugCounters.arrangedSubviewUnderflowCount)"
+            return "OK \(BonsplitDebugCounters.arrangedSubviewUnderflowCount)"
 #else
-            result = "OK 0"
+            return "OK 0"
 #endif
         }
-        return result
     }
 
-    private func resetBonsplitUnderflowCount() -> String {
-        DispatchQueue.main.sync {
+    private nonisolated func resetBonsplitUnderflowCount() -> String {
+        return v2MainSync {
 #if DEBUG
             BonsplitDebugCounters.reset()
 #endif
+            return "OK"
         }
-        return "OK"
     }
 
-    private func captureScreenshot(_ args: String) -> String {
+    private nonisolated func captureScreenshot(_ args: String) -> String {
         // Parse optional label from args
         let label = args.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -1741,41 +1723,44 @@ extension TerminalController {
         let screenshotId = "\(timestamp)_\(shortId)"
 
         // Determine output path
-        let outputDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cmux-screenshots")
+        let outputPath = Self.debugCaptureOutputURL(label: label, captureID: screenshotId)
+        let outputDir = outputPath.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
-        let filename = label.isEmpty ? "\(screenshotId).png" : "\(label)_\(screenshotId).png"
-        let outputPath = outputDir.appendingPathComponent(filename)
-
-        // Capture the main window on main thread
-        var captureError: String?
-        DispatchQueue.main.sync {
+        // Capture AppKit state on main, then encode and write the immutable image off-main.
+        let capture: ScreenshotCaptureOutcome = v2MainSync {
             guard let window = NSApp.mainWindow ?? NSApp.windows.first else {
-                captureError = "No window available"
-                return
+                return .failed("No window available")
             }
 
             guard let contentView = window.contentView,
                   let bitmap = contentView.bitmapImageRepForCachingDisplay(in: contentView.bounds) else {
-                captureError = "Failed to prepare window image"
-                return
+                return .failed("Failed to prepare window image")
             }
             contentView.cacheDisplay(in: contentView.bounds, to: bitmap)
-            guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
-                captureError = "Failed to create PNG data"
-                return
+            guard let cgImage = bitmap.cgImage else {
+                return .failed("Failed to create PNG data")
             }
-
-            do {
-                try pngData.write(to: outputPath)
-            } catch {
-                captureError = "Failed to write file: \(error.localizedDescription)"
-            }
+            return .captured(cgImage)
         }
 
-        if let error = captureError {
+        let cgImage: CGImage
+        switch capture {
+        case .failed(let error):
             return "ERROR: \(error)"
+        case .captured(let image):
+            cgImage = image
+        }
+
+        let bitmap = NSBitmapImageRep(cgImage: cgImage)
+        guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            return "ERROR: Failed to create PNG data"
+        }
+
+        do {
+            try pngData.write(to: outputPath)
+        } catch {
+            return "ERROR: Failed to write file: \(error.localizedDescription)"
         }
 
         // Return OK with screenshot ID and path for easy reference
@@ -1922,7 +1907,7 @@ extension TerminalController {
         return nil
     }
 
-    func parseSidebarMetadataFormat(_ raw: String) -> SidebarMetadataFormat? {
+    nonisolated func parseSidebarMetadataFormat(_ raw: String) -> SidebarMetadataFormat? {
         switch raw.lowercased() {
         case "plain":
             return .plain

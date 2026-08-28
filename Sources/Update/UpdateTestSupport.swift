@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import Sparkle
+import Sparkle_Private.SUAppcastItem
 
 enum UpdateTestSupport {
     static func applyIfNeeded(to viewModel: UpdateViewModel) {
@@ -94,7 +95,19 @@ enum UpdateTestSupport {
             "pubDate": "Wed, 25 Mar 2026 12:00:00 +0000",
             "enclosure": enclosure,
         ]
-        return SUAppcastItem(dictionary: dict)
+        let comparator = SUStandardVersionComparator.default
+        let stateResolver = SPUAppcastItemStateResolver(
+            hostVersion: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0",
+            applicationVersionComparator: comparator,
+            standardVersionComparator: comparator
+        )
+        return SUAppcastItem(
+            dictionary: dict,
+            relativeTo: nil,
+            stateResolver: stateResolver,
+            signingValidationStatus: .skipped,
+            failureReason: nil
+        )
     }
 }
 #endif

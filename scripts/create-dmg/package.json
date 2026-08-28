@@ -1,0 +1,7 @@
+{
+  "name": "programa-create-dmg-toolchain",
+  "private": true,
+  "dependencies": {
+    "create-dmg": "8.0.0"
+  }
+}

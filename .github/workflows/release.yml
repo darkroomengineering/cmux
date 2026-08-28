@@ -1,8 +1,9 @@
 name: Release macOS app
 
 # Single-lane release pipeline: this is the ONLY macOS release lane.
-# - workflow_run: auto-ships from `main` after the "CI" workflow succeeds (green CI on main),
-#     publishing to a single reused `rolling` release that is overwritten each ship.
+# - workflow_run: every successful `main` CI run builds and seals a unique draft candidate;
+#     a serialized reconciler publishes it as a retained non-latest prerelease archive, then
+#     advances only the mutable aliases, metadata, and ref on `rolling`.
 # - push tags v*: milestone marketing-version releases (manual `scripts/bump-version.sh` + tag).
 # - workflow_dispatch: dry-run build that uploads an artifact instead of publishing.
 on:
@@ -15,11 +16,8 @@ on:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
+  actions: read
   contents: write
   attestations: write
   id-token: write
@@ -27,13 +25,25 @@ permissions:
 env:
   CREATE_DMG_VERSION: 8.0.0
 
+concurrency:
+  group: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && 'programa-release-publication' || format('programa-release-{0}-{1}', github.run_id, github.run_attempt) }}
+  queue: max
+  cancel-in-progress: false
+
 jobs:
   build-sign-notarize:
     # Only build for workflow_run events when the upstream CI run actually succeeded.
     # Tag pushes and manual dispatch always run.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.sha == github.event.workflow_run.head_sha)
     runs-on: macos-15
     timeout-minutes: 60
+    outputs:
+      effective_build: ${{ steps.version.outputs.effective_build }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -41,11 +51,66 @@ jobs:
           # For workflow_run, github.ref/github.sha resolve to the default branch's
           # workflow definition, not the commit that triggered CI. Pin to the exact
           # commit CI validated.
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           submodules: recursive
+
+      - name: Validate milestone tag identity
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Milestone tag must be canonical vMAJOR.MINOR.PATCH: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          }
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          [[ "${CHECKED_OUT_SHA}" == "${GITHUB_SHA}" ]] || {
+            echo "Milestone checkout ${CHECKED_OUT_SHA} does not match event SHA ${GITHUB_SHA}" >&2
+            exit 1
+          }
+          PROJECT_VERSION="$(grep -m1 'MARKETING_VERSION = ' GhosttyTabs.xcodeproj/project.pbxproj | sed 's/.*= //;s/;.*//')"
+          [[ "${GITHUB_REF_NAME}" == "v${PROJECT_VERSION}" ]] || {
+            echo "Milestone tag ${GITHUB_REF_NAME} does not match MARKETING_VERSION ${PROJECT_VERSION}" >&2
+            exit 1
+          }
+
+      - name: Validate CI provenance against current main
+        if: github.event_name == 'workflow_run'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const upstream = context.payload.workflow_run;
+            if (upstream.event !== 'push' || upstream.head_branch !== 'main') {
+              core.setFailed('Rolling releases require a successful push CI run on main.');
+              return;
+            }
+            if (!/^[0-9a-f]{40}$/.test(upstream.head_sha)) {
+              core.setFailed('The upstream CI head SHA is not a canonical commit SHA.');
+              return;
+            }
+            if (context.sha !== upstream.head_sha) {
+              core.setFailed(
+                `Release provenance SHA ${context.sha} does not match upstream CI SHA ${upstream.head_sha}.`
+              );
+              return;
+            }
+            const mainRef = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/main',
+            });
+            if (mainRef.data.object.sha !== upstream.head_sha) {
+              core.setFailed(
+                `Upstream CI SHA ${upstream.head_sha} is no longer current main ${mainRef.data.object.sha}.`
+              );
+            }
 
       - name: Determine release tag and effective build number
         id: version
+        env:
+          UPSTREAM_RUN_ID: ${{ github.event.workflow_run.id }}
+          UPSTREAM_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           PROJECT_FILE="GhosttyTabs.xcodeproj/project.pbxproj"
@@ -59,20 +124,32 @@ jobs:
           # run-ID builds would make the first milestone tag after any auto-ship fail the
           # monotonic guard below (and Sparkle would never offer it). Marketing version
           # (CFBundleShortVersionString, baked in at build time) carries the human semver.
-          RUN_ATTEMPT="$(printf '%02d' "${GITHUB_RUN_ATTEMPT:-1}")"
-          EFFECTIVE_BUILD="${GITHUB_RUN_ID}${RUN_ATTEMPT}"
+          EFFECTIVE_BUILD="$(node <<'NODE'
+          "use strict";
+          const { deriveReleaseBuildIdentity } = require("./scripts/release_build_identity");
+          process.stdout.write(deriveReleaseBuildIdentity({
+            eventName: process.env.GITHUB_EVENT_NAME,
+            upstreamRunId: process.env.UPSTREAM_RUN_ID,
+            upstreamRunAttempt: process.env.UPSTREAM_RUN_ATTEMPT,
+            workflowRunId: process.env.WORKFLOW_RUN_ID,
+            workflowRunAttempt: process.env.WORKFLOW_RUN_ATTEMPT,
+          }));
+          NODE
+          )"
 
-          if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then
+          if [[ "${GITHUB_EVENT_NAME:-}" == "push" && "${GITHUB_REF:-}" == refs/tags/* ]]; then
             # Milestone tag release: semver comes from the committed MARKETING_VERSION/tag.
             RELEASE_TAG="${GITHUB_REF_NAME}"
+            PAYLOAD_RELEASE_TAG="${RELEASE_TAG}"
             IS_AUTO_SHIP="false"
             EFFECTIVE_MARKETING_VERSION="${MARKETING_VERSION}"
+            REMOTE_DAEMON_ASSET_SUFFIX="-${EFFECTIVE_BUILD}"
           else
-            # Auto-ship from main (workflow_run) or dry-run (workflow_dispatch): publish to a
-            # single reused "rolling" release that is overwritten each ship, so the releases
-            # page stays clean (one rolling entry + permanent milestone v* tags) instead of
-            # accumulating one release per commit.
+            # Auto-ship from main (workflow_run) or dry-run (workflow_dispatch): keep the
+            # user-facing latest surface on the reused mutable `rolling` release while every
+            # build-specific payload targets its retained non-latest candidate archive.
             RELEASE_TAG="rolling"
+            PAYLOAD_RELEASE_TAG="rolling-candidate-${EFFECTIVE_BUILD}"
             IS_AUTO_SHIP="true"
             # Every auto-ship gets a DISTINCT user-visible version: keep the committed
             # major.minor and replace the patch with the monotonic workflow run number.
@@ -83,151 +160,86 @@ jobs:
             # (scripts/bump-version.sh); the patch sequence continues across them,
             # which keeps versions strictly increasing in Sparkle-visible order.
             EFFECTIVE_MARKETING_VERSION="${MARKETING_VERSION%.*}.${GITHUB_RUN_NUMBER}"
+            REMOTE_DAEMON_ASSET_SUFFIX="-${EFFECTIVE_BUILD}"
           fi
 
           echo "MARKETING_VERSION=${MARKETING_VERSION}" >> "$GITHUB_ENV"
           echo "EFFECTIVE_MARKETING_VERSION=${EFFECTIVE_MARKETING_VERSION}" >> "$GITHUB_ENV"
           echo "EFFECTIVE_BUILD=${EFFECTIVE_BUILD}" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+          echo "PAYLOAD_RELEASE_TAG=${PAYLOAD_RELEASE_TAG}" >> "$GITHUB_ENV"
           echo "IS_AUTO_SHIP=${IS_AUTO_SHIP}" >> "$GITHUB_ENV"
+          echo "REMOTE_DAEMON_ASSET_SUFFIX=${REMOTE_DAEMON_ASSET_SUFFIX}" >> "$GITHUB_ENV"
+          echo "effective_build=${EFFECTIVE_BUILD}" >> "$GITHUB_OUTPUT"
 
           echo "Marketing version: ${MARKETING_VERSION} (effective: ${EFFECTIVE_MARKETING_VERSION})"
           echo "Effective build: ${EFFECTIVE_BUILD}"
           echo "Release tag: ${RELEASE_TAG}"
           echo "Auto-ship: ${IS_AUTO_SHIP}"
 
-      - name: Guard immutable release assets
-        id: guard_release_assets
-        # Only milestone v* tag releases are immutable — this guard prevents a re-run from
-        # clobbering already-signed milestone artifacts. Auto-ship publishes to the reused
-        # "rolling" release and intentionally overwrites, so it skips this guard entirely
-        # (when skipped, the empty skip_all/skip_upload outputs let the build/publish run).
+      - name: Restore durable milestone candidate
+        id: milestone_artifact
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const {
-              enclosureAssetFromAppcast,
-              evaluateReleaseAssetGuard,
-            } = require('./scripts/release_asset_guard');
-            const tag = process.env.RELEASE_TAG;
-            core.setOutput('skip_all', 'false');
-            core.setOutput('skip_upload', 'false');
-            core.setOutput('release_state', 'clear');
-            try {
-              const release = await github.rest.repos.getReleaseByTag({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag,
-              });
-              const existingAssets = release.data.assets || [];
-              const existingAssetNames = existingAssets.map((asset) => asset.name);
-
-              // A published appcast names the exact DMG Sparkle will fetch. Read it so the
-              // guard requires that per-build asset too — otherwise a partial upload
-              // (appcast present, versioned DMG missing) looks "complete" on rerun and the
-              // release ships pointing at a 404.
-              //
-              // Fail closed: if an appcast exists but its enclosure can't be read, we can't
-              // tell a healthy release from a broken one. Skipping the build on that
-              // uncertainty is the exact failure this guard exists to prevent, so stop and
-              // make a human look instead.
-              let appcastXml = null;
-              const appcastAsset = existingAssets.find((asset) => asset.name === 'appcast.xml');
-              if (appcastAsset) {
-                let readError = null;
-                try {
-                  // Must be the typed endpoint: `github.request('GET {url}', ...)` would
-                  // percent-encode the asset url as an RFC 6570 simple expansion and 404.
-                  const response = await github.rest.repos.getReleaseAsset({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    asset_id: appcastAsset.id,
-                    headers: { accept: 'application/octet-stream' },
-                  });
-                  appcastXml = Buffer.from(response.data).toString('utf8');
-                } catch (error) {
-                  readError = error.message;
-                }
-
-                if (readError !== null) {
-                  core.setFailed(
-                    `Release ${tag} has a published appcast.xml that could not be read (${readError}). ` +
-                    'Cannot verify its Sparkle enclosure is uploaded; refusing to skip the build. ' +
-                    'Re-run once the asset is readable, or resolve release assets manually.'
-                  );
-                  return;
-                }
-
-                if (!enclosureAssetFromAppcast(appcastXml)) {
-                  core.setFailed(
-                    `Release ${tag} has an appcast.xml with no per-build Sparkle enclosure ` +
-                    '(expected programa-macos-<build>.dmg). It predates the immutable-enclosure fix ' +
-                    'or is malformed. Resolve release assets manually before rerunning.'
-                  );
-                  return;
-                }
-              }
-
-              const {
-                conflicts,
-                missingImmutableAssets,
-                guardState,
-                hasPartialConflict,
-                shouldSkipBuildAndUpload,
-              } = evaluateReleaseAssetGuard({ existingAssetNames, appcastXml });
-
-              core.setOutput('release_state', guardState);
-
-              if (hasPartialConflict) {
-                core.setFailed(
-                  `Release ${tag} has a partial immutable asset state. Existing immutable assets: ` +
-                  `${conflicts.join(', ')}. Missing immutable assets: ${missingImmutableAssets.join(', ')}. ` +
-                  'Resolve release assets manually before rerunning.'
-                );
-                return;
-              }
-
-              if (shouldSkipBuildAndUpload) {
-                core.notice(
-                  `Release ${tag} already contains immutable assets (${conflicts.join(', ')}). ` +
-                  'Skipping build, notarization, and upload to preserve existing signed artifacts.'
-                );
-                core.setOutput('skip_all', 'true');
-                core.setOutput('skip_upload', 'true');
-                return;
-              }
-
-              core.notice(`Release ${tag} exists but has no immutable release assets yet; continuing.`);
-            } catch (error) {
-              if (error.status === 404) {
-                core.notice(`Release ${tag} does not exist yet; safe to build and publish assets.`);
-                return;
-              }
-              throw error;
-            }
-
-      - name: Guard Sparkle build number is monotonic
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          echo "Effective CURRENT_PROJECT_VERSION=$EFFECTIVE_BUILD"
-          PUBLISHED_BUILD=$(curl -fsSL --max-time 15 \
-            https://github.com/darkroomengineering/programa/releases/latest/download/appcast.xml 2>/dev/null \
-            | sed -n 's#.*<sparkle:version>\([0-9][0-9]*\)</sparkle:version>.*#\1#p' \
-            | head -n1 || true)
-          if [[ "$PUBLISHED_BUILD" =~ ^[0-9]+$ ]]; then
-            echo "Latest published Sparkle build=$PUBLISHED_BUILD"
-            if (( EFFECTIVE_BUILD <= PUBLISHED_BUILD )); then
-              echo "::error::Effective build number ($EFFECTIVE_BUILD) must be > latest published Sparkle build ($PUBLISHED_BUILD). Build numbers derive from the monotonic GitHub run ID, so this is unexpected — likely a re-run of an older run or a stale published appcast." >&2
-              exit 1
-            fi
+          MILESTONE_PAYLOAD_DIR="${RUNNER_TEMP}/programa-milestone-payload"
+          mkdir "$MILESTONE_PAYLOAD_DIR"
+          set +e
+          ./scripts/restore_release_candidate.sh \
+            --candidate-prefix milestone-candidate- \
+            --destination-tag "$RELEASE_TAG" \
+            --target-sha "$GITHUB_SHA" \
+            --build "$EFFECTIVE_BUILD" \
+            --version "$EFFECTIVE_MARKETING_VERSION" \
+            --output-dir "$MILESTONE_PAYLOAD_DIR"
+          restore_status=$?
+          set -e
+          if [[ "$restore_status" -eq 0 ]]; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+            echo "MILESTONE_PAYLOAD_DIR=${MILESTONE_PAYLOAD_DIR}" >> "$GITHUB_ENV"
+          elif [[ "$restore_status" -eq 3 ]]; then
+            rmdir "$MILESTONE_PAYLOAD_DIR"
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
           else
-            echo "Latest published appcast unavailable; skipping monotonic check"
+            exit "$restore_status"
           fi
 
+      - name: Require current main before milestone build
+        if: >-
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/') &&
+          steps.milestone_artifact.outputs.reuse != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
+          [[ "$GITHUB_SHA" == "$MAIN_SHA" ]] || {
+            echo "Milestone tag commit ${GITHUB_SHA} is not current main ${MAIN_SHA}" >&2
+            exit 1
+          }
+
+      - name: Guard Sparkle build number is monotonic
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          EFFECTIVE_BUILD: ${{ env.EFFECTIVE_BUILD }}
+        with:
+          script: |
+            const { enforceSparkleMonotonicBuild } = require('./scripts/sparkle_monotonic_guard');
+            await enforceSparkleMonotonicBuild({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              effectiveBuild: process.env.EFFECTIVE_BUILD,
+            });
+            core.notice(`Sparkle build ${process.env.EFFECTIVE_BUILD} is newer than the latest release.`);
+
       - name: Select Xcode
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           set -euo pipefail
           # Prefer Xcode 26 (macOS 26 SDK) so NSGlassEffectView / Liquid Glass compiles;
@@ -250,8 +262,14 @@ jobs:
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-path
 
+      - name: Setup Bun
+        if: steps.milestone_artifact.outputs.reuse != 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
       - name: Install build deps
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           ZIG_REQUIRED="0.16.0"
           if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
@@ -268,21 +286,31 @@ jobs:
           fi
           ./scripts/install-create-dmg.sh
 
+      - name: Resolve Ghostty revision
+        id: ghostty-revision
+        if: steps.milestone_artifact.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          revision="$(./scripts/ghostty_cache_revision.sh)"
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+
       - name: Cache GhosttyKit.xcframework
         id: cache-ghosttykit-release
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: GhosttyKit.xcframework
-          key: ghosttykit-v2-${{ hashFiles('.gitmodules', 'ghostty') }}
+          key: ghosttykit-v3-${{ steps.ghostty-revision.outputs.revision }}
 
       - name: Download pre-built GhosttyKit.xcframework
-        if: steps.guard_release_assets.outputs.skip_all != 'true' && steps.cache-ghosttykit-release.outputs.cache-hit != 'true'
+        if: >-
+          steps.milestone_artifact.outputs.reuse != 'true' &&
+          steps.cache-ghosttykit-release.outputs.cache-hit != 'true'
         run: |
           ./scripts/download-prebuilt-ghosttykit.sh
 
       - name: Cache Swift packages
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: .spm-cache
@@ -290,13 +318,13 @@ jobs:
           restore-keys: spm-
 
       - name: Setup Go
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version-file: daemon/remote/go.mod
 
       - name: Derive Sparkle public key from private key
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
@@ -309,7 +337,7 @@ jobs:
           echo "SPARKLE_PUBLIC_KEY=$DERIVED_PUBLIC_KEY" >> "$GITHUB_ENV"
 
       - name: Build universal app (Release)
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           xcodebuild -scheme programa -configuration Release -derivedDataPath build-universal \
             -destination 'generic/platform=macOS' \
@@ -319,7 +347,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO build
 
       - name: Verify binary architectures
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           ./scripts/verify-release-architectures.sh \
             "build-universal/Build/Products/Release/Programa.app/Contents/MacOS/Programa" \
@@ -327,7 +355,7 @@ jobs:
             "build-universal/Build/Products/Release/Programa.app/Contents/Resources/bin/ghostty"
 
       - name: Archive dSYMs
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           set -euo pipefail
           # dwarf-with-dsym (Release config) writes each target's .dSYM next to its
@@ -346,7 +374,7 @@ jobs:
           zip -r -y "$DSYM_ZIP" "${DSYM_PATHS[@]}"
 
       - name: Stamp effective version and build number in Info.plist
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           set -euo pipefail
           APP_PLIST="build-universal/Build/Products/Release/Programa.app/Contents/Info.plist"
@@ -359,22 +387,24 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${EFFECTIVE_MARKETING_VERSION}" "$APP_PLIST"
 
       - name: Build remote daemon release assets and inject manifest
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           set -euo pipefail
           APP_PLIST="build-universal/Build/Products/Release/Programa.app/Contents/Info.plist"
           APP_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PLIST")
           ./scripts/build_remote_daemon_release_assets.sh \
             --version "$APP_VERSION" \
-            --release-tag "$RELEASE_TAG" \
+            --release-tag "$PAYLOAD_RELEASE_TAG" \
             --repo "darkroomengineering/programa" \
-            --output-dir "remote-daemon-assets"
-          MANIFEST_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding="utf-8")), separators=(",",":")))' remote-daemon-assets/programad-remote-manifest.json)"
+            --output-dir "remote-daemon-assets" \
+            --asset-suffix "${REMOTE_DAEMON_ASSET_SUFFIX#-}"
+          MANIFEST_PATH="remote-daemon-assets/programad-remote-manifest${REMOTE_DAEMON_ASSET_SUFFIX}.json"
+          MANIFEST_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding="utf-8")), separators=(",",":")))' "$MANIFEST_PATH")"
           plutil -remove CMUXRemoteDaemonManifestJSON "$APP_PLIST" >/dev/null 2>&1 || true
           plutil -insert CMUXRemoteDaemonManifestJSON -string "$MANIFEST_JSON" "$APP_PLIST"
 
       - name: Run CLI version memory guard regression
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           set -euo pipefail
           CLI_BINARY="build-universal/Build/Products/Release/Programa.app/Contents/Resources/bin/programa"
@@ -382,14 +412,14 @@ jobs:
           PROGRAMA_CLI_BIN="$CLI_BINARY" python3 tests/test_cli_version_memory_guard.py
 
       - name: Verify bundled Ghostty theme picker helper
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           set -euo pipefail
           HELPER_BINARY="build-universal/Build/Products/Release/Programa.app/Contents/Resources/bin/ghostty"
           [ -x "$HELPER_BINARY" ] || { echo "Ghostty theme picker helper not found at $HELPER_BINARY" >&2; exit 1; }
 
       - name: Inject Sparkle keys into Info.plist
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           APP_PLIST="build-universal/Build/Products/Release/Programa.app/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Delete :SUPublicEDKey" "$APP_PLIST" >/dev/null 2>&1 || true
@@ -403,7 +433,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :SUFeedURL" "$APP_PLIST"
 
       - name: Import signing cert
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -427,7 +457,7 @@ jobs:
           security list-keychains -d user -s build.keychain
 
       - name: Import provisioning profile
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         env:
           APPLE_PROVISION_PROFILE_BASE64: ${{ secrets.APPLE_PROVISION_PROFILE_BASE64 }}
         run: |
@@ -449,7 +479,7 @@ jobs:
           echo "PROGRAMA_PROVISION_PROFILE=/tmp/programa.provisionprofile" >> "$GITHUB_ENV"
 
       - name: Codesign app
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
@@ -466,27 +496,26 @@ jobs:
           ./scripts/verify-provision-profile.sh "$APP_PATH"
 
       - name: Verify embedded Sparkle artifact
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
           ./scripts/verify_sparkle_artifact.sh \
             "build-universal/Build/Products/Release/Programa.app" \
             "2.9.4"
 
       - name: Notarize app
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
+          set -euo pipefail
           if [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
             echo "Missing notarization secrets (APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID)" >&2
             exit 1
           fi
           APP_PATH="build-universal/Build/Products/Release/Programa.app"
           ZIP_SUBMIT="programa-notary.zip"
-          DMG_RELEASE="programa-macos.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_SUBMIT"
           APP_SUBMIT_JSON="$(xcrun notarytool submit "$ZIP_SUBMIT" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait --output-format json)"
           APP_SUBMIT_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$APP_SUBMIT_JSON")"
@@ -500,15 +529,42 @@ jobs:
           xcrun stapler validate "$APP_PATH"
           spctl -a -vv --type execute "$APP_PATH"
           rm -f "$ZIP_SUBMIT"
+
+      - name: Create signed DMG
+        if: steps.milestone_artifact.outputs.reuse != 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          [[ -n "${APPLE_SIGNING_IDENTITY}" ]] || {
+            echo "Missing APPLE_SIGNING_IDENTITY secret" >&2
+            exit 1
+          }
+          APP_PATH="build-universal/Build/Products/Release/Programa.app"
+          DMG_RELEASE="programa-macos.dmg"
           # create-dmg generates a styled drag-to-install DMG
           create-dmg \
             --identity="$APPLE_SIGNING_IDENTITY" \
             "$APP_PATH" \
             ./
-          # create-dmg (npm) names the DMG after the app bundle, e.g. "Programa 0.1.0.dmg".
+          # create-dmg names the DMG after the app bundle, e.g. "Programa 0.1.0.dmg".
           # GitHub macOS runners use a case-sensitive filesystem, so the glob must match
           # the capitalized product name exactly.
           mv ./Programa*.dmg "$DMG_RELEASE"
+
+      - name: Notarize DMG
+        if: steps.milestone_artifact.outputs.reuse != 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "Missing notarization secrets (APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID)" >&2
+            exit 1
+          fi
+          DMG_RELEASE="programa-macos.dmg"
           DMG_SUBMIT_JSON="$(xcrun notarytool submit "$DMG_RELEASE" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait --output-format json)"
           DMG_SUBMIT_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$DMG_SUBMIT_JSON")"
           DMG_STATUS="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$DMG_SUBMIT_JSON")"
@@ -519,17 +575,23 @@ jobs:
           fi
           xcrun stapler staple "$DMG_RELEASE"
           xcrun stapler validate "$DMG_RELEASE"
+
+      - name: Create build-specific DMG alias
+        if: steps.milestone_artifact.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          DMG_RELEASE="programa-macos.dmg"
           # Publish the same bytes twice: programa-macos.dmg is the stable README
           # download button, and programa-macos-<build>.dmg is what Sparkle's appcast
-          # points at. The versioned name is never overwritten by a later ship, so the
-          # EdDSA signature always matches whatever that url returns. See
+          # points at. The publisher retains each build archive and never overwrites its
+          # payload assets, so the EdDSA signature always matches that URL. See
           # scripts/sparkle_enclosure.js for why (SUSparkleErrorDomain 4005, 2026-07-24).
           ENCLOSURE_DMG="$(node scripts/sparkle_enclosure.js name "$EFFECTIVE_BUILD")"
           cp "$DMG_RELEASE" "$ENCLOSURE_DMG"
           echo "ENCLOSURE_DMG=${ENCLOSURE_DMG}" >> "$GITHUB_ENV"
 
       - name: Generate Sparkle appcast
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
@@ -537,22 +599,140 @@ jobs:
             echo "Missing SPARKLE_PRIVATE_KEY secret" >&2
             exit 1
           fi
-          ./scripts/sparkle_generate_appcast.sh programa-macos.dmg "$RELEASE_TAG" appcast.xml "$ENCLOSURE_DMG"
+          ./scripts/sparkle_generate_appcast.sh programa-macos.dmg "$PAYLOAD_RELEASE_TAG" appcast.xml "$ENCLOSURE_DMG"
 
-      - name: Attest remote daemon release assets
-        if: steps.guard_release_assets.outputs.skip_all != 'true'
+      - name: Create milestone payload manifest
+        if: >-
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/') &&
+          steps.milestone_artifact.outputs.reuse != 'true'
+        run: |
+          set -euo pipefail
+          MILESTONE_PAYLOAD_DIR="${RUNNER_TEMP}/programa-milestone-payload"
+          mkdir "$MILESTONE_PAYLOAD_DIR"
+          cp appcast.xml "$MILESTONE_PAYLOAD_DIR/appcast.xml"
+          cp "programa-dSYMs-${EFFECTIVE_BUILD}.zip" "$MILESTONE_PAYLOAD_DIR/"
+          cp "programa-macos-${EFFECTIVE_BUILD}.dmg" "$MILESTONE_PAYLOAD_DIR/"
+          cp programa-macos.dmg "$MILESTONE_PAYLOAD_DIR/"
+          cp "remote-daemon-assets/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" "$MILESTONE_PAYLOAD_DIR/"
+          cp "remote-daemon-assets/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" "$MILESTONE_PAYLOAD_DIR/"
+          cp "remote-daemon-assets/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" "$MILESTONE_PAYLOAD_DIR/"
+          cp "remote-daemon-assets/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" "$MILESTONE_PAYLOAD_DIR/"
+          cp "remote-daemon-assets/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" "$MILESTONE_PAYLOAD_DIR/"
+          cp "remote-daemon-assets/programad-remote-manifest-${EFFECTIVE_BUILD}.json" "$MILESTONE_PAYLOAD_DIR/"
+          node - "$MILESTONE_PAYLOAD_DIR" "$EFFECTIVE_BUILD" <<'NODE'
+          "use strict";
+          const path = require("node:path");
+          const {
+            validateMilestonePayloadReferences,
+            writeMilestoneManifest,
+          } = require(path.resolve("scripts/milestone_payload.js"));
+          writeMilestoneManifest({ directory: process.argv[2], build: process.argv[3] });
+          validateMilestonePayloadReferences({
+            directory: process.argv[2],
+            build: process.argv[3],
+            repository: process.env.GITHUB_REPOSITORY,
+            tag: process.env.RELEASE_TAG,
+            version: process.env.EFFECTIVE_MARKETING_VERSION,
+          });
+          NODE
+          echo "MILESTONE_PAYLOAD_DIR=${MILESTONE_PAYLOAD_DIR}" >> "$GITHUB_ENV"
+
+      - name: Attest release candidate payloads
+        if: steps.milestone_artifact.outputs.reuse != 'true'
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: |
-            remote-daemon-assets/programad-remote-darwin-arm64
-            remote-daemon-assets/programad-remote-darwin-amd64
-            remote-daemon-assets/programad-remote-linux-arm64
-            remote-daemon-assets/programad-remote-linux-amd64
-            remote-daemon-assets/programad-remote-checksums.txt
-            remote-daemon-assets/programad-remote-manifest.json
+            programa-macos-${{ env.EFFECTIVE_BUILD }}.dmg
+            programa-dSYMs-${{ env.EFFECTIVE_BUILD }}.zip
+            remote-daemon-assets/programad-remote-darwin-arm64${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}
+            remote-daemon-assets/programad-remote-darwin-amd64${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}
+            remote-daemon-assets/programad-remote-linux-arm64${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}
+            remote-daemon-assets/programad-remote-linux-amd64${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}
+            remote-daemon-assets/programad-remote-checksums${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}.txt
+            remote-daemon-assets/programad-remote-manifest${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}.json
+            appcast.xml
+            programa-macos.dmg
+
+      - name: Prepare milestone release candidate seal
+        if: >-
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/') &&
+          steps.milestone_artifact.outputs.reuse != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ((GITHUB_RUN_ATTEMPT >= 1 && GITHUB_RUN_ATTEMPT <= 999)) || {
+            echo "Workflow attempt must be between 1 and 999" >&2
+            exit 1
+          }
+          printf -v CANDIDATE_ATTEMPT '%03d' "$GITHUB_RUN_ATTEMPT"
+          CANDIDATE_TAG="milestone-candidate-${EFFECTIVE_BUILD}-${CANDIDATE_ATTEMPT}"
+          CANDIDATE_SEAL="${RUNNER_TEMP}/programa-release-candidate.json"
+          ./scripts/publish_release_candidate.sh \
+            --prepare-only \
+            --candidate-prefix milestone-candidate- \
+            --destination-tag "$RELEASE_TAG" \
+            --candidate-tag "$CANDIDATE_TAG" \
+            --target-sha "$GITHUB_SHA" \
+            --build "$EFFECTIVE_BUILD" \
+            --version "$EFFECTIVE_MARKETING_VERSION" \
+            --seal-output "$CANDIDATE_SEAL" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programa-macos-${EFFECTIVE_BUILD}.dmg" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programa-dSYMs-${EFFECTIVE_BUILD}.zip" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-manifest-${EFFECTIVE_BUILD}.json" \
+            --asset-role "appcast=${MILESTONE_PAYLOAD_DIR}/appcast.xml" \
+            --asset-role "stable-alias=${MILESTONE_PAYLOAD_DIR}/programa-macos.dmg"
+          echo "CANDIDATE_SEAL=${CANDIDATE_SEAL}" >> "$GITHUB_ENV"
+
+      - name: Attest milestone release candidate seal
+        if: >-
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/') &&
+          steps.milestone_artifact.outputs.reuse != 'true'
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: ${{ env.CANDIDATE_SEAL }}
+
+      - name: Stage milestone release candidate with attested seal
+        if: >-
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/') &&
+          steps.milestone_artifact.outputs.reuse != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          printf -v CANDIDATE_ATTEMPT '%03d' "$GITHUB_RUN_ATTEMPT"
+          ./scripts/publish_release_candidate.sh \
+            --candidate-prefix milestone-candidate- \
+            --destination-tag "$RELEASE_TAG" \
+            --candidate-tag "milestone-candidate-${EFFECTIVE_BUILD}-${CANDIDATE_ATTEMPT}" \
+            --target-sha "$GITHUB_SHA" \
+            --build "$EFFECTIVE_BUILD" \
+            --version "$EFFECTIVE_MARKETING_VERSION" \
+            --seal-output "$CANDIDATE_SEAL" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programa-macos-${EFFECTIVE_BUILD}.dmg" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programa-dSYMs-${EFFECTIVE_BUILD}.zip" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" \
+            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-manifest-${EFFECTIVE_BUILD}.json" \
+            --asset-role "appcast=${MILESTONE_PAYLOAD_DIR}/appcast.xml" \
+            --asset-role "stable-alias=${MILESTONE_PAYLOAD_DIR}/programa-macos.dmg"
 
       - name: Upload build artifacts (dry-run)
-        if: steps.guard_release_assets.outputs.skip_upload != 'true' && github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: programa-release-dry-run
@@ -564,105 +744,108 @@ jobs:
             remote-daemon-assets/programad-remote-*
           if-no-files-found: error
 
-      - name: Generate rolling release notes (since previous ship)
-        id: rolling_notes
-        if: github.event_name == 'workflow_run' && steps.guard_release_assets.outputs.skip_all != 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # The rolling release is reused each ship; generate_release_notes on an
-          # existing release accumulates every past ship's "What's Changed" into
-          # one ever-growing body. Instead, generate notes for just the span since
-          # the previous ship (old rolling tag -> new commit) and REPLACE the body.
-          # Must run BEFORE the rolling tag is force-moved below.
-          NEW_SHA="${{ github.event.workflow_run.head_sha }}"
-          ARGS=(-f tag_name="rolling-next" -f target_commitish="$NEW_SHA")
-          PREV_SHA=""
-          if PREV_SHA=$(gh api "repos/${{ github.repository }}/git/ref/tags/rolling" --jq .object.sha 2>/dev/null); then
-            ARGS+=(-f previous_tag_name="rolling")
-          fi
-          BODY=$(gh api "repos/${{ github.repository }}/releases/generate-notes" "${ARGS[@]}" --jq .body)
-          # The synthetic rolling-next tag never exists; fix the compare link to real SHAs.
-          if [ -n "$PREV_SHA" ]; then
-            BODY=$(printf '%s' "$BODY" | sed "s|/compare/rolling...rolling-next|/compare/${PREV_SHA}...${NEW_SHA}|")
-          fi
-          {
-            echo "body<<PROGRAMA_ROLLING_NOTES_EOF"
-            printf '%s\n' "$BODY"
-            echo "PROGRAMA_ROLLING_NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Move rolling tag to shipped commit
-        if: github.event_name == 'workflow_run' && steps.guard_release_assets.outputs.skip_all != 'true'
-        run: |
-          set -euo pipefail
-          # Reuse a single "rolling" release: point its tag at the commit we just shipped so
-          # the release page reflects the actual build. Assets are overwritten below.
-          git tag -f rolling "${{ github.event.workflow_run.head_sha }}"
-          git push origin refs/tags/rolling --force
-
-      - name: Upload release asset
-        if: steps.guard_release_assets.outputs.skip_upload != 'true' && (github.event_name == 'workflow_run' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')))
-        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
+      - name: Upload milestone release assets
+        if: >-
+          github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ env.IS_AUTO_SHIP == 'true' && format('Rolling {0} (latest main)', env.EFFECTIVE_MARKETING_VERSION) || env.RELEASE_TAG }}
-          make_latest: true
-          # Sequential upload, and this order specifically:
-          #   1. programa-macos-<build>.dmg — up before anything references it, so the new
-          #      appcast's enclosure is never briefly a 404.
-          #   2. appcast.xml — now points at an asset that already exists.
-          #   3. programa-macos.dmg — overwritten LAST. Until this moment a client holding
-          #      the PREVIOUS appcast (which still names the unversioned dmg) is served the
-          #      previous bytes, matching the signature it has. Overwriting it first would
-          #      recreate the 4005 mismatch during the upload window.
-          preserve_order: true
-          files: |
-            programa-macos-*.dmg
-            programa-dSYMs-*.zip
-            appcast.xml
-            programa-macos.dmg
-            remote-daemon-assets/programad-remote-darwin-arm64
-            remote-daemon-assets/programad-remote-darwin-amd64
-            remote-daemon-assets/programad-remote-linux-arm64
-            remote-daemon-assets/programad-remote-linux-amd64
-            remote-daemon-assets/programad-remote-checksums.txt
-            remote-daemon-assets/programad-remote-manifest.json
-          # Auto-ship: replace the body with freshly-scoped notes (previous ship -> now)
-          # so the reused rolling release doesn't accumulate every past "What's Changed".
-          # Milestone v* tags: a fresh release, so GitHub-generated notes are fine.
-          body: ${{ steps.rolling_notes.outputs.body }}
-          generate_release_notes: ${{ env.IS_AUTO_SHIP != 'true' }}
-          overwrite_files: true
+          name: programa-milestone-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.MILESTONE_PAYLOAD_DIR }}/
+          if-no-files-found: error
 
-      - name: Prune superseded Sparkle enclosures
-        if: steps.guard_release_assets.outputs.skip_upload != 'true' && github.event_name == 'workflow_run'
+      - name: Prepare rolling release candidate seal
+        if: github.event_name == 'workflow_run'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Housekeeping only: the ship already succeeded by this point, so a failure here
-        # must not fail the run. Worst case a stale DMG lingers, costing storage.
-        continue-on-error: true
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          set -uo pipefail
-          # Versioned DMGs are never overwritten (that is the whole point), so they
-          # accumulate ~21MB per ship on the reused rolling release. The keep window is
-          # deliberately generous — see DEFAULT_KEEP_BUILDS in scripts/sparkle_enclosure.js
-          # for why deleting one is a real (if mild) auto-update failure.
-          if ! ASSETS=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'); then
-            echo "Could not list release assets; skipping prune."
-            exit 0
+          set -euo pipefail
+          CURRENT_MAIN="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq .object.sha)"
+          EXPECTED_TARGET="${{ github.event.workflow_run.head_sha }}"
+          CHECKED_OUT_TARGET="$(git rev-parse HEAD)"
+          [[ "${CHECKED_OUT_TARGET}" == "${EXPECTED_TARGET}" ]] || {
+            echo "Checked-out revision ${CHECKED_OUT_TARGET} does not match upstream CI SHA ${EXPECTED_TARGET}" >&2
+            exit 1
+          }
+          [[ "${CURRENT_MAIN}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Current main did not resolve to a canonical commit SHA" >&2
+            exit 1
+          }
+          [[ "${CURRENT_MAIN}" == "${EXPECTED_TARGET}" ]] || {
+            echo "Upstream CI SHA ${EXPECTED_TARGET} is no longer current main ${CURRENT_MAIN}" >&2
+            exit 1
+          }
+          DSYM_ZIPS=()
+          for dsym_zip in programa-dSYMs-*.zip; do
+            if [[ -f "$dsym_zip" ]]; then
+              DSYM_ZIPS+=("$dsym_zip")
+            fi
+          done
+          if [[ "${#DSYM_ZIPS[@]}" -ne 1 ]]; then
+            echo "Expected exactly one generated dSYM archive, found ${#DSYM_ZIPS[@]}" >&2
+            exit 1
           fi
-          STALE=$(node scripts/sparkle_enclosure.js prune --current "$EFFECTIVE_BUILD" <<< "$ASSETS")
-          if [ -z "$STALE" ]; then
-            echo "No superseded enclosures to prune."
-            exit 0
+          DSYM_ZIP="${DSYM_ZIPS[0]}"
+          if [[ "$DSYM_ZIP" != "programa-dSYMs-${EFFECTIVE_BUILD}.zip" ]]; then
+            echo "Unexpected dSYM archive for build ${EFFECTIVE_BUILD}: $DSYM_ZIP" >&2
+            exit 1
           fi
-          while IFS= read -r asset; do
-            echo "Pruning $asset"
-            # Best-effort: a failed delete leaves a stale asset, which is harmless.
-            gh release delete-asset "$RELEASE_TAG" "$asset" --yes || true
-          done <<< "$STALE"
+
+          ./scripts/publish_release_candidate.sh \
+            --prepare-only \
+            --candidate-prefix rolling-candidate- \
+            --destination-tag "$PAYLOAD_RELEASE_TAG" \
+            --candidate-tag "$PAYLOAD_RELEASE_TAG" \
+            --target-sha "${{ github.event.workflow_run.head_sha }}" \
+            --seal-output programa-release-candidate.json \
+            --build "$EFFECTIVE_BUILD" \
+            --version "$EFFECTIVE_MARKETING_VERSION" \
+            --asset-role "immutable=programa-macos-${EFFECTIVE_BUILD}.dmg" \
+            --asset-role "immutable=$DSYM_ZIP" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-manifest-${EFFECTIVE_BUILD}.json" \
+            --asset-role "appcast=appcast.xml" \
+            --asset-role "stable-alias=programa-macos.dmg"
+
+      - name: Attest rolling release candidate seal
+        if: github.event_name == 'workflow_run'
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: programa-release-candidate.json
+
+      - name: Stage rolling release candidate with attested seal
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          DSYM_ZIP="programa-dSYMs-${EFFECTIVE_BUILD}.zip"
+          ./scripts/publish_release_candidate.sh \
+            --candidate-prefix rolling-candidate- \
+            --destination-tag "$PAYLOAD_RELEASE_TAG" \
+            --candidate-tag "$PAYLOAD_RELEASE_TAG" \
+            --target-sha "${{ github.event.workflow_run.head_sha }}" \
+            --seal-output programa-release-candidate.json \
+            --build "$EFFECTIVE_BUILD" \
+            --version "$EFFECTIVE_MARKETING_VERSION" \
+            --asset-role "immutable=programa-macos-${EFFECTIVE_BUILD}.dmg" \
+            --asset-role "immutable=$DSYM_ZIP" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" \
+            --asset-role "immutable=remote-daemon-assets/programad-remote-manifest-${EFFECTIVE_BUILD}.json" \
+            --asset-role "appcast=appcast.xml" \
+            --asset-role "stable-alias=programa-macos.dmg"
 
       - name: Cleanup keychain
         if: always()
@@ -670,3 +853,177 @@ jobs:
           security delete-keychain build.keychain >/dev/null 2>&1 || true
           rm -f /tmp/cert.p12
           rm -f /tmp/programa.provisionprofile
+
+  publish-milestone:
+    needs: build-sign-notarize
+    if: >-
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    env:
+      MILESTONE_TAG: ${{ github.ref_name }}
+      MILESTONE_TARGET_SHA: ${{ github.sha }}
+    steps:
+      - name: Checkout milestone revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify immutable milestone checkout
+        run: |
+          set -euo pipefail
+          CHECKED_OUT_SHA="$(git rev-parse HEAD)"
+          [[ "${CHECKED_OUT_SHA}" == "${MILESTONE_TARGET_SHA}" ]] || {
+            echo "Milestone publication checkout ${CHECKED_OUT_SHA} does not match event SHA ${MILESTONE_TARGET_SHA}" >&2
+            exit 1
+          }
+
+      - name: Download milestone release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: programa-milestone-${{ github.run_id }}-${{ github.run_attempt }}
+          path: milestone-payload
+
+      - name: Verify milestone payload handoff
+        env:
+          EFFECTIVE_BUILD: ${{ needs.build-sign-notarize.outputs.effective_build }}
+        run: |
+          set -euo pipefail
+          node - "$EFFECTIVE_BUILD" <<'NODE'
+          "use strict";
+          const path = require("node:path");
+          const {
+            validateMilestonePayloadReferences,
+            verifyMilestonePayload,
+          } = require(path.resolve("scripts/milestone_payload.js"));
+          verifyMilestonePayload({ directory: "milestone-payload", build: process.argv[2] });
+          validateMilestonePayloadReferences({
+            directory: "milestone-payload",
+            build: process.argv[2],
+            repository: process.env.GITHUB_REPOSITORY,
+            tag: process.env.MILESTONE_TAG,
+            version: process.env.MILESTONE_TAG.slice(1),
+          });
+          NODE
+
+      - name: Determine milestone monotonic boundary
+        id: milestone_publication_state
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          EFFECTIVE_BUILD: ${{ needs.build-sign-notarize.outputs.effective_build }}
+        with:
+          script: |
+            core.setOutput('mode', 'strict');
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag: process.env.MILESTONE_TAG,
+              });
+              if (release.data.draft === false) {
+                // The publisher authenticates the entire permanent release. Skip the
+                // strict > comparison so an exact published rerun can converge idempotently.
+                core.setOutput('mode', 'skip');
+              } else if (release.data.draft !== true) {
+                throw new TypeError('Milestone release has an invalid draft state.');
+              } else {
+                const build = process.env.EFFECTIVE_BUILD;
+                const expectedNames = new Set([
+                  `programa-macos-${build}.dmg`,
+                  `programa-dSYMs-${build}.zip`,
+                  `programad-remote-darwin-arm64-${build}`,
+                  `programad-remote-darwin-amd64-${build}`,
+                  `programad-remote-linux-arm64-${build}`,
+                  `programad-remote-linux-amd64-${build}`,
+                  `programad-remote-checksums-${build}.txt`,
+                  `programad-remote-manifest-${build}.json`,
+                  'appcast.xml',
+                  'programa-macos.dmg',
+                ]);
+                const assets = release.data.assets;
+                if (!Array.isArray(assets)) {
+                  throw new TypeError('Draft milestone release assets are unavailable.');
+                }
+                const names = assets.map((asset) => asset?.name);
+                if (
+                  names.length === expectedNames.size &&
+                  names.every((name) => expectedNames.has(name)) &&
+                  new Set(names).size === expectedNames.size
+                ) {
+                  // A complete interrupted draft may finalize at the existing public
+                  // high-water. The publisher still authenticates all ten exact bytes.
+                  core.setOutput('mode', 'allow-equal');
+                }
+              }
+            } catch (error) {
+              if (error.status === 404) {
+                return;
+              }
+              throw error;
+            }
+
+      - name: Recheck Sparkle build number before milestone publication
+        if: steps.milestone_publication_state.outputs.mode != 'skip'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          EFFECTIVE_BUILD: ${{ needs.build-sign-notarize.outputs.effective_build }}
+          MONOTONIC_MODE: ${{ steps.milestone_publication_state.outputs.mode }}
+        with:
+          script: |
+            const { enforceSparkleMonotonicBuild } = require('./scripts/sparkle_monotonic_guard');
+            const effectiveBuild = process.env.MONOTONIC_MODE === 'allow-equal'
+              ? (BigInt(process.env.EFFECTIVE_BUILD) + 1n).toString()
+              : process.env.EFFECTIVE_BUILD;
+            await enforceSparkleMonotonicBuild({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              effectiveBuild,
+            });
+
+      - name: Converge milestone release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          EFFECTIVE_BUILD: ${{ needs.build-sign-notarize.outputs.effective_build }}
+        run: |
+          set -euo pipefail
+          ./scripts/publish_milestone_release.sh \
+            --tag "$MILESTONE_TAG" \
+            --target-sha "$MILESTONE_TARGET_SHA" \
+            --build "$EFFECTIVE_BUILD" \
+            --payload-dir milestone-payload
+
+  promote-rolling:
+    needs: build-sign-notarize
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: programa-release-publication
+      queue: max
+    steps:
+      - name: Checkout CI-validated revision
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Reconcile highest sealed candidate to rolling
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          EXPECTED_TARGET="${{ github.event.workflow_run.head_sha }}"
+          CHECKED_OUT_TARGET="$(git rev-parse HEAD)"
+          [[ "$CHECKED_OUT_TARGET" == "$EXPECTED_TARGET" ]] || {
+            echo "Checked-out revision ${CHECKED_OUT_TARGET} does not match reconciler target ${EXPECTED_TARGET}" >&2
+            exit 1
+          }
+          ./scripts/publish_rolling_release.sh \
+            --candidate-prefix rolling-candidate- \
+            --rolling-tag rolling \
+            --reconciler-target-sha "$EXPECTED_TARGET"

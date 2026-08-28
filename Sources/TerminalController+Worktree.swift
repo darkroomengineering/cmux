@@ -94,8 +94,8 @@ extension TerminalController {
         ])
     }
 
-    func v2WorktreeOpen(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
+    nonisolated func v2WorktreeOpen(params: [String: Any]) -> V2CallResult {
+        guard let windowId = v2ResolveWorktreeWindowId(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
         }
         guard let repoRoot = v2ResolveWorktreeRepoRoot(params: params) else {
@@ -117,39 +117,41 @@ extension TerminalController {
             return .err(code: "worktree_not_found", message: "No matching worktree found", data: nil)
         }
 
-        if let existingWorkspace = v2MainSync({ self.v2WorktreeOpenWorkspace(tabManager: tabManager, path: entry.path) }) {
-            // "already open" is idempotent -- only touch focus/selection when the caller
-            // explicitly opted in via `focus: true` (socket focus policy default is false).
-            if v2FocusAllowed(requested: v2Bool(params, "focus") ?? false) {
-                v2MainSync {
-                    if let windowId = self.v2ResolveWindowId(tabManager: tabManager) {
-                        _ = AppDelegate.shared?.focusMainWindow(windowId: windowId)
-                        self.setActiveTabManager(tabManager)
-                    }
+        let focusRequested = v2Bool(params, "focus") ?? false
+        return v2MainSync {
+            guard let tabManager = AppDelegate.shared?.tabManagerFor(windowId: windowId) else {
+                return .err(code: "unavailable", message: "TabManager not available", data: nil)
+            }
+
+            if let existingWorkspace = self.v2WorktreeOpenWorkspace(tabManager: tabManager, path: entry.path) {
+                // "already open" is idempotent -- only touch focus/selection when the caller
+                // explicitly opted in via `focus: true` (socket focus policy default is false).
+                if self.v2FocusAllowed(requested: focusRequested) {
+                    _ = AppDelegate.shared?.focusMainWindow(windowId: windowId)
+                    self.setActiveTabManager(tabManager)
                     tabManager.selectWorkspace(existingWorkspace)
                 }
+                return .ok([
+                    "worktree": ["path": entry.path, "branch": self.v2OrNull(entry.branch), "repo": repoRoot],
+                    "workspace_id": existingWorkspace.id.uuidString,
+                    "workspace_ref": self.v2Ref(kind: .workspace, uuid: existingWorkspace.id),
+                    "window_id": self.v2OrNull(windowId.uuidString),
+                    "window_ref": self.v2Ref(kind: .window, uuid: windowId)
+                ])
             }
-            let windowId = v2ResolveWindowId(tabManager: tabManager)
-            return .ok([
-                "worktree": ["path": entry.path, "branch": v2OrNull(entry.branch), "repo": repoRoot],
-                "workspace_id": existingWorkspace.id.uuidString,
-                "workspace_ref": v2Ref(kind: .workspace, uuid: existingWorkspace.id),
-                "window_id": v2OrNull(windowId?.uuidString),
-                "window_ref": v2Ref(kind: .window, uuid: windowId)
-            ])
-        }
 
-        return v2CompleteWorktreeCreation(
-            tabManager: tabManager,
-            entry: entry,
-            repoRoot: repoRoot,
-            layoutName: nil,
-            focusRequested: v2Bool(params, "focus") ?? false
-        )
+            return self.v2CompleteWorktreeCreation(
+                tabManager: tabManager,
+                entry: entry,
+                repoRoot: repoRoot,
+                layoutName: nil,
+                focusRequested: focusRequested
+            )
+        }
     }
 
-    func v2WorktreeRemove(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
+    nonisolated func v2WorktreeRemove(params: [String: Any]) -> V2CallResult {
+        guard let windowId = v2ResolveWorktreeWindowId(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
         }
         guard let repoRoot = v2ResolveWorktreeRepoRoot(params: params) else {
@@ -173,12 +175,15 @@ extension TerminalController {
 
         switch GitWorktreeManager.remove(repoRoot: repoRoot, path: entry.path, force: v2Bool(params, "force") ?? false) {
         case .success:
-            var closedWorkspaceId: UUID?
-            v2MainSync {
+            let closedWorkspaceId = v2MainSync { () -> UUID? in
+                guard let tabManager = AppDelegate.shared?.tabManagerFor(windowId: windowId) else {
+                    return nil
+                }
                 if let ws = self.v2WorktreeOpenWorkspace(tabManager: tabManager, path: entry.path) {
                     tabManager.closeWorkspace(ws)
-                    closedWorkspaceId = ws.id
+                    return ws.id
                 }
+                return nil
             }
             var result: [String: Any] = ["removed": true]
             if let closedWorkspaceId {
@@ -196,13 +201,30 @@ extension TerminalController {
         }
     }
 
-    func v2WorktreeList(params: [String: Any]) -> V2CallResult {
-        let tabManager = v2ResolveTabManager(params: params)
+    nonisolated func v2WorktreeList(params: [String: Any]) -> V2CallResult {
+        let windowId = v2ResolveWorktreeWindowId(params: params)
         guard let repoRoot = v2ResolveWorktreeRepoRoot(params: params) else {
             return .err(code: "not_a_git_repo", message: "Could not resolve a git repository from 'repo'", data: nil)
         }
         guard let entries = GitWorktreeManager.listWorktrees(repoRoot: repoRoot) else {
             return .err(code: "not_a_git_repo", message: "'\(repoRoot)' is not a git repository", data: nil)
+        }
+
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
+        let openWorkspaceIdsByPath = v2MainSync { () -> [String: UUID] in
+            guard let windowId,
+                  let tabManager = AppDelegate.shared?.tabManagerFor(windowId: windowId) else {
+                return [:]
+            }
+            var workspaceIdsByPath: [String: UUID] = [:]
+            for workspace in tabManager.tabs {
+                guard let key = SidebarBranchOrdering.canonicalDirectoryKey(
+                    workspace.currentDirectory,
+                    homeDirectoryForTildeExpansion: homeDirectory
+                ), workspaceIdsByPath[key] == nil else { continue }
+                workspaceIdsByPath[key] = workspace.id
+            }
+            return workspaceIdsByPath
         }
 
         var payloads: [[String: Any]] = []
@@ -213,11 +235,13 @@ extension TerminalController {
                 "head": v2OrNull(entry.headSHA),
                 "is_open": false
             ]
-            if let tabManager,
-               let ws = v2MainSync({ self.v2WorktreeOpenWorkspace(tabManager: tabManager, path: entry.path) }) {
+            if let key = SidebarBranchOrdering.canonicalDirectoryKey(
+                entry.path,
+                homeDirectoryForTildeExpansion: homeDirectory
+            ), let workspaceId = openWorkspaceIdsByPath[key] {
                 payload["is_open"] = true
-                payload["workspace_id"] = ws.id.uuidString
-                payload["workspace_ref"] = v2Ref(kind: .workspace, uuid: ws.id)
+                payload["workspace_id"] = workspaceId.uuidString
+                payload["workspace_ref"] = v2Ref(kind: .workspace, uuid: workspaceId)
             }
             payloads.append(payload)
         }
@@ -227,7 +251,14 @@ extension TerminalController {
 
     // MARK: - Shared helpers
 
-    private func v2ExpandedPath(_ raw: String) -> String {
+    private nonisolated func v2ResolveWorktreeWindowId(params: [String: Any]) -> UUID? {
+        v2MainSync {
+            guard let tabManager = self.v2ResolveTabManager(params: params) else { return nil }
+            return AppDelegate.shared?.windowId(for: tabManager)
+        }
+    }
+
+    private nonisolated func v2ExpandedPath(_ raw: String) -> String {
         (raw as NSString).expandingTildeInPath
     }
 
@@ -235,7 +266,7 @@ extension TerminalController {
     /// callers can pass any directory inside the repo, not only its exact toplevel. Missing or
     /// unresolvable `repo` fails clearly rather than falling back to the app process's own
     /// (meaningless, from the caller's perspective) working directory -- see plan risk #2.
-    private func v2ResolveWorktreeRepoRoot(params: [String: Any]) -> String? {
+    private nonisolated func v2ResolveWorktreeRepoRoot(params: [String: Any]) -> String? {
         guard let raw = v2String(params, "repo") else { return nil }
         return GitWorktreeManager.resolveRepoRoot(from: v2ExpandedPath(raw))
     }

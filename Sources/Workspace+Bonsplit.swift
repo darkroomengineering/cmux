@@ -610,7 +610,11 @@ extension Workspace: @preconcurrency BonsplitDelegate {
             )
             if isUndoStaging, let originalIndex = undoStageOriginalIndex,
                let staged = pendingDetachedSurfaces.removeValue(forKey: tabId) {
-                onTerminalCloseStagedForUndo?(staged, pane, originalIndex)
+                if let onTerminalCloseStagedForUndo {
+                    onTerminalCloseStagedForUndo(staged, pane, originalIndex)
+                } else {
+                    staged.finalizePermanently()
+                }
             }
         } else {
             if let closedBrowserRestoreSnapshot {
@@ -781,13 +785,7 @@ extension Workspace: @preconcurrency BonsplitDelegate {
         // automation state must survive the trip, so it is only pruned on
         // permanent close.
         if !isDetaching {
-            TerminalController.shared.v2BrowserInitScriptsBySurface.removeValue(forKey: panelId)
-            TerminalController.shared.v2BrowserInitStylesBySurface.removeValue(forKey: panelId)
-            TerminalController.shared.v2BrowserDownloadEventsBySurface.removeValue(forKey: panelId)
-            TerminalController.shared.v2BrowserUnsupportedNetworkRequestsBySurface.removeValue(forKey: panelId)
-            TerminalController.shared.v2BrowserFrameSelectorBySurface.removeValue(forKey: panelId)
-            TerminalController.shared.v2BrowserElementRefs = TerminalController.shared.v2BrowserElementRefs
-                .filter { $0.value.surfaceId != panelId }
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: panelId)
         }
         if progressSourcePanelId == panelId {
             progress = nil

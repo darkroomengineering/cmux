@@ -3282,21 +3282,22 @@ struct ProgramaCLI {
                 Submit a prompt to an agent surface and wait for it to finish, in one
                 request -- built on surface.wait's agent_state condition (#166). Sends
                 <text> (+ Enter) the same way `send` does, waits up to --working-grace for
-                the agent to report it started working, then waits up to the remaining
-                --timeout for it to report idle again.
+                the agent to report it started working (capped by the remaining --timeout),
+                then waits up to the remaining --timeout for it to report idle again.
 
-                If the agent never reports "working" within --working-grace, the call
-                resolves immediately (working_observed: false in JSON output) rather than
-                waiting further -- there's nothing left to usefully watch for. If the
-                surface never reported any agent_state at all, JSON output carries a
-                `warning` noting hooks may not be installed.
+                If the agent never reports "working" before that capped grace expires --
+                including when the overall deadline arrives first -- the call resolves
+                immediately (working_observed: false in JSON output), rather than returning
+                a timeout error. If the surface never reported any agent_state at all, JSON
+                output carries a `warning` noting hooks may not be installed.
 
                 Flags:
                   --workspace <id|ref>      Target workspace (default: $PROGRAMA_WORKSPACE_ID)
                   --surface <id|ref>        Target surface (default: $PROGRAMA_SURFACE_ID)
                   --timeout <seconds>       Overall budget for the agent to finish (default: 120)
                   --working-grace <seconds> How long to wait for a "working" report before
-                                            giving up on observing it (default: 3)
+                                            giving up on observing it, capped by the remaining
+                                            --timeout budget (default: 3)
 
                 Example:
                   programa prompt-agent "review this diff for bugs"

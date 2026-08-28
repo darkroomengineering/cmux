@@ -479,113 +479,99 @@ extension ProgramaCLI {
         case "pre-tool-use":
             // Clears "Needs input" status and notification when Claude resumes work
             // (e.g. after permission grant). Runs async so it doesn't block tool execution.
+            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+
+            // Deliberately best-effort, for the same reason as the surfaceId resolution
+            // further down. A throw here used to abort the hook before any of the three
+            // independent clears below, while Claude Code continued with a stale red
+            // "blocked" badge that nothing would clear.
             //
-            // Wrapped in do/catch like "stop"/"idle": this hook's whole job is clearing the
-            // blocked indicators, so a teardown-time throw escaping here is precisely the
-            // case that leaves them stuck on.
-            do {
-                let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+            // Nothing recovers from that. There is no TTL or watchdog on agent state, and
+            // AgentScreenDetectionEngine deliberately refuses to touch a surface a hook has
+            // claimed (its `hooksOwned` guard), so the terminal can be visibly running a
+            // command while the sidebar still reads "Claude needs your permission" until the
+            // session ends.
+            //
+            // Falling back to the identifiers the Notification hook recorded is the whole
+            // point: those are the exact workspace and surface it marked blocked, so they
+            // are the right things to clear even when a live re-resolution is unavailable.
+            let resolvedWorkspaceId = (try? resolvePreferredWorkspaceIdForClaudeHook(
+                preferred: mappedSession?.workspaceId,
+                fallback: workspaceArg,
+                client: client
+            ))
+                ?? nonEmptyClaudeHookIdentifier(mappedSession?.workspaceId).flatMap { isUUID($0) ? $0 : nil }
+                ?? nonEmptyClaudeHookIdentifier(workspaceArg).flatMap { isUUID($0) ? $0 : nil }
 
-                // Deliberately not `try`, for the same reason as the surfaceId resolution
-                // further down -- and this was the remaining half of that bug. A throw here
-                // aborted the hook before any of the three clears below, and the catch at the
-                // bottom treats teardown-shaped errors as benign: it prints "OK", so Claude
-                // Code sees a perfectly healthy hook while the red "blocked" badge stays lit
-                // with nothing left to turn it off.
-                //
-                // Nothing recovers from that. There is no TTL or watchdog on agent state, and
-                // AgentScreenDetectionEngine deliberately refuses to touch a surface a hook has
-                // claimed (its `hooksOwned` guard), so the terminal can be visibly running a
-                // command while the sidebar still reads "Claude needs your permission" until the
-                // session ends.
-                //
-                // Falling back to the identifiers the Notification hook recorded is the whole
-                // point: those are the exact workspace and surface it marked blocked, so they
-                // are the right things to clear even when a live re-resolution is unavailable.
-                let resolvedWorkspaceId = (try? resolvePreferredWorkspaceIdForClaudeHook(
-                    preferred: mappedSession?.workspaceId,
-                    fallback: workspaceArg,
-                    client: client
-                ))
-                    ?? nonEmptyClaudeHookIdentifier(mappedSession?.workspaceId).flatMap { isUUID($0) ? $0 : nil }
-                    ?? nonEmptyClaudeHookIdentifier(workspaceArg).flatMap { isUUID($0) ? $0 : nil }
-
-                // Only when there is genuinely no workspace to name is there nothing to clear.
-                guard let workspaceId = resolvedWorkspaceId else {
-                    print("OK")
-                    return
-                }
-                let claudePid = mappedSession?.pid
-
-                // AskUserQuestion means Claude is about to ask the user something.
-                // Save question text in session so the Notification handler can use it
-                // instead of the generic "Claude Code needs your attention".
-                if let toolName = parsedInput.object?["tool_name"] as? String,
-                   toolName == "AskUserQuestion",
-                   let question = describeAskUserQuestion(parsedInput.object),
-                   let sessionId = parsedInput.sessionId {
-                    // Preserve the existing surfaceId from SessionStart; passing ""
-                    // would overwrite it and cause notifications to target the wrong workspace.
-                    let existingSurfaceId = (try? sessionStore.lookup(sessionId: sessionId))?.surfaceId ?? ""
-                    try? sessionStore.upsert(
-                        sessionId: sessionId,
-                        workspaceId: workspaceId,
-                        surfaceId: existingSurfaceId,
-                        cwd: parsedInput.cwd,
-                        lastSubtitle: "Waiting",
-                        lastBody: question
-                    )
-                    // Don't clear notifications or set status here.
-                    // The Notification hook fires right after and will use the saved question.
-                    print("OK")
-                    return
-                }
-
-                // Best-effort, and deliberately not `try`: a throw here aborted the whole hook
-                // before any of the three clears below, stranding the red "blocked" badge lit
-                // while Claude was already running again. Hook failures don't block tool
-                // execution, so the user saw Claude working under a permission badge that
-                // nothing would ever clear. Only reportAgentState needs a surface; the
-                // notification and status clears are workspace-scoped and must still run.
-                let surfaceId = try? resolvePreferredSurfaceIdForClaudeHook(
-                    preferred: mappedSession?.surfaceId,
-                    fallback: surfaceArg,
-                    workspaceId: workspaceId,
-                    client: client
-                )
-
-                // Clear the badge first: it is the indicator a user reads as "Claude is stuck",
-                // and it is the only one of the three that can't be re-derived from anything else.
-                if let surfaceId {
-                    reportAgentState(client: client, workspaceId: workspaceId, surfaceId: surfaceId, state: .working)
-                }
-
-                _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
-
-                let statusValue: String
-                if UserDefaults.standard.bool(forKey: "claudeCodeVerboseStatus"),
-                   let toolStatus = describeToolUse(parsedInput.object) {
-                    statusValue = toolStatus
-                } else {
-                    statusValue = "Running"
-                }
-                // Best-effort: benign if TabManager is already torn down.
-                try? setClaudeStatus(
-                    client: client,
-                    workspaceId: workspaceId,
-                    value: statusValue,
-                    icon: "bolt.fill",
-                    color: "#4C8DFF",
-                    pid: claudePid
-                )
+            // Only when there is genuinely no workspace to name is there nothing to clear.
+            guard let workspaceId = resolvedWorkspaceId else {
                 print("OK")
-            } catch {
-                if shouldIgnoreClaudeHookTeardownError(error) {
-                    print("OK")
-                    return
-                }
-                throw error
+                return
             }
+            let claudePid = mappedSession?.pid
+
+            // AskUserQuestion means Claude is about to ask the user something.
+            // Save question text in session so the Notification handler can use it
+            // instead of the generic "Claude Code needs your attention".
+            if let toolName = parsedInput.object?["tool_name"] as? String,
+               toolName == "AskUserQuestion",
+               let question = describeAskUserQuestion(parsedInput.object),
+               let sessionId = parsedInput.sessionId {
+                // Preserve the existing surfaceId from SessionStart; passing ""
+                // would overwrite it and cause notifications to target the wrong workspace.
+                let existingSurfaceId = (try? sessionStore.lookup(sessionId: sessionId))?.surfaceId ?? ""
+                try? sessionStore.upsert(
+                    sessionId: sessionId,
+                    workspaceId: workspaceId,
+                    surfaceId: existingSurfaceId,
+                    cwd: parsedInput.cwd,
+                    lastSubtitle: "Waiting",
+                    lastBody: question
+                )
+                // Don't clear notifications or set status here.
+                // The Notification hook fires right after and will use the saved question.
+                print("OK")
+                return
+            }
+
+            // Best-effort, and deliberately not `try`: a throw here aborted the whole hook
+            // before any of the three clears below, stranding the red "blocked" badge lit
+            // while Claude was already running again. Hook failures don't block tool
+            // execution, so the user saw Claude working under a permission badge that
+            // nothing would ever clear. Only reportAgentState needs a surface; the
+            // notification and status clears are workspace-scoped and must still run.
+            let surfaceId = try? resolvePreferredSurfaceIdForClaudeHook(
+                preferred: mappedSession?.surfaceId,
+                fallback: surfaceArg,
+                workspaceId: workspaceId,
+                client: client
+            )
+
+            // Clear the badge first: it is the indicator a user reads as "Claude is stuck",
+            // and it is the only one of the three that can't be re-derived from anything else.
+            if let surfaceId {
+                reportAgentState(client: client, workspaceId: workspaceId, surfaceId: surfaceId, state: .working)
+            }
+
+            _ = try? client.sendV2(method: "notification.clear", params: ["workspace_id": workspaceId])
+
+            let statusValue: String
+            if UserDefaults.standard.bool(forKey: "claudeCodeVerboseStatus"),
+               let toolStatus = describeToolUse(parsedInput.object) {
+                statusValue = toolStatus
+            } else {
+                statusValue = "Running"
+            }
+            // Best-effort: benign if TabManager is already torn down.
+            try? setClaudeStatus(
+                client: client,
+                workspaceId: workspaceId,
+                value: statusValue,
+                icon: "bolt.fill",
+                color: "#4C8DFF",
+                pid: claudePid
+            )
+            print("OK")
 
         case "help", "--help", "-h":
             print(

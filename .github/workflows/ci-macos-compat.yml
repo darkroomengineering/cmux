@@ -153,12 +153,19 @@ jobs:
           xcrun --sdk macosx --show-sdk-path
           sw_vers
 
+      - name: Resolve Ghostty revision
+        id: ghostty-revision
+        run: |
+          set -euo pipefail
+          revision="$(./scripts/ghostty_cache_revision.sh)"
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+
       - name: Cache GhosttyKit.xcframework
         id: cache-ghosttykit
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: GhosttyKit.xcframework
-          key: ghosttykit-v2-${{ hashFiles('.gitmodules', 'ghostty') }}
+          key: ghosttykit-v3-${{ steps.ghostty-revision.outputs.revision }}
 
       - name: Set up Zig 0.16.0
         run: |

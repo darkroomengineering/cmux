@@ -1,7 +1,7 @@
 import Foundation
 
 /// Which base the review panel diffs the worktree against.
-enum ReviewDiffMode: String, Codable, Equatable {
+enum ReviewDiffMode: String, Codable, Equatable, Sendable {
     /// Worktree vs `HEAD`, including uncommitted + untracked changes.
     case uncommitted
     /// `HEAD` vs the merge-base with a base branch (default `origin/main`, falling back to
@@ -9,12 +9,12 @@ enum ReviewDiffMode: String, Codable, Equatable {
     case branch
 }
 
-enum ReviewDiffError: Equatable {
+enum ReviewDiffError: Equatable, Sendable {
     case notGitRepository
     case unknownBaseBranch(String)
 }
 
-struct ReviewDiffSnapshot: Equatable {
+struct ReviewDiffSnapshot: Equatable, Sendable {
     var files: [ReviewFileDiff] = []
     var generatedAt: Date = Date()
     var repositoryRoot: String?

@@ -513,7 +513,11 @@ private final class PaneChromePortalHostView: NSView {
 @available(macOS 26.0, *)
 private final class NativePaneTabBarView: NSView {
     private let scrollView = NSScrollView(frame: .zero)
-    private let documentView = FlippedDocumentView(frame: .zero)
+    // Unflipped on purpose: a flipped document view mirrors the glass pills'
+    // built-in shadow upward (layer geometry flip flips shadowOffset), while
+    // the control capsules in the unflipped host cast theirs downward. Layout
+    // doesn't care — every child spans the full row height at y = 0.
+    private let documentView = NSView(frame: .zero)
     private var pillViews: [TabID: NativeGlassTabPillView] = [:]
     private var descriptor: BonsplitPaneChromeDescriptor?
     /// Safari-style "+" after the last pill; scrolls with the tabs. Bare glyph,
@@ -637,10 +641,6 @@ private final class NativePaneTabBarView: NSView {
     }
 }
 
-private final class FlippedDocumentView: NSView {
-    override var isFlipped: Bool { true }
-}
-
 /// A Maps-style always-visible control capsule: one glass surface holding a row
 /// of icon buttons (Maps groups map-mode + navigation in one pill the same way).
 @MainActor
@@ -659,8 +659,6 @@ private final class GlassIconClusterView: NSView {
         #if compiler(>=6.2)
         glass.style = .regular
         glass.cornerRadius = WindowGlassEffect.controlCornerRadius
-        // Same surface tone as the selected pill (see applySurfaceState).
-        glass.tintColor = NSColor.labelColor.withAlphaComponent(0.12)
         glass.contentView = container
         #endif
         addSubview(glass)
@@ -679,9 +677,22 @@ private final class GlassIconClusterView: NSView {
         }
         actions = Array(repeating: {}, count: symbols.count)
         defaultTooltips = symbols.map(\.tooltip)
-        // Full-presence like the selected pill; the shared tint above keeps the
+        // Full-presence like the selected pill; the shared tint keeps the
         // strip's three capsule surfaces in one material family.
         alphaValue = 1.0
+        applySurfaceTint()
+    }
+
+    /// Same surface tone as the selected pill (see NativeGlassTabPillView.applySurfaceState).
+    private func applySurfaceTint() {
+        #if compiler(>=6.2)
+        glass.tintColor = WindowGlassEffect.surfaceLiftTint(for: effectiveAppearance)
+        #endif
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applySurfaceTint()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -794,16 +805,23 @@ private final class NativeGlassTabPillView: NSView, NSDraggingSource {
     private func applySurfaceState() {
         #if compiler(>=6.2)
         // One shared surface tone across the strip: selected pills and the
-        // control capsules use labelColor@0.12; quiet pills stay untinted.
+        // control capsules share it; quiet pills stay untinted. labelColor@0.12
+        // is a white lift in dark mode, but the same alpha in light mode is a
+        // black wash that reads muddy/pressed — halve it there.
         if isSelected {
-            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.12)
+            glass.tintColor = WindowGlassEffect.surfaceLiftTint(for: effectiveAppearance)
         } else if isHovered {
-            glass.tintColor = NSColor.labelColor.withAlphaComponent(0.06)
+            glass.tintColor = WindowGlassEffect.surfaceLiftTint(for: effectiveAppearance, hover: true)
         } else {
             glass.tintColor = nil
         }
         #endif
         alphaValue = isSelected ? 1.0 : (isHovered ? 0.94 : 0.85)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applySurfaceState()
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
@@ -895,13 +913,23 @@ private final class NativeTabPillControl: NSControl, NSMenuDelegate, NSDraggingS
         titleField.stringValue = tab.title
         titleField.font = .systemFont(ofSize: 13, weight: tab.isSelected ? .semibold : .medium)
         titleField.textColor = tab.isSelected ? .labelColor : .secondaryLabelColor
-        iconView.contentTintColor = tab.isSelected ? .labelColor : .secondaryLabelColor
+        // Selection reads through the title weight and surface tone; a primary-
+        // tinted filled glyph (terminal.fill is a solid box) overpowers the pill.
+        iconView.contentTintColor = .secondaryLabelColor
         closeButton.contentTintColor = .secondaryLabelColor
         if let data = tab.iconImageData, let image = NSImage(data: data) {
             iconView.image = image
         } else if let icon = tab.icon {
-            iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+            // Unconfigured symbols render at the full 16pt slot; boxy filled
+            // glyphs like terminal.fill then dominate the pill. Match the
+            // SwiftUI tab bar's smaller optical size.
+            let configuration = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+            // The filled variant is a solid box that dominates the pill; the
+            // strip's control capsules already use the outline variant.
+            let resolvedName = icon == "terminal.fill" ? "terminal" : icon
+            let symbol = NSImage(systemSymbolName: resolvedName, accessibilityDescription: nil)
                 ?? NSImage(systemSymbolName: "terminal", accessibilityDescription: nil)
+            iconView.image = symbol?.withSymbolConfiguration(configuration) ?? symbol
         } else {
             iconView.image = nil
         }

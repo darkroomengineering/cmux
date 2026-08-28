@@ -2,12 +2,134 @@ import XCTest
 import AppKit
 import Combine
 import Darwin
+import os
 
 #if canImport(Programa_DEV)
 @testable import Programa_DEV
 #elseif canImport(Programa)
 @testable import Programa
 #endif
+
+private final class TestSocketPasswordCredentialHolder: Sendable {
+    private let password: OSAllocatedUnfairLock<String>
+
+    init(password: String) {
+        self.password = OSAllocatedUnfairLock(initialState: password)
+    }
+
+    func update(password: String) {
+        self.password.withLock { storedPassword in
+            storedPassword = password
+        }
+    }
+
+    var source: TerminalController.SocketPasswordCredentialSource {
+        TerminalController.SocketPasswordCredentialSource(
+            hasConfiguredPassword: { [self] in
+                password.withLock { !$0.isEmpty }
+            },
+            verify: { [self] candidate in
+                password.withLock { $0 == candidate }
+            }
+        )
+    }
+}
+
+private struct MainQueueBlockedTelemetryObservation: Sendable {
+    var responseReceived = false
+    var responseOK = false
+    var responseWorkspaceID: String?
+    var responseKey: String?
+    var responseValue: String?
+    var mainQueueWasBlockedAtResponse = false
+    var statusPublicationCountBeforeRelease: Int?
+    var errorDescription: String?
+}
+
+private struct MainQueueBlockedQueryObservation: Sendable {
+    var confirmedNoResponseWhileBlocked = false
+    var responseArrivedWhileBlocked = false
+    var responseOK = false
+    var windowCount: Int?
+    var errorDescription: String?
+}
+
+private struct MainQueueBlockedInvalidTelemetryObservation: Sendable {
+    var reportTTYResponseOK: Bool?
+    var reportTTYErrorCode: String?
+    var reportTTYErrorMessage: String?
+    var reportTTYResponseWhileBlocked = false
+    var portsKickResponseOK: Bool?
+    var portsKickErrorCode: String?
+    var portsKickErrorMessage: String?
+    var portsKickResponseWhileBlocked = false
+    var reportPWDResponseOK: Bool?
+    var reportPWDErrorCode: String?
+    var reportPWDErrorMessage: String?
+    var reportPWDResponseWhileBlocked = false
+    var reportShellStateResponseOK: Bool?
+    var reportShellStateErrorCode: String?
+    var reportShellStateErrorMessage: String?
+    var reportShellStateResponseWhileBlocked = false
+    var reportAgentStateResponseOK: Bool?
+    var reportAgentStateErrorCode: String?
+    var reportAgentStateErrorMessage: String?
+    var reportAgentStateResponseWhileBlocked = false
+    var clearAgentStateResponseOK: Bool?
+    var clearAgentStateErrorCode: String?
+    var clearAgentStateErrorMessage: String?
+    var clearAgentStateResponseWhileBlocked = false
+    var setAgentPIDResponseOK: Bool?
+    var setAgentPIDErrorCode: String?
+    var setAgentPIDErrorMessage: String?
+    var setAgentPIDResponseWhileBlocked = false
+    var clearAgentPIDResponseOK: Bool?
+    var clearAgentPIDErrorCode: String?
+    var clearAgentPIDErrorMessage: String?
+    var clearAgentPIDResponseWhileBlocked = false
+    var setStatusResponseOK: Bool?
+    var setStatusErrorCode: String?
+    var setStatusErrorMessage: String?
+    var setStatusResponseWhileBlocked = false
+    var clearStatusResponseOK: Bool?
+    var clearStatusErrorCode: String?
+    var clearStatusErrorMessage: String?
+    var clearStatusResponseWhileBlocked = false
+    var errorDescription: String?
+}
+
+private struct PendingSurfaceWaitObservation: Sendable {
+    var completed = false
+    var responseOK = false
+    var condition: String?
+    var waited: Bool?
+    var state: String?
+    var source: String?
+    var workspaceID: String?
+    var surfaceID: String?
+    var errorDescription: String?
+}
+
+private actor AgentPortPublicationGate {
+    private var isReleased = false
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func pause() async {
+        await withCheckedContinuation { continuation in
+            if isReleased {
+                continuation.resume()
+            } else {
+                releaseContinuation = continuation
+            }
+        }
+    }
+
+    func release() {
+        isReleased = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
 
 @MainActor
 final class TerminalControllerSocketSecurityTests: XCTestCase {
@@ -20,11 +142,17 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        #if DEBUG
+        TerminalController.shared.setSocketPasswordCredentialSourceForTesting(nil)
+        #endif
         TerminalController.shared.stop()
     }
 
     override func tearDown() {
         TerminalController.shared.stop()
+        #if DEBUG
+        TerminalController.shared.setSocketPasswordCredentialSourceForTesting(nil)
+        #endif
         super.tearDown()
     }
 
@@ -34,6 +162,517 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
                 continuation.resume()
             }
         }
+    }
+
+    private func makeIsolatedSurfaceTelemetryFixture() async throws -> (
+        tabManager: TabManager,
+        workspace: Workspace,
+        surfaceId: UUID,
+        directoryURL: URL
+    ) {
+        let directoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-surface-telemetry-nonrepo-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+        do {
+            let tabManager = TabManager(initialWorkingDirectory: directoryURL.path)
+            let workspace = try XCTUnwrap(tabManager.selectedWorkspace)
+            let surfaceId = try XCTUnwrap(workspace.focusedPanelId)
+
+            // The initial git probe applies its directory snapshot asynchronously via an
+            // unstructured `Task { @MainActor in ... }` hop from a background probe queue.
+            // That hop is only ever serviced by suspending this async test's own Task (so the
+            // MainActor executor can drain its queue) -- a synchronous XCTWaiter/run-loop spin
+            // (the old `waitUntil` helper) never observes it and hangs for the full timeout,
+            // because XCTWaiter's nested CFRunLoop does not pump Swift Concurrency's MainActor
+            // executor. Poll with real suspension points instead. Seed the same directory value
+            // first, then wait for the non-repository probe to finish so no setup publication
+            // can race the exact objectWillChange counts below.
+            workspace.updatePanelDirectory(panelId: surfaceId, directory: directoryURL.path)
+            let deadline = Date().addingTimeInterval(12.0)
+            while !tabManager.activeWorkspaceGitProbePanelIdsForTesting(workspaceId: workspace.id).isEmpty {
+                guard Date() < deadline else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(ETIMEDOUT), userInfo: [
+                        NSLocalizedDescriptionKey: "Timed out waiting for the isolated workspace git probe",
+                    ])
+                }
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+
+            return (tabManager, workspace, surfaceId, directoryURL)
+        } catch {
+            try? FileManager.default.removeItem(at: directoryURL)
+            throw error
+        }
+    }
+
+#if DEBUG
+    func testDebugCaptureLabelsCannotEscapeTheScreenshotDirectory() {
+        let expectedDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-screenshots", isDirectory: true)
+            .standardizedFileURL
+        let captureID = "capture-id"
+        let untrustedLabels = [
+            "../escaped",
+            "../../escaped",
+            "nested/escaped",
+            "nested\\escaped",
+            "..",
+        ]
+
+        for label in untrustedLabels {
+            let outputURL = TerminalController.debugCaptureOutputURL(
+                label: label,
+                captureID: captureID
+            ).standardizedFileURL
+
+            XCTAssertEqual(
+                outputURL.deletingLastPathComponent(),
+                expectedDirectory,
+                "debug capture labels are caller-controlled and must never select a parent or nested directory: \(label)"
+            )
+            XCTAssertEqual(
+                outputURL.pathComponents.count,
+                expectedDirectory.pathComponents.count + 1,
+                "a capture must always be one direct file child of the screenshot directory: \(label)"
+            )
+            XCTAssertFalse(outputURL.lastPathComponent.contains(".."))
+            XCTAssertFalse(outputURL.lastPathComponent.contains("/"))
+            XCTAssertFalse(outputURL.lastPathComponent.contains("\\"))
+            XCTAssertTrue(outputURL.lastPathComponent.hasSuffix("_\(captureID).png"))
+        }
+    }
+
+    func testDebugCapturePreservesAFilesystemSafeLabel() {
+        let outputURL = TerminalController.debugCaptureOutputURL(
+            label: "release-compare",
+            captureID: "capture-id"
+        )
+
+        XCTAssertEqual(
+            outputURL.lastPathComponent,
+            "release-compare_capture-id.png",
+            "confining untrusted labels must not discard an already-safe label used to identify a capture"
+        )
+    }
+
+    /// A long-lived wait must occupy only its own client connection. Exact model queries from
+    /// another client still need prompt main-actor access while that wait remains registered.
+    func testPendingSurfaceWaitDoesNotBlockExactSurfaceQueryOnAnotherClient() async throws {
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
+        let socketPath = makeSocketPath("surface-wait")
+        let workspaceID = fixture.workspace.id.uuidString
+        let surfaceID = fixture.surfaceId.uuidString
+
+        XCTAssertTrue(
+            fixture.tabManager.updateSurfaceAgentState(
+                tabId: fixture.workspace.id,
+                surfaceId: fixture.surfaceId,
+                state: .idle,
+                source: .hooks
+            )
+        )
+        XCTAssertEqual(fixture.workspace.panelAgentStates[fixture.surfaceId], .idle)
+        XCTAssertEqual(fixture.workspace.panelAgentStateSources[fixture.surfaceId], .hooks)
+
+        TerminalController.shared.start(
+            tabManager: fixture.tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        defer {
+            _ = fixture.tabManager.updateSurfaceAgentState(
+                tabId: fixture.workspace.id,
+                surfaceId: fixture.surfaceId,
+                state: .working,
+                source: .hooks
+            )
+            TerminalController.shared.stop()
+            try? FileManager.default.removeItem(at: fixture.directoryURL)
+        }
+        try waitForSocket(at: socketPath)
+
+        let waitObservation = OSAllocatedUnfairLock(initialState: PendingSurfaceWaitObservation())
+        let waitFinished = expectation(description: "surface.wait returned after the public state report")
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer {
+                waitObservation.withLock { $0.completed = true }
+                waitFinished.fulfill()
+            }
+
+            do {
+                let response = try self.sendV2Request(
+                    method: "surface.wait",
+                    params: [
+                        "workspace_id": workspaceID,
+                        "surface_id": surfaceID,
+                        "agent_state": "working",
+                        "timeout_ms": 5_000,
+                    ],
+                    to: socketPath
+                )
+                let result = response["result"] as? [String: Any]
+                waitObservation.withLock {
+                    $0.responseOK = response["ok"] as? Bool == true
+                    $0.condition = result?["condition"] as? String
+                    $0.waited = result?["waited"] as? Bool
+                    $0.state = result?["state"] as? String
+                    $0.source = result?["source"] as? String
+                    $0.workspaceID = result?["workspace_id"] as? String
+                    $0.surfaceID = result?["surface_id"] as? String
+                }
+            } catch {
+                waitObservation.withLock { $0.errorDescription = String(describing: error) }
+            }
+        }
+
+        let registrationDeadline = Date().addingTimeInterval(2.0)
+        while !AgentStateWaitRegistry.shared.hasPendingWaiterForTesting(
+            surfaceId: fixture.surfaceId,
+            condition: .working
+        ), Date() < registrationDeadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        guard AgentStateWaitRegistry.shared.hasPendingWaiterForTesting(
+            surfaceId: fixture.surfaceId,
+            condition: .working
+        ) else {
+            _ = fixture.tabManager.updateSurfaceAgentState(
+                tabId: fixture.workspace.id,
+                surfaceId: fixture.surfaceId,
+                state: .working,
+                source: .hooks
+            )
+            await fulfillment(of: [waitFinished], timeout: 6.0)
+            XCTFail("surface.wait did not register its working-state waiter before the deadline")
+            return
+        }
+        XCTAssertFalse(
+            waitObservation.withLock { $0.completed },
+            "Registration must be observed while client A is still pending"
+        )
+
+        let currentResponse: [String: Any]
+        do {
+            currentResponse = try await sendV2RequestAsync(
+                method: "surface.current",
+                params: ["workspace_id": workspaceID],
+                to: socketPath
+            )
+        } catch {
+            _ = fixture.tabManager.updateSurfaceAgentState(
+                tabId: fixture.workspace.id,
+                surfaceId: fixture.surfaceId,
+                state: .working,
+                source: .hooks
+            )
+            await fulfillment(of: [waitFinished], timeout: 6.0)
+            throw error
+        }
+        let currentResult = currentResponse["result"] as? [String: Any]
+        XCTAssertTrue(currentResponse["ok"] as? Bool == true)
+        XCTAssertEqual(currentResult?["workspace_id"] as? String, workspaceID)
+        XCTAssertEqual(currentResult?["surface_id"] as? String, surfaceID)
+        XCTAssertEqual(currentResult?["surface_type"] as? String, "terminal")
+        XCTAssertFalse(
+            waitObservation.withLock { $0.completed },
+            "Client A must remain pending when client B receives the exact surface snapshot"
+        )
+
+        let reportResponse: [String: Any]
+        do {
+            reportResponse = try await sendV2RequestAsync(
+                method: "surface.report_agent_state",
+                params: [
+                    "workspace_id": workspaceID,
+                    "surface_id": surfaceID,
+                    "state": "working",
+                    "source": "hooks",
+                ],
+                to: socketPath
+            )
+        } catch {
+            _ = fixture.tabManager.updateSurfaceAgentState(
+                tabId: fixture.workspace.id,
+                surfaceId: fixture.surfaceId,
+                state: .working,
+                source: .hooks
+            )
+            await fulfillment(of: [waitFinished], timeout: 6.0)
+            throw error
+        }
+        let reportResult = reportResponse["result"] as? [String: Any]
+        XCTAssertTrue(reportResponse["ok"] as? Bool == true)
+        XCTAssertEqual(reportResult?["workspace_id"] as? String, workspaceID)
+        XCTAssertEqual(reportResult?["surface_id"] as? String, surfaceID)
+        XCTAssertEqual(reportResult?["state"] as? String, "working")
+        XCTAssertEqual(reportResult?["source"] as? String, "hooks")
+
+        await fulfillment(of: [waitFinished], timeout: 6.0)
+
+        let observation = waitObservation.withLock { $0 }
+        XCTAssertNil(observation.errorDescription)
+        XCTAssertTrue(observation.completed)
+        XCTAssertTrue(observation.responseOK)
+        XCTAssertEqual(observation.condition, "agent_state")
+        XCTAssertEqual(observation.waited, true)
+        XCTAssertEqual(observation.state, "working")
+        XCTAssertEqual(observation.source, "hooks")
+        XCTAssertEqual(observation.workspaceID, workspaceID)
+        XCTAssertEqual(observation.surfaceID, surfaceID)
+        XCTAssertFalse(
+            AgentStateWaitRegistry.shared.hasPendingWaiterForTesting(
+                surfaceId: fixture.surfaceId,
+                condition: .working
+            )
+        )
+    }
+#endif
+
+    func testDuplicateSurfacePortsReportDoesNotRepublishWorkspace() async throws {
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
+        let tabManager = fixture.tabManager
+        let workspace = fixture.workspace
+        let surfaceId = fixture.surfaceId
+        let reportedPorts = [4242, 5173]
+
+        defer { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: makeSocketPath("ports-dedup"),
+            accessMode: .allowAll
+        )
+
+        _ = TerminalController.shared.v2SurfaceReportPorts(params: [
+            "workspace_id": workspace.id.uuidString,
+            "surface_id": surfaceId.uuidString,
+            "ports": reportedPorts,
+        ])
+        await drainMainQueue()
+        XCTAssertEqual(workspace.surfaceListeningPorts[surfaceId], reportedPorts)
+        XCTAssertEqual(workspace.listeningPorts, reportedPorts)
+
+        var publishCount = 0
+        let cancellable = workspace.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        _ = TerminalController.shared.v2SurfaceReportPorts(params: [
+            "workspace_id": workspace.id.uuidString,
+            "surface_id": surfaceId.uuidString,
+            "ports": reportedPorts,
+        ])
+        await drainMainQueue()
+
+        XCTAssertEqual(
+            publishCount,
+            0,
+            "An identical ports report must not invalidate every workspace observer"
+        )
+        XCTAssertEqual(workspace.surfaceListeningPorts[surfaceId], reportedPorts)
+        XCTAssertEqual(workspace.listeningPorts, reportedPorts)
+    }
+
+    func testSurfacePortsReportEnforcesInclusiveCountBoundThroughSocket() async throws {
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
+        let workspace = fixture.workspace
+        let surfaceId = fixture.surfaceId
+        let socketPath = makeSocketPath("ports-bound")
+        let maximumReportedPorts = 65_535
+        let acceptedPorts = Array(1...maximumReportedPorts)
+
+        defer { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+
+        TerminalController.shared.start(
+            tabManager: fixture.tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let acceptedResult = TerminalController.shared.v2SurfaceReportPorts(params: [
+            "workspace_id": workspace.id.uuidString,
+            "surface_id": surfaceId.uuidString,
+            "ports": acceptedPorts,
+        ])
+        guard case .ok = acceptedResult else {
+            XCTFail("The inclusive reported-port count limit must remain accepted")
+            return
+        }
+        await drainMainQueue()
+        XCTAssertTrue(
+            workspace.surfaceListeningPorts[surfaceId] == acceptedPorts,
+            "An accepted boundary-sized report must reach the surface telemetry model"
+        )
+
+        let oversizedResponse = try await sendV2RequestAsync(
+            method: "surface.report_ports",
+            params: [
+                "workspace_id": workspace.id.uuidString,
+                "surface_id": surfaceId.uuidString,
+                "ports": Array(repeating: 5173, count: maximumReportedPorts + 1),
+            ],
+            to: socketPath
+        )
+        let oversizedError = oversizedResponse["error"] as? [String: Any]
+        XCTAssertEqual(
+            oversizedResponse["ok"] as? Bool,
+            false,
+            "A report above the count limit must be rejected before model mutation"
+        )
+        XCTAssertEqual(oversizedError?["code"] as? String, "invalid_params")
+
+        await drainMainQueue()
+        XCTAssertTrue(
+            workspace.surfaceListeningPorts[surfaceId] == acceptedPorts,
+            "Rejected ingress must not replace the last accepted surface ports after main-queue work drains"
+        )
+    }
+
+    func testSurfacePortsReportCanonicalizesDuplicateUnorderedPortsThroughSocket() async throws {
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
+        let workspace = fixture.workspace
+        let surfaceId = fixture.surfaceId
+        let socketPath = makeSocketPath("ports-canonical")
+        let canonicalPorts = [3000, 5173]
+
+        defer { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+
+        TerminalController.shared.start(
+            tabManager: fixture.tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let response = try await sendV2RequestAsync(
+            method: "surface.report_ports",
+            params: [
+                "workspace_id": workspace.id.uuidString,
+                "surface_id": surfaceId.uuidString,
+                "ports": [5173, 3000, 5173],
+            ],
+            to: socketPath
+        )
+        let result = response["result"] as? [String: Any]
+        XCTAssertEqual(response["ok"] as? Bool, true, "Unexpected JSON-RPC response: \(response)")
+        XCTAssertEqual(
+            result?["ports"] as? [Int],
+            canonicalPorts,
+            "The acknowledgement must expose the set semantics of reported listening ports"
+        )
+        XCTAssertTrue(
+            waitUntil { workspace.surfaceListeningPorts[surfaceId] == canonicalPorts },
+            "Surface telemetry must store ports in the same canonical form returned to callers"
+        )
+        XCTAssertEqual(workspace.listeningPorts, canonicalPorts)
+    }
+
+    func testSurfacePortsReportPrunesOnlyChangedPublishedMetadata() async throws {
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
+        let tabManager = fixture.tabManager
+        let workspace = fixture.workspace
+        let surfaceId = fixture.surfaceId
+        let staleSurfaceId = UUID()
+        let reportedPorts = [4242, 5173]
+
+        defer { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: makeSocketPath("ports-prune"),
+            accessMode: .allowAll
+        )
+
+        _ = TerminalController.shared.v2SurfaceReportPorts(params: [
+            "workspace_id": workspace.id.uuidString,
+            "surface_id": surfaceId.uuidString,
+            "ports": reportedPorts,
+        ])
+        await drainMainQueue()
+
+        workspace.panelTitles[surfaceId] = "Valid surface"
+        workspace.panelTitles[staleSurfaceId] = "Closed surface"
+
+        var publishCount = 0
+        let cancellable = workspace.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        _ = TerminalController.shared.v2SurfaceReportPorts(params: [
+            "workspace_id": workspace.id.uuidString,
+            "surface_id": surfaceId.uuidString,
+            "ports": reportedPorts,
+        ])
+        await drainMainQueue()
+
+        XCTAssertNil(workspace.panelTitles[staleSurfaceId])
+        XCTAssertEqual(workspace.panelTitles[surfaceId], "Valid surface")
+        XCTAssertEqual(workspace.surfaceListeningPorts[surfaceId], reportedPorts)
+        XCTAssertEqual(workspace.listeningPorts, reportedPorts)
+        XCTAssertEqual(
+            publishCount,
+            1,
+            "Pruning one stale published collection must emit once without republishing unchanged collections"
+        )
+    }
+
+    func testSurfacePortsReportPrunesStaleTTYAndPortsWithoutDisturbingLiveSurface() async throws {
+        let fixture = try await makeIsolatedSurfaceTelemetryFixture()
+        let tabManager = fixture.tabManager
+        let workspace = fixture.workspace
+        let surfaceId = fixture.surfaceId
+        let staleSurfaceId = UUID()
+        let reportedPorts = [4242, 5173]
+
+        defer { try? FileManager.default.removeItem(at: fixture.directoryURL) }
+
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: makeSocketPath("tty-port-prune"),
+            accessMode: .allowAll
+        )
+
+        _ = TerminalController.shared.v2SurfaceReportPorts(params: [
+            "workspace_id": workspace.id.uuidString,
+            "surface_id": surfaceId.uuidString,
+            "ports": reportedPorts,
+        ])
+        await drainMainQueue()
+
+        workspace.surfaceTTYNames[surfaceId] = "ttys-live"
+        workspace.surfaceTTYNames[staleSurfaceId] = "ttys-stale"
+        workspace.surfaceListeningPorts[staleSurfaceId] = reportedPorts
+
+        var publishCount = 0
+        let cancellable = workspace.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        _ = TerminalController.shared.v2SurfaceReportPorts(params: [
+            "workspace_id": workspace.id.uuidString,
+            "surface_id": surfaceId.uuidString,
+            "ports": reportedPorts,
+        ])
+        await drainMainQueue()
+
+        XCTAssertNil(workspace.surfaceTTYNames[staleSurfaceId])
+        XCTAssertNil(workspace.surfaceListeningPorts[staleSurfaceId])
+        XCTAssertEqual(workspace.surfaceTTYNames[surfaceId], "ttys-live")
+        XCTAssertEqual(workspace.surfaceListeningPorts[surfaceId], reportedPorts)
+        XCTAssertEqual(workspace.listeningPorts, reportedPorts)
+        XCTAssertEqual(
+            publishCount,
+            1,
+            "Removing stale TTY bookkeeping and one stale published ports entry must emit only for the published change"
+        )
     }
 
     func testClearingEmptyWorkspaceTelemetryDoesNotRepublishWorkspace() async {
@@ -102,6 +741,107 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         )
     }
 
+    func testExplicitInvalidWorkspaceSelectorCannotReadOrMutateSelectedWorkspaceThroughSocket() async throws {
+        let socketPath = makeSocketPath("invalid-workspace")
+        let manager = TabManager()
+        let selectedWorkspace = try XCTUnwrap(manager.selectedWorkspace)
+        let otherWorkspace = manager.addWorkspace(select: false, eagerLoadTerminal: false)
+        let selectedStatus = SidebarStatusEntry(key: "selected-status", value: "selected-running")
+        let selectedMetadata = SidebarMetadataBlock(
+            key: "selected-metadata",
+            markdown: "selected-details",
+            priority: 7,
+            timestamp: Date(timeIntervalSince1970: 1)
+        )
+        let selectedLog = SidebarLogEntry(
+            message: "selected-log",
+            level: .warning,
+            source: "selected-source",
+            timestamp: Date(timeIntervalSince1970: 2)
+        )
+        let selectedProgress = SidebarProgressState(value: 0.75, label: "selected-progress")
+
+        selectedWorkspace.statusEntries[selectedStatus.key] = selectedStatus
+        selectedWorkspace.metadataBlocks[selectedMetadata.key] = selectedMetadata
+        selectedWorkspace.logEntries = [selectedLog]
+        selectedWorkspace.progress = selectedProgress
+        otherWorkspace.statusEntries["other-status"] = SidebarStatusEntry(
+            key: "other-status",
+            value: "other-running"
+        )
+        otherWorkspace.metadataBlocks["other-metadata"] = SidebarMetadataBlock(
+            key: "other-metadata",
+            markdown: "other-details",
+            priority: 3,
+            timestamp: Date(timeIntervalSince1970: 3)
+        )
+
+        XCTAssertEqual(manager.selectedTabId, selectedWorkspace.id)
+
+        TerminalController.shared.start(
+            tabManager: manager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        for invalidWorkspaceID in ["not-a-workspace-id", "workspace:0", UUID().uuidString] {
+            let response = try await sendV2RequestAsync(
+                method: "workspace.list_status",
+                params: ["workspace_id": invalidWorkspaceID],
+                to: socketPath
+            )
+
+            XCTAssertEqual(
+                response["ok"] as? Bool,
+                false,
+                "An explicit invalid workspace_id must not fall back to the selected workspace: \(response)"
+            )
+            XCTAssertNotNil(response["error"], "Expected an error response for \(invalidWorkspaceID)")
+            XCTAssertEqual(selectedWorkspace.statusEntries[selectedStatus.key], selectedStatus)
+        }
+
+        let clearResponse = try await sendV2RequestAsync(
+            method: "workspace.clear_meta_block",
+            params: [
+                "workspace_id": "not-a-workspace-id",
+                "key": selectedMetadata.key,
+            ],
+            to: socketPath
+        )
+
+        XCTAssertEqual(
+            clearResponse["ok"] as? Bool,
+            false,
+            "An explicit malformed workspace_id must not clear metadata from the selected workspace: \(clearResponse)"
+        )
+        XCTAssertNotNil(clearResponse["error"])
+        XCTAssertEqual(selectedWorkspace.metadataBlocks[selectedMetadata.key], selectedMetadata)
+
+        // Restore the sentinel independently so reset_sidebar proves its own destructive boundary
+        // even when the pre-fix clear_meta_block assertion above records a failure and removes it.
+        selectedWorkspace.metadataBlocks[selectedMetadata.key] = selectedMetadata
+
+        let resetResponse = try await sendV2RequestAsync(
+            method: "workspace.reset_sidebar",
+            params: ["workspace_id": "not-a-workspace-id"],
+            to: socketPath
+        )
+
+        XCTAssertEqual(
+            resetResponse["ok"] as? Bool,
+            false,
+            "An explicit malformed workspace_id must not reset the selected workspace: \(resetResponse)"
+        )
+        XCTAssertNotNil(resetResponse["error"])
+        XCTAssertEqual(selectedWorkspace.statusEntries[selectedStatus.key], selectedStatus)
+        XCTAssertEqual(selectedWorkspace.metadataBlocks[selectedMetadata.key], selectedMetadata)
+        XCTAssertEqual(selectedWorkspace.logEntries, [selectedLog])
+        XCTAssertEqual(selectedWorkspace.progress, selectedProgress)
+        XCTAssertEqual(otherWorkspace.statusEntries["other-status"]?.value, "other-running")
+        XCTAssertEqual(otherWorkspace.metadataBlocks["other-metadata"]?.markdown, "other-details")
+    }
+
     /// Regression for #6618: `shouldPublishShellActivity` used to record the state
     /// it was queried with (write-on-read). When a report arrived before the panel
     /// existed, that premature write suppressed every later identical report, so the
@@ -159,6 +899,120 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         XCTAssertEqual(try socketMode(at: restrictedPath), 0o600)
     }
 
+    func testStopRevokesEstablishedAllowAllClient() throws {
+        let socketPath = makeSocketPath("stop-revocation")
+        TerminalController.shared.start(
+            tabManager: TabManager(),
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let clientFD = try connectPersistentClient(to: socketPath)
+        defer { Darwin.close(clientFD) }
+
+        let initialResponse = try sendV2Ping(to: clientFD, id: 1)
+        XCTAssertTrue(
+            isSuccessfulV2Ping(initialResponse),
+            "The established client must reach the real JSON-RPC handler before revocation is tested"
+        )
+
+        TerminalController.shared.stop()
+
+        let postStopResponse = try? sendV2Ping(to: clientFD, id: 2, timeout: 1.0)
+        XCTAssertFalse(
+            postStopResponse.map(isSuccessfulV2Ping) ?? false,
+            "Stopping socket control must revoke established clients, not only reject new connections"
+        )
+    }
+
+    func testRestartOnSamePathRevokesOldClientAndAcceptsNewClient() throws {
+        let socketPath = makeSocketPath("restart-revocation")
+        let tabManager = TabManager()
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let oldClientFD = try connectPersistentClient(to: socketPath)
+        defer { Darwin.close(oldClientFD) }
+
+        let initialResponse = try sendV2Ping(to: oldClientFD, id: 1)
+        XCTAssertTrue(
+            isSuccessfulV2Ping(initialResponse),
+            "The old client must be established before the listener restarts"
+        )
+
+        TerminalController.shared.stop()
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let oldClientResponse = try? sendV2Ping(to: oldClientFD, id: 2, timeout: 1.0)
+        XCTAssertFalse(
+            oldClientResponse.map(isSuccessfulV2Ping) ?? false,
+            "Restarting the listener must not preserve authority held by a client from the previous listener"
+        )
+
+        let newClientResponse = try sendV2Request(
+            method: "system.ping",
+            params: [:],
+            to: socketPath
+        )
+        XCTAssertTrue(
+            isSuccessfulV2Ping(newClientResponse),
+            "The restarted listener must accept newly connected clients"
+        )
+    }
+
+    func testAccessModeChangeOnSamePathRevokesOldClientAndAcceptsNewClient() throws {
+        let socketPath = makeSocketPath("mode-revocation")
+        let tabManager = TabManager()
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        try waitForSocket(at: socketPath)
+
+        let oldClientFD = try connectPersistentClient(to: socketPath)
+        defer { Darwin.close(oldClientFD) }
+
+        let initialResponse = try sendV2Ping(to: oldClientFD, id: 1)
+        XCTAssertTrue(
+            isSuccessfulV2Ping(initialResponse),
+            "The old client must be established under the original access mode"
+        )
+
+        TerminalController.shared.start(
+            tabManager: tabManager,
+            socketPath: socketPath,
+            accessMode: .automation
+        )
+        try waitForSocket(at: socketPath)
+
+        let oldClientResponse = try? sendV2Ping(to: oldClientFD, id: 2, timeout: 1.0)
+        XCTAssertFalse(
+            oldClientResponse.map(isSuccessfulV2Ping) ?? false,
+            "Changing access mode must revoke authority granted by the previous mode"
+        )
+
+        let newClientResponse = try sendV2Request(
+            method: "system.ping",
+            params: [:],
+            to: socketPath
+        )
+        XCTAssertTrue(
+            isSuccessfulV2Ping(newClientResponse),
+            "The replacement listener must accept clients under the new access mode"
+        )
+    }
+
     func testPasswordModeRejectsUnauthenticatedCommands() throws {
         let socketPath = makeSocketPath("password-mode")
         let tabManager = TabManager()
@@ -182,6 +1036,111 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         XCTAssertEqual(wrongAuthThenPing.count, 2)
         XCTAssertTrue(wrongAuthThenPing[0].hasPrefix("ERROR:"))
         XCTAssertTrue(wrongAuthThenPing[1].hasPrefix("ERROR:"))
+    }
+
+    #if DEBUG
+    func testPasswordRotationRevokesAuthenticatedClientAndRequiresNewCredential() throws {
+        let oldPassword = "old-test-password"
+        let newPassword = "new-test-password"
+        let credentials = TestSocketPasswordCredentialHolder(password: oldPassword)
+        TerminalController.shared.setSocketPasswordCredentialSourceForTesting(credentials.source)
+
+        let socketPath = makeSocketPath("password-rotation")
+        TerminalController.shared.start(
+            tabManager: TabManager(),
+            socketPath: socketPath,
+            accessMode: .password
+        )
+        try waitForSocket(at: socketPath)
+
+        let oldClientFD = try connectPersistentClient(to: socketPath)
+        defer { Darwin.close(oldClientFD) }
+
+        let oldAuthentication = try sendV2Request(
+            method: "auth.login",
+            params: ["password": oldPassword],
+            id: 1,
+            to: oldClientFD
+        )
+        XCTAssertTrue(
+            isSuccessfulV2Authentication(oldAuthentication),
+            "The persistent client must authenticate with the credential active when it connects"
+        )
+        XCTAssertTrue(
+            isSuccessfulV2Ping(try sendV2Ping(to: oldClientFD, id: 2)),
+            "An authenticated password-mode client must be able to execute commands before rotation"
+        )
+
+        credentials.update(password: newPassword)
+        NotificationCenter.default.post(
+            name: SocketControlPasswordStore.didChangeNotification,
+            object: nil
+        )
+
+        let revokedClientResponse = try? sendV2Ping(to: oldClientFD, id: 3, timeout: 1.0)
+        XCTAssertFalse(
+            revokedClientResponse.map(isSuccessfulV2Ping) ?? false,
+            "Rotating the socket password must revoke clients authenticated with the previous credential"
+        )
+
+        let newClientFD = try connectPersistentClient(to: socketPath)
+        defer { Darwin.close(newClientFD) }
+
+        let staleAuthentication = try sendV2Request(
+            method: "auth.login",
+            params: ["password": oldPassword],
+            id: 4,
+            to: newClientFD
+        )
+        XCTAssertEqual(
+            v2ErrorCode(staleAuthentication),
+            "auth_failed",
+            "A new client must not authenticate with the credential that was rotated away"
+        )
+
+        let newAuthentication = try sendV2Request(
+            method: "auth.login",
+            params: ["password": newPassword],
+            id: 5,
+            to: newClientFD
+        )
+        XCTAssertTrue(
+            isSuccessfulV2Authentication(newAuthentication),
+            "A new client must authenticate with the replacement credential"
+        )
+        XCTAssertTrue(
+            isSuccessfulV2Ping(try sendV2Ping(to: newClientFD, id: 6)),
+            "A client authenticated after rotation must retain normal command access"
+        )
+    }
+    #endif
+
+    func testMobileBridgePingSucceedsWhileUnixSocketControlIsStopped() throws {
+        TerminalController.shared.stop()
+
+        let response = try sendPingThroughMobileBridgeHandler(id: 1)
+
+        XCTAssertTrue(
+            isSuccessfulV2Ping(response),
+            "Stopping Unix Socket Control must not disable an independently admitted Mobile Bridge session"
+        )
+    }
+
+    func testMobileBridgePingSucceedsWhileUnixSocketControlRequiresPassword() throws {
+        let socketPath = makeSocketPath("mobile-password")
+        TerminalController.shared.start(
+            tabManager: TabManager(),
+            socketPath: socketPath,
+            accessMode: .password
+        )
+        try waitForSocket(at: socketPath)
+
+        let response = try sendPingThroughMobileBridgeHandler(id: 1)
+
+        XCTAssertTrue(
+            isSuccessfulV2Ping(response),
+            "Unix Socket Control password policy must not leak into an independently admitted Mobile Bridge session"
+        )
     }
 
     func testSocketCommandPolicyDistinguishesFocusIntent() throws {
@@ -355,6 +1314,419 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         XCTAssertFalse(store.hasUnreadNotification(forTabId: workspace.id, surfaceId: focusedPanelId))
     }
 
+    /// High-frequency telemetry must acknowledge independently of the main queue so shell-side
+    /// reporters cannot stall behind UI work. The model mutation remains main-queue confined and
+    /// is applied only after that queue becomes available.
+    func testWorkspaceStatusTelemetryAcknowledgesWhileMainQueueIsOccupiedThenMutatesAfterRelease() async throws {
+        let socketPath = makeSocketPath("status-lane")
+        let manager = TabManager()
+        let workspace = manager.addWorkspace(select: true, eagerLoadTerminal: false)
+        let workspaceID = workspace.id.uuidString
+        let statusKey = "build"
+        let statusValue = "running"
+
+        defer {
+            if manager.tabs.contains(where: { $0.id == workspace.id }) {
+                manager.closeWorkspace(workspace)
+            }
+        }
+
+        TerminalController.shared.start(
+            tabManager: manager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        defer { TerminalController.shared.stop() }
+        try waitForSocket(at: socketPath)
+
+        let clientFD = try connectPersistentClient(to: socketPath)
+        defer {
+            _ = Darwin.shutdown(clientFD, SHUT_RDWR)
+            Darwin.close(clientFD)
+        }
+
+        let statusPublicationCount = OSAllocatedUnfairLock(initialState: 0)
+        let statusCancellable = workspace.$statusEntries.dropFirst().sink { _ in
+            statusPublicationCount.withLock { $0 += 1 }
+        }
+        defer { statusCancellable.cancel() }
+
+        let mainQueueEntered = DispatchSemaphore(value: 0)
+        let mainQueueRelease = DispatchSemaphore(value: 0)
+        defer { mainQueueRelease.signal() }
+
+        let mainQueueBlockReturned = OSAllocatedUnfairLock(initialState: false)
+        let mainQueueBlockTimedOut = OSAllocatedUnfairLock(initialState: false)
+        let observation = OSAllocatedUnfairLock(initialState: MainQueueBlockedTelemetryObservation())
+        let clientFinished = expectation(description: "telemetry response received while main queue is occupied")
+
+        DispatchQueue.main.async {
+            mainQueueEntered.signal()
+            let waitResult = mainQueueRelease.wait(timeout: .now() + 3.0)
+            mainQueueBlockTimedOut.withLock { $0 = waitResult == .timedOut }
+            mainQueueBlockReturned.withLock { $0 = true }
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer {
+                mainQueueRelease.signal()
+                clientFinished.fulfill()
+            }
+
+            guard mainQueueEntered.wait(timeout: .now() + 1.0) == .success else {
+                observation.withLock {
+                    $0.errorDescription = "Timed out waiting for the main-queue blocker to start"
+                }
+                return
+            }
+
+            do {
+                let response = try self.sendV2Request(
+                    method: "workspace.set_status",
+                    params: [
+                        "workspace_id": workspaceID,
+                        "key": statusKey,
+                        "value": statusValue,
+                    ],
+                    id: 1,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let result = response["result"] as? [String: Any]
+                let queueWasStillBlocked = !mainQueueBlockReturned.withLock { $0 }
+                let publicationsBeforeRelease = statusPublicationCount.withLock { $0 }
+
+                observation.withLock {
+                    $0.responseReceived = true
+                    $0.responseOK = response["ok"] as? Bool == true
+                    $0.responseWorkspaceID = result?["workspace_id"] as? String
+                    $0.responseKey = result?["key"] as? String
+                    $0.responseValue = result?["value"] as? String
+                    $0.mainQueueWasBlockedAtResponse = queueWasStillBlocked
+                    $0.statusPublicationCountBeforeRelease = publicationsBeforeRelease
+                }
+            } catch {
+                observation.withLock {
+                    $0.errorDescription = String(describing: error)
+                }
+            }
+        }
+
+        await fulfillment(of: [clientFinished], timeout: 5.0)
+
+        let responseObservation = observation.withLock { $0 }
+        XCTAssertNil(responseObservation.errorDescription)
+        XCTAssertTrue(
+            responseObservation.responseReceived,
+            "Telemetry must respond before a busy main queue is released"
+        )
+        XCTAssertTrue(responseObservation.responseOK)
+        XCTAssertEqual(responseObservation.responseWorkspaceID, workspaceID)
+        XCTAssertEqual(responseObservation.responseKey, statusKey)
+        XCTAssertEqual(responseObservation.responseValue, statusValue)
+        XCTAssertTrue(
+            responseObservation.mainQueueWasBlockedAtResponse,
+            "The optimistic response must not wait for main-queue model resolution"
+        )
+        XCTAssertEqual(
+            responseObservation.statusPublicationCountBeforeRelease,
+            0,
+            "The workspace mutation must remain deferred while the main queue is occupied"
+        )
+        XCTAssertFalse(
+            mainQueueBlockTimedOut.withLock { $0 },
+            "The client must release the bounded main-queue blocker after receiving its response"
+        )
+
+        await drainMainQueue()
+        XCTAssertEqual(
+            workspace.statusEntries[statusKey]?.value,
+            statusValue,
+            "The acknowledged telemetry mutation must apply after the main queue is released"
+        )
+    }
+
+    /// Exact UI/model queries must wait for the main queue so their response describes one
+    /// coherent point in time rather than racing window-context mutation.
+    func testWindowListWaitsForMainQueueBeforeReturningExactSnapshot() async throws {
+        let originalAppDelegate = AppDelegate.shared
+        let isolatedAppDelegate = AppDelegate()
+        defer {
+            if AppDelegate.shared === isolatedAppDelegate {
+                AppDelegate.shared = originalAppDelegate
+            }
+        }
+
+        let socketPath = makeSocketPath("window-snapshot")
+        TerminalController.shared.start(
+            tabManager: TabManager(),
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        defer { TerminalController.shared.stop() }
+        try waitForSocket(at: socketPath)
+
+        let clientFD = try connectPersistentClient(to: socketPath)
+        defer {
+            _ = Darwin.shutdown(clientFD, SHUT_RDWR)
+            Darwin.close(clientFD)
+        }
+        guard isSuccessfulV2Ping(try sendV2Ping(to: clientFD, id: 1)) else {
+            XCTFail("Expected the persistent Unix client handler to be ready before blocking main")
+            return
+        }
+        guard !TerminalController.shouldSuppressSocketCommandActivation() else {
+            XCTFail("Expected no socket command policy scope after the preflight response was consumed")
+            return
+        }
+
+        let mainQueueEntered = DispatchSemaphore(value: 0)
+        let mainQueueRelease = DispatchSemaphore(value: 0)
+        defer { mainQueueRelease.signal() }
+
+        let mainQueueBlockTimedOut = OSAllocatedUnfairLock(initialState: false)
+        let observation = OSAllocatedUnfairLock(initialState: MainQueueBlockedQueryObservation())
+        let clientFinished = expectation(description: "exact window snapshot received after main queue release")
+
+        DispatchQueue.main.async {
+            mainQueueEntered.signal()
+            let waitResult = mainQueueRelease.wait(timeout: .now() + 3.0)
+            mainQueueBlockTimedOut.withLock { $0 = waitResult == .timedOut }
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer {
+                mainQueueRelease.signal()
+                clientFinished.fulfill()
+            }
+
+            guard mainQueueEntered.wait(timeout: .now() + 1.0) == .success else {
+                observation.withLock {
+                    $0.errorDescription = "Timed out waiting for the main-queue blocker to start"
+                }
+                return
+            }
+
+            do {
+                try self.writeLine(
+                    #"{"jsonrpc":"2.0","id":2,"method":"window.list","params":{}}"#,
+                    to: clientFD
+                )
+            } catch {
+                observation.withLock { $0.errorDescription = String(describing: error) }
+                return
+            }
+
+            // This class serializes access to the shared TerminalController. With the preflight
+            // response fully consumed above, a positive policy depth identifies request 2's
+            // parsed dispatch scope without making that internal signal part of the assertion.
+            var dispatchEntryObserved = false
+            let dispatchEntryDeadline = DispatchTime.now() + 1.0
+            while !dispatchEntryObserved {
+                if TerminalController.shouldSuppressSocketCommandActivation() {
+                    dispatchEntryObserved = true
+                    break
+                }
+
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < dispatchEntryDeadline.uptimeNanoseconds else {
+                    observation.withLock {
+                        $0.errorDescription = "Timed out waiting for window.list to enter parsed dispatch"
+                    }
+                    break
+                }
+
+                let remainingNanoseconds = dispatchEntryDeadline.uptimeNanoseconds - now
+                let remainingMilliseconds = max(1, (remainingNanoseconds + 999_999) / 1_000_000)
+                var descriptor = pollfd(fd: clientFD, events: Int16(POLLIN), revents: 0)
+                let pollResult = Darwin.poll(
+                    &descriptor,
+                    1,
+                    Int32(min(UInt64(5), remainingMilliseconds))
+                )
+                if pollResult > 0 {
+                    observation.withLock { $0.responseArrivedWhileBlocked = true }
+                    break
+                }
+                if pollResult < 0, errno != EINTR {
+                    observation.withLock {
+                        $0.errorDescription = String(describing: self.posixError("poll while waiting for parsed dispatch"))
+                    }
+                    break
+                }
+            }
+
+            if dispatchEntryObserved {
+                do {
+                    try self.waitForReadable(
+                        from: clientFD,
+                        until: .now() + 0.2,
+                        operation: "checking for an off-main window.list response"
+                    )
+                    observation.withLock { $0.responseArrivedWhileBlocked = true }
+                } catch let error as NSError
+                    where error.domain == NSPOSIXErrorDomain && error.code == Int(ETIMEDOUT) {
+                    observation.withLock { $0.confirmedNoResponseWhileBlocked = true }
+                } catch {
+                    observation.withLock { $0.errorDescription = String(describing: error) }
+                }
+            }
+
+            mainQueueRelease.signal()
+
+            do {
+                let responseLine = try self.readLine(from: clientFD, timeout: 1.0)
+                let responseData = Data(responseLine.utf8)
+                guard let response = try JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                      let result = response["result"] as? [String: Any],
+                      let windows = result["windows"] as? [[String: Any]] else {
+                    observation.withLock {
+                        $0.errorDescription = "Expected a window.list JSON-RPC result"
+                    }
+                    return
+                }
+                observation.withLock {
+                    $0.responseOK = response["ok"] as? Bool == true
+                    $0.windowCount = windows.count
+                }
+            } catch {
+                observation.withLock { $0.errorDescription = String(describing: error) }
+            }
+        }
+
+        await fulfillment(of: [clientFinished], timeout: 5.0)
+
+        let queryObservation = observation.withLock { $0 }
+        XCTAssertNil(queryObservation.errorDescription)
+        XCTAssertTrue(
+            queryObservation.confirmedNoResponseWhileBlocked,
+            "An exact window snapshot must not return while the main queue is occupied"
+        )
+        XCTAssertFalse(
+            queryObservation.responseArrivedWhileBlocked,
+            "window.list must not read AppDelegate window state off-main"
+        )
+        XCTAssertTrue(queryObservation.responseOK)
+        XCTAssertEqual(
+            queryObservation.windowCount,
+            0,
+            "The isolated delegate's exact snapshot must contain no windows"
+        )
+        XCTAssertFalse(
+            mainQueueBlockTimedOut.withLock { $0 },
+            "The bounded main-queue blocker must be released by the client observation"
+        )
+    }
+
+    /// A successful subscribe response defines the stream boundary: clients must be able to
+    /// parse that acknowledgment before any asynchronous event frame. Events published after
+    /// the acknowledgment must then flow on the same connection without another request.
+    func testSubscribeAcknowledgmentPrecedesPushedEvents() throws {
+        var sockets: [Int32] = [-1, -1]
+        let socketPairResult = sockets.withUnsafeMutableBufferPointer { buffer in
+            Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, buffer.baseAddress)
+        }
+        guard socketPairResult == 0 else {
+            throw posixError("socketpair(AF_UNIX)")
+        }
+
+        let connection = SocketConnection(socket: sockets[0])
+        defer {
+            connection.teardown()
+            _ = Darwin.shutdown(sockets[0], SHUT_RDWR)
+            _ = Darwin.shutdown(sockets[1], SHUT_RDWR)
+            Darwin.close(sockets[0])
+            Darwin.close(sockets[1])
+        }
+
+        let subscribeResult = TerminalController.shared.v2Subscribe(
+            params: ["classes": ["workspace_lifecycle"]],
+            connection: connection
+        )
+        guard case .ok(let resultPayload) = subscribeResult else {
+            XCTFail("Expected workspace_lifecycle subscription to be accepted")
+            return
+        }
+
+        let acknowledgmentObject: [String: Any] = [
+            "id": 1,
+            "ok": true,
+            "result": resultPayload,
+        ]
+        let acknowledgmentData = try JSONSerialization.data(withJSONObject: acknowledgmentObject)
+        let acknowledgmentLine = try XCTUnwrap(String(data: acknowledgmentData, encoding: .utf8))
+
+        let beforeAcknowledgmentWorkspaceID = UUID()
+        SocketEventBroadcaster.shared.publishWorkspaceLifecycle(
+            kind: "before_ack",
+            workspaceId: beforeAcknowledgmentWorkspaceID,
+            title: nil
+        )
+
+        var frameBeforeAcknowledgment: [String: Any]?
+        do {
+            try waitForReadable(
+                from: sockets[1],
+                until: .now() + 1.0,
+                operation: "checking for an event before the subscribe acknowledgment"
+            )
+            let line = try readLine(from: sockets[1], timeout: 1.0)
+            frameBeforeAcknowledgment = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            )
+        } catch let error as NSError
+            where error.domain == NSPOSIXErrorDomain && error.code == Int(ETIMEDOUT) {
+            frameBeforeAcknowledgment = nil
+        }
+
+        XCTAssertTrue(
+            connection.writeLine(acknowledgmentLine),
+            "The real subscription acknowledgment must be writable to the live connection"
+        )
+
+        let afterAcknowledgmentWorkspaceID = UUID()
+        SocketEventBroadcaster.shared.publishWorkspaceLifecycle(
+            kind: "after_ack",
+            workspaceId: afterAcknowledgmentWorkspaceID,
+            title: nil
+        )
+
+        let firstLineAfterAcknowledgmentWrite = try readLine(from: sockets[1], timeout: 1.0)
+        let firstFrameAfterAcknowledgmentWrite = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(firstLineAfterAcknowledgmentWrite.utf8)) as? [String: Any]
+        )
+
+        XCTAssertNil(
+            frameBeforeAcknowledgment,
+            "No pushed event may overtake a successful subscribe acknowledgment"
+        )
+        XCTAssertEqual(firstFrameAfterAcknowledgmentWrite["id"] as? Int, 1)
+        XCTAssertEqual(firstFrameAfterAcknowledgmentWrite["ok"] as? Bool, true)
+        XCTAssertNil(
+            firstFrameAfterAcknowledgmentWrite["event"],
+            "The first stream frame must be the subscribe acknowledgment, not an event"
+        )
+
+        let nextLine = try readLine(from: sockets[1], timeout: 1.0)
+        var postAcknowledgmentFrame = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(nextLine.utf8)) as? [String: Any]
+        )
+        if postAcknowledgmentFrame["workspace_id"] as? String != afterAcknowledgmentWorkspaceID.uuidString {
+            let followingLine = try readLine(from: sockets[1], timeout: 1.0)
+            postAcknowledgmentFrame = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(followingLine.utf8)) as? [String: Any]
+            )
+        }
+
+        XCTAssertEqual(postAcknowledgmentFrame["event"] as? String, "workspace_lifecycle")
+        XCTAssertEqual(postAcknowledgmentFrame["kind"] as? String, "after_ack")
+        XCTAssertEqual(
+            postAcknowledgmentFrame["workspace_id"] as? String,
+            afterAcknowledgmentWorkspaceID.uuidString,
+            "An event published after acknowledgment must flow on the activated subscription"
+        )
+    }
+
     /// Regression for #82: `surface.report_tty`/`surface.ports_kick` used to block the socket
     /// thread with `DispatchQueue.main.sync` so the response could echo the surface resolved on
     /// main (e.g. falling back to the focused surface when `surface_id` is omitted). They now
@@ -466,6 +1838,369 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         // nonexistent surface.
         waitUntil(timeout: 0.5) { false }
         XCTAssertTrue(workspace.surfaceTTYNames.isEmpty)
+    }
+
+    /// Unknown handles are rejected from the telemetry lane's existing handle cache. Validation
+    /// must not fall back to a generic main-actor handle refresh, or malformed telemetry can
+    /// stall behind unrelated UI work instead of failing promptly with an actionable field name.
+    func testCacheOnlyTelemetryRejectsUnknownHandlesWhileMainQueueIsOccupied() async throws {
+        let socketPath = makeSocketPath("relay-handles")
+        let manager = TabManager()
+        let workspace = manager.addWorkspace(select: true, eagerLoadTerminal: false)
+        let workspaceID = workspace.id.uuidString
+
+        defer {
+            if manager.tabs.contains(where: { $0.id == workspace.id }) {
+                manager.closeWorkspace(workspace)
+            }
+        }
+
+        TerminalController.shared.start(
+            tabManager: manager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        defer { TerminalController.shared.stop() }
+        try waitForSocket(at: socketPath)
+
+        let clientFD = try connectPersistentClient(to: socketPath)
+        defer {
+            _ = Darwin.shutdown(clientFD, SHUT_RDWR)
+            Darwin.close(clientFD)
+        }
+        guard isSuccessfulV2Ping(try sendV2Ping(to: clientFD, id: 1)) else {
+            XCTFail("Expected the persistent Unix client handler to be ready before blocking main")
+            return
+        }
+
+        let mainQueueEntered = DispatchSemaphore(value: 0)
+        let mainQueueRelease = DispatchSemaphore(value: 0)
+        defer { mainQueueRelease.signal() }
+
+        let mainQueueBlockReturned = OSAllocatedUnfairLock(initialState: false)
+        let mainQueueBlockTimedOut = OSAllocatedUnfairLock(initialState: false)
+        let observation = OSAllocatedUnfairLock(initialState: MainQueueBlockedInvalidTelemetryObservation())
+        let clientFinished = expectation(description: "unknown telemetry handles rejected while main queue is occupied")
+
+        DispatchQueue.main.async {
+            mainQueueEntered.signal()
+            let waitResult = mainQueueRelease.wait(timeout: .now() + 3.0)
+            mainQueueBlockTimedOut.withLock { $0 = waitResult == .timedOut }
+            mainQueueBlockReturned.withLock { $0 = true }
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer {
+                mainQueueRelease.signal()
+                clientFinished.fulfill()
+            }
+
+            guard mainQueueEntered.wait(timeout: .now() + 1.0) == .success else {
+                observation.withLock {
+                    $0.errorDescription = "Timed out waiting for the main-queue blocker to start"
+                }
+                return
+            }
+
+            do {
+                let reportTTYResponse = try self.sendV2Request(
+                    method: "surface.report_tty",
+                    params: [
+                        "workspace_id": workspaceID,
+                        "surface_id": "surface:0",
+                        "tty_name": "ttys999",
+                    ],
+                    id: 2,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let reportTTYError = reportTTYResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.reportTTYResponseOK = reportTTYResponse["ok"] as? Bool
+                    $0.reportTTYErrorCode = reportTTYError?["code"] as? String
+                    $0.reportTTYErrorMessage = reportTTYError?["message"] as? String
+                    $0.reportTTYResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+
+                let portsKickResponse = try self.sendV2Request(
+                    method: "surface.ports_kick",
+                    params: ["workspace_id": "workspace:0"],
+                    id: 3,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let portsKickError = portsKickResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.portsKickResponseOK = portsKickResponse["ok"] as? Bool
+                    $0.portsKickErrorCode = portsKickError?["code"] as? String
+                    $0.portsKickErrorMessage = portsKickError?["message"] as? String
+                    $0.portsKickResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+
+                let reportPWDResponse = try self.sendV2Request(
+                    method: "surface.report_pwd",
+                    params: [
+                        "workspace_id": workspaceID,
+                        "surface_id": "surface:0",
+                        "path": "/tmp/programa-cache-only-telemetry",
+                    ],
+                    id: 4,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let reportPWDError = reportPWDResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.reportPWDResponseOK = reportPWDResponse["ok"] as? Bool
+                    $0.reportPWDErrorCode = reportPWDError?["code"] as? String
+                    $0.reportPWDErrorMessage = reportPWDError?["message"] as? String
+                    $0.reportPWDResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+
+                let reportShellStateResponse = try self.sendV2Request(
+                    method: "surface.report_shell_state",
+                    params: [
+                        "workspace_id": "workspace:0",
+                        "surface_id": UUID().uuidString,
+                        "state": "busy",
+                    ],
+                    id: 5,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let reportShellStateError = reportShellStateResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.reportShellStateResponseOK = reportShellStateResponse["ok"] as? Bool
+                    $0.reportShellStateErrorCode = reportShellStateError?["code"] as? String
+                    $0.reportShellStateErrorMessage = reportShellStateError?["message"] as? String
+                    $0.reportShellStateResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+
+                let reportAgentStateResponse = try self.sendV2Request(
+                    method: "surface.report_agent_state",
+                    params: [
+                        "workspace_id": workspaceID,
+                        "surface_id": "surface:0",
+                        "state": "blocked",
+                        "source": "hooks",
+                    ],
+                    id: 6,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let reportAgentStateError = reportAgentStateResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.reportAgentStateResponseOK = reportAgentStateResponse["ok"] as? Bool
+                    $0.reportAgentStateErrorCode = reportAgentStateError?["code"] as? String
+                    $0.reportAgentStateErrorMessage = reportAgentStateError?["message"] as? String
+                    $0.reportAgentStateResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+
+                let clearAgentStateResponse = try self.sendV2Request(
+                    method: "surface.clear_agent_state",
+                    params: [
+                        "workspace_id": "workspace:0",
+                        "surface_id": UUID().uuidString,
+                    ],
+                    id: 7,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let clearAgentStateError = clearAgentStateResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.clearAgentStateResponseOK = clearAgentStateResponse["ok"] as? Bool
+                    $0.clearAgentStateErrorCode = clearAgentStateError?["code"] as? String
+                    $0.clearAgentStateErrorMessage = clearAgentStateError?["message"] as? String
+                    $0.clearAgentStateResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+
+                let setAgentPIDResponse = try self.sendV2Request(
+                    method: "workspace.set_agent_pid",
+                    params: [
+                        "workspace_id": "workspace:0",
+                        "key": "cache-only-agent",
+                        "pid": 42,
+                    ],
+                    id: 8,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let setAgentPIDError = setAgentPIDResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.setAgentPIDResponseOK = setAgentPIDResponse["ok"] as? Bool
+                    $0.setAgentPIDErrorCode = setAgentPIDError?["code"] as? String
+                    $0.setAgentPIDErrorMessage = setAgentPIDError?["message"] as? String
+                    $0.setAgentPIDResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+
+                let clearAgentPIDResponse = try self.sendV2Request(
+                    method: "workspace.clear_agent_pid",
+                    params: [
+                        "workspace_id": "workspace:0",
+                        "key": "cache-only-agent",
+                    ],
+                    id: 9,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let clearAgentPIDError = clearAgentPIDResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.clearAgentPIDResponseOK = clearAgentPIDResponse["ok"] as? Bool
+                    $0.clearAgentPIDErrorCode = clearAgentPIDError?["code"] as? String
+                    $0.clearAgentPIDErrorMessage = clearAgentPIDError?["message"] as? String
+                    $0.clearAgentPIDResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+
+                let setStatusResponse = try self.sendV2Request(
+                    method: "workspace.set_status",
+                    params: [
+                        "workspace_id": "workspace:0",
+                        "key": "cache-only-status",
+                        "value": "running",
+                    ],
+                    id: 10,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let setStatusError = setStatusResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.setStatusResponseOK = setStatusResponse["ok"] as? Bool
+                    $0.setStatusErrorCode = setStatusError?["code"] as? String
+                    $0.setStatusErrorMessage = setStatusError?["message"] as? String
+                    $0.setStatusResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+
+                let clearStatusResponse = try self.sendV2Request(
+                    method: "workspace.clear_status",
+                    params: [
+                        "workspace_id": "workspace:0",
+                        "key": "cache-only-status",
+                    ],
+                    id: 11,
+                    to: clientFD,
+                    timeout: 1.0
+                )
+                let clearStatusError = clearStatusResponse["error"] as? [String: Any]
+                observation.withLock {
+                    $0.clearStatusResponseOK = clearStatusResponse["ok"] as? Bool
+                    $0.clearStatusErrorCode = clearStatusError?["code"] as? String
+                    $0.clearStatusErrorMessage = clearStatusError?["message"] as? String
+                    $0.clearStatusResponseWhileBlocked = !mainQueueBlockReturned.withLock { $0 }
+                }
+            } catch {
+                observation.withLock {
+                    $0.errorDescription = String(describing: error)
+                }
+            }
+        }
+
+        await fulfillment(of: [clientFinished], timeout: 5.0)
+
+        let responseObservation = observation.withLock { $0 }
+        XCTAssertNil(responseObservation.errorDescription)
+        XCTAssertEqual(responseObservation.reportTTYResponseOK, false)
+        XCTAssertEqual(responseObservation.reportTTYErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.reportTTYErrorMessage?.contains("surface_id") == true,
+            "The validation error must identify the unknown surface_id"
+        )
+        XCTAssertTrue(
+            responseObservation.reportTTYResponseWhileBlocked,
+            "surface.report_tty must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertEqual(responseObservation.portsKickResponseOK, false)
+        XCTAssertEqual(responseObservation.portsKickErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.portsKickErrorMessage?.contains("workspace_id") == true,
+            "The validation error must identify the unknown workspace_id"
+        )
+        XCTAssertTrue(
+            responseObservation.portsKickResponseWhileBlocked,
+            "surface.ports_kick must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertEqual(responseObservation.reportPWDResponseOK, false)
+        XCTAssertEqual(responseObservation.reportPWDErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.reportPWDErrorMessage?.contains("surface_id") == true,
+            "The validation error must identify the unknown surface_id"
+        )
+        XCTAssertTrue(
+            responseObservation.reportPWDResponseWhileBlocked,
+            "surface.report_pwd must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertEqual(responseObservation.reportShellStateResponseOK, false)
+        XCTAssertEqual(responseObservation.reportShellStateErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.reportShellStateErrorMessage?.contains("workspace_id") == true,
+            "The validation error must identify the unknown workspace_id"
+        )
+        XCTAssertTrue(
+            responseObservation.reportShellStateResponseWhileBlocked,
+            "surface.report_shell_state must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertEqual(responseObservation.reportAgentStateResponseOK, false)
+        XCTAssertEqual(responseObservation.reportAgentStateErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.reportAgentStateErrorMessage?.contains("surface_id") == true,
+            "The validation error must identify the unknown surface_id"
+        )
+        XCTAssertTrue(
+            responseObservation.reportAgentStateResponseWhileBlocked,
+            "surface.report_agent_state must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertEqual(responseObservation.clearAgentStateResponseOK, false)
+        XCTAssertEqual(responseObservation.clearAgentStateErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.clearAgentStateErrorMessage?.contains("workspace_id") == true,
+            "The validation error must identify the unknown workspace_id"
+        )
+        XCTAssertTrue(
+            responseObservation.clearAgentStateResponseWhileBlocked,
+            "surface.clear_agent_state must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertEqual(responseObservation.setAgentPIDResponseOK, false)
+        XCTAssertEqual(responseObservation.setAgentPIDErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.setAgentPIDErrorMessage?.contains("workspace_id") == true,
+            "The validation error must identify the unknown workspace_id"
+        )
+        XCTAssertTrue(
+            responseObservation.setAgentPIDResponseWhileBlocked,
+            "workspace.set_agent_pid must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertEqual(responseObservation.clearAgentPIDResponseOK, false)
+        XCTAssertEqual(responseObservation.clearAgentPIDErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.clearAgentPIDErrorMessage?.contains("workspace_id") == true,
+            "The validation error must identify the unknown workspace_id"
+        )
+        XCTAssertTrue(
+            responseObservation.clearAgentPIDResponseWhileBlocked,
+            "workspace.clear_agent_pid must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertEqual(responseObservation.setStatusResponseOK, false)
+        XCTAssertEqual(responseObservation.setStatusErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.setStatusErrorMessage?.contains("workspace_id") == true,
+            "The validation error must identify the unknown workspace_id"
+        )
+        XCTAssertTrue(
+            responseObservation.setStatusResponseWhileBlocked,
+            "workspace.set_status must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertEqual(responseObservation.clearStatusResponseOK, false)
+        XCTAssertEqual(responseObservation.clearStatusErrorCode, "invalid_params")
+        XCTAssertTrue(
+            responseObservation.clearStatusErrorMessage?.contains("workspace_id") == true,
+            "The validation error must identify the unknown workspace_id"
+        )
+        XCTAssertTrue(
+            responseObservation.clearStatusResponseWhileBlocked,
+            "workspace.clear_status must reject an unknown cached handle without waiting for main"
+        )
+        XCTAssertFalse(
+            mainQueueBlockTimedOut.withLock { $0 },
+            "All ten responses must arrive before the bounded main-queue blocker times out"
+        )
     }
 
     func testWorkspaceCloseRejectsPinnedWorkspace() async throws {
@@ -1104,6 +2839,66 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         XCTAssertEqual(workspace.remoteDaemonStatus.detail, exactDiagnostic)
     }
 
+    func testNewAgentRefreshInvalidatesResultsAlreadyValidatedForPublication() async {
+        let manager = TabManager()
+        let workspace = manager.addWorkspace(select: true, eagerLoadTerminal: false)
+        let workspaceId = workspace.id
+        let gate = AgentPortPublicationGate()
+        let staleNonemptyPublication = OSAllocatedUnfairLock(initialState: false)
+        let validationPaused = expectation(description: "old agent ports validate before the newer refresh")
+        let emptyPublication = expectation(description: "current empty agent ports publish")
+        let oldApplyCompleted = expectation(description: "old validated agent ports finish the apply phase")
+        let scanner = PortScanner(
+            observesAppVisibility: false,
+            agentScanOverride: { workspaceIds, agentPIDsByWorkspace in
+                guard !agentPIDsByWorkspace.isEmpty else { return [:] }
+                return Dictionary(uniqueKeysWithValues: workspaceIds.map { ($0, Set([5173])) })
+            },
+            agentResultsValidatedHook: { results in
+                guard results.contains(where: { !$0.1.isEmpty }) else { return }
+                validationPaused.fulfill()
+                await gate.pause()
+            },
+            agentResultsApplyCompletedHook: { results in
+                guard results.contains(where: { $0.0 == workspaceId && !$0.1.isEmpty }) else { return }
+                oldApplyCompleted.fulfill()
+            }
+        )
+        scanner.onAgentPortsUpdated = { publishedWorkspaceId, ports in
+            guard publishedWorkspaceId == workspace.id else { return }
+            if !ports.isEmpty {
+                staleNonemptyPublication.withLock { $0 = true }
+            }
+            if workspace.agentListeningPorts != ports {
+                workspace.agentListeningPorts = ports
+                workspace.recomputeListeningPorts()
+            }
+            if ports.isEmpty {
+                emptyPublication.fulfill()
+            }
+        }
+
+        XCTAssertTrue(workspace.setSidebarAgentPID(key: "test-agent", pid: 42))
+        workspace.agentListeningPorts = [4242]
+        workspace.recomputeListeningPorts()
+        XCTAssertEqual(workspace.agentListeningPorts, [4242])
+        XCTAssertEqual(workspace.listeningPorts, [4242])
+
+        scanner.refreshAgentPorts(workspaceId: workspaceId, agentPIDs: [42])
+        await fulfillment(of: [validationPaused], timeout: 2.0)
+
+        workspace.resetSidebarContext(reason: "test-agent-port-reset", portScanner: scanner)
+        await fulfillment(of: [emptyPublication], timeout: 2.0)
+
+        await gate.release()
+        await fulfillment(of: [oldApplyCompleted], timeout: 2.0)
+
+        XCTAssertFalse(staleNonemptyPublication.withLock { $0 })
+        XCTAssertTrue(workspace.agentPIDs.isEmpty)
+        XCTAssertTrue(workspace.agentListeningPorts.isEmpty)
+        XCTAssertTrue(workspace.listeningPorts.isEmpty)
+    }
+
     private func waitForSocket(at path: String, timeout: TimeInterval = 5.0) throws {
         let expectation = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in
@@ -1270,6 +3065,138 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         return fd
     }
 
+    private nonisolated func connectPersistentClient(to socketPath: String) throws -> Int32 {
+        let fd = try connect(to: socketPath)
+        do {
+            try suppressSIGPIPE(on: fd)
+        } catch {
+            Darwin.close(fd)
+            throw error
+        }
+        return fd
+    }
+
+    private nonisolated func suppressSIGPIPE(on fd: Int32) throws {
+        var enabled: Int32 = 1
+        let result = withUnsafePointer(to: &enabled) { pointer in
+            Darwin.setsockopt(
+                fd,
+                SOL_SOCKET,
+                SO_NOSIGPIPE,
+                pointer,
+                socklen_t(MemoryLayout<Int32>.size)
+            )
+        }
+        guard result == 0 else {
+            throw posixError("setsockopt(SO_NOSIGPIPE)")
+        }
+    }
+
+    private nonisolated func sendV2Ping(
+        to fd: Int32,
+        id: Int,
+        timeout: TimeInterval = 5.0
+    ) throws -> [String: Any] {
+        try sendV2Request(
+            method: "system.ping",
+            params: [:],
+            id: id,
+            to: fd,
+            timeout: timeout
+        )
+    }
+
+    private nonisolated func sendV2Request(
+        method: String,
+        params: [String: Any],
+        id: Int,
+        to fd: Int32,
+        timeout: TimeInterval = 5.0
+    ) throws -> [String: Any] {
+        let payload: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params
+        ]
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        guard let line = String(data: data, encoding: .utf8) else {
+            throw NSError(domain: NSCocoaErrorDomain, code: 0, userInfo: [
+                NSLocalizedDescriptionKey: "Failed to encode JSON-RPC request"
+            ])
+        }
+        try writeLine(line, to: fd)
+
+        let responseLine = try readLine(from: fd, timeout: timeout)
+        let responseData = Data(responseLine.utf8)
+        return try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+            "Expected JSON-RPC response object"
+        )
+    }
+
+    private nonisolated func isSuccessfulV2Ping(_ response: [String: Any]) -> Bool {
+        guard response["ok"] as? Bool == true,
+              let result = response["result"] as? [String: Any]
+        else { return false }
+        return result["pong"] as? Bool == true
+    }
+
+    private nonisolated func isSuccessfulV2Authentication(_ response: [String: Any]) -> Bool {
+        guard response["ok"] as? Bool == true,
+              let result = response["result"] as? [String: Any]
+        else { return false }
+        return result["authenticated"] as? Bool == true
+    }
+
+    private nonisolated func v2ErrorCode(_ response: [String: Any]) -> String? {
+        guard response["ok"] as? Bool == false,
+              let error = response["error"] as? [String: Any]
+        else { return nil }
+        return error["code"] as? String
+    }
+
+    private nonisolated func sendPingThroughMobileBridgeHandler(id: Int) throws -> [String: Any] {
+        let method = "system.ping"
+        guard MobileBridgeMethodAllowList.isAllowed(method) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTSUP), userInfo: [
+                NSLocalizedDescriptionKey: "system.ping is not admitted by the Mobile Bridge method allow-list"
+            ])
+        }
+
+        var sockets: [Int32] = [-1, -1]
+        let socketPairResult = sockets.withUnsafeMutableBufferPointer { buffer in
+            Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, buffer.baseAddress)
+        }
+        guard socketPairResult == 0 else {
+            throw posixError("socketpair(AF_UNIX)")
+        }
+
+        let localFD = sockets[0]
+        let handlerFD = sockets[1]
+        do {
+            try suppressSIGPIPE(on: localFD)
+        } catch {
+            Darwin.close(localFD)
+            Darwin.close(handlerFD)
+            throw error
+        }
+        defer {
+            _ = Darwin.shutdown(localFD, SHUT_RDWR)
+            Darwin.close(localFD)
+        }
+
+        Thread.detachNewThread {
+            TerminalController.shared.handleClient(
+                handlerFD,
+                peerPid: getpid(),
+                source: .mobileBridge
+            )
+        }
+
+        return try sendV2Ping(to: localFD, id: id)
+    }
+
     private nonisolated func writeLine(_ command: String, to fd: Int32) throws {
         let payload = Array((command + "\n").utf8)
         var offset = 0
@@ -1295,7 +3222,19 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
             guard count >= 0 else {
                 throw posixError("read")
             }
-            if count == 0 { break }
+            if count == 0 {
+                if data.isEmpty {
+                    // The peer closed the connection before sending any bytes for this
+                    // line (e.g. a revoked client after a password rotation). Surface this
+                    // distinctly from a legitimate empty response so callers using `try?`
+                    // (to tolerate revocation) don't trip an unconditional XCTUnwrap
+                    // failure on the caller side when they parse this as JSON.
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET), userInfo: [
+                        NSLocalizedDescriptionKey: "Connection closed before a response line was received",
+                    ])
+                }
+                break
+            }
             if buffer[0] == 0x0A { break }
             data.append(buffer[0])
         }

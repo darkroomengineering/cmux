@@ -1868,9 +1868,6 @@ final class BrowserPanel: Panel, ObservableObject {
         configuration: WKWebViewConfiguration,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        // Share the opener's process pool so popups (e.g. OAuth flows) participate in the
-        // same renderer/process group as the opener rather than defaulting to a fresh one.
-        configuration.processPool = webView.configuration.processPool
         let controller = BrowserPopupWindowController(
             configuration: configuration,
             windowFeatures: windowFeatures,

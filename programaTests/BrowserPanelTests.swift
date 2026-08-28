@@ -392,6 +392,983 @@ final class BrowserPanelReactGrabBridgeTests: XCTestCase {
 
 
 @MainActor
+final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
+    private func snapshot(
+        _ panel: BrowserPanel,
+        interactiveOnly: Bool = false,
+        includeCursor: Bool = false,
+        compact: Bool = false,
+        maxDepth: Int = 64,
+        scopeSelector: String? = nil
+    ) async throws -> [String: Any] {
+        let script = TerminalController.shared.v2BrowserSnapshotJavaScript(
+            interactiveOnly: interactiveOnly,
+            includeCursor: includeCursor,
+            compact: compact,
+            maxDepth: maxDepth,
+            scopeSelector: scopeSelector
+        )
+        let value = try await panel.evaluateJavaScript(script)
+        return try XCTUnwrap(value as? [String: Any])
+    }
+
+    /// Runs the same isolated-world collector seam used by `browser.snapshot` after the page
+    /// has had a chance to replace page-world globals.
+    private func productionSnapshot(
+        _ panel: BrowserPanel,
+        interactiveOnly: Bool = false,
+        includeCursor: Bool = false,
+        compact: Bool = false,
+        maxDepth: Int = 64,
+        scopeSelector: String? = nil
+    ) throws -> [String: Any] {
+        let script = TerminalController.shared.v2BrowserSnapshotJavaScript(
+            interactiveOnly: interactiveOnly,
+            includeCursor: includeCursor,
+            compact: compact,
+            maxDepth: maxDepth,
+            scopeSelector: scopeSelector
+        )
+        return try XCTUnwrap(
+            TerminalController.shared.v2BrowserCollectSnapshotJavaScriptResult(
+                webView: panel.webView,
+                surfaceId: panel.id,
+                script: script
+            )
+        )
+    }
+
+    private func assertGeneratedHTMLIsBounded(
+        _ panel: BrowserPanel,
+        setupScript: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        _ = try await panel.evaluateJavaScript(setupScript)
+        let fullHTMLValue = try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)") as? String
+        let fullHTML = try XCTUnwrap(fullHTMLValue, file: file, line: line)
+        XCTAssertGreaterThan(fullHTML.count, TerminalController.v2BrowserSnapshotHTMLCharacterLimit, file: file, line: line)
+
+        let result = try await snapshot(panel)
+        let html = try XCTUnwrap(result["html"] as? String, file: file, line: line)
+        XCTAssertEqual(html.count, TerminalController.v2BrowserSnapshotHTMLCharacterLimit, file: file, line: line)
+        XCTAssertEqual(
+            html,
+            String(fullHTML.prefix(TerminalController.v2BrowserSnapshotHTMLCharacterLimit)),
+            "The bounded serializer must preserve the exact deterministic document prefix",
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(result["html_truncated"] as? Bool, true, file: file, line: line)
+    }
+
+    private func entries(in result: [String: Any]) throws -> [[String: Any]] {
+        try XCTUnwrap(result["entries"] as? [[String: Any]])
+    }
+
+    private func reasons(in result: [String: Any]) -> [String] {
+        result["truncation_reasons"] as? [String] ?? []
+    }
+
+    private func javaScriptStringLiteral(_ value: String) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: [value])
+        return String(try XCTUnwrap(String(data: data, encoding: .utf8)).dropFirst().dropLast())
+    }
+
+    func testSnapshotStopsAfterTheBoundedNodePrefixBeforeAButton() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.replaceChildren();
+            const fragment = document.createDocumentFragment();
+            for (let i = 0; i < 4095; i += 1) fragment.appendChild(document.createElement('span'));
+            const button = document.createElement('button');
+            button.id = 'after-node-budget';
+            button.textContent = 'Too late';
+            fragment.appendChild(button);
+            document.body.appendChild(fragment);
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+
+        XCTAssertEqual(TerminalController.v2BrowserSnapshotNodeVisitLimit, 4_096)
+        XCTAssertEqual(result["visited_nodes"] as? Int, 4_096)
+        XCTAssertEqual(result["node_limit"] as? Int, 4_096)
+        XCTAssertEqual(result["truncated"] as? Bool, true)
+        XCTAssertEqual(reasons(in: result), ["node_limit"])
+        XCTAssertFalse(try entries(in: result).contains { $0["selector"] as? String == "#after-node-budget" })
+    }
+
+    func testCursorModeCannotRestartTraversalBeyondTheNodeBudget() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.replaceChildren();
+            const fragment = document.createDocumentFragment();
+            for (let i = 0; i < 4095; i += 1) fragment.appendChild(document.createElement('span'));
+            const cursorOnly = document.createElement('div');
+            cursorOnly.id = 'cursor-after-budget';
+            cursorOnly.style.cursor = 'pointer';
+            cursorOnly.textContent = 'cursor';
+            fragment.appendChild(cursorOnly);
+            document.body.appendChild(fragment);
+            true;
+            """
+        )
+
+        let withoutCursor = try await snapshot(panel, includeCursor: false)
+        let withCursor = try await snapshot(panel, includeCursor: true)
+
+        XCTAssertEqual(withoutCursor["visited_nodes"] as? Int, 4_096)
+        XCTAssertEqual(withCursor["visited_nodes"] as? Int, 4_096)
+        XCTAssertEqual(reasons(in: withoutCursor), ["node_limit"])
+        XCTAssertEqual(reasons(in: withCursor), ["node_limit"])
+        XCTAssertFalse(try entries(in: withCursor).contains { $0["selector"] as? String == "#cursor-after-budget" })
+    }
+
+    func testSnapshotClampsRequestedDepthToTheNamedMaximum() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '';
+            let parent = document.body;
+            for (let i = 0; i < 64; i += 1) {
+              const child = document.createElement('div');
+              parent.appendChild(child);
+              parent = child;
+            }
+            const tooDeep = document.createElement('button');
+            tooDeep.id = 'past-max-depth';
+            tooDeep.textContent = 'too deep';
+            parent.appendChild(tooDeep);
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel, maxDepth: .max)
+
+        XCTAssertEqual(TerminalController.v2BrowserSnapshotMaxDepth, 64)
+        XCTAssertFalse(try entries(in: result).contains { $0["selector"] as? String == "#past-max-depth" })
+        XCTAssertEqual(
+            result["text_truncated"] as? Bool,
+            true,
+            "Skipping text below the requested depth must be reported as text truncation"
+        )
+    }
+
+    func testScopedSnapshotNeverTraversesOrSerializesLaterSiblings() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        let expectedNodeCountValue = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = `
+              <section id="snapshot-scope">
+                <button id="scoped-button">Scoped button</button>
+                <p>Scoped text marker</p>
+              </section>
+              <section id="later-sibling">
+                <button id="later-button">Later sibling marker</button>
+              </section>
+            `;
+            window.__programaLaterSiblingTouches = 0;
+            const laterSibling = document.getElementById('later-sibling');
+            laterSibling.getBoundingClientRect = function() {
+              window.__programaLaterSiblingTouches += 1;
+              return { x: 0, y: 0, width: 10, height: 10, top: 0, right: 10, bottom: 10, left: 0 };
+            };
+            const scopeRoot = document.getElementById('snapshot-scope');
+            const walker = document.createTreeWalker(scopeRoot, NodeFilter.SHOW_ALL);
+            let scopedNodeCount = 1;
+            while (walker.nextNode()) scopedNodeCount += 1;
+            scopedNodeCount;
+            """
+        )
+        let expectedNodeCount = try XCTUnwrap(expectedNodeCountValue as? Int)
+        let expectedScopedHTMLValue = try await panel.evaluateJavaScript("document.getElementById('snapshot-scope').outerHTML") as? String
+        let expectedScopedHTML = try XCTUnwrap(expectedScopedHTMLValue)
+
+        let result = try await snapshot(panel, scopeSelector: "#snapshot-scope")
+        let sentinelValue = try await panel.evaluateJavaScript("window.__programaLaterSiblingTouches")
+        let returnedEntries = try entries(in: result)
+        let text = try XCTUnwrap(result["text"] as? String)
+        let html = try XCTUnwrap(result["html"] as? String)
+
+        XCTAssertEqual(sentinelValue as? Int, 0, "A scoped traversal must not touch a later sibling")
+        XCTAssertEqual(result["visited_nodes"] as? Int, expectedNodeCount)
+        XCTAssertTrue(returnedEntries.contains { $0["selector"] as? String == "#scoped-button" })
+        XCTAssertFalse(returnedEntries.contains { $0["selector"] as? String == "#later-button" })
+        XCTAssertTrue(text.contains("Scoped button"))
+        XCTAssertTrue(text.contains("Scoped text marker"))
+        XCTAssertFalse(text.contains("Later sibling marker"))
+        XCTAssertEqual(html, expectedScopedHTML, "A scoped snapshot must serialize only the selected subtree")
+        XCTAssertTrue(html.hasPrefix("<section id=\"snapshot-scope\">"))
+        XCTAssertFalse(html.contains("<html"))
+        XCTAssertFalse(html.contains("<body"))
+        XCTAssertFalse(html.contains("later-sibling"))
+        XCTAssertFalse(html.contains("later-button"))
+    }
+
+    func testScopedSelectorListProducesChildSelectorsBoundToTheSelectedRoot() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = `
+              <section id="a" data-identity="selected-root">
+                <button data-identity="selected-child">A child</button>
+              </section>
+              <section id="b" data-identity="other-root">
+                <button data-identity="other-child">B child</button>
+              </section>
+            `;
+            true;
+            """
+        )
+        let expectedHTMLValue = try await panel.evaluateJavaScript("document.getElementById('a').outerHTML") as? String
+        let expectedHTML = try XCTUnwrap(expectedHTMLValue)
+
+        let result = try await snapshot(panel, scopeSelector: "#a, #b")
+        let returnedEntries = try entries(in: result)
+        let childEntry = try XCTUnwrap(returnedEntries.first { $0["name"] as? String == "A child" })
+        let childSelector = try XCTUnwrap(childEntry["selector"] as? String)
+        let selectorLiteral = try javaScriptStringLiteral(childSelector)
+        let resolvedIdentity = try await panel.evaluateJavaScript(
+            "document.querySelector(\(selectorLiteral))?.dataset.identity || null"
+        )
+
+        XCTAssertEqual(result["html"] as? String, expectedHTML)
+        XCTAssertEqual(resolvedIdentity as? String, "selected-child")
+        XCTAssertNotEqual(resolvedIdentity as? String, "selected-root")
+        XCTAssertNotEqual(resolvedIdentity as? String, "other-root")
+        XCTAssertNotEqual(resolvedIdentity as? String, "other-child")
+    }
+
+    func testSnapshotCollectorIgnoresCompromisedPageWorldCSSEscape() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '<button id="safe-selector">Safe</button><button id="attacker-selector">Attacker</button>';
+            CSS.escape = function() { return 'attacker-selector'; };
+            true;
+            """
+        )
+        let compromisedEscape = try await panel.evaluateJavaScript("CSS.escape('harmless-known-input')")
+        XCTAssertEqual(
+            compromisedEscape as? String,
+            "attacker-selector",
+            "The page-world mutation must be active before testing the isolated collector"
+        )
+
+        let result = try productionSnapshot(panel)
+        let returnedEntries = try entries(in: result)
+        let safeEntry = try XCTUnwrap(returnedEntries.first { $0["name"] as? String == "Safe" })
+
+        XCTAssertEqual(
+            safeEntry["selector"] as? String,
+            "#safe-selector",
+            "Page JavaScript must not be able to redirect a snapshot ref by replacing CSS.escape"
+        )
+    }
+
+    func testDuplicateIDSelectorStillResolvesToTheVisibleElementThatProducedTheEntry() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '';
+            const hidden = document.createElement('button');
+            hidden.id = 'duplicate';
+            hidden.dataset.identity = 'hidden-first';
+            hidden.style.display = 'none';
+            hidden.textContent = 'Hidden duplicate';
+            document.body.appendChild(hidden);
+            const visible = document.createElement('button');
+            visible.id = 'duplicate';
+            visible.dataset.identity = 'visible-second';
+            visible.textContent = 'Visible duplicate';
+            document.body.appendChild(visible);
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let visibleEntry = try XCTUnwrap(try entries(in: result).first { $0["name"] as? String == "Visible duplicate" })
+        let selector = try XCTUnwrap(visibleEntry["selector"] as? String)
+        let selectorLiteral = try javaScriptStringLiteral(selector)
+        let resolvedIdentity = try await panel.evaluateJavaScript(
+            "document.querySelector(\(selectorLiteral))?.dataset.identity || null"
+        )
+
+        XCTAssertNotEqual(selector, "#duplicate", "A duplicate ID is not an identity-safe selector")
+        XCTAssertEqual(resolvedIdentity as? String, "visible-second")
+    }
+
+    func testSnapshotAccessibleNamesIncludeNestedTextAndNestedLabelledContent() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = `
+              <button id="nested-name"><span>Save</span></button>
+              <div id="nested-label"><span>Account</span> <strong>settings</strong></div>
+              <button id="labelled-button" aria-labelledby="nested-label"></button>
+            `;
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let returnedEntries = try entries(in: result)
+        let nestedName = returnedEntries.first { $0["selector"] as? String == "#nested-name" }?["name"] as? String
+        let labelledName = returnedEntries.first { $0["selector"] as? String == "#labelled-button" }?["name"] as? String
+
+        XCTAssertEqual(nestedName, "Save")
+        XCTAssertEqual(labelledName, "Account settings")
+    }
+
+    func testSnapshotPageTextExcludesNonVisibleAndNonContentTextWithElementBoundaries() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = `
+              <p>Hello</p><p>World</p>
+              <script type="application/json">script-marker</script>
+              <style>.unused { content: 'style-marker'; }</style>
+              <div style="display: none"><span>hidden-marker</span></div>
+              <div>Visible marker</div>
+            `;
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let text = try XCTUnwrap(result["text"] as? String)
+        let normalized = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+
+        XCTAssertEqual(normalized, "Hello World Visible marker")
+        XCTAssertNotEqual(normalized, "HelloWorld Visible marker")
+        XCTAssertFalse(normalized.contains("script-marker"))
+        XCTAssertFalse(normalized.contains("style-marker"))
+        XCTAssertFalse(normalized.contains("hidden-marker"))
+    }
+
+    func testSelectedSameOriginFrameSnapshotUsesTheChildDocumentURLStylesAndNames() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer {
+            TerminalController.shared.v2BrowserFrameSelectorBySurface.removeValue(forKey: panel.id)
+            panel.close()
+        }
+        let frameStateValue = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '';
+            const frame = document.createElement('iframe');
+            frame.id = 'selected-frame';
+            document.body.appendChild(frame);
+            frame.contentWindow.location.hash = 'selected-child-document';
+            const childDocument = frame.contentDocument;
+            childDocument.open();
+            childDocument.write('<!doctype html><html><head><title>Child title</title></head><body><button id="child-frame-button" data-identity="child-button"><span>Child action</span></button></body></html>');
+            childDocument.close();
+            ({ url: String(childDocument.location.href), title: childDocument.title });
+            """
+        ) as? [String: Any]
+        let frameState = try XCTUnwrap(frameStateValue)
+        let expectedURL = try XCTUnwrap(frameState["url"] as? String)
+        TerminalController.shared.v2BrowserFrameSelectorBySurface[panel.id] = "#selected-frame"
+
+        let result = try productionSnapshot(panel)
+        let returnedEntries = try entries(in: result)
+        let childEntry = try XCTUnwrap(returnedEntries.first { $0["name"] as? String == "Child action" })
+        let selector = try XCTUnwrap(childEntry["selector"] as? String)
+        let selectorLiteral = try javaScriptStringLiteral(selector)
+        let resolvedIdentity = try await panel.evaluateJavaScript(
+            "document.getElementById('selected-frame').contentDocument.querySelector(\(selectorLiteral))?.dataset.identity || null"
+        )
+
+        XCTAssertEqual(result["url"] as? String, expectedURL)
+        XCTAssertEqual(result["title"] as? String, "Child title")
+        XCTAssertEqual(childEntry["role"] as? String, "button")
+        XCTAssertEqual(resolvedIdentity as? String, "child-button")
+    }
+
+    func testOversizedSelectorIsSkippedWithoutRetargetingALaterButton() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '';
+            const oversized = document.createElement('button');
+            oversized.id = 'x'.repeat(16385);
+            oversized.textContent = 'oversized';
+            document.body.appendChild(oversized);
+            const normal = document.createElement('button');
+            normal.id = 'normal-after-oversized';
+            normal.textContent = 'normal';
+            document.body.appendChild(normal);
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let returnedEntries = try entries(in: result)
+        let selectors = returnedEntries.compactMap { $0["selector"] as? String }
+
+        XCTAssertEqual(result["selector_byte_limit"] as? Int, 16_384)
+        XCTAssertEqual(result["selector_skipped_count"] as? Int, 1)
+        XCTAssertTrue(reasons(in: result).contains("selector_byte_limit"))
+        XCTAssertEqual(selectors, ["#normal-after-oversized"])
+        XCTAssertEqual(selectors[0].utf8.count, "#normal-after-oversized".utf8.count)
+    }
+
+    func testMultibyteAccessibleNameTruncatesAtAValidUTF8Boundary() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '';
+            const button = document.createElement('button');
+            button.id = 'multibyte-name';
+            button.setAttribute('aria-label', 'é'.repeat(600));
+            document.body.appendChild(button);
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let name = try XCTUnwrap(try entries(in: result).first?["name"] as? String)
+
+        XCTAssertEqual(result["name_byte_limit"] as? Int, 1_024)
+        XCTAssertEqual(result["name_truncated_count"] as? Int, 1)
+        XCTAssertTrue(reasons(in: result).contains("name_byte_limit"))
+        XCTAssertEqual(name, String(repeating: "é", count: 512))
+        XCTAssertEqual(name.utf8.count, 1_024)
+    }
+
+    func testOversizedRolesFallBackToImplicitRoleOrSkipInsteadOfTruncating() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        // The snapshot's visibility check requires a positive layout rect. A zero-size
+        // WKWebView (the default for a panel that has never been placed in a window) gives
+        // block-level elements a 0px width, so give it a real viewport before laying out
+        // the block-level `invalidDiv` below.
+        panel.webView.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '';
+            const implicitButton = document.createElement('button');
+            implicitButton.id = 'implicit-role-fallback';
+            implicitButton.setAttribute('role', 'button'.repeat(20));
+            implicitButton.textContent = 'button';
+            document.body.appendChild(implicitButton);
+            const invalidDiv = document.createElement('div');
+            invalidDiv.id = 'invalid-role-skip';
+            invalidDiv.setAttribute('role', 'link'.repeat(20));
+            invalidDiv.textContent = 'div';
+            document.body.appendChild(invalidDiv);
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let returnedEntries = try entries(in: result)
+
+        XCTAssertEqual(result["role_byte_limit"] as? Int, 64)
+        XCTAssertEqual(result["role_skipped_count"] as? Int, 1)
+        XCTAssertTrue(reasons(in: result).contains("role_byte_limit"))
+        XCTAssertEqual(returnedEntries.count, 1)
+        XCTAssertEqual(returnedEntries[0]["selector"] as? String, "#implicit-role-fallback")
+        XCTAssertEqual(returnedEntries[0]["role"] as? String, "button")
+    }
+
+    func testAggregateEntryBytesKeepOnlyTheDeterministicPreorderPrefix() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '';
+            const fragment = document.createDocumentFragment();
+            for (let i = 0; i < 300; i += 1) {
+              const button = document.createElement('button');
+              button.id = 'entry-' + i;
+              button.setAttribute('aria-label', 'n'.repeat(1024));
+              fragment.appendChild(button);
+            }
+            document.body.appendChild(fragment);
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let returnedEntries = try entries(in: result)
+        let accountedBytes = returnedEntries.reduce(into: 0) { total, entry in
+            total += ((entry["selector"] as? String) ?? "").utf8.count
+            total += ((entry["name"] as? String) ?? "").utf8.count
+            total += ((entry["role"] as? String) ?? "").utf8.count
+        }
+
+        XCTAssertEqual(result["entry_byte_limit"] as? Int, 262_144)
+        XCTAssertEqual(result["entry_bytes"] as? Int, accountedBytes)
+        XCTAssertLessThanOrEqual(accountedBytes, 262_144)
+        XCTAssertLessThanOrEqual(returnedEntries.count, 256)
+        XCTAssertTrue(reasons(in: result).contains("entry_byte_limit"))
+        XCTAssertEqual(
+            returnedEntries.compactMap { $0["selector"] as? String },
+            (0 ..< returnedEntries.count).map { "#entry-\($0)" }
+        )
+    }
+
+    func testGeneratedSnapshotBoundsPageStringsAndPreservesExactPrefixes() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+
+        // WebKit refuses to grow the URL of the WKWebView's initial "about:blank" document via
+        // `location.hash`/`history.replaceState` (SecurityError: session history URL cannot
+        // change from an opaque initial document). Commit a real navigation with a long-path
+        // base URL instead so `document.location.href` is genuinely long, then poll for that
+        // navigation to land before mutating title/body content.
+        let longPath = String(repeating: "u", count: 17000)
+        let longBaseURL = try XCTUnwrap(URL(string: "https://example.com/\(longPath)"))
+        panel.webView.loadHTMLString("<html><head></head><body></body></html>", baseURL: longBaseURL)
+        for _ in 0 ..< 200 {
+            let currentHref = try await panel.evaluateJavaScript("String(location.href)") as? String
+            if currentHref?.hasPrefix("https://example.com/") == true { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.title = 't'.repeat(1100);
+            document.body.textContent = 'b'.repeat(1100000);
+            true;
+            """
+        )
+
+        let evaluatedURL = try await panel.evaluateJavaScript("String(location.href)")
+        let evaluatedHTML = try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)")
+        let fullURL = try XCTUnwrap(evaluatedURL as? String)
+        let fullHTML = try XCTUnwrap(evaluatedHTML as? String)
+        let result = try await snapshot(panel)
+        let title = try XCTUnwrap(result["title"] as? String)
+        let url = try XCTUnwrap(result["url"] as? String)
+        let text = try XCTUnwrap(result["text"] as? String)
+        let html = try XCTUnwrap(result["html"] as? String)
+
+        XCTAssertEqual(title, String(String(repeating: "t", count: 1100).prefix(1_024)))
+        XCTAssertEqual(url, String(fullURL.prefix(16_384)))
+        XCTAssertEqual(text, String(String(repeating: "b", count: 1_100_000).prefix(262_144)))
+        XCTAssertEqual(html, String(fullHTML.prefix(1_048_576)))
+        XCTAssertEqual(title.utf8.count, 1_024)
+        XCTAssertEqual(url.utf8.count, 16_384)
+        XCTAssertEqual(text.count, 262_144)
+        XCTAssertLessThanOrEqual(html.count, 1_048_576)
+        XCTAssertTrue(reasons(in: result).contains("title_byte_limit"))
+        XCTAssertTrue(reasons(in: result).contains("url_byte_limit"))
+        XCTAssertEqual(result["text_truncated"] as? Bool, true)
+        XCTAssertEqual(result["html_truncated"] as? Bool, true)
+    }
+
+    func testGeneratedSnapshotBoundsHugeCommentAttributeAndTagOutput() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        let limit = TerminalController.v2BrowserSnapshotHTMLCharacterLimit
+
+        try await assertGeneratedHTMLIsBounded(
+            panel,
+            setupScript: """
+            document.body.replaceChildren(document.createComment('c'.repeat(\(limit + 256))));
+            true;
+            """
+        )
+        try await assertGeneratedHTMLIsBounded(
+            panel,
+            setupScript: """
+            document.body.innerHTML = '';
+            const attributed = document.createElement('div');
+            attributed.setAttribute('data-huge', 'a'.repeat(\(limit + 256)));
+            document.body.appendChild(attributed);
+            true;
+            """
+        )
+        try await assertGeneratedHTMLIsBounded(
+            panel,
+            setupScript: """
+            document.body.innerHTML = '';
+            const fragment = document.createDocumentFragment();
+            const tag = 'snapshot-' + 'x'.repeat(240);
+            for (let index = 0; index < 2_200; index += 1) fragment.appendChild(document.createElement(tag));
+            document.body.appendChild(fragment);
+            true;
+            """
+        )
+    }
+
+    func testNestedScopedSelectorListKeepsEachEntryBoundToItsOriginatingElement() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = `
+              <section id="a">
+                <section id="b"><button data-identity="nested-wrong">Wrong nested button</button></section>
+                <button data-identity="direct-target">Direct target</button>
+              </section>
+            `;
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel, scopeSelector: "#a, #b")
+        let targetEntry = try XCTUnwrap(
+            try entries(in: result).first { $0["name"] as? String == "Direct target" }
+        )
+        let selector = try XCTUnwrap(targetEntry["selector"] as? String)
+        let selectorLiteral = try javaScriptStringLiteral(selector)
+        let resolvedIdentity = try await panel.evaluateJavaScript(
+            "document.querySelector(\(selectorLiteral))?.dataset.identity || null"
+        )
+
+        XCTAssertEqual(resolvedIdentity as? String, "direct-target")
+        XCTAssertNotEqual(resolvedIdentity as? String, "nested-wrong")
+    }
+
+    func testSnapshotStopsInspectingAggregateWhitespaceBeforeUnboundedLateText() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.replaceChildren();
+            const fragment = document.createDocumentFragment();
+            for (let index = 0; index < 1024; index += 1) {
+              fragment.appendChild(document.createTextNode(' '.repeat(1025)));
+            }
+            const marker = document.createElement('span');
+            marker.textContent = 'late-visible-marker';
+            fragment.appendChild(marker);
+            document.body.appendChild(fragment);
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let text = try XCTUnwrap(result["text"] as? String)
+
+        XCTAssertLessThan(result["visited_nodes"] as? Int ?? .max, 4_096)
+        XCTAssertEqual(result["text_truncated"] as? Bool, true)
+        XCTAssertFalse(text.contains("late-visible-marker"))
+        XCTAssertEqual(result["text_inspection_limit"] as? Int, 1_048_832)
+        let inspectedUnits = try XCTUnwrap(result["text_inspected_units"] as? Int)
+        XCTAssertGreaterThan(inspectedUnits, 0)
+        XCTAssertLessThanOrEqual(inspectedUnits, 1_048_832)
+        XCTAssertTrue(reasons(in: result).contains("text_inspection_limit"))
+    }
+
+    func testEscapedNullIDSelectorCannotResolveAnEarlierReplacementCharacterElement() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.replaceChildren();
+            const replacement = document.createElement('button');
+            replacement.id = '\u{FFFD}';
+            replacement.dataset.identity = 'replacement-character';
+            replacement.textContent = 'Replacement character';
+            document.body.appendChild(replacement);
+            const nul = document.createElement('button');
+            nul.id = String.fromCharCode(0);
+            nul.dataset.identity = 'nul-target';
+            nul.textContent = 'NUL target';
+            document.body.appendChild(nul);
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let targetEntry = try XCTUnwrap(try entries(in: result).first { $0["name"] as? String == "NUL target" })
+        let selector = try XCTUnwrap(targetEntry["selector"] as? String)
+        let selectorLiteral = try javaScriptStringLiteral(selector)
+        let resolvedIdentity = try await panel.evaluateJavaScript(
+            "document.querySelector(\(selectorLiteral))?.dataset.identity || null"
+        )
+
+        XCTAssertEqual(resolvedIdentity as? String, "nul-target")
+        XCTAssertNotEqual(resolvedIdentity as? String, "replacement-character")
+    }
+
+    func testSnapshotTextPreservesInlineRunsAuthoredWhitespaceAndBlockBoundaries() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '<span>pro</span><span>grama </span><span>rocks</span><p>First block</p><p>Second block</p>';
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+
+        XCTAssertEqual(result["text"] as? String, "programa rocks First block Second block")
+    }
+
+    func testContentNamesSuppressHiddenDescendantsWhileExplicitHiddenLabelsTakePrecedence() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = `
+              <button id="content-name">Visible <span hidden>hidden-attribute</span><span style="display:none">hidden-style</span><span aria-hidden="true">hidden-aria</span><span>nested text</span></button>
+              <div id="explicit-hidden-label" hidden><span>Explicit hidden</span> <strong>label</strong></div>
+              <button id="label-precedence" aria-label="Fallback label" aria-labelledby="explicit-hidden-label"></button>
+            `;
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let returnedEntries = try entries(in: result)
+        let contentName = returnedEntries.first { $0["selector"] as? String == "#content-name" }?["name"] as? String
+        let labelledName = returnedEntries.first { $0["selector"] as? String == "#label-precedence" }?["name"] as? String
+
+        XCTAssertEqual(contentName, "Visible nested text")
+        XCTAssertEqual(labelledName, "Explicit hidden label")
+    }
+
+    func testSnapshotPreservesInertTemplateMarkupWithoutExposingItsText() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '<template><div data-marker="deferred">Deferred</div></template>';
+            true;
+            """
+        )
+        let nativeHTMLValue = try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)") as? String
+        let nativeHTML = try XCTUnwrap(nativeHTMLValue)
+
+        let result = try await snapshot(panel)
+        let html = try XCTUnwrap(result["html"] as? String)
+        let text = try XCTUnwrap(result["text"] as? String)
+
+        XCTAssertEqual(html, nativeHTML)
+        XCTAssertTrue(html.contains("<div data-marker=\"deferred\">Deferred</div>"))
+        XCTAssertFalse(text.contains("Deferred"), "Inert template content must not become visible page text")
+    }
+
+    func testExplicitVisibilityHiddenLabelIncludesDescendantsWhileOrdinaryNamesSuppressThem() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = `
+              <div id="hidden-label" style="visibility:hidden"><span>Secret</span></div>
+              <button id="labelled" aria-labelledby="hidden-label"></button>
+              <button id="ordinary">Public<span style="visibility:hidden">Private</span></button>
+            `;
+            true;
+            """
+        )
+
+        let result = try await snapshot(panel)
+        let returnedEntries = try entries(in: result)
+        let labelledName = returnedEntries.first { $0["selector"] as? String == "#labelled" }?["name"] as? String
+        let ordinaryName = returnedEntries.first { $0["selector"] as? String == "#ordinary" }?["name"] as? String
+
+        XCTAssertEqual(labelledName, "Secret")
+        XCTAssertEqual(ordinaryName, "Public")
+    }
+
+    func testMixedNamespaceSnapshotPreservesNativeHTMLAndForeignElementIdentity() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = `
+              <svg id="mixed-svg" width="240" height="80" xmlns="http://www.w3.org/2000/svg">
+                <defs><linearGradient id="mixedGradient"><stop offset="0%" stop-color="red"></stop></linearGradient></defs>
+                <rect width="240" height="80" fill="url(#mixedGradient)"></rect>
+                <foreignObject x="10" y="10" width="180" height="50">
+                  <button xmlns="http://www.w3.org/1999/xhtml" id="foreign-button" data-identity="foreign-origin"><span>Foreign action</span></button>
+                </foreignObject>
+              </svg>
+            `;
+            true;
+            """
+        )
+        let nativeHTMLValue = try await panel.evaluateJavaScript("String(document.documentElement.outerHTML)") as? String
+        let nativeHTML = try XCTUnwrap(nativeHTMLValue)
+
+        let result = try await snapshot(panel)
+        let foreignEntry = try XCTUnwrap(try entries(in: result).first { $0["name"] as? String == "Foreign action" })
+        let selector = try XCTUnwrap(foreignEntry["selector"] as? String)
+        let selectorLiteral = try javaScriptStringLiteral(selector)
+        let resolvedIdentity = try await panel.evaluateJavaScript(
+            "document.querySelector(\(selectorLiteral))?.dataset.identity || null"
+        )
+
+        XCTAssertEqual(result["html"] as? String, nativeHTML)
+        XCTAssertTrue(nativeHTML.contains("linearGradient"))
+        XCTAssertEqual(resolvedIdentity as? String, "foreign-origin")
+    }
+
+    func testSelectedFrameRemovalReturnsFrameUnavailableInsteadOfTopDocumentContent() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer {
+            TerminalController.shared.v2BrowserFrameSelectorBySurface.removeValue(forKey: panel.id)
+            panel.close()
+        }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '<div id="top-document-marker">Top document must not leak</div><iframe id="removed-frame"></iframe>';
+            document.getElementById('removed-frame').remove();
+            true;
+            """
+        )
+        TerminalController.shared.v2BrowserFrameSelectorBySurface[panel.id] = "#removed-frame"
+        let script = TerminalController.shared.v2BrowserSnapshotJavaScript(
+            interactiveOnly: false,
+            includeCursor: false,
+            compact: false,
+            maxDepth: 64,
+            scopeSelector: nil
+        )
+
+        let outcome = TerminalController.shared.v2BrowserCollectSnapshotJavaScriptOutcome(
+            webView: panel.webView,
+            surfaceId: panel.id,
+            script: script
+        )
+        switch outcome {
+        case .frameUnavailable(let selector):
+            XCTAssertEqual(selector, "#removed-frame")
+        case .collected(let result):
+            XCTFail("A missing selected frame must not fall back to top-document content: \(result)")
+        case .failed(let message):
+            XCTFail("A missing selected frame must have a structured unavailable outcome, not a generic failure: \(message)")
+        }
+    }
+
+    func testGeneratedSelectorActionFailsWhenSelectedFrameDisappearsInsteadOfClickingTopDocument() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer {
+            TerminalController.shared.v2BrowserFrameSelectorBySurface.removeValue(forKey: panel.id)
+            panel.close()
+        }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '<button id="shared-action" data-clicked="0">Top target</button><iframe id="selected-action-frame"></iframe>';
+            document.getElementById('shared-action').addEventListener('click', (event) => {
+              event.currentTarget.dataset.clicked = '1';
+            });
+            document.getElementById('selected-action-frame').remove();
+            true;
+            """
+        )
+        TerminalController.shared.v2BrowserFrameSelectorBySurface[panel.id] = "#selected-action-frame"
+
+        let outcome = TerminalController.shared.v2BrowserRunGeneratedSelectorAction(
+            webView: panel.webView,
+            surfaceId: panel.id,
+            selector: "#shared-action",
+            action: .click
+        )
+        switch outcome {
+        case .frameUnavailable(let selector):
+            XCTAssertEqual(selector, "#selected-action-frame")
+        case .succeeded:
+            XCTFail("A removed selected frame must not let a generated action fall back to the top document")
+        case .elementNotFound:
+            XCTFail("The selected-frame failure must remain distinguishable from a missing element")
+        case .failed(let message):
+            XCTFail("The selected-frame failure must be structured, not generic: \(message)")
+        }
+        let topClickCount = try await panel.evaluateJavaScript(
+            "document.getElementById('shared-action').dataset.clicked"
+        )
+        XCTAssertEqual(topClickCount as? String, "0")
+    }
+
+    func testGeneratedElementRefActionIgnoresHostilePageWorldQuerySelectorOverride() async throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+        defer {
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: panel.id)
+            panel.close()
+        }
+        _ = try await panel.evaluateJavaScript(
+            """
+            document.body.innerHTML = '<button id="trusted-action" data-clicked="0">Trusted</button><button id="attacker-action" data-clicked="0">Attacker</button>';
+            for (const button of document.querySelectorAll('button')) {
+              button.addEventListener('click', (event) => { event.currentTarget.dataset.clicked = '1'; });
+            }
+            const attacker = document.getElementById('attacker-action');
+            document.querySelector = function() { return attacker; };
+            true;
+            """
+        )
+        let elementRef: String
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            surfaceId: panel.id,
+            selectors: ["#trusted-action"]
+        ) {
+        case .allocated(let refs):
+            elementRef = try XCTUnwrap(refs.first)
+        case .resourceExhausted:
+            return XCTFail("A fresh surface must have capacity for one trusted selector")
+        }
+
+        let outcome = TerminalController.shared.v2BrowserRunGeneratedSelectorAction(
+            webView: panel.webView,
+            surfaceId: panel.id,
+            selector: elementRef,
+            action: .click
+        )
+        guard case .succeeded = outcome else {
+            return XCTFail("The trusted generated action must succeed despite the page-world override: \(outcome)")
+        }
+        let clickStateValue = try await panel.evaluateJavaScript(
+            "({ trusted: document.getElementById('trusted-action').dataset.clicked, attacker: document.getElementById('attacker-action').dataset.clicked })"
+        ) as? [String: Any]
+        let clickState = try XCTUnwrap(clickStateValue)
+
+        XCTAssertEqual(clickState["trusted"] as? String, "1")
+        XCTAssertEqual(clickState["attacker"] as? String, "0")
+    }
+
+    func testOversizedFrameSelectorsAreRejectedForLiteralSelectionAndStateRestore() {
+        let selector = "#" + String(repeating: "f", count: 16_384)
+        XCTAssertGreaterThan(selector.utf8.count, TerminalController.v2BrowserElementRefSelectorByteLimit)
+        let selectedSurface = UUID()
+        let restoredSurface = UUID()
+        defer {
+            TerminalController.shared.v2BrowserFrameSelectorBySurface.removeValue(forKey: selectedSurface)
+            TerminalController.shared.v2BrowserFrameSelectorBySurface.removeValue(forKey: restoredSurface)
+        }
+
+        for (surfaceId, source) in [
+            (selectedSurface, TerminalController.V2BrowserFrameSelectorSource.frameSelect),
+            (restoredSurface, TerminalController.V2BrowserFrameSelectorSource.stateLoad),
+        ] {
+            let result = TerminalController.shared.v2BrowserApplyFrameSelector(
+                selector,
+                surfaceId: surfaceId,
+                source: source
+            )
+            guard case .rejected(let limit) = result else {
+                return XCTFail("An oversized \(source) selector must be rejected")
+            }
+            XCTAssertEqual(limit, 16_384)
+            XCTAssertNil(TerminalController.shared.v2BrowserFrameSelectorBySurface[surfaceId])
+        }
+    }
+}
+
+
+@MainActor
 final class WindowBrowserHostViewTests: XCTestCase {
     private final class CapturingView: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? {

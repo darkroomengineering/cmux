@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 import Combine
 
 #if canImport(Programa_DEV)
@@ -11,6 +12,13 @@ private let appDelegateLastSurfaceCloseShortcutDefaultsKey = "closeWorkspaceOnLa
 private final class FakeWKInspectorContainerView: NSView {}
 private final class FocusableTestView: NSView {
     override var acceptsFirstResponder: Bool { true }
+}
+private final class CloseConfirmationButtonRecorder: NSObject {
+    private(set) var clickCount = 0
+
+    @objc func recordClick(_ sender: NSButton) {
+        clickCount += 1
+    }
 }
 
 @MainActor
@@ -100,6 +108,328 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             }
         }
         super.tearDown()
+    }
+
+    func testDuplicateInstanceArbitrationLetsLaterStartSecondWinAndEarlierStartLose() {
+        let earlier = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 999_999,
+            processIdentifier: 200
+        )
+        let later = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 100
+        )
+
+        XCTAssertTrue(AppDelegate.shouldTerminateDuplicateInstance(current: later, other: earlier))
+        XCTAssertFalse(AppDelegate.shouldTerminateDuplicateInstance(current: earlier, other: later))
+    }
+
+    func testDuplicateInstanceArbitrationLetsLaterStartMicrosecondWinAndEarlierStartLose() {
+        let earlier = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 200
+        )
+        let later = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 101,
+            processIdentifier: 100
+        )
+
+        XCTAssertTrue(AppDelegate.shouldTerminateDuplicateInstance(current: later, other: earlier))
+        XCTAssertFalse(AppDelegate.shouldTerminateDuplicateInstance(current: earlier, other: later))
+    }
+
+    func testDuplicateInstanceArbitrationUsesPIDToElectOneWinnerForIdenticalTimestamps() {
+        let lowerPID = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let higherPID = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 200
+        )
+        let higherPIDWins = AppDelegate.shouldTerminateDuplicateInstance(current: higherPID, other: lowerPID)
+        let lowerPIDWins = AppDelegate.shouldTerminateDuplicateInstance(current: lowerPID, other: higherPID)
+
+        XCTAssertTrue(higherPIDWins)
+        XCTAssertFalse(lowerPIDWins)
+        XCTAssertNotEqual(higherPIDWins, lowerPIDWins, "Identical kernel timestamps must elect exactly one winner")
+    }
+
+    func testDuplicateInstanceCandidateExcludesEmbeddedCLIExecutable() {
+        let embeddedCLIURL = URL(
+            fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+        )
+
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: embeddedCLIURL,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: embeddedCLIURL
+        ))
+    }
+
+    func testDuplicateInstanceCandidateIncludesSameBundleGUIExecutable() {
+        XCTAssertTrue(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: URL(
+                fileURLWithPath: "/Applications/Programa.app/Contents/MacOS/Programa"
+            ),
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: URL(
+                fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+            )
+        ))
+    }
+
+    func testDuplicateInstanceCandidateRejectsMissingExecutableMetadata() {
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: nil,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: URL(
+                fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+            )
+        ))
+    }
+
+    func testDuplicateInstanceTerminationWaitsForGraceBeforeForcing() throws {
+        var gracefulTerminationCount = 0
+        var forcedTerminationCount = 0
+        var scheduledGraceAction: (@MainActor () -> Void)?
+
+        AppDelegate.scheduleDuplicateTerminationForTesting(
+            requestTermination: {
+                gracefulTerminationCount += 1
+                return true
+            },
+            scheduleGrace: { action in
+                scheduledGraceAction = action
+            },
+            forceTerminationIfStillMatching: {
+                forcedTerminationCount += 1
+                return true
+            }
+        )
+
+        XCTAssertEqual(gracefulTerminationCount, 1)
+        XCTAssertEqual(forcedTerminationCount, 0, "Force termination must not run synchronously")
+
+        let graceAction = try XCTUnwrap(scheduledGraceAction)
+        graceAction()
+
+        XCTAssertEqual(forcedTerminationCount, 1)
+    }
+
+    func testValidatedDuplicateShutdownRequestTargetsExactCurrentProcessAndBypassesWarning() {
+        let current = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let requester = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 200
+        )
+        let request = AppDelegate.SingleInstanceShutdownRequest(
+            target: current,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+
+        let accepted = AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            request,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        )
+
+        XCTAssertTrue(accepted)
+        XCTAssertFalse(AppDelegate.shouldWarnBeforeTerminationForTesting(
+            isTaggedDevBuild: false,
+            isQuitWarningConfirmed: false,
+            hasValidatedDuplicateShutdownRequest: accepted,
+            isQuitWarningEnabled: true
+        ))
+    }
+
+    func testDuplicateShutdownRequestFailsClosedWhenMissingStaleMalformedOrMismatched() {
+        let current = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let requester = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 200
+        )
+        let wrongTarget = ProgramaSingleInstanceProcessKey(
+            startSeconds: 999,
+            startMicroseconds: 999,
+            processIdentifier: 99
+        )
+        let staleRequest = AppDelegate.SingleInstanceShutdownRequest(
+            target: current,
+            requester: requester,
+            createdAtUnixSeconds: 9_000
+        )
+        let malformedVersionRequest = AppDelegate.SingleInstanceShutdownRequest(
+            version: AppDelegate.SingleInstanceShutdownRequest.currentVersion + 1,
+            target: current,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+        let mismatchedTargetRequest = AppDelegate.SingleInstanceShutdownRequest(
+            target: wrongTarget,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            nil,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            staleRequest,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            malformedVersionRequest,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            mismatchedTargetRequest,
+            currentProcessKey: current,
+            now: 10_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            staleRequest,
+            currentProcessKey: current,
+            now: 9_001,
+            resolvedRequesterKey: wrongTarget,
+            requesterIsProgramaGUI: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownRequestForTesting(
+            staleRequest,
+            currentProcessKey: current,
+            now: 9_001,
+            resolvedRequesterKey: requester,
+            requesterIsProgramaGUI: false
+        ))
+    }
+
+    func testOrdinaryQuitStillWarnsWhenWarningIsEnabled() {
+        XCTAssertTrue(AppDelegate.shouldWarnBeforeTerminationForTesting(
+            isTaggedDevBuild: false,
+            isQuitWarningConfirmed: false,
+            hasValidatedDuplicateShutdownRequest: false,
+            isQuitWarningEnabled: true
+        ))
+    }
+
+    func testDuplicateForceFallbackRequiresSameLiveProcessIdentity() {
+        let expected = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let changed = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 100
+        )
+
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: nil,
+            isTerminated: false,
+            requestIsPending: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: changed,
+            isTerminated: false,
+            requestIsPending: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: expected,
+            isTerminated: true,
+            requestIsPending: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: expected,
+            isTerminated: false,
+            requestIsPending: false
+        ))
+        XCTAssertTrue(AppDelegate.shouldForceDuplicateTerminationForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKey: expected,
+            isTerminated: false,
+            requestIsPending: true
+        ))
+    }
+
+    func testDuplicateInstanceCandidateRejectsCurrentProcessAndDifferentBundle() {
+        let embeddedCLIURL = URL(
+            fileURLWithPath: "/Applications/Programa.app/Contents/Resources/bin/programa"
+        )
+        let guiURL = URL(fileURLWithPath: "/Applications/Programa.app/Contents/MacOS/Programa")
+
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.darkroom.programa",
+            candidateProcessIdentifier: 100,
+            candidateExecutableURL: guiURL,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: embeddedCLIURL
+        ))
+        XCTAssertFalse(AppDelegate.shouldConsiderDuplicateApplication(
+            candidateBundleIdentifier: "com.example.other",
+            candidateProcessIdentifier: 200,
+            candidateExecutableURL: guiURL,
+            expectedBundleIdentifier: "com.darkroom.programa",
+            currentProcessIdentifier: 100,
+            embeddedCLIURL: embeddedCLIURL
+        ))
+    }
+
+    func testSingleInstanceProcessKeyReadsCurrentKernelProcessIdentity() throws {
+        let currentPID = getpid()
+        let key = try XCTUnwrap(AppDelegate.singleInstanceProcessKey(for: currentPID))
+
+        XCTAssertEqual(key.processIdentifier, currentPID)
+        XCTAssertGreaterThan(key.startSeconds, 0, "The current process must have a positive kernel start timestamp")
+    }
+
+    func testSingleInstanceProcessKeyRejectsMissingKernelProcessRecord() {
+        XCTAssertNil(AppDelegate.singleInstanceProcessKey(for: pid_t.max))
     }
 
     func testOrphanReconciliationRetainsOneRecoveryWorkspacePerSuccessfulSessionOnly() throws {
@@ -1363,6 +1693,156 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertTrue(appDelegate.tabManager === secondManager, "Split shortcut routing should keep the event window active")
     }
 
+    func testCmdDClicksOnlyCloseConfirmationInEventPanel() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let confirmationTitle = String(localized: "dialog.closeWindow.title", defaultValue: "Close window?")
+        let closeTitle = String(localized: "common.close", defaultValue: "Close")
+        let firstRecorder = CloseConfirmationButtonRecorder()
+        let secondRecorder = CloseConfirmationButtonRecorder()
+
+        func makePanel(recorder: CloseConfirmationButtonRecorder) -> NSPanel {
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 320, height: 140),
+                styleMask: [.titled],
+                backing: .buffered,
+                defer: false
+            )
+            let content = NSView(frame: panel.contentView?.bounds ?? .zero)
+            let label = NSTextField(labelWithString: confirmationTitle)
+            let button = NSButton(
+                title: closeTitle,
+                target: recorder,
+                action: #selector(CloseConfirmationButtonRecorder.recordClick(_:))
+            )
+            content.addSubview(label)
+            content.addSubview(button)
+            panel.contentView = content
+            panel.orderFrontRegardless()
+            return panel
+        }
+
+        let firstPanel = makePanel(recorder: firstRecorder)
+        let secondPanel = makePanel(recorder: secondRecorder)
+        defer {
+            firstPanel.orderOut(nil)
+            secondPanel.orderOut(nil)
+            firstPanel.close()
+            secondPanel.close()
+        }
+
+        let panelsInGlobalOrder = NSApp.windows.compactMap { window -> NSPanel? in
+            guard let panel = window as? NSPanel,
+                  panel === firstPanel || panel === secondPanel else { return nil }
+            return panel
+        }
+        guard panelsInGlobalOrder.count == 2 else {
+            XCTFail("Expected both close-confirmation panels in NSApp.windows")
+            return
+        }
+        let globallyFirstPanel = panelsInGlobalOrder[0]
+        let eventPanel = panelsInGlobalOrder[1]
+        let globallyFirstRecorder = globallyFirstPanel === firstPanel ? firstRecorder : secondRecorder
+        let eventRecorder = eventPanel === firstPanel ? firstRecorder : secondRecorder
+
+        guard let event = makeKeyDownEvent(
+            key: "d",
+            modifiers: [.command],
+            keyCode: 2,
+            windowNumber: eventPanel.windowNumber
+        ) else {
+            XCTFail("Failed to construct Cmd+D event for the second close-confirmation panel")
+            return
+        }
+
+#if DEBUG
+        XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: event))
+#else
+        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+        XCTAssertEqual(eventRecorder.clickCount, 1, "Cmd+D must confirm the alert in the shortcut event's window context")
+        XCTAssertEqual(globallyFirstRecorder.clickCount, 0, "Cmd+D must not confirm a same-titled alert owned by another window")
+    }
+
+    func testCloseConfirmationSheetInAnotherWindowDoesNotInterceptCmdD() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let firstWindowId = appDelegate.createMainWindow()
+        let secondWindowId = appDelegate.createMainWindow()
+        guard let firstManager = appDelegate.tabManagerFor(windowId: firstWindowId),
+              let firstWindow = window(withId: firstWindowId),
+              let secondWindow = window(withId: secondWindowId),
+              let secondWorkspace = appDelegate.tabManagerFor(windowId: secondWindowId)?.selectedWorkspace else {
+            closeWindow(withId: firstWindowId)
+            closeWindow(withId: secondWindowId)
+            XCTFail("Expected both window contexts")
+            return
+        }
+
+        let recorder = CloseConfirmationButtonRecorder()
+        let sheet = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 140),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let content = NSView(frame: sheet.contentView?.bounds ?? .zero)
+        content.addSubview(NSTextField(
+            labelWithString: String(localized: "dialog.closeWindow.title", defaultValue: "Close window?")
+        ))
+        content.addSubview(NSButton(
+            title: String(localized: "common.close", defaultValue: "Close"),
+            target: recorder,
+            action: #selector(CloseConfirmationButtonRecorder.recordClick(_:))
+        ))
+        sheet.contentView = content
+        firstWindow.beginSheet(sheet)
+        defer {
+            if firstWindow.attachedSheet === sheet {
+                firstWindow.endSheet(sheet)
+            }
+            sheet.orderOut(nil)
+            sheet.close()
+            closeWindow(withId: firstWindowId)
+            closeWindow(withId: secondWindowId)
+        }
+        waitUntil(description: "close-confirmation sheet to attach to the first window") {
+            firstWindow.attachedSheet === sheet && sheet.isVisible
+        }
+
+        secondWindow.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        appDelegate.tabManager = firstManager
+        let secondSurfaceCount = secondWorkspace.panels.count
+
+        guard let event = makeKeyDownEvent(
+            key: "d",
+            modifiers: [.command],
+            keyCode: 2,
+            windowNumber: secondWindow.windowNumber
+        ) else {
+            XCTFail("Failed to construct Cmd+D event for the window without a confirmation")
+            return
+        }
+
+#if DEBUG
+        XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: event))
+#else
+        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+        XCTAssertEqual(recorder.clickCount, 0, "A confirmation attached to another window must not consume Cmd+D")
+        waitUntil(description: "Cmd+D to reach the event window while another window has a confirmation") {
+            secondWorkspace.panels.count == secondSurfaceCount + 1
+        }
+        XCTAssertEqual(secondWorkspace.panels.count, secondSurfaceCount + 1)
+    }
+
     func testConfiguredOpenReviewShortcutOpensReviewPanel() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
@@ -1585,6 +2065,62 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         // whether the close took effect.
         XCTAssertFalse(targetWindow.isVisible, "Confirming Cmd+Ctrl+W should close the window")
         XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId), "Confirmed close should unregister the window's context")
+    }
+
+    func testClosingMainWindowTearsDownEveryOwnedWorkspaceAndBrowserElementRef() throws {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = appDelegate.createMainWindow()
+        var surfaceIds: [UUID] = []
+        defer {
+            if appDelegate.tabManagerFor(windowId: windowId) != nil {
+                closeWindow(withId: windowId)
+            }
+            for surfaceId in surfaceIds {
+                TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId)
+            }
+        }
+
+        let manager = try XCTUnwrap(appDelegate.tabManagerFor(windowId: windowId))
+        let firstWorkspace = try XCTUnwrap(manager.tabs.first)
+        let secondWorkspace = manager.addTab(select: false)
+        let workspaces = [firstWorkspace, secondWorkspace]
+        XCTAssertEqual(manager.tabs.count, 2)
+
+        var refs: [(surfaceId: UUID, ref: String)] = []
+        for (index, workspace) in workspaces.enumerated() {
+            let surfaceId = try XCTUnwrap(workspace.panels.keys.first)
+            surfaceIds.append(surfaceId)
+            switch TerminalController.shared.v2BrowserAllocateElementRefs(
+                surfaceId: surfaceId,
+                selectors: ["#window-owned-workspace-\(index)"]
+            ) {
+            case .allocated(let allocated):
+                let ref = try XCTUnwrap(allocated.first)
+                refs.append((surfaceId, ref))
+                XCTAssertNotNil(TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: surfaceId))
+            case .resourceExhausted:
+                XCTFail("A fresh workspace surface must accept its first browser element ref")
+            }
+        }
+
+        closeWindow(withId: windowId)
+
+        XCTAssertNil(appDelegate.tabManagerFor(windowId: windowId), "The real window close path must unregister its context")
+        for workspace in workspaces {
+            XCTAssertTrue(workspace.panels.isEmpty, "Closing a window must tear down every workspace it still owns")
+        }
+        for (surfaceId, ref) in refs {
+            switch TerminalController.shared.v2BrowserSelectorResolutionError(ref, surfaceId: surfaceId) {
+            case .err(let code, _, _):
+                XCTAssertEqual(code, "not_found", "Whole-window teardown must permanently remove every owned surface ref")
+            case .ok:
+                XCTFail("A ref from a closed window must not remain resolvable")
+            }
+        }
     }
 
     func testTabManagerWindowCloseTeardownStopsEveryLifecycleResourceIdempotently() throws {
@@ -3898,6 +4434,93 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         wait(for: [dismissExpectation], timeout: 0.2)
     }
 
+    func testTerminalMarkedTextBypassesRecentPalettePendingOpenEscapeGrace() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = appDelegate.createMainWindow()
+        guard let window = window(withId: windowId),
+              let workspace = appDelegate.tabManagerFor(windowId: windowId)?.selectedWorkspace,
+              let panelId = workspace.focusedPanelId,
+              let terminalPanel = workspace.terminalPanel(for: panelId),
+              let terminalView = surfaceView(in: terminalPanel.hostedView) else {
+            closeWindow(withId: windowId)
+            XCTFail("Expected focused terminal surface")
+            return
+        }
+        defer {
+            terminalView.markedText = NSMutableAttributedString()
+            appDelegate.setCommandPaletteVisible(true, for: window)
+            appDelegate.setCommandPaletteVisible(false, for: window)
+            closeWindow(withId: windowId)
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        terminalPanel.hostedView.suppressReparentFocus()
+        XCTAssertTrue(window.makeFirstResponder(terminalView))
+        terminalPanel.hostedView.clearSuppressReparentFocus()
+        terminalView.markedText = NSMutableAttributedString(string: "composing")
+        XCTAssertTrue(terminalView.hasMarkedText())
+        XCTAssertTrue(window.firstResponder === terminalView)
+
+#if DEBUG
+        XCTAssertTrue(
+            appDelegate.debugSetCommandPalettePendingOpenAge(window: window, age: 0.1),
+            "Expected deterministic recent pending-open state"
+        )
+#else
+        XCTFail("debugSetCommandPalettePendingOpenAge is only available in DEBUG")
+#endif
+        appDelegate.setCommandPaletteVisible(false, for: window)
+
+        var toggleCount = 0
+        var dismissCount = 0
+        let toggleToken = NotificationCenter.default.addObserver(
+            forName: .commandPaletteToggleRequested,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard notification.object as? NSWindow === window else { return }
+            toggleCount += 1
+        }
+        let dismissToken = NotificationCenter.default.addObserver(
+            forName: .commandPaletteDismissRequested,
+            object: nil,
+            queue: nil
+        ) { notification in
+            guard notification.object as? NSWindow === window else { return }
+            dismissCount += 1
+        }
+        defer {
+            NotificationCenter.default.removeObserver(toggleToken)
+            NotificationCenter.default.removeObserver(dismissToken)
+        }
+
+        guard let escapeEvent = makeKeyDownEvent(
+            key: "\u{1b}",
+            modifiers: [],
+            keyCode: 53,
+            windowNumber: window.windowNumber
+        ) else {
+            XCTFail("Failed to construct Escape event")
+            return
+        }
+
+#if DEBUG
+        XCTAssertFalse(
+            appDelegate.debugHandleCustomShortcut(event: escapeEvent),
+            "Terminal IME composition must take precedence over pending-open Escape grace"
+        )
+#else
+        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+        XCTAssertEqual(toggleCount, 0)
+        XCTAssertEqual(dismissCount, 0)
+    }
+
     func testEscapeDismissesMenuTriggeredCommandPaletteWhenVisibilitySyncIsStale() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
@@ -4020,6 +4643,75 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertTrue(
             appDelegate.debugHandleCustomShortcut(event: repeatedEscape),
             "Repeated Escape immediately after dismiss should be consumed to prevent terminal passthrough"
+        )
+#else
+        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+    }
+
+    func testTerminalMarkedTextBypassesPostDismissEscapeSuppression() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = appDelegate.createMainWindow()
+        guard let window = window(withId: windowId),
+              let workspace = appDelegate.tabManagerFor(windowId: windowId)?.selectedWorkspace,
+              let panelId = workspace.focusedPanelId,
+              let terminalPanel = workspace.terminalPanel(for: panelId),
+              let terminalView = surfaceView(in: terminalPanel.hostedView) else {
+            closeWindow(withId: windowId)
+            XCTFail("Expected focused terminal surface")
+            return
+        }
+        defer {
+            terminalView.markedText = NSMutableAttributedString()
+            appDelegate.setCommandPaletteVisible(false, for: window)
+            closeWindow(withId: windowId)
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        appDelegate.setCommandPaletteVisible(true, for: window)
+
+        guard let firstEscape = makeKeyDownEvent(
+            key: "\u{1b}",
+            modifiers: [],
+            keyCode: 53,
+            windowNumber: window.windowNumber
+        ), let repeatedEscape = makeKeyDownEvent(
+            key: "\u{1b}",
+            modifiers: [],
+            keyCode: 53,
+            windowNumber: window.windowNumber,
+            isARepeat: true
+        ) else {
+            XCTFail("Failed to construct Escape events")
+            return
+        }
+
+#if DEBUG
+        XCTAssertTrue(
+            appDelegate.debugHandleCustomShortcut(event: firstEscape),
+            "The initial Escape must dismiss the visible palette and seed suppression"
+        )
+#else
+        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+        appDelegate.setCommandPaletteVisible(false, for: window)
+
+        terminalPanel.hostedView.suppressReparentFocus()
+        XCTAssertTrue(window.makeFirstResponder(terminalView))
+        terminalPanel.hostedView.clearSuppressReparentFocus()
+        terminalView.markedText = NSMutableAttributedString(string: "composing")
+        XCTAssertTrue(terminalView.hasMarkedText())
+        XCTAssertTrue(window.firstResponder === terminalView)
+
+#if DEBUG
+        XCTAssertFalse(
+            appDelegate.debugHandleCustomShortcut(event: repeatedEscape),
+            "Terminal IME composition must take precedence over post-dismiss Escape suppression"
         )
 #else
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")

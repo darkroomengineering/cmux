@@ -170,6 +170,19 @@ final class AgentStateWaitRegistry: @unchecked Sendable {
         lock.unlock()
     }
 
+#if DEBUG
+    func hasPendingWaiterForTesting(
+        surfaceId: UUID,
+        condition: AgentStateWaitCondition
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return waiters[surfaceId]?.contains {
+            $0.condition.rawValue == condition.rawValue
+        } ?? false
+    }
+#endif
+
     /// Called from the single main-thread mutation point whenever `surfaceId`'s agent state
     /// changes (including transitioning to `nil` on clear/reset). Fires every waiter whose
     /// condition `newState` satisfies and leaves the rest registered. `source` is the additive
@@ -207,14 +220,14 @@ extension TerminalController {
     /// true content-changed event. This still satisfies the "single call, no caller-side polling"
     /// goal of #166: the polling happens once, inside the app, on the connection's own thread,
     /// and the caller gets exactly one request/response round trip.
-    private static let surfaceWaitPollInterval: TimeInterval = 0.1
+    private nonisolated static let surfaceWaitPollInterval: TimeInterval = 0.1
 
     /// `surface.wait`: block (with timeout) until a surface hits a condition -- new output
     /// matching a regex `pattern`, the surface's child process exiting (`exit: true`), or its
     /// reported agent activity state satisfying `agent_state` (#166 task 2: `idle`, `working`,
     /// `blocked`, or `any_change`). Exactly one of `pattern` / `exit` / `agent_state` must be
     /// provided.
-    func v2SurfaceWait(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2SurfaceWait(params: [String: Any]) -> V2CallResult {
         let timeoutMs = max(1, v2Int(params, "timeout_ms") ?? v2Int(params, "timeout") ?? 30_000)
         let timeout = Double(timeoutMs) / 1000.0
         let deadline = Date().addingTimeInterval(timeout)

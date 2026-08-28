@@ -799,7 +799,10 @@ class TabManager: ObservableObject {
             self?.recentlyClosedBrowsers.push(snapshot)
         }
         workspace.onTerminalCloseStagedForUndo = { [weak self, weak workspace] transfer, paneId, index in
-            guard let self, let workspace else { return }
+            guard let self, let workspace else {
+                transfer.finalizePermanently()
+                return
+            }
             self.stageDetachedTerminalTransferForUndo(
                 transfer,
                 originalWorkspaceId: workspace.id,
@@ -866,13 +869,7 @@ class TabManager: ObservableObject {
                 )
             },
             finalize: {
-                // Mirrors Workspace+Bonsplit.swift's `didCloseTab` non-detaching teardown: release
-                // the SSH control master this transfer was keeping alive (if any), then close the
-                // retained panel for real.
-                if let cleanupConfiguration = transfer.remoteCleanupConfiguration {
-                    Workspace.requestSSHControlMasterCleanupIfNeeded(configuration: cleanupConfiguration)
-                }
-                transfer.panel.close()
+                transfer.finalizePermanently()
             }
         )
     }
@@ -887,15 +884,8 @@ class TabManager: ObservableObject {
         originalPaneId: PaneID?,
         originalIndex: Int?
     ) {
-        func giveUp() {
-            if let cleanupConfiguration = transfer.remoteCleanupConfiguration {
-                Workspace.requestSSHControlMasterCleanupIfNeeded(configuration: cleanupConfiguration)
-            }
-            transfer.panel.close()
-        }
-
         guard let targetWorkspace = workspace(withId: originalWorkspaceId) ?? selectedWorkspace ?? tabs.first else {
-            giveUp()
+            transfer.finalizePermanently()
             return
         }
 
@@ -907,7 +897,7 @@ class TabManager: ObservableObject {
         }
 
         guard let targetPane else {
-            giveUp()
+            transfer.finalizePermanently()
             return
         }
 
@@ -917,7 +907,15 @@ class TabManager: ObservableObject {
 
         let tabCount = targetWorkspace.bonsplitController.tabs(inPane: targetPane).count
         let clampedIndex = originalIndex.map { min(max($0, 0), tabCount) }
-        targetWorkspace.attachDetachedSurface(transfer, inPane: targetPane, atIndex: clampedIndex, focus: true)
+        _ = transfer.resolve(
+            primary: Workspace.DetachedSurfaceAttachmentTarget(
+                workspace: targetWorkspace,
+                paneId: targetPane,
+                index: clampedIndex,
+                focus: true
+            ),
+            rollback: nil
+        )
     }
 
     /// Canonical workspace lookup by ID. All workspace-by-ID scans across TabManager and its
@@ -2992,7 +2990,7 @@ class TabManager: ObservableObject {
         // workspace selection can fire on the next run loop turn and clobber this panel
         // with its stale captured panel ID.
         if let targetPanelId, let panel = tab.panels[targetPanelId] {
-            focusTransitionCoordinator.beginTransition(
+            _ = focusTransitionCoordinator.beginTransition(
                 to: FocusTransitionCoordinator.Owner(
                     workspaceID: tabId,
                     panelID: targetPanelId,

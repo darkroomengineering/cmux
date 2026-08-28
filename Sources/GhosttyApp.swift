@@ -22,6 +22,54 @@ private func programaRuntimeReadClipboardCallback(
     GhosttyApp.runtimeReadClipboardCallback(userdata, location, state)
 }
 
+/// Pinned Ghostty heap-allocates this opaque state for async completion and owns and
+/// invalidates it after the corresponding completion. This wrapper never dereferences or frees it.
+private struct GhosttyClipboardRequestState: @unchecked Sendable {
+    let pointer: UnsafeMutableRawPointer
+}
+
+/// Preserves the previous raw-pointer equality semantics without transporting the pointer.
+/// It carries the same allocator-reuse/ABA limitation, with no pointer ownership or access.
+private struct GhosttyRuntimeSurfaceIdentity: Equatable, Sendable {
+    let value: UInt
+
+    init(_ surface: ghostty_surface_t) {
+        value = UInt(bitPattern: surface)
+    }
+}
+
+/// Transient provenance for Ghostty's synchronous read-to-confirm callback re-entry.
+private enum GhosttyClipboardRequestIdentityRegistry {
+    private static let lock = NSLock()
+    private static var identities: [UnsafeMutableRawPointer: GhosttyRuntimeSurfaceIdentity] = [:]
+
+    static func withIdentity<Result>(
+        state: GhosttyClipboardRequestState,
+        identity: GhosttyRuntimeSurfaceIdentity,
+        body: () throws -> Result
+    ) rethrows -> Result {
+        lock.lock()
+        identities[state.pointer] = identity
+        lock.unlock()
+        defer {
+            lock.lock()
+            if identities[state.pointer] == identity {
+                identities.removeValue(forKey: state.pointer)
+            }
+            lock.unlock()
+        }
+        // Never hold the registry lock while calling Ghostty: confirmation re-enters here.
+        return try body()
+    }
+
+    static func identity(for state: GhosttyClipboardRequestState) -> GhosttyRuntimeSurfaceIdentity? {
+        lock.lock()
+        let identity = identities[state.pointer]
+        lock.unlock()
+        return identity
+    }
+}
+
 // Widened from private to internal: also constructed directly from
 // TerminalSurface.swift (Nuclear Review #97 split).
 //
@@ -138,7 +186,7 @@ enum GhosttySurfaceUserdataRegistry {
 /// see the live class reference itself -- there's no way to retain (or read a property of)
 /// a `GhosttySurfaceCallbackContext` from a callback at all, since `resolve(from:)` never
 /// dereferences the pointer.
-struct GhosttySurfaceCallbackSnapshot {
+struct GhosttySurfaceCallbackSnapshot: Sendable {
     let surfaceId: UUID
     let tabId: UUID?
 }
@@ -201,129 +249,146 @@ class GhosttyApp {
         // Only value fields are read here, off-main -- see GhosttySurfaceCallbackContext's
         // doc comment. All live-object resolution (including the ghostty_surface_t itself)
         // happens on main below.
+        guard let state else { return false }
+        let requestState = GhosttyClipboardRequestState(pointer: state)
         guard let callbackContext = Self.callbackContext(from: userdata) else { return false }
         let callbackSurfaceId = callbackContext.surfaceId
         let callbackTabId = callbackContext.tabId
 
         DispatchQueue.main.async {
-            let terminalSurface = MainActor.assumeIsolated {
-                Self.resolveTerminalSurface(tabId: callbackTabId, surfaceId: callbackSurfaceId)
-            }
-            // Deviation from the pre-fix synchronous behavior: we can no longer tell
-            // off-main whether the surface is still live, so this callback always
-            // returns `true` (accepted) below rather than synchronously falling back to
-            // `false` when the surface is already gone. If resolution fails here, the
-            // read silently completes as a no-op instead -- ghostty's clipboard-read
-            // request is simply never fulfilled, matching what already happened when the
-            // surface went away mid-flight in the old code.
-            guard let requestSurface: ghostty_surface_t = MainActor.assumeIsolated({
-                () -> ghostty_surface_t? in
-                terminalSurface?.liveSurfaceForGhosttyAccess(reason: "clipboard.read")
-            }) else { return }
+            MainActor.assumeIsolated { () -> Void in
+                guard let terminalSurface = Self.resolveTerminalSurface(
+                    tabId: callbackTabId,
+                    surfaceId: callbackSurfaceId
+                ) else { return }
+                // Deviation from the pre-fix synchronous behavior: we can no longer tell
+                // off-main whether the surface is still live, so this callback always
+                // returns `true` (accepted) below rather than synchronously falling back to
+                // `false` when the surface is already gone. If resolution fails here, the
+                // read silently completes as a no-op instead -- ghostty's clipboard-read
+                // request is simply never fulfilled, matching what already happened when the
+                // surface went away mid-flight in the old code.
+                guard let requestSurface = terminalSurface.liveSurfaceForGhosttyAccess(
+                    reason: "clipboard.read"
+                ) else { return }
+                let requestSurfaceIdentity = GhosttyRuntimeSurfaceIdentity(requestSurface)
 
-            func completeClipboardRequest(with text: String) {
-                let finish = {
-                    let currentSurface: ghostty_surface_t? = MainActor.assumeIsolated {
-                        () -> ghostty_surface_t? in
-                        terminalSurface?.liveSurfaceForGhosttyAccess(reason: "clipboard.complete")
+                func completeClipboardRequest(with text: String) {
+                    let finish = {
+                        MainActor.assumeIsolated { () -> Void in
+                            guard let currentSurface = Self.resolveLiveSurface(
+                                tabId: callbackTabId,
+                                surfaceId: callbackSurfaceId,
+                                reason: "clipboard.complete"
+                            ) else { return }
+                            let currentSurfaceIdentity = GhosttyRuntimeSurfaceIdentity(currentSurface)
+                            guard currentSurfaceIdentity == requestSurfaceIdentity else {
+                                return
+                            }
+                            text.withCString { ptr in
+                                GhosttyClipboardRequestIdentityRegistry.withIdentity(
+                                    state: requestState,
+                                    identity: currentSurfaceIdentity
+                                ) {
+                                    ghostty_surface_complete_clipboard_request(
+                                        currentSurface,
+                                        ptr,
+                                        requestState.pointer,
+                                        false
+                                    )
+                                }
+                            }
+                        }
                     }
-                    guard currentSurface == requestSurface else { return }
-                    text.withCString { ptr in
-                        ghostty_surface_complete_clipboard_request(requestSurface, ptr, state, false)
+                    if Thread.isMainThread {
+                        finish()
+                    } else {
+                        DispatchQueue.main.async(execute: finish)
                     }
                 }
-                if Thread.isMainThread {
-                    finish()
-                } else {
-                    DispatchQueue.main.async(execute: finish)
+
+                guard let pasteboard = GhosttyPasteboardHelper.pasteboard(for: location) else {
+                    completeClipboardRequest(with: "")
+                    return
                 }
-            }
 
-            guard let pasteboard = GhosttyPasteboardHelper.pasteboard(for: location) else {
-                completeClipboardRequest(with: "")
-                return
-            }
+                let preparedContent = TerminalImageTransferPlanner.prepare(
+                    pasteboard: pasteboard,
+                    mode: .paste
+                )
 
-            let preparedContent = TerminalImageTransferPlanner.prepare(
-                pasteboard: pasteboard,
-                mode: .paste
-            )
-
-            switch preparedContent {
-            case .reject:
-                completeClipboardRequest(with: "")
-            case .insertText(let text):
-                completeClipboardRequest(with: text)
-            case .fileURLs(let fileURLs):
-                let operation = TerminalImageTransferOperation()
-                MainActor.assumeIsolated {
-                    terminalSurface?.hostedView.beginImageTransferIndicator(
+                switch preparedContent {
+                case .reject:
+                    completeClipboardRequest(with: "")
+                case .insertText(let text):
+                    completeClipboardRequest(with: text)
+                case .fileURLs(let fileURLs):
+                    let operation = TerminalImageTransferOperation()
+                    terminalSurface.hostedView.beginImageTransferIndicator(
                         for: operation,
                         onCancel: {
                             completeClipboardRequest(with: "")
                         }
                     )
-                }
 
-                let target = MainActor.assumeIsolated {
-                    terminalSurface?.resolvedImageTransferTarget() ?? .local
-                }
-                let plan = TerminalImageTransferPlanner.plan(
-                    fileURLs: fileURLs,
-                    target: target
-                )
+                    let target = terminalSurface.resolvedImageTransferTarget()
+                    let plan = TerminalImageTransferPlanner.plan(
+                        fileURLs: fileURLs,
+                        target: target
+                    )
 
-                TerminalImageTransferPlanner.execute(
-                    plan: plan,
-                    operation: operation,
-                    uploadWorkspaceRemote: { fileURLs, operation, finish in
-                        guard let workspace = MainActor.assumeIsolated({
-                            terminalSurface?.owningWorkspace()
-                        }) else {
-                            finish(.failure(NSError(domain: "programa.remote.paste", code: 3)))
-                            GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
-                            return
-                        }
-                        workspace.uploadDroppedFilesForRemoteTerminal(
-                            fileURLs,
-                            operation: operation,
-                            completion: { result in
-                                finish(result)
+                    TerminalImageTransferPlanner.execute(
+                        plan: plan,
+                        operation: operation,
+                        uploadWorkspaceRemote: { fileURLs, operation, finish in
+                            guard let workspace = MainActor.assumeIsolated({
+                                terminalSurface.owningWorkspace()
+                            }) else {
+                                finish(.failure(NSError(domain: "programa.remote.paste", code: 3)))
                                 GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                                return
                             }
-                        )
-                    },
-                    uploadDetectedSSH: { session, fileURLs, operation, finish in
-                        session.uploadDroppedFiles(
-                            fileURLs,
-                            operation: operation,
-                            completion: { result in
-                                finish(result)
-                                GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                            workspace.uploadDroppedFilesForRemoteTerminal(
+                                fileURLs,
+                                operation: operation,
+                                completion: { result in
+                                    finish(result)
+                                    GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                                }
+                            )
+                        },
+                        uploadDetectedSSH: { session, fileURLs, operation, finish in
+                            session.uploadDroppedFiles(
+                                fileURLs,
+                                operation: operation,
+                                completion: { result in
+                                    finish(result)
+                                    GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
+                                }
+                            )
+                        },
+                        insertText: { text in
+                            MainActor.assumeIsolated {
+                                terminalSurface.hostedView.endImageTransferIndicator(
+                                    for: operation
+                                )
                             }
-                        )
-                    },
-                    insertText: { text in
-                        MainActor.assumeIsolated {
-                            terminalSurface?.hostedView.endImageTransferIndicator(
-                                for: operation
-                            )
-                        }
-                        completeClipboardRequest(with: text)
-                    },
-                    onFailure: { _ in
-                        MainActor.assumeIsolated {
-                            terminalSurface?.hostedView.endImageTransferIndicator(
-                                for: operation
-                            )
-                        }
-                        NSSound.beep()
+                            completeClipboardRequest(with: text)
+                        },
+                        onFailure: { _ in
+                            MainActor.assumeIsolated {
+                                terminalSurface.hostedView.endImageTransferIndicator(
+                                    for: operation
+                                )
+                            }
+                            NSSound.beep()
 #if DEBUG
-                        dlog("terminal.remotePasteUpload.failed surface=\(callbackSurfaceId.uuidString.prefix(5))")
+                            dlog("terminal.remotePasteUpload.failed surface=\(callbackSurfaceId.uuidString.prefix(5))")
 #endif
-                        completeClipboardRequest(with: "")
-                    }
-                )
+                            completeClipboardRequest(with: "")
+                        }
+                    )
+                }
             }
         }
 
@@ -433,34 +498,40 @@ class GhosttyApp {
         runtimeConfig.action_cb = { app, target, action in
             return GhosttyApp.shared.handleAction(target: target, action: action)
         }
-        // Some GhosttyKit builds import this callback as returning `Void` in Swift even
-        // though the C ABI returns `bool`. Store the C-compatible shim explicitly so the
-        // project compiles against both importer variants.
-        runtimeConfig.read_clipboard_cb = unsafeBitCast(
-            programaRuntimeReadClipboardCallback as @convention(c) (
-                UnsafeMutableRawPointer?,
-                ghostty_clipboard_e,
-                UnsafeMutableRawPointer?
-            ) -> Bool,
-            to: ghostty_runtime_read_clipboard_cb.self
-        )
+        runtimeConfig.read_clipboard_cb = programaRuntimeReadClipboardCallback
         runtimeConfig.confirm_read_clipboard_cb = { userdata, content, state, _ in
             guard let content else { return }
+            guard let state else { return }
+            let requestState = GhosttyClipboardRequestState(pointer: state)
             guard let callbackContext = GhosttyApp.callbackContext(from: userdata) else { return }
             let callbackSurfaceId = callbackContext.surfaceId
             let callbackTabId = callbackContext.tabId
+            guard let originatingSurfaceIdentity = GhosttyClipboardRequestIdentityRegistry.identity(
+                for: requestState
+            ) else { return }
             // Snapshot the C string now -- `content` is only valid for the duration of
             // this callback invocation, and resolving the live surface requires a
             // main-thread hop (see GhosttySurfaceCallbackContext's doc comment).
             let contentString = String(cString: content)
 
             DispatchQueue.main.async {
-                guard let surface: ghostty_surface_t = MainActor.assumeIsolated({
-                    () -> ghostty_surface_t? in
-                    GhosttyApp.resolveLiveSurface(tabId: callbackTabId, surfaceId: callbackSurfaceId, reason: "clipboard.confirm")
-                }) else { return }
-                contentString.withCString { ptr in
-                    ghostty_surface_complete_clipboard_request(surface, ptr, state, true)
+                MainActor.assumeIsolated { () -> Void in
+                    guard let surface = GhosttyApp.resolveLiveSurface(
+                        tabId: callbackTabId,
+                        surfaceId: callbackSurfaceId,
+                        reason: "clipboard.confirm"
+                    ) else { return }
+                    guard GhosttyRuntimeSurfaceIdentity(surface) == originatingSurfaceIdentity else {
+                        return
+                    }
+                    contentString.withCString { ptr in
+                        ghostty_surface_complete_clipboard_request(
+                            surface,
+                            ptr,
+                            requestState.pointer,
+                            true
+                        )
+                    }
                 }
             }
         }

@@ -9,16 +9,17 @@
 //      that instant and register a watcher for the next "working" transition. This closes the
 //      race where a hook reacts to the injected text before a separately-registered watcher
 //      would exist (same atomic check+register pattern as surface.wait).
-//   2. Grace window (`working_grace_ms`, default 3000): wait for the "working" transition.
+//   2. Grace window (`working_grace_ms`, default 3000), capped by the remaining overall
+//      `timeout_ms` budget: wait for the "working" transition.
 //      - If observed, proceed to step 3.
-//      - If the grace window elapses without ever seeing "working", there is nothing further
-//        useful to wait for -- resolve immediately using whatever the surface's agent_state
-//        already is (`working_observed: false`). This is deliberately not a hard error: a
-//        prompt can finish faster than the grace window, or the hook simply may not fire for a
-//        trivial prompt. If the surface never reported ANY agent_state at all (neither before
-//        sending nor during the grace window), the response carries a `warning` field instead
-//        of silently succeeding, since that combination usually means agent hooks were never
-//        installed for this surface.
+//      - If the grace window or overall deadline elapses without ever seeing "working", there is
+//        nothing further useful to wait for -- resolve immediately using whatever the surface's
+//        agent_state already is (`working_observed: false`). This is deliberately not a hard
+//        error: a prompt can finish faster than the grace window, or the hook simply may not fire
+//        for a trivial prompt. If the surface never reported ANY agent_state at all (neither
+//        before sending nor during the grace window), the response carries a `warning` field
+//        instead of silently succeeding, since that combination usually means agent hooks were
+//        never installed for this surface.
 //   3. Once "working" is observed, wait (for the remaining overall `timeout_ms` budget) for the
 //      surface's agent_state to reach "idle" (or clear entirely -- see surface.wait's no-state
 //      rule) and resolve with `working_observed: true`.
@@ -30,8 +31,9 @@ extension TerminalController {
     /// `agent.prompt`: send `text` to an agent surface and block (single request/response) until
     /// the agent finishes, per the phased semantics documented on this file and in
     /// docs/v2-api-migration.md.
-    func v2AgentPrompt(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
+    nonisolated func v2AgentPrompt(params: [String: Any]) -> V2CallResult {
+        let tabManagerAvailable = v2MainSync { self.v2ResolveTabManager(params: params) != nil }
+        guard tabManagerAvailable else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
         }
         guard let rawText = params["text"] as? String, !rawText.isEmpty else {
@@ -71,6 +73,10 @@ extension TerminalController {
         var resolvedState: AgentActivityState?
 
         v2MainSync {
+            guard let tabManager = self.v2ResolveTabManager(params: params) else {
+                setupError = .err(code: "unavailable", message: "TabManager not available", data: nil)
+                return
+            }
             guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
                 setupError = .err(code: "not_found", message: "Workspace not found", data: nil)
                 return
@@ -167,14 +173,17 @@ extension TerminalController {
         }
 
         // Step 2: grace window for a "working" transition.
-        let observedWorking = workingSemaphore.wait(timeout: .now() + Double(workingGraceMs) / 1000.0) == .success
+        let remaining = max(0, totalDeadline.timeIntervalSinceNow)
+        let graceWait = min(Double(workingGraceMs) / 1000.0, remaining)
+        let observedWorking = workingSemaphore.wait(timeout: .now() + graceWait) == .success
         if !observedWorking {
             AgentStateWaitRegistry.shared.removeWaiter(surfaceId: surfaceIdOut, token: firstPhaseWaiterToken)
 
             var currentState: AgentActivityState?
             var stateReadError: V2CallResult?
             v2MainSync {
-                guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                guard let tabManager = AppDelegate.shared?.tabManagerFor(tabId: workspaceId) ?? self.tabManager,
+                      let ws = tabManager.tabs.first(where: { $0.id == workspaceId }) else {
                     stateReadError = .err(code: "not_found", message: "Workspace not found", data: nil)
                     return
                 }
@@ -195,7 +204,8 @@ extension TerminalController {
         var idleWaiterToken: UUID?
         var idleSetupError: V2CallResult?
         v2MainSync {
-            guard let ws = self.v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+            guard let tabManager = AppDelegate.shared?.tabManagerFor(tabId: workspaceId) ?? self.tabManager,
+                  let ws = tabManager.tabs.first(where: { $0.id == workspaceId }) else {
                 idleSetupError = .err(code: "not_found", message: "Workspace not found", data: nil)
                 return
             }

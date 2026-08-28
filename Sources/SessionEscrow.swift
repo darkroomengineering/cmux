@@ -526,7 +526,7 @@ enum UnixDomainFDPassing {
         withUnsafeMutableBytes(of: &addr.sun_path) { rawPath in
             guard let base = rawPath.baseAddress else { return }
             memset(base, 0, rawPath.count)
-            path.withCString { cstr in
+            _ = path.withCString { cstr in
                 memcpy(base, cstr, path.utf8.count)
             }
         }
