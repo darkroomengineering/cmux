@@ -215,6 +215,13 @@ extension Workspace: @preconcurrency BonsplitDelegate {
             p.unfocus()
         }
 
+        // Web extensions track the active tab through this same selection funnel
+        // (didFocusPane also lands here), so this one hook covers pane focus and
+        // tab selection alike.
+        if #available(macOS 15.4, *), let browserPanel = panel as? BrowserPanel {
+            BrowserExtensionManager.shared.noteTabActivated(browserPanel)
+        }
+
         // Explicitly hide browser portals for deselected tabs in this pane.
         // Bonsplit's keepAllAlive mode hides non-selected tabs via SwiftUI .opacity(0),
         // but portal-hosted WKWebViews render at the window level in AppKit and are not

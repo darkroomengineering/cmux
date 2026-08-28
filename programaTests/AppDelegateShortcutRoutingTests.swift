@@ -204,9 +204,9 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         ))
     }
 
-    func testDuplicateInstanceTerminationWaitsForGraceBeforeForcing() throws {
+    func testDuplicateInstanceTerminationWaitsForGraceBeforeRunningFallback() throws {
         var gracefulTerminationCount = 0
-        var forcedTerminationCount = 0
+        var fallbackCount = 0
         var scheduledGraceAction: (@MainActor () -> Void)?
 
         AppDelegate.scheduleDuplicateTerminationForTesting(
@@ -217,19 +217,18 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             scheduleGrace: { action in
                 scheduledGraceAction = action
             },
-            forceTerminationIfStillMatching: {
-                forcedTerminationCount += 1
-                return true
+            performFallbackAfterGrace: {
+                fallbackCount += 1
             }
         )
 
         XCTAssertEqual(gracefulTerminationCount, 1)
-        XCTAssertEqual(forcedTerminationCount, 0, "Force termination must not run synchronously")
+        XCTAssertEqual(fallbackCount, 0, "The fallback must not run synchronously")
 
         let graceAction = try XCTUnwrap(scheduledGraceAction)
         graceAction()
 
-        XCTAssertEqual(forcedTerminationCount, 1)
+        XCTAssertEqual(fallbackCount, 1)
     }
 
     func testValidatedDuplicateShutdownRequestTargetsExactCurrentProcessAndBypassesWarning() {
@@ -261,6 +260,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertFalse(AppDelegate.shouldWarnBeforeTerminationForTesting(
             isTaggedDevBuild: false,
             isQuitWarningConfirmed: false,
+            isInternalSingleInstanceLoserExit: false,
             hasValidatedDuplicateShutdownRequest: accepted,
             isQuitWarningEnabled: true
         ))
@@ -347,53 +347,610 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertTrue(AppDelegate.shouldWarnBeforeTerminationForTesting(
             isTaggedDevBuild: false,
             isQuitWarningConfirmed: false,
+            isInternalSingleInstanceLoserExit: false,
             hasValidatedDuplicateShutdownRequest: false,
             isQuitWarningEnabled: true
         ))
     }
 
-    func testDuplicateForceFallbackRequiresSameLiveProcessIdentity() {
+    func testConcurrentDuplicateRequestGenerationsCannotOverwriteOrDeleteEachOther() throws {
+        let rootDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-ownership-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: rootDirectory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: rootDirectory) }
+
+        let target = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let firstGeneration = UUID()
+        let secondGeneration = UUID()
+        let firstURL = AppDelegate.duplicateRequestURLForTesting(
+            rootDirectory: rootDirectory,
+            target: target,
+            generation: firstGeneration
+        )
+        let secondURL = AppDelegate.duplicateRequestURLForTesting(
+            rootDirectory: rootDirectory,
+            target: target,
+            generation: secondGeneration
+        )
+
+        try Data("first".utf8).write(to: firstURL, options: .atomic)
+        try Data("second".utf8).write(to: secondURL, options: .atomic)
+
+        XCTAssertNotEqual(firstURL, secondURL)
+        XCTAssertEqual(try Data(contentsOf: firstURL), Data("first".utf8))
+        XCTAssertEqual(try Data(contentsOf: secondURL), Data("second".utf8))
+
+        try FileManager.default.removeItem(at: firstURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
+    func testThreeConcurrentShutdownGenerationsOwnRequestFilesAndShareTargetAcknowledgment() throws {
+        let rootDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-three-generations-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: rootDirectory) }
+
+        let target = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let requests = (0..<3).map { index in
+            AppDelegate.SingleInstanceShutdownRequest(
+                generation: UUID(),
+                target: target,
+                requester: ProgramaSingleInstanceProcessKey(
+                    startSeconds: 1_001,
+                    startMicroseconds: Int64(index),
+                    processIdentifier: pid_t(200 + index)
+                ),
+                createdAtUnixSeconds: 10_000
+            )
+        }
+        var requestURLs: [URL] = []
+        var acknowledgmentURLs: [URL] = []
+        for request in requests {
+            requestURLs.append(try XCTUnwrap(AppDelegate.writeDuplicateRequestForTesting(
+                rootDirectory: rootDirectory,
+                request: request
+            )))
+            let acknowledgmentURL = AppDelegate.duplicateAcknowledgmentURLForTesting(
+                rootDirectory: rootDirectory,
+                target: target,
+                generation: request.generation
+            )
+            let acknowledgment = AppDelegate.SingleInstanceShutdownAcknowledgment(
+                acceptedGeneration: request.generation,
+                target: target,
+                createdAtUnixSeconds: 10_001
+            )
+            try JSONEncoder().encode(acknowledgment).write(to: acknowledgmentURL, options: .atomic)
+            acknowledgmentURLs.append(acknowledgmentURL)
+        }
+
+        XCTAssertEqual(Set(requestURLs).count, 3)
+        XCTAssertEqual(Set(acknowledgmentURLs).count, 1)
+        XCTAssertTrue(AppDelegate.removeDuplicateStateForTesting(
+            rootDirectory: rootDirectory,
+            request: requests[0]
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: requestURLs[0].path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: acknowledgmentURLs[0].path))
+        for index in 1..<3 {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: requestURLs[index].path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: acknowledgmentURLs[index].path))
+        }
+    }
+
+    func testDuplicateAcknowledgmentRequiresExactTargetAndTimingButNotGeneration() {
+        let target = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let requester = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_001,
+            startMicroseconds: 0,
+            processIdentifier: 200
+        )
+        let request = AppDelegate.SingleInstanceShutdownRequest(
+            generation: UUID(),
+            target: target,
+            requester: requester,
+            createdAtUnixSeconds: 10_000
+        )
+        let valid = AppDelegate.SingleInstanceShutdownAcknowledgment(
+            acceptedGeneration: request.generation,
+            target: target,
+            createdAtUnixSeconds: 10_001
+        )
+        let wrongTarget = AppDelegate.SingleInstanceShutdownAcknowledgment(
+            acceptedGeneration: request.generation,
+            target: requester,
+            createdAtUnixSeconds: 10_001
+        )
+        let wrongGeneration = AppDelegate.SingleInstanceShutdownAcknowledgment(
+            acceptedGeneration: UUID(),
+            target: target,
+            createdAtUnixSeconds: 10_001
+        )
+        let beforeRequest = AppDelegate.SingleInstanceShutdownAcknowledgment(
+            acceptedGeneration: request.generation,
+            target: target,
+            createdAtUnixSeconds: 9_999
+        )
+        let tooLate = AppDelegate.SingleInstanceShutdownAcknowledgment(
+            acceptedGeneration: request.generation,
+            target: target,
+            createdAtUnixSeconds: 10_011
+        )
+        let future = AppDelegate.SingleInstanceShutdownAcknowledgment(
+            acceptedGeneration: request.generation,
+            target: target,
+            createdAtUnixSeconds: 10_004
+        )
+
+        XCTAssertTrue(AppDelegate.shouldAcceptDuplicateShutdownAcknowledgmentForTesting(
+            valid,
+            expectedRequest: request,
+            now: 10_002
+        ))
+        for accepted in [wrongGeneration, beforeRequest] {
+            XCTAssertTrue(AppDelegate.shouldAcceptDuplicateShutdownAcknowledgmentForTesting(
+                accepted,
+                expectedRequest: request,
+                now: 10_002
+            ))
+        }
+        for invalid in [wrongTarget, tooLate, future] {
+            XCTAssertFalse(AppDelegate.shouldAcceptDuplicateShutdownAcknowledgmentForTesting(
+                invalid,
+                expectedRequest: request,
+                now: 10_002
+            ))
+        }
+    }
+
+    func testDuplicateStateRecoversFromMoreThanScanLimitRecognizedStaleEntries() throws {
+        let rootDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-stale-cap-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: rootDirectory) }
+
+        let target = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        for index in 0..<520 {
+            let request = AppDelegate.SingleInstanceShutdownRequest(
+                generation: UUID(),
+                target: target,
+                requester: ProgramaSingleInstanceProcessKey(
+                    startSeconds: 1_001,
+                    startMicroseconds: Int64(index),
+                    processIdentifier: pid_t(200 + index)
+                ),
+                createdAtUnixSeconds: 9_000
+            )
+            _ = try XCTUnwrap(AppDelegate.writeDuplicateRequestForTesting(
+                rootDirectory: rootDirectory,
+                request: request
+            ))
+        }
+
+        XCTAssertTrue(AppDelegate.prepareDuplicateStateForTesting(
+            rootDirectory: rootDirectory,
+            now: 10_000,
+            isProcessLive: { _ in false }
+        ))
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: rootDirectory.path).count,
+            0
+        )
+    }
+
+    func testDuplicateStateRetainsStaleFilesForExactLiveProcesses() throws {
+        let rootDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-live-retention-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: rootDirectory) }
+
+        let target = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let request = AppDelegate.SingleInstanceShutdownRequest(
+            target: target,
+            requester: ProgramaSingleInstanceProcessKey(
+                startSeconds: 1_001,
+                startMicroseconds: 0,
+                processIdentifier: 200
+            ),
+            createdAtUnixSeconds: 9_000
+        )
+        let requestURL = try XCTUnwrap(AppDelegate.writeDuplicateRequestForTesting(
+            rootDirectory: rootDirectory,
+            request: request
+        ))
+        let acknowledgmentURL = AppDelegate.duplicateAcknowledgmentURLForTesting(
+            rootDirectory: rootDirectory,
+            target: target,
+            generation: request.generation
+        )
+        let acknowledgment = AppDelegate.SingleInstanceShutdownAcknowledgment(
+            acceptedGeneration: request.generation,
+            target: target,
+            createdAtUnixSeconds: 9_001
+        )
+        try JSONEncoder().encode(acknowledgment).write(to: acknowledgmentURL, options: .atomic)
+
+        XCTAssertTrue(AppDelegate.prepareDuplicateStateForTesting(
+            rootDirectory: rootDirectory,
+            now: 10_000,
+            isProcessLive: { $0 == target || $0 == request.requester }
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: requestURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: acknowledgmentURL.path))
+    }
+
+    func testDuplicateStateRefusesMalformedAndSymlinkEntriesWithoutDeletingThem() throws {
+        let rootDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-unsafe-state-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let symlinkTarget = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-symlink-target-\(UUID().uuidString)",
+            isDirectory: false
+        )
+        try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: false)
+        try Data("outside".utf8).write(to: symlinkTarget)
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+            try? FileManager.default.removeItem(at: symlinkTarget)
+        }
+        let malformedURL = rootDirectory.appendingPathComponent("request-malformed.json")
+        let symlinkURL = rootDirectory.appendingPathComponent("ack-malformed.json")
+        try Data("not-json".utf8).write(to: malformedURL)
+        try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: symlinkTarget)
+
+        XCTAssertFalse(AppDelegate.prepareDuplicateStateForTesting(
+            rootDirectory: rootDirectory,
+            now: 10_000,
+            isProcessLive: { _ in false }
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: malformedURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: symlinkURL.path))
+        XCTAssertEqual(try Data(contentsOf: symlinkTarget), Data("outside".utf8))
+    }
+
+    func testRejectedGracefulTerminationStillSchedulesConsentFallbackForOwnedRequest() {
+        XCTAssertTrue(AppDelegate.shouldScheduleDuplicateFallbackForTesting(
+            requestWasWritten: true,
+            gracefulTerminationAccepted: false
+        ))
+        XCTAssertFalse(AppDelegate.shouldScheduleDuplicateFallbackForTesting(
+            requestWasWritten: false,
+            gracefulTerminationAccepted: false
+        ))
+    }
+
+    func testDuplicateForcePromptDefaultsReturnAndEscapeToCancel() {
+        XCTAssertEqual(AppDelegate.duplicateForcePromptResponseForTesting(button: .primary), .cancel)
+        XCTAssertEqual(AppDelegate.duplicateForcePromptResponseForTesting(button: .secondary), .forceClose)
+        XCTAssertEqual(AppDelegate.duplicateForcePromptResponseForTesting(button: .escape), .cancel)
+    }
+
+    func testDuplicateRequesterRequiresMatchingDesignatedSigningIdentity() {
+        let releaseIdentity = AppDelegate.SingleInstanceCodeIdentity(
+            signingIdentifier: "com.darkroom.programa",
+            teamIdentifier: "DARKROOMTEAM"
+        )
+        XCTAssertTrue(AppDelegate.shouldTrustDuplicateCodeIdentityForTesting(
+            current: releaseIdentity,
+            candidate: releaseIdentity,
+            designatedRequirementMatches: true,
+            isDebugBuild: false
+        ))
+        XCTAssertFalse(AppDelegate.shouldTrustDuplicateCodeIdentityForTesting(
+            current: releaseIdentity,
+            candidate: AppDelegate.SingleInstanceCodeIdentity(
+                signingIdentifier: "com.darkroom.programa",
+                teamIdentifier: "SPOOFEDTEAM"
+            ),
+            designatedRequirementMatches: true,
+            isDebugBuild: false
+        ))
+        XCTAssertFalse(AppDelegate.shouldTrustDuplicateCodeIdentityForTesting(
+            current: releaseIdentity,
+            candidate: AppDelegate.SingleInstanceCodeIdentity(
+                signingIdentifier: "com.example.spoof",
+                teamIdentifier: "DARKROOMTEAM"
+            ),
+            designatedRequirementMatches: true,
+            isDebugBuild: false
+        ))
+        let adHocIdentity = AppDelegate.SingleInstanceCodeIdentity(
+            signingIdentifier: "com.darkroom.programa.debug",
+            teamIdentifier: nil
+        )
+        XCTAssertFalse(AppDelegate.shouldTrustDuplicateCodeIdentityForTesting(
+            current: adHocIdentity,
+            candidate: adHocIdentity,
+            designatedRequirementMatches: true,
+            isDebugBuild: false
+        ))
+        XCTAssertTrue(AppDelegate.shouldTrustDuplicateCodeIdentityForTesting(
+            current: adHocIdentity,
+            candidate: adHocIdentity,
+            designatedRequirementMatches: true,
+            isDebugBuild: true
+        ))
+        XCTAssertFalse(AppDelegate.shouldTrustDuplicateCodeIdentityForTesting(
+            current: adHocIdentity,
+            candidate: adHocIdentity,
+            designatedRequirementMatches: false,
+            isDebugBuild: true
+        ))
+    }
+
+    func testDuplicateRequesterRequiresDynamicCodeValidationForUnchangedProcessIdentity() {
         let expected = ProgramaSingleInstanceProcessKey(
             startSeconds: 1_000,
             startMicroseconds: 100,
             processIdentifier: 100
         )
-        let changed = ProgramaSingleInstanceProcessKey(
+        let replaced = ProgramaSingleInstanceProcessKey(
             startSeconds: 1_001,
             startMicroseconds: 0,
             processIdentifier: 100
         )
+        let identity = AppDelegate.SingleInstanceCodeIdentity(
+            signingIdentifier: "com.darkroom.programa",
+            teamIdentifier: "DARKROOMTEAM"
+        )
 
-        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
+        XCTAssertFalse(AppDelegate.shouldTrustDuplicateRunningCodeForTesting(
             expectedProcessKey: expected,
-            resolvedProcessKey: nil,
-            isTerminated: false,
-            requestIsPending: true
+            resolvedProcessKeyBeforeValidation: expected,
+            resolvedProcessKeyAfterValidation: replaced,
+            currentIdentity: identity,
+            candidateIdentity: identity,
+            dynamicRequirementMatches: true,
+            isDebugBuild: false
+        ), "A PID whose kernel start key changes during validation must fail closed")
+        XCTAssertFalse(AppDelegate.shouldTrustDuplicateRunningCodeForTesting(
+            expectedProcessKey: expected,
+            resolvedProcessKeyBeforeValidation: expected,
+            resolvedProcessKeyAfterValidation: expected,
+            currentIdentity: identity,
+            candidateIdentity: identity,
+            dynamicRequirementMatches: false,
+            isDebugBuild: false
+        ), "Matching static signing metadata must not replace dynamic running-code validation")
+    }
+
+    func testAcceptingOneGenerationAcknowledgesExactTargetForEveryRequester() throws {
+        let rootDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-shared-ack-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: rootDirectory) }
+
+        let target = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let acceptedRequest = AppDelegate.SingleInstanceShutdownRequest(
+            generation: UUID(),
+            target: target,
+            requester: ProgramaSingleInstanceProcessKey(
+                startSeconds: 1_001,
+                startMicroseconds: 0,
+                processIdentifier: 200
+            ),
+            createdAtUnixSeconds: 10_000
+        )
+        _ = try XCTUnwrap(AppDelegate.writeDuplicateRequestForTesting(
+            rootDirectory: rootDirectory,
+            request: acceptedRequest
         ))
-        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
-            expectedProcessKey: expected,
-            resolvedProcessKey: changed,
-            isTerminated: false,
-            requestIsPending: true
+        XCTAssertTrue(AppDelegate.publishDuplicateAcknowledgmentForTesting(
+            rootDirectory: rootDirectory,
+            request: acceptedRequest,
+            currentProcessKey: target,
+            now: 10_001
         ))
-        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
-            expectedProcessKey: expected,
-            resolvedProcessKey: expected,
+
+        let lateRequests = (0..<2).map { index in
+            AppDelegate.SingleInstanceShutdownRequest(
+                generation: UUID(),
+                target: target,
+                requester: ProgramaSingleInstanceProcessKey(
+                    startSeconds: 1_002,
+                    startMicroseconds: Int64(index),
+                    processIdentifier: pid_t(300 + index)
+                ),
+                createdAtUnixSeconds: 10_002
+            )
+        }
+        for request in lateRequests {
+            _ = try XCTUnwrap(AppDelegate.writeDuplicateRequestForTesting(
+                rootDirectory: rootDirectory,
+                request: request
+            ))
+        }
+
+        for request in [acceptedRequest] + lateRequests {
+            XCTAssertTrue(
+                AppDelegate.hasValidDuplicateAcknowledgmentForTesting(
+                    rootDirectory: rootDirectory,
+                    request: request,
+                    now: 10_003
+                ),
+                "The target's durable responsive state must suppress fallback for existing and later request generations"
+            )
+            XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+                hasValidTargetAcknowledgment: true,
+                requestGenerationIsPending: true,
+                processIdentityMatches: true,
+                isTerminated: false,
+                response: nil
+            ), .skip)
+        }
+    }
+
+    func testDuplicateTargetFailsClosedWhenAcknowledgmentPublicationFails() throws {
+        let rootDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "programa-single-instance-ack-failure-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: rootDirectory) }
+
+        let target = ProgramaSingleInstanceProcessKey(
+            startSeconds: 1_000,
+            startMicroseconds: 100,
+            processIdentifier: 100
+        )
+        let request = AppDelegate.SingleInstanceShutdownRequest(
+            target: target,
+            requester: ProgramaSingleInstanceProcessKey(
+                startSeconds: 1_001,
+                startMicroseconds: 0,
+                processIdentifier: 200
+            ),
+            createdAtUnixSeconds: 10_000
+        )
+
+        XCTAssertFalse(AppDelegate.publishDuplicateAcknowledgmentForTesting(
+            rootDirectory: rootDirectory,
+            request: request,
+            currentProcessKey: target,
+            now: 10_001,
+            allowWrite: false
+        ))
+        XCTAssertTrue(AppDelegate.shouldWarnBeforeTerminationForTesting(
+            isTaggedDevBuild: false,
+            isQuitWarningConfirmed: false,
+            isInternalSingleInstanceLoserExit: false,
+            hasValidatedDuplicateShutdownRequest: false,
+            isQuitWarningEnabled: true
+        ))
+    }
+
+    func testDelayedDuplicateTargetPromptsInsteadOfForcingAutomatically() {
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
+            isTerminated: false,
+            response: nil
+        ), .prompt)
+    }
+
+    func testDuplicateFallbackGraceLeavesRoomBeforeRequestExpiry() {
+        XCTAssertEqual(
+            AppDelegate.duplicateTerminationGraceIntervalForTesting,
+            8,
+            accuracy: 0.25
+        )
+        XCTAssertLessThan(AppDelegate.duplicateTerminationGraceIntervalForTesting, 10)
+    }
+
+    func testDuplicateForceRequiresConsentAndCurrentUnacknowledgedGeneration() {
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
+            isTerminated: false,
+            response: .forceClose
+        ), .force)
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: true,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
+            isTerminated: false,
+            response: .forceClose
+        ), .skip)
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: false,
+            processIdentityMatches: true,
+            isTerminated: false,
+            response: .forceClose
+        ), .skip)
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: false,
+            isTerminated: false,
+            response: .forceClose
+        ), .skip)
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
             isTerminated: true,
-            requestIsPending: true
-        ))
-        XCTAssertFalse(AppDelegate.shouldForceDuplicateTerminationForTesting(
-            expectedProcessKey: expected,
-            resolvedProcessKey: expected,
+            response: .forceClose
+        ), .skip)
+    }
+
+    func testDuplicateForcePromptCancelSelectsCleanNewerProcessExit() {
+        XCTAssertEqual(AppDelegate.duplicateFallbackActionForTesting(
+            hasValidTargetAcknowledgment: false,
+            requestGenerationIsPending: true,
+            processIdentityMatches: true,
             isTerminated: false,
-            requestIsPending: false
+            response: .cancel
+        ), .exitNewer)
+        XCTAssertFalse(AppDelegate.shouldWarnBeforeTerminationForTesting(
+            isTaggedDevBuild: false,
+            isQuitWarningConfirmed: false,
+            isInternalSingleInstanceLoserExit: true,
+            hasValidatedDuplicateShutdownRequest: false,
+            isQuitWarningEnabled: true
         ))
-        XCTAssertTrue(AppDelegate.shouldForceDuplicateTerminationForTesting(
-            expectedProcessKey: expected,
-            resolvedProcessKey: expected,
-            isTerminated: false,
-            requestIsPending: true
-        ))
+
+        let policy = AppDelegate.singleInstanceTerminationPersistencePolicyForTesting(
+            isDiscardedDuplicate: true
+        )
+        XCTAssertFalse(policy.persistPreTerminationSnapshot)
+        XCTAssertFalse(policy.persistCleanShutdownSnapshot)
+        XCTAssertTrue(
+            policy.performProcessLocalTeardown,
+            "Discarding the empty newer process must still run its local teardown"
+        )
+
+        XCTAssertEqual(
+            AppDelegate.singleInstanceTerminationPersistencePolicyForTesting(
+                isDiscardedDuplicate: false
+            ),
+            AppDelegate.SingleInstanceTerminationPersistencePolicy(
+                persistPreTerminationSnapshot: true,
+                persistCleanShutdownSnapshot: true,
+                performProcessLocalTeardown: true
+            ),
+            "Ordinary and update-driven termination must keep normal persistence and teardown"
+        )
     }
 
     func testDuplicateInstanceCandidateRejectsCurrentProcessAndDifferentBundle() {
