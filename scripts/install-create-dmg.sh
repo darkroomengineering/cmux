@@ -35,6 +35,17 @@ command -v "${BUN_COMMAND}" >/dev/null 2>&1 || {
   --frozen-lockfile \
   --ignore-scripts
 
+# --ignore-scripts also skips the node-gyp builds that create-dmg's native
+# dependencies need (macos-alias ships volume.node, fs-xattr ships xattr.node);
+# without them appdmg fails with MODULE_NOT_FOUND at DMG creation. Rebuild only
+# those two pinned packages so every other lifecycle script stays disabled.
+NPM_COMMAND="${PROGRAMA_NPM_COMMAND:-npm}"
+for native_package in macos-alias fs-xattr; do
+  package_dir="${INSTALL_DIR}/node_modules/${native_package}"
+  [[ -d "${package_dir}" ]] || continue
+  "${NPM_COMMAND}" rebuild --prefix "${INSTALL_DIR}" "${native_package}"
+done
+
 LOCAL_BIN="${INSTALL_DIR}/node_modules/.bin"
 if [[ -n "${GITHUB_PATH:-}" ]]; then
   printf '%s\n' "${LOCAL_BIN}" >> "${GITHUB_PATH}"
