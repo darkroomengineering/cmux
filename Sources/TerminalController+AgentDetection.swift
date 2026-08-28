@@ -12,7 +12,7 @@ import Foundation
 extension TerminalController {
     // MARK: - V2 Agent Detection Methods
 
-    func v2AgentDetectionList(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2AgentDetectionList(params: [String: Any]) -> V2CallResult {
         // Re-read from disk so a manifest just written by `agent-detection scaffold` shows up
         // without relaunching the app.
         AgentManifestLoader.shared.reloadFromDisk()
@@ -50,11 +50,13 @@ extension TerminalController {
         return .ok(["manifests": payloads])
     }
 
-    func v2AgentDetectionClassify(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2AgentDetectionClassify(params: [String: Any]) -> V2CallResult {
         // Same reason as `v2AgentDetectionList`: `test` exists to check patterns you just
         // edited, so it must read the file as it is on disk right now.
         AgentManifestLoader.shared.reloadFromDisk()
-        let readResult = v2SurfaceReadText(params: params)
+        let readResult = v2MainSync {
+            v2SurfaceReadText(params: params)
+        }
         let textPayload: [String: Any]
         switch readResult {
         case .ok(let value):

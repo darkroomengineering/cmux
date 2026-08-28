@@ -153,6 +153,13 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
     }
 
+    /// Single-owner transport used only after registry removal and `surface` nil-ing.
+    /// The replay queue orders this free after earlier replay work; only the main-actor
+    /// task unwraps the pointer and frees it once.
+    private struct DeferredSurfaceFree: @unchecked Sendable {
+        let pointer: ghostty_surface_t
+    }
+
     private(set) var surface: ghostty_surface_t?
     private weak var attachedView: GhosttyNSView?
 
@@ -973,6 +980,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
 #endif
 
+        let deferredSurfaceFree = DeferredSurfaceFree(pointer: surfaceToFree)
+
 #if DEBUG
         dlog(
             "surface.lifecycle.\(reason).begin surface=\(surfaceIdForTap.prefix(5)) " +
@@ -989,6 +998,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // needs is snapshotted above, same discipline as before.
         reviveReplayQueue.async {
             Task { @MainActor in
+                let surfaceToFree = deferredSurfaceFree.pointer
                 // Keep free behavior aligned across teardown sites: perform the runtime
                 // teardown on the next main-actor turn so SIGHUP delivery is
                 // deterministic but non-reentrant. Clear the PTY tee right before

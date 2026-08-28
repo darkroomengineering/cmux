@@ -20,6 +20,57 @@ private enum BrowserFaviconPolicy {
     static let maxResponseBytes = 1024 * 1024
 }
 
+struct BrowserStateRestoreNavigationMilestone {
+    let navigationID: UUID
+    let url: URL
+    let executionURL: URL
+}
+
+enum BrowserStateRestoreNavigationOutcome {
+    case finished(
+        committed: BrowserStateRestoreNavigationMilestone,
+        finished: BrowserStateRestoreNavigationMilestone
+    )
+    case cancelled
+    case permissionDenied
+    case unavailable
+    case failed(message: String)
+}
+
+enum BrowserStateRestoreNavigationStartOutcome {
+    case started(effectiveURL: URL)
+    case permissionDenied
+    case unavailable
+    case busy
+}
+
+@MainActor
+private final class BrowserStateRestoreNavigationWaiter {
+    let navigationID = UUID()
+    let webView: WKWebView
+    let webViewInstanceID: UUID
+    let requestedLogicalURL: URL
+    let effectiveExecutionURL: URL
+    let completion: (BrowserStateRestoreNavigationOutcome) -> Void
+    var navigation: WKNavigation?
+    var committed: BrowserStateRestoreNavigationMilestone?
+    var observationsBeforeNavigationWasBound: [BrowserNavigationObservation] = []
+
+    init(
+        webView: WKWebView,
+        webViewInstanceID: UUID,
+        requestedLogicalURL: URL,
+        effectiveExecutionURL: URL,
+        completion: @escaping (BrowserStateRestoreNavigationOutcome) -> Void
+    ) {
+        self.webView = webView
+        self.webViewInstanceID = webViewInstanceID
+        self.requestedLogicalURL = requestedLogicalURL
+        self.effectiveExecutionURL = effectiveExecutionURL
+        self.completion = completion
+    }
+}
+
 @MainActor
 final class BrowserPanel: Panel, ObservableObject {
     /// Popup windows owned by this panel (for lifecycle cleanup)
@@ -677,6 +728,10 @@ final class BrowserPanel: Panel, ObservableObject {
         let preserveRestoredSessionHistory: Bool
     }
     private var pendingRemoteNavigation: PendingRemoteNavigation?
+    private var browserStateRestoreGeneration = UUID()
+    private var browserStateRestoreLease: TerminalController.V2BrowserStateRestoreLeaseCoordinator.Lease?
+    private var browserStateRestoreNavigationWaiter: BrowserStateRestoreNavigationWaiter?
+    private var browserStateRestoreEffectiveURL: URL?
     let developerToolsDetachedOpenGracePeriod: TimeInterval = 0.35
     var developerToolsDetachedOpenGraceDeadline: Date?
     var developerToolsTransitionTargetVisible: Bool?
@@ -966,6 +1021,7 @@ final class BrowserPanel: Panel, ObservableObject {
     }
 
     func bindWebView(_ webView: ProgramaWebView) {
+        invalidateBrowserStateRestore(with: .unavailable)
         webView.onContextMenuDownloadStateChanged = { [weak self] downloading in
             if downloading {
                 self?.beginDownloadActivity()
@@ -991,6 +1047,10 @@ final class BrowserPanel: Panel, ObservableObject {
         let boundWebViewInstanceID = webViewInstanceID
         let boundHistoryStore = historyStore
 
+        navigationDelegate.didObserveNavigation = { [weak self] observation in
+            guard let self else { return }
+            self.handleBrowserStateRestoreNavigationObservation(observation)
+        }
         navigationDelegate.didStartProvisionalNavigation = { [weak self] webView in
             guard let self, self.isCurrentWebView(webView, instanceID: boundWebViewInstanceID) else { return }
             self.hasPromptedPasskeyHandoffForCurrentNavigation = false
@@ -1074,7 +1134,9 @@ final class BrowserPanel: Panel, ObservableObject {
             self?.shouldBlockInsecureHTTPNavigation(to: url) ?? false
         }
         navDelegate.handleBlockedInsecureHTTPNavigation = { [weak self] request, intent in
-            self?.presentInsecureHTTPAlert(for: request, intent: intent, recordTypedNavigation: false)
+            guard let self else { return }
+            if self.rejectBlockedBrowserStateRestoreNavigation() { return }
+            self.presentInsecureHTTPAlert(for: request, intent: intent, recordTypedNavigation: false)
         }
         navDelegate.didTerminateWebContentProcess = { [weak self] webView in
             self?.replaceWebViewAfterContentProcessTermination(for: webView)
@@ -1165,6 +1227,7 @@ final class BrowserPanel: Panel, ObservableObject {
 
     func setRemoteProxyEndpoint(_ endpoint: BrowserProxyEndpoint?) {
         guard remoteProxyEndpoint != endpoint else { return }
+        invalidateBrowserStateRestore(with: .unavailable)
         remoteProxyEndpoint = endpoint
         applyRemoteProxyConfigurationIfAvailable()
         resumePendingRemoteNavigationIfNeeded()
@@ -1237,6 +1300,7 @@ final class BrowserPanel: Panel, ObservableObject {
         proxyEndpoint: BrowserProxyEndpoint?,
         remoteStatus: BrowserRemoteWorkspaceStatus?
     ) {
+        invalidateBrowserStateRestoreForWorkspaceTransfer()
         workspaceId = newWorkspaceId
         usesRemoteWorkspaceProxy = isRemoteWorkspace
         let targetStore = isRemoteWorkspace
@@ -1618,6 +1682,7 @@ final class BrowserPanel: Panel, ObservableObject {
         reason: String
     ) {
         guard oldWebView === webView else { return }
+        invalidateBrowserStateRestore(with: .unavailable)
 
         let wasRenderable = shouldRenderWebView
         let restoreURL = Self.remoteProxyDisplayURL(for: oldWebView.url) ?? currentURL
@@ -1774,6 +1839,7 @@ final class BrowserPanel: Panel, ObservableObject {
         // Ensure we don't keep a hidden WKWebView (or its content view) as first responder while
         // bonsplit/SwiftUI reshuffles views during close.
         unfocus()
+        invalidateBrowserStateRestore(with: .cancelled)
 
         // Snapshot first: popup close unregisters itself from popupControllers.
         let popupsToClose = popupControllers
@@ -1802,9 +1868,6 @@ final class BrowserPanel: Panel, ObservableObject {
         configuration: WKWebViewConfiguration,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        // Share the opener's process pool so popups (e.g. OAuth flows) participate in the
-        // same renderer/process group as the opener rather than defaulting to a fresh one.
-        configuration.processPool = webView.configuration.processPool
         let controller = BrowserPopupWindowController(
             configuration: configuration,
             windowFeatures: windowFeatures,
@@ -2190,6 +2253,207 @@ final class BrowserPanel: Panel, ObservableObject {
 
     // MARK: - Navigation
 
+    func beginBrowserStateRestore() -> TerminalController.V2BrowserStateRestoreLeaseCoordinator.Lease? {
+        guard browserStateRestoreLease == nil else { return nil }
+        let dataStoreID = ObjectIdentifier(webView.configuration.websiteDataStore)
+        guard let lease = TerminalController.V2BrowserStateRestoreLeaseCoordinator.shared.acquire(
+            dataStoreID: dataStoreID,
+            generation: browserStateRestoreGeneration
+        ) else { return nil }
+        browserStateRestoreLease = lease
+        return lease
+    }
+
+    func isBrowserStateRestoreLeaseValid(
+        _ lease: TerminalController.V2BrowserStateRestoreLeaseCoordinator.Lease
+    ) -> Bool {
+        guard browserStateRestoreLease != nil else { return false }
+        return TerminalController.V2BrowserStateRestoreLeaseCoordinator.shared.isValid(
+            lease,
+            currentGeneration: browserStateRestoreGeneration
+        )
+    }
+
+    func endBrowserStateRestore(
+        _ lease: TerminalController.V2BrowserStateRestoreLeaseCoordinator.Lease
+    ) {
+        if let waiter = browserStateRestoreNavigationWaiter {
+            waiter.webView.stopLoading()
+            completeBrowserStateRestoreNavigation(waiter, with: .cancelled)
+        }
+        TerminalController.V2BrowserStateRestoreLeaseCoordinator.shared.release(lease)
+        browserStateRestoreLease = nil
+    }
+
+    private func invalidateBrowserStateRestore(with outcome: BrowserStateRestoreNavigationOutcome) {
+        browserStateRestoreGeneration = UUID()
+        if let waiter = browserStateRestoreNavigationWaiter {
+            waiter.webView.stopLoading()
+            completeBrowserStateRestoreNavigation(waiter, with: outcome)
+        }
+    }
+
+    func invalidateBrowserStateRestoreForWorkspaceTransfer() {
+        invalidateBrowserStateRestore(with: .unavailable)
+    }
+
+    func startBrowserStateRestoreNavigation(
+        to url: URL,
+        completion: @escaping (BrowserStateRestoreNavigationOutcome) -> Void
+    ) -> BrowserStateRestoreNavigationStartOutcome {
+        guard browserStateRestoreNavigationWaiter == nil else { return .busy }
+        guard !browserShouldBlockInsecureHTTPURL(url) else { return .permissionDenied }
+        guard !usesRemoteWorkspaceProxy || remoteProxyEndpoint != nil else { return .unavailable }
+
+        let request = URLRequest(url: url)
+        let effectiveRequest = remoteProxyPreparedRequest(from: request, logScope: "stateRestore")
+        guard let effectiveURL = effectiveRequest.url else { return .unavailable }
+
+        let restoreWebView = webView
+        let restoreWebViewInstanceID = webViewInstanceID
+        let waiter = BrowserStateRestoreNavigationWaiter(
+            webView: restoreWebView,
+            webViewInstanceID: restoreWebViewInstanceID,
+            requestedLogicalURL: url,
+            effectiveExecutionURL: effectiveURL,
+            completion: completion
+        )
+        browserStateRestoreNavigationWaiter = waiter
+        browserStateRestoreEffectiveURL = effectiveURL
+
+        abandonRestoredSessionHistoryIfNeeded()
+        restoreWebView.customUserAgent = BrowserUserAgentSettings.safariUserAgent
+        shouldRenderWebView = true
+        navigationDelegate?.lastAttemptedURL = url
+
+        guard let navigation = browserLoadRequest(effectiveRequest, in: restoreWebView) else {
+            browserStateRestoreNavigationWaiter = nil
+            browserStateRestoreEffectiveURL = nil
+            return .unavailable
+        }
+        waiter.navigation = navigation
+
+        let bufferedObservations = waiter.observationsBeforeNavigationWasBound
+        waiter.observationsBeforeNavigationWasBound.removeAll(keepingCapacity: false)
+        for observation in bufferedObservations {
+            handleBrowserStateRestoreNavigationObservation(observation)
+            guard browserStateRestoreNavigationWaiter === waiter else { break }
+        }
+        return .started(effectiveURL: effectiveURL)
+    }
+
+    func cancelBrowserStateRestoreNavigationWait() {
+        guard let waiter = browserStateRestoreNavigationWaiter else { return }
+        waiter.webView.stopLoading()
+        completeBrowserStateRestoreNavigation(waiter, with: .cancelled)
+    }
+
+    private func browserStateRestoreMilestone(
+        for waiter: BrowserStateRestoreNavigationWaiter,
+        observedURL: URL
+    ) -> BrowserStateRestoreNavigationMilestone {
+        let expectedExecutionOrigin = TerminalController.V2BrowserStateRestorer.originString(
+            for: waiter.effectiveExecutionURL
+        )
+        let observedExecutionOrigin = TerminalController.V2BrowserStateRestorer.originString(for: observedURL)
+        let logicalURL = expectedExecutionOrigin == observedExecutionOrigin
+            ? waiter.requestedLogicalURL
+            : observedURL
+        return BrowserStateRestoreNavigationMilestone(
+            navigationID: waiter.navigationID,
+            url: logicalURL,
+            executionURL: observedURL
+        )
+    }
+
+    private func handleBrowserStateRestoreNavigationObservation(
+        _ observation: BrowserNavigationObservation
+    ) {
+        guard let waiter = browserStateRestoreNavigationWaiter,
+              observation.webView === waiter.webView,
+              waiter.webViewInstanceID == webViewInstanceID else {
+            return
+        }
+
+        if observation.phase == .webContentProcessTerminated {
+            completeBrowserStateRestoreNavigation(waiter, with: .unavailable)
+            return
+        }
+
+        guard let expectedNavigation = waiter.navigation else {
+            if waiter.observationsBeforeNavigationWasBound.count < 8 {
+                waiter.observationsBeforeNavigationWasBound.append(observation)
+            }
+            return
+        }
+        guard let observedNavigation = observation.navigation,
+              observedNavigation === expectedNavigation else {
+            return
+        }
+
+        switch observation.phase {
+        case .started:
+            return
+        case .committed:
+            guard let observedURL = observation.url else {
+                completeBrowserStateRestoreNavigation(
+                    waiter,
+                    with: .failed(message: "Committed navigation has no URL")
+                )
+                return
+            }
+            waiter.committed = browserStateRestoreMilestone(for: waiter, observedURL: observedURL)
+        case .finished:
+            guard let committed = waiter.committed else {
+                completeBrowserStateRestoreNavigation(
+                    waiter,
+                    with: .failed(message: "Navigation finished before a matching commit")
+                )
+                return
+            }
+            guard let observedURL = observation.url else {
+                completeBrowserStateRestoreNavigation(
+                    waiter,
+                    with: .failed(message: "Finished navigation has no URL")
+                )
+                return
+            }
+            let finished = browserStateRestoreMilestone(for: waiter, observedURL: observedURL)
+            completeBrowserStateRestoreNavigation(
+                waiter,
+                with: .finished(committed: committed, finished: finished)
+            )
+        case .failed, .provisionalFailed:
+            guard let error = observation.error else {
+                completeBrowserStateRestoreNavigation(
+                    waiter,
+                    with: .failed(message: "Navigation failed without an error")
+                )
+                return
+            }
+            if error.domain == NSURLErrorDomain, error.code == NSURLErrorCancelled {
+                completeBrowserStateRestoreNavigation(waiter, with: .cancelled)
+            } else {
+                completeBrowserStateRestoreNavigation(
+                    waiter,
+                    with: .failed(message: error.localizedDescription)
+                )
+            }
+        case .webContentProcessTerminated:
+            completeBrowserStateRestoreNavigation(waiter, with: .unavailable)
+        }
+    }
+
+    private func completeBrowserStateRestoreNavigation(
+        _ waiter: BrowserStateRestoreNavigationWaiter,
+        with outcome: BrowserStateRestoreNavigationOutcome
+    ) {
+        guard browserStateRestoreNavigationWaiter === waiter else { return }
+        browserStateRestoreNavigationWaiter = nil
+        browserStateRestoreEffectiveURL = nil
+        waiter.completion(outcome)
+    }
+
     /// Navigate to a URL
     func navigate(to url: URL, recordTypedNavigation: Bool = false) {
         let request = URLRequest(url: url)
@@ -2352,10 +2616,29 @@ final class BrowserPanel: Panel, ObservableObject {
     }
 
     private func shouldBlockInsecureHTTPNavigation(to url: URL) -> Bool {
+        if browserStateRestoreAllowsEffectiveNavigation(to: url) {
+            return false
+        }
         if browserShouldConsumeOneTimeInsecureHTTPBypass(url, bypassHostOnce: &insecureHTTPBypassHostOnce) {
             return false
         }
         return browserShouldBlockInsecureHTTPURL(url)
+    }
+
+    private func browserStateRestoreAllowsEffectiveNavigation(to url: URL) -> Bool {
+        guard browserStateRestoreNavigationWaiter != nil,
+              let allowedURL = browserStateRestoreEffectiveURL,
+              let allowedOrigin = TerminalController.V2BrowserStateRestorer.originString(for: allowedURL),
+              let candidateOrigin = TerminalController.V2BrowserStateRestorer.originString(for: url) else {
+            return false
+        }
+        return allowedOrigin == candidateOrigin
+    }
+
+    private func rejectBlockedBrowserStateRestoreNavigation() -> Bool {
+        guard let waiter = browserStateRestoreNavigationWaiter else { return false }
+        completeBrowserStateRestoreNavigation(waiter, with: .permissionDenied)
+        return true
     }
 
     private func requestNavigation(_ request: URLRequest, intent: BrowserInsecureHTTPNavigationIntent) {

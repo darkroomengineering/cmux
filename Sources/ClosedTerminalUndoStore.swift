@@ -17,7 +17,7 @@ import Foundation
 /// close handler).
 @MainActor
 final class ClosedTerminalUndoStore {
-    static let gracePeriodSeconds: TimeInterval = 5
+    nonisolated static let gracePeriodSeconds: TimeInterval = 5
 
     private struct Entry {
         let id: UUID

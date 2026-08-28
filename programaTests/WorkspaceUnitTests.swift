@@ -3333,6 +3333,245 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         XCTAssertFalse(attachedTab.hasCustomTitle)
     }
 
+    func testLocalBrowserTransferInvalidatesRestoreWithoutReplacingWebViewOrDataStore() throws {
+        let source = Workspace()
+        let destination = Workspace()
+        let sourcePanelId = try XCTUnwrap(source.focusedPanelId)
+        let browserPanel = try XCTUnwrap(
+            source.newBrowserSplit(
+                from: sourcePanelId,
+                orientation: .horizontal,
+                focus: false
+            )
+        )
+        var activeLease: TerminalController.V2BrowserStateRestoreLeaseCoordinator.Lease?
+        defer {
+            if let activeLease {
+                browserPanel.endBrowserStateRestore(activeLease)
+            }
+            source.teardownAllPanels()
+            destination.teardownAllPanels()
+        }
+
+        let originalWebView = browserPanel.webView
+        let originalDataStore = originalWebView.configuration.websiteDataStore
+        let detachLease = try XCTUnwrap(browserPanel.beginBrowserStateRestore())
+        activeLease = detachLease
+
+        let detached = try XCTUnwrap(source.detachSurface(panelId: browserPanel.id))
+        XCTAssertTrue(browserPanel.webView === originalWebView)
+        XCTAssertTrue(browserPanel.webView.configuration.websiteDataStore === originalDataStore)
+        XCTAssertFalse(
+            browserPanel.isBrowserStateRestoreLeaseValid(detachLease),
+            "Detaching must invalidate an in-flight restore even when the browser objects survive"
+        )
+        browserPanel.endBrowserStateRestore(detachLease)
+        activeLease = nil
+
+        let reattachLease = try XCTUnwrap(browserPanel.beginBrowserStateRestore())
+        activeLease = reattachLease
+        let destinationPane = try XCTUnwrap(destination.bonsplitController.allPaneIds.first)
+        XCTAssertEqual(
+            destination.attachDetachedSurface(detached, inPane: destinationPane, focus: false),
+            browserPanel.id
+        )
+        XCTAssertTrue(browserPanel.webView === originalWebView)
+        XCTAssertTrue(browserPanel.webView.configuration.websiteDataStore === originalDataStore)
+        XCTAssertFalse(
+            browserPanel.isBrowserStateRestoreLeaseValid(reattachLease),
+            "Reattaching must defensively invalidate a restore when the local profile keeps the same data store"
+        )
+        browserPanel.endBrowserStateRestore(reattachLease)
+        activeLease = nil
+    }
+
+    func testBrowserElementRefSurvivesDetachAndAttachThenExpiresOnPermanentTeardown() throws {
+        let source = Workspace()
+        let destination = Workspace()
+        var transferredSurfaceId: UUID?
+        defer {
+            source.teardownAllPanels()
+            destination.teardownAllPanels()
+            if let transferredSurfaceId {
+                TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: transferredSurfaceId)
+            }
+        }
+
+        let sourcePanelId = try XCTUnwrap(source.focusedPanelId)
+        let browserPanel = try XCTUnwrap(
+            source.newBrowserSplit(
+                from: sourcePanelId,
+                orientation: .horizontal,
+                focus: false
+            )
+        )
+        transferredSurfaceId = browserPanel.id
+        let ref: String
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            surfaceId: browserPanel.id,
+            selectors: ["#survives-workspace-transfer"]
+        ) {
+        case .allocated(let refs):
+            ref = try XCTUnwrap(refs.first)
+        case .resourceExhausted:
+            XCTFail("A new browser panel must accept its first element ref")
+            return
+        }
+        XCTAssertEqual(
+            TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: browserPanel.id),
+            "#survives-workspace-transfer"
+        )
+
+        let detached = try XCTUnwrap(source.detachSurface(panelId: browserPanel.id))
+        XCTAssertNil(source.panels[browserPanel.id])
+        XCTAssertEqual(
+            TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: browserPanel.id),
+            "#survives-workspace-transfer",
+            "Detaching for transfer must preserve browser automation state"
+        )
+
+        let destinationPane = try XCTUnwrap(destination.bonsplitController.allPaneIds.first)
+        XCTAssertEqual(
+            destination.attachDetachedSurface(detached, inPane: destinationPane, focus: false),
+            browserPanel.id
+        )
+        XCTAssertTrue(destination.panels[browserPanel.id] is BrowserPanel)
+        XCTAssertEqual(
+            TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: browserPanel.id),
+            "#survives-workspace-transfer",
+            "Attaching the same browser panel must preserve its existing ref identity"
+        )
+
+        destination.teardownAllPanels()
+        switch TerminalController.shared.v2BrowserSelectorResolutionError(ref, surfaceId: browserPanel.id) {
+        case .err(let code, _, _):
+            XCTAssertEqual(code, "not_found", "Permanent workspace teardown must remove the transferred browser ref")
+        case .ok:
+            XCTFail("A permanently closed browser panel ref must not remain resolvable")
+        }
+    }
+
+    func testDetachedBrowserResolutionRollsBackAfterInvalidPrimaryWithoutLosingState() throws {
+        let source = Workspace()
+        let destination = Workspace()
+        defer {
+            source.teardownAllPanels()
+            destination.teardownAllPanels()
+        }
+        let sourcePanelId = try XCTUnwrap(source.focusedPanelId)
+        let browserPanel = try XCTUnwrap(source.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, focus: false))
+        let sourceRollbackPane = try XCTUnwrap(source.bonsplitController.allPaneIds.first)
+        let transfer = try XCTUnwrap(source.detachSurface(panelId: browserPanel.id))
+        let ref: String
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: browserPanel.id, selectors: ["#rollback-ref"]) {
+        case .allocated(let refs): ref = try XCTUnwrap(refs.first)
+        case .resourceExhausted: return XCTFail("Expected a fresh browser ref")
+        }
+
+        let result = transfer.resolve(
+            primary: Workspace.DetachedSurfaceAttachmentTarget(
+                workspace: destination,
+                paneId: PaneID(),
+                index: nil,
+                focus: false
+            ),
+            rollback: Workspace.DetachedSurfaceAttachmentTarget(
+                workspace: source,
+                paneId: sourceRollbackPane,
+                index: nil,
+                focus: false
+            )
+        )
+
+        guard case .attachedRollback(let panelId) = result else {
+            return XCTFail("Expected invalid primary attachment to use the valid source rollback")
+        }
+        XCTAssertEqual(panelId, browserPanel.id)
+        XCTAssertTrue((source.panels[browserPanel.id] as? BrowserPanel) === browserPanel)
+        XCTAssertNil(destination.panels[browserPanel.id])
+        XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: browserPanel.id), "#rollback-ref")
+    }
+
+    func testDetachedBrowserResolutionFinalizesWhenPrimaryAndRollbackAreInvalid() throws {
+        let source = Workspace()
+        let destination = Workspace()
+        defer {
+            source.teardownAllPanels()
+            destination.teardownAllPanels()
+        }
+        let sourcePanelId = try XCTUnwrap(source.focusedPanelId)
+        let browserPanel = try XCTUnwrap(source.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, focus: false))
+        let transfer = try XCTUnwrap(source.detachSurface(panelId: browserPanel.id))
+        let ref: String
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: browserPanel.id, selectors: ["#finalized-ref"]) {
+        case .allocated(let refs): ref = try XCTUnwrap(refs.first)
+        case .resourceExhausted: return XCTFail("Expected a fresh browser ref")
+        }
+
+        let result = transfer.resolve(
+            primary: Workspace.DetachedSurfaceAttachmentTarget(workspace: destination, paneId: PaneID(), index: nil, focus: false),
+            rollback: Workspace.DetachedSurfaceAttachmentTarget(workspace: source, paneId: PaneID(), index: nil, focus: false)
+        )
+
+        guard case .finalized = result else {
+            return XCTFail("A transfer with no valid attachment owner must finalize")
+        }
+        XCTAssertNil(source.panels[browserPanel.id])
+        XCTAssertNil(destination.panels[browserPanel.id])
+        XCTAssertNil(browserPanel.webView.navigationDelegate, "Finalization must close and disable the detached browser panel")
+        switch TerminalController.shared.v2BrowserSelectorResolutionError(ref, surfaceId: browserPanel.id) {
+        case .err(let code, _, _): XCTAssertEqual(code, "not_found")
+        case .ok: XCTFail("Finalization must permanently remove browser ref state")
+        }
+        transfer.finalizePermanently()
+        XCTAssertNil(browserPanel.webView.navigationDelegate, "Repeated finalization must remain idempotent")
+    }
+
+    func testAttachedTransferIgnoresStaleFinalizeAndNextDetachHasIndependentOwnership() throws {
+        let source = Workspace()
+        let destination = Workspace()
+        defer {
+            source.teardownAllPanels()
+            destination.teardownAllPanels()
+        }
+        let sourcePanelId = try XCTUnwrap(source.focusedPanelId)
+        let browserPanel = try XCTUnwrap(source.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, focus: false))
+        let transfer = try XCTUnwrap(source.detachSurface(panelId: browserPanel.id))
+        let destinationPane = try XCTUnwrap(destination.bonsplitController.allPaneIds.first)
+        let ref: String
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: browserPanel.id, selectors: ["#attached-ref"]) {
+        case .allocated(let refs): ref = try XCTUnwrap(refs.first)
+        case .resourceExhausted: return XCTFail("Expected a fresh browser ref")
+        }
+
+        let result = transfer.resolve(
+            primary: Workspace.DetachedSurfaceAttachmentTarget(
+                workspace: destination,
+                paneId: destinationPane,
+                index: nil,
+                focus: false
+            ),
+            rollback: nil
+        )
+        guard case .attachedPrimary(let panelId) = result else {
+            return XCTFail("Expected the valid primary destination to own the panel")
+        }
+        XCTAssertEqual(panelId, browserPanel.id)
+
+        transfer.finalizePermanently()
+        XCTAssertTrue((destination.panels[browserPanel.id] as? BrowserPanel) === browserPanel)
+        XCTAssertNotNil(browserPanel.webView.navigationDelegate)
+        XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: browserPanel.id), "#attached-ref")
+
+        let nextTransfer = try XCTUnwrap(destination.detachSurface(panelId: browserPanel.id))
+        XCTAssertFalse(nextTransfer === transfer, "A later detach must have a new pending lifecycle owner")
+        nextTransfer.finalizePermanently()
+        switch TerminalController.shared.v2BrowserSelectorResolutionError(ref, surfaceId: browserPanel.id) {
+        case .err(let code, _, _): XCTAssertEqual(code, "not_found")
+        case .ok: XCTFail("Finalizing the new pending transfer must remove its browser ref")
+        }
+    }
+
     func testBrowserSplitWithFocusFalseRecoversFromDelayedStaleSelection() {
         let workspace = Workspace()
         guard let originalFocusedPanelId = workspace.focusedPanelId else {

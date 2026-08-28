@@ -9,18 +9,23 @@ import Foundation
 extension TerminalController {
     // MARK: - V2 Snapshot Methods
 
-    func v2SnapshotList(params _: [String: Any]) -> V2CallResult {
+    nonisolated func v2SnapshotList(params _: [String: Any]) -> V2CallResult {
+        let isoFormatter = ISO8601DateFormatter()
         let payloads = SessionPersistenceStore.historyFileURLs().compactMap { url -> [String: Any]? in
             guard let data = try? Data(contentsOf: url),
                   let snapshot = SessionPersistenceStore.decodeSnapshot(from: data) else {
                 return nil
             }
-            return v2SnapshotListEntry(id: v2SnapshotHistoryId(for: url), snapshot: snapshot)
+            return v2SnapshotListEntry(
+                id: v2SnapshotHistoryId(for: url),
+                snapshot: snapshot,
+                isoFormatter: isoFormatter
+            )
         }
         return .ok(["snapshots": payloads])
     }
 
-    func v2SnapshotRestore(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2SnapshotRestore(params: [String: Any]) -> V2CallResult {
         let requestedId = v2String(params, "id")
         let entries = SessionPersistenceStore.historyFileURLs()
 
@@ -49,15 +54,14 @@ extension TerminalController {
             return .err(code: "not_found", message: "Archived snapshot has no windows to restore", data: nil)
         }
 
-        let windowsToRestore = SessionPersistenceStore.windowsToRestore(from: snapshot)
-
-        var workspaceCount = 0
-        var panelCount = 0
+        let windowsToRestore: [SessionWindowSnapshot] = SessionPersistenceStore.windowsToRestore(from: snapshot)
+        let workspaceCount = windowsToRestore.reduce(0) { $0 + $1.tabManager.workspaces.count }
+        let panelCount = windowsToRestore.reduce(0) { total, window in
+            total + window.tabManager.workspaces.reduce(0) { $0 + $1.panels.count }
+        }
         v2MainSync {
             for windowSnapshot in windowsToRestore {
                 _ = AppDelegate.shared?.createMainWindow(sessionWindowSnapshot: windowSnapshot)
-                workspaceCount += windowSnapshot.tabManager.workspaces.count
-                panelCount += windowSnapshot.tabManager.workspaces.reduce(0) { $0 + $1.panels.count }
             }
         }
 
@@ -72,18 +76,22 @@ extension TerminalController {
 
     // MARK: - Shared helpers
 
-    private func v2SnapshotHistoryId(for url: URL) -> String {
+    private nonisolated func v2SnapshotHistoryId(for url: URL) -> String {
         url.deletingPathExtension().lastPathComponent
     }
 
-    private func v2SnapshotListEntry(id: String, snapshot: AppSessionSnapshot) -> [String: Any] {
+    private nonisolated func v2SnapshotListEntry(
+        id: String,
+        snapshot: AppSessionSnapshot,
+        isoFormatter: ISO8601DateFormatter
+    ) -> [String: Any] {
         let workspaceCount = snapshot.windows.reduce(0) { $0 + $1.tabManager.workspaces.count }
         let panelCount = snapshot.windows.reduce(0) { total, window in
             total + window.tabManager.workspaces.reduce(0) { $0 + $1.panels.count }
         }
         return [
             "id": id,
-            "saved_at": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: snapshot.createdAt)),
+            "saved_at": isoFormatter.string(from: Date(timeIntervalSince1970: snapshot.createdAt)),
             "created_at": snapshot.createdAt,
             "clean_shutdown": v2OrNull(snapshot.cleanShutdown),
             "window_count": snapshot.windows.count,

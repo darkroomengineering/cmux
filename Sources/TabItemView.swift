@@ -50,7 +50,8 @@ struct TabItemView: View, Equatable {
     private static let workspaceObservationCoalesceInterval: RunLoop.SchedulerTimeType.Stride = .milliseconds(40)
 
     // Closures, Bindings, and object references are excluded from ==
-    // because they're recreated every parent eval but don't affect rendering.
+    // because they're recreated every parent eval. Render-affecting binding state
+    // is supplied separately through immutable snapshots below.
     nonisolated static func == (lhs: TabItemView, rhs: TabItemView) -> Bool {
         lhs.tab === rhs.tab &&
         lhs.index == rhs.index &&
@@ -69,13 +70,10 @@ struct TabItemView: View, Equatable {
         lhs.allRemoteContextMenuTargetsDisconnected == rhs.allRemoteContextMenuTargetsDisconnected &&
         lhs.settings == rhs.settings &&
         lhs.showsWorktreeBadge == rhs.showsWorktreeBadge &&
-        // Bindings are normally excluded (recreated per parent eval, don't
-        // affect rendering) — but body READS these two values (isBeingDragged
-        // opacity dim, showsCenteredTopDropIndicator), so excluding them froze
-        // drag visuals mid-drag (audit 2026-08-20, H2). Compare wrapped values;
-        // only drag interactions churn them, never typing.
-        lhs.draggedTabId == rhs.draggedTabId &&
-        lhs.dropIndicator == rhs.dropIndicator
+        // Keep these immutable render snapshots last so `==` and body consume
+        // the same drag state without reading Binding storage during typing.
+        lhs.draggedTabIdSnapshot == rhs.draggedTabIdSnapshot &&
+        lhs.dropIndicatorSnapshot == rhs.dropIndicatorSnapshot
     }
 
     // Use plain references instead of @EnvironmentObject to avoid subscribing
@@ -99,6 +97,9 @@ struct TabItemView: View, Equatable {
     @Binding var lastSidebarSelectionIndex: Int?
     let showsModifierShortcutHints: Bool
     let dragAutoScrollController: SidebarDragAutoScrollController
+    let draggedTabIdSnapshot: UUID?
+    let dropIndicatorSnapshot: SidebarDropIndicator?
+    // Mutation-only bindings; body rendering uses the immutable snapshots above.
     @Binding var draggedTabId: UUID?
     @Binding var dropIndicator: SidebarDropIndicator?
     let contextMenuWorkspaceIds: [UUID]
@@ -126,7 +127,7 @@ struct TabItemView: View, Equatable {
     }
 
     private var isBeingDragged: Bool {
-        draggedTabId == tab.id
+        draggedTabIdSnapshot == tab.id
     }
 
     private var sidebarShortcutHintXOffset: Double {
@@ -1217,7 +1218,7 @@ struct TabItemView: View, Equatable {
     }
 
     private var showsCenteredTopDropIndicator: Bool {
-        guard draggedTabId != nil, let indicator = dropIndicator else { return false }
+        guard draggedTabIdSnapshot != nil, let indicator = dropIndicatorSnapshot else { return false }
         if indicator.tabId == tab.id && indicator.edge == .top {
             return true
         }

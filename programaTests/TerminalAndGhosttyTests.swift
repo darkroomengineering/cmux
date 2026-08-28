@@ -4351,16 +4351,945 @@ final class TerminalControllerSocketListenerHealthTests: XCTestCase {
     }
 }
 
+// MARK: - V2 Browser State Restore Invariants
+
+@MainActor
+final class TerminalControllerV2BrowserStateRestoreTests: XCTestCase {
+    private typealias FailureCode = TerminalController.V2BrowserStateRestoreFailure.Code
+    private typealias Limits = TerminalController.V2BrowserStateRestoreLimits
+    private typealias NavigationOutcome = TerminalController.V2BrowserStateNavigationOutcome
+    private typealias StepOutcome = TerminalController.V2BrowserStateStepOutcome
+
+    private final class RestoreRecorder {
+        var events: [String] = []
+        var cookieOutcome: StepOutcome = .succeeded
+        var navigationOutcome: NavigationOutcome
+        var storageOutcome: StepOutcome = .succeeded
+        var frameSelectorOutcome: StepOutcome = .succeeded
+        var capturedStorage: TerminalController.V2BrowserStateStoragePayload?
+        var leaseIsValid = true
+        var invalidateLeaseDuringEvent: String?
+
+        init() {
+            let navigationID = UUID()
+            navigationOutcome = .finished(
+                committed: .init(
+                    navigationID: navigationID,
+                    url: URL(string: "https://example.com/committed")!
+                ),
+                finished: .init(
+                    navigationID: navigationID,
+                    url: URL(string: "https://example.com/restored")!
+                )
+            )
+        }
+
+        func operations() -> TerminalController.V2BrowserStateRestoreOperations {
+            TerminalController.V2BrowserStateRestoreOperations(
+                installCookies: { [self] _, _ in
+                    record("installCookies")
+                    return cookieOutcome
+                },
+                navigateAndWait: { [self] _ in
+                    record("navigateAndWait")
+                    return navigationOutcome
+                },
+                applyStorage: { [self] storage in
+                    capturedStorage = storage
+                    record("applyStorage")
+                    return storageOutcome
+                },
+                applyFrameSelector: { [self] _ in
+                    record("applyFrameSelector")
+                    return frameSelectorOutcome
+                },
+                leaseIsValid: { [self] in leaseIsValid },
+                cancelNavigation: { [self] in events.append("cancelNavigation") }
+            )
+        }
+
+        private func record(_ event: String) {
+            events.append(event)
+            if invalidateLeaseDuringEvent == event {
+                leaseIsValid = false
+            }
+        }
+    }
+
+    private let constrainedLimits = Limits(
+        documentByteLimit: 4_096,
+        urlByteLimit: 256,
+        cookieCountLimit: 2,
+        storageEntryCountLimit: 2,
+        storageKeyByteLimit: 8,
+        storageValueByteLimit: 16,
+        frameSelectorByteLimit: 64
+    )
+
+    private func validState(
+        url: String = "https://example.com/restored",
+        cookies: [[String: Any]]? = nil,
+        localStorage: [String: String] = ["theme": "dark"],
+        sessionStorage: [String: String] = ["step": "1"],
+        frameSelector: String? = "#checkout"
+    ) -> [String: Any] {
+        [
+            "url": url,
+            "cookies": cookies ?? [[
+                "name": "session",
+                "value": "token",
+                "domain": "example.com",
+                "path": "/",
+            ]],
+            "storage": [
+                "local": localStorage,
+                "session": sessionStorage,
+            ],
+            "frame_selector": frameSelector ?? NSNull(),
+        ]
+    }
+
+    private func stateFile(
+        object: Any,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> URL {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return try stateFile(data: data, file: file, line: line)
+    }
+
+    private func stateFile(
+        data: Data,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-browser-state-\(UUID().uuidString).json")
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            XCTFail("Failed to prepare browser state fixture: \(error)", file: file, line: line)
+            throw error
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    @discardableResult
+    private func restore(
+        _ fileURL: URL,
+        recorder: RestoreRecorder,
+        limits: Limits? = nil
+    ) -> Result<Void, TerminalController.V2BrowserStateRestoreFailure> {
+        TerminalController.V2BrowserStateRestorer.restore(
+            fileURL: fileURL,
+            limits: limits ?? constrainedLimits,
+            using: recorder.operations()
+        )
+    }
+
+    private func assertFailure(
+        _ expectedCode: FailureCode,
+        result: Result<Void, TerminalController.V2BrowserStateRestoreFailure>,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        switch result {
+        case .success:
+            XCTFail("Expected browser state restore to fail with \(expectedCode)", file: file, line: line)
+        case .failure(let failure):
+            XCTAssertEqual(failure.code, expectedCode, file: file, line: line)
+        }
+    }
+
+    private func failure(
+        from result: Result<Void, TerminalController.V2BrowserStateRestoreFailure>,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> TerminalController.V2BrowserStateRestoreFailure? {
+        switch result {
+        case .success:
+            XCTFail("Expected browser state restore to fail", file: file, line: line)
+            return nil
+        case .failure(let failure):
+            return failure
+        }
+    }
+
+    func testStateDocumentValidationRejectsUnboundedOrMalformedInputBeforeRestoreOperations() throws {
+        let cases: [(FailureCode, URL)] = try [
+            (
+                .documentTooLarge,
+                stateFile(data: Data(repeating: 0x20, count: constrainedLimits.documentByteLimit + 1))
+            ),
+            (.malformedDocument, stateFile(data: Data("{not-json".utf8))),
+            (.invalidURL, stateFile(object: validState(url: "not a valid absolute browser URL"))),
+            (
+                .cookieLimitExceeded,
+                stateFile(object: validState(cookies: (0 ... constrainedLimits.cookieCountLimit).map { index in
+                    ["name": "cookie-\(index)", "value": "v", "domain": "example.com", "path": "/"]
+                }))
+            ),
+            (
+                .storageEntryLimitExceeded,
+                stateFile(object: validState(
+                    localStorage: Dictionary(
+                        uniqueKeysWithValues: (0 ... constrainedLimits.storageEntryCountLimit).map { ("k\($0)", "v") }
+                    ),
+                    sessionStorage: [:]
+                ))
+            ),
+            (
+                .storageKeyTooLarge,
+                stateFile(object: validState(
+                    localStorage: [String(repeating: "k", count: constrainedLimits.storageKeyByteLimit + 1): "v"],
+                    sessionStorage: [:]
+                ))
+            ),
+            (
+                .storageValueTooLarge,
+                stateFile(object: validState(
+                    localStorage: ["key": String(repeating: "v", count: constrainedLimits.storageValueByteLimit + 1)],
+                    sessionStorage: [:]
+                ))
+            ),
+        ]
+
+        for (expectedCode, fileURL) in cases {
+            let recorder = RestoreRecorder()
+            assertFailure(expectedCode, result: restore(fileURL, recorder: recorder))
+            XCTAssertTrue(
+                recorder.events.isEmpty,
+                "Invalid state must be rejected before cookies, navigation, or page storage can be mutated"
+            )
+        }
+    }
+
+    func testRestoreInstallsCookiesThenWaitsForMatchingCommitAndFinishBeforePageState() throws {
+        let recorder = RestoreRecorder()
+        let navigationID = UUID()
+        recorder.navigationOutcome = .finished(
+            committed: .init(
+                navigationID: navigationID,
+                url: URL(string: "https://example.com/redirected-path")!
+            ),
+            finished: .init(
+                navigationID: navigationID,
+                url: URL(string: "https://example.com/restored")!
+            )
+        )
+        let fileURL = try stateFile(object: validState())
+
+        switch restore(fileURL, recorder: recorder) {
+        case .success:
+            break
+        case .failure(let failure):
+            XCTFail("A restore with matching committed and finished origins must succeed: \(failure)")
+        }
+
+        XCTAssertEqual(
+            recorder.events,
+            ["installCookies", "navigateAndWait", "applyStorage", "applyFrameSelector"],
+            "Cookies must precede navigation; origin-bound storage must wait for the target navigation; frame selection is page state and belongs last"
+        )
+    }
+
+    func testFinishFromAnotherOriginCannotUnlockStorageForTheRequestedPage() throws {
+        let recorder = RestoreRecorder()
+        let navigationID = UUID()
+        recorder.navigationOutcome = .finished(
+            committed: .init(
+                navigationID: navigationID,
+                url: URL(string: "https://example.com/restored")!
+            ),
+            finished: .init(
+                navigationID: navigationID,
+                url: URL(string: "https://attacker.example/restored")!
+            )
+        )
+        let fileURL = try stateFile(object: validState())
+
+        assertFailure(.originMismatch, result: restore(fileURL, recorder: recorder))
+        XCTAssertEqual(recorder.events, ["installCookies", "navigateAndWait"])
+        XCTAssertFalse(
+            recorder.events.contains("applyStorage"),
+            "A stale or unrelated navigation finish must never authorize local/session storage writes"
+        )
+    }
+
+    func testFinishFromAnotherNavigationCannotUnlockStorageEvenOnTheExpectedOrigin() throws {
+        let recorder = RestoreRecorder()
+        recorder.navigationOutcome = .finished(
+            committed: .init(
+                navigationID: UUID(),
+                url: URL(string: "https://example.com/restored")!
+            ),
+            finished: .init(
+                navigationID: UUID(),
+                url: URL(string: "https://example.com/restored")!
+            )
+        )
+        let fileURL = try stateFile(object: validState())
+
+        assertFailure(.navigationMismatch, result: restore(fileURL, recorder: recorder))
+        XCTAssertEqual(recorder.events, ["installCookies", "navigateAndWait"])
+        XCTAssertFalse(
+            recorder.events.contains("applyStorage"),
+            "A same-origin finish from an unrelated navigation must not satisfy the requested restore"
+        )
+    }
+
+    func testNavigationCancellationReturnsTypedFailureWithoutApplyingPageState() throws {
+        let recorder = RestoreRecorder()
+        recorder.navigationOutcome = .cancelled
+        let fileURL = try stateFile(object: validState())
+
+        assertFailure(.navigationCancelled, result: restore(fileURL, recorder: recorder))
+        XCTAssertEqual(recorder.events, ["installCookies", "navigateAndWait"])
+        XCTAssertFalse(recorder.events.contains("applyStorage"))
+    }
+
+    func testNavigationFailureReturnsTypedFailureWithoutApplyingPageState() throws {
+        let recorder = RestoreRecorder()
+        recorder.navigationOutcome = .failed(message: "TLS handshake failed")
+        let fileURL = try stateFile(object: validState())
+
+        assertFailure(.navigationFailed, result: restore(fileURL, recorder: recorder))
+        XCTAssertEqual(recorder.events, ["installCookies", "navigateAndWait"])
+        XCTAssertFalse(recorder.events.contains("applyStorage"))
+    }
+
+    func testNavigationTimeoutReturnsTypedFailureWithoutApplyingPageState() throws {
+        let recorder = RestoreRecorder()
+        recorder.navigationOutcome = .timedOut
+        let fileURL = try stateFile(object: validState())
+
+        assertFailure(.navigationTimedOut, result: restore(fileURL, recorder: recorder))
+        XCTAssertEqual(recorder.events, ["installCookies", "navigateAndWait", "cancelNavigation"])
+        XCTAssertFalse(recorder.events.contains("applyStorage"))
+    }
+
+    func testCookieTimeoutStopsBeforeNavigationAndReturnsTypedFailure() throws {
+        let recorder = RestoreRecorder()
+        recorder.cookieOutcome = .timedOut
+        let fileURL = try stateFile(object: validState())
+
+        assertFailure(.cookieInstallTimedOut, result: restore(fileURL, recorder: recorder))
+        XCTAssertEqual(recorder.events, ["installCookies"])
+        XCTAssertFalse(recorder.events.contains("navigateAndWait"))
+        XCTAssertFalse(recorder.events.contains("applyStorage"))
+    }
+
+    func testCookieFailureStopsBeforeNavigationAndReturnsTypedFailure() throws {
+        let recorder = RestoreRecorder()
+        recorder.cookieOutcome = .failed(message: "Cookie store rejected the write")
+        let fileURL = try stateFile(object: validState())
+
+        assertFailure(.cookieInstallFailed, result: restore(fileURL, recorder: recorder))
+        XCTAssertEqual(recorder.events, ["installCookies"])
+        XCTAssertFalse(recorder.events.contains("navigateAndWait"))
+        XCTAssertFalse(recorder.events.contains("applyStorage"))
+    }
+
+    func testStorageFailureIsReportedAndFrameSelectorIsNotAppliedToPartialState() throws {
+        let recorder = RestoreRecorder()
+        recorder.storageOutcome = .failed(message: "SecurityError")
+        let fileURL = try stateFile(object: validState())
+
+        assertFailure(.storageApplyFailed, result: restore(fileURL, recorder: recorder))
+        XCTAssertEqual(recorder.events, ["installCookies", "navigateAndWait", "applyStorage"])
+        XCTAssertFalse(
+            recorder.events.contains("applyFrameSelector"),
+            "Frame state must not advance after storage restore fails"
+        )
+    }
+
+    func testOriginSerializationMatchesBrowserLocationOriginCanonicalization() throws {
+        let cases = [
+            ("http://[::1]/path", "http://[::1]"),
+            ("https://bücher.example/path", "https://xn--bcher-kva.example"),
+            ("http://example.com:80/path", "http://example.com"),
+            ("https://example.com:443/path", "https://example.com"),
+            ("https://example.com:8443/path", "https://example.com:8443"),
+        ]
+
+        for (rawURL, expectedOrigin) in cases {
+            let url = try XCTUnwrap(URL(string: rawURL))
+            XCTAssertEqual(
+                TerminalController.V2BrowserStateRestorer.originString(for: url),
+                expectedOrigin,
+                "State restoration must compare the same canonical origin string that JavaScript location.origin exposes"
+            )
+        }
+    }
+
+    func testVersionedStateRoundTripsHTTPOnlyAndSameSiteCookiesWhileLegacyStateRemainsReadable() throws {
+        let targetURL = try XCTUnwrap(URL(string: "https://example.com/restored"))
+        let cookieCases: [(name: String, header: String, policy: HTTPCookieStringPolicy)] = [
+            ("strict-session", "strict-session=one; Path=/; HttpOnly; SameSite=Strict", .sameSiteStrict),
+            ("lax-session", "lax-session=two; Path=/; HttpOnly; SameSite=Lax", .sameSiteLax),
+        ]
+        let sourceCookies = try cookieCases.map { item in
+            try XCTUnwrap(
+                HTTPCookie.cookies(
+                    withResponseHeaderFields: ["Set-Cookie": item.header],
+                    for: targetURL
+                ).first
+            )
+        }
+        let serializedCookies = sourceCookies.map(TerminalController.shared.v2BrowserCookieDict)
+
+        for (index, serialized) in serializedCookies.enumerated() {
+            XCTAssertEqual(serialized["http_only"] as? Bool, true)
+            XCTAssertEqual(serialized["same_site"] as? String, cookieCases[index].policy.rawValue)
+        }
+
+        var versionedState = validState(
+            cookies: serializedCookies,
+            localStorage: [:],
+            sessionStorage: [:],
+            frameSelector: nil
+        )
+        versionedState["schema_version"] = TerminalController.V2BrowserStateRestorer.currentSchemaVersion
+        let versionedFile = try stateFile(object: versionedState)
+
+        let prepared: TerminalController.V2BrowserStateRestorer.PreparedState
+        switch TerminalController.V2BrowserStateRestorer.prepare(
+            fileURL: versionedFile,
+            limits: constrainedLimits
+        ) {
+        case .success(let state):
+            prepared = state
+        case .failure(let failure):
+            return XCTFail("The current versioned state schema must decode: \(failure)")
+        }
+        XCTAssertEqual(prepared.cookies.count, cookieCases.count)
+        for item in cookieCases {
+            let restored = try XCTUnwrap(prepared.cookies.first { $0.name == item.name })
+            XCTAssertTrue(restored.isHTTPOnly)
+            XCTAssertEqual(restored.sameSitePolicy, item.policy)
+        }
+
+        let legacyFile = try stateFile(object: validState(
+            cookies: [serializedCookies[0]],
+            localStorage: [:],
+            sessionStorage: [:],
+            frameSelector: nil
+        ))
+        switch TerminalController.V2BrowserStateRestorer.prepare(
+            fileURL: legacyFile,
+            limits: constrainedLimits
+        ) {
+        case .success(let legacy):
+            XCTAssertEqual(legacy.cookies.first?.isHTTPOnly, true)
+            XCTAssertEqual(legacy.cookies.first?.sameSitePolicy, .sameSiteStrict)
+        case .failure(let failure):
+            XCTFail("State files written before schema versioning must remain readable: \(failure)")
+        }
+
+        versionedState["schema_version"] = TerminalController.V2BrowserStateRestorer.currentSchemaVersion + 1
+        let futureFile = try stateFile(object: versionedState)
+        switch TerminalController.V2BrowserStateRestorer.prepare(
+            fileURL: futureFile,
+            limits: constrainedLimits
+        ) {
+        case .success:
+            XCTFail("An unknown future schema must not be interpreted as the current cookie contract")
+        case .failure(let failure):
+            XCTAssertEqual(failure.code, .unsupportedSchemaVersion)
+        }
+    }
+
+    func testPostCookieFailuresExposeWhichBrowserStateMayAlreadyBeMutated() throws {
+        let fileURL = try stateFile(object: validState())
+
+        let navigationRecorder = RestoreRecorder()
+        navigationRecorder.navigationOutcome = .failed(message: "connection reset")
+        let navigationFailure = try XCTUnwrap(failure(from: restore(fileURL, recorder: navigationRecorder)))
+        XCTAssertEqual(navigationFailure.code, .navigationFailed)
+        XCTAssertTrue(navigationFailure.cookiesMayHaveBeenMutated)
+        XCTAssertEqual(navigationFailure.cookieCount, 1)
+        XCTAssertFalse(navigationFailure.storageMayHaveBeenMutated)
+
+        let originRecorder = RestoreRecorder()
+        let navigationID = UUID()
+        originRecorder.navigationOutcome = .finished(
+            committed: .init(
+                navigationID: navigationID,
+                url: URL(string: "https://example.com/restored")!
+            ),
+            finished: .init(
+                navigationID: navigationID,
+                url: URL(string: "https://other.example/restored")!
+            )
+        )
+        let originFailure = try XCTUnwrap(failure(from: restore(fileURL, recorder: originRecorder)))
+        XCTAssertEqual(originFailure.code, .originMismatch)
+        XCTAssertTrue(originFailure.cookiesMayHaveBeenMutated)
+        XCTAssertFalse(originFailure.storageMayHaveBeenMutated)
+
+        let storageRecorder = RestoreRecorder()
+        storageRecorder.storageOutcome = .failed(message: "quota exceeded after clear")
+        let storageFailure = try XCTUnwrap(failure(from: restore(fileURL, recorder: storageRecorder)))
+        XCTAssertEqual(storageFailure.code, .storageApplyFailed)
+        XCTAssertTrue(storageFailure.cookiesMayHaveBeenMutated)
+        XCTAssertTrue(
+            storageFailure.storageMayHaveBeenMutated,
+            "Storage clear/set is not transactional, so a reported failure can leave partially restored data"
+        )
+
+        let frameRecorder = RestoreRecorder()
+        frameRecorder.frameSelectorOutcome = .failed(message: "frame selector rejected")
+        let frameFailure = try XCTUnwrap(failure(from: restore(fileURL, recorder: frameRecorder)))
+        XCTAssertEqual(frameFailure.code, .frameSelectorApplyFailed)
+        XCTAssertTrue(frameFailure.cookiesMayHaveBeenMutated)
+        XCTAssertTrue(frameFailure.storageMayHaveBeenMutated)
+    }
+
+    func testFIFOStateDocumentIsRejectedAsNonRegularWithoutReadingItsStream() throws {
+        let fifoURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-browser-state-\(UUID().uuidString).fifo")
+        XCTAssertEqual(mkfifo(fifoURL.path, 0o600), 0)
+        let keeperFD = open(fifoURL.path, O_RDWR | O_NONBLOCK)
+        XCTAssertGreaterThanOrEqual(keeperFD, 0)
+        defer {
+            if keeperFD >= 0 { Darwin.close(keeperFD) }
+            unlink(fifoURL.path)
+        }
+
+        switch TerminalController.V2BrowserStateRestorer.prepare(
+            fileURL: fifoURL,
+            limits: constrainedLimits
+        ) {
+        case .success:
+            XCTFail("A browser state path must name a bounded regular file, never a FIFO or device stream")
+        case .failure(let failure):
+            XCTAssertEqual(failure.code, .documentNotRegular)
+        }
+    }
+
+    func testRestoreLeaseIsCheckedBeforeAndAfterEveryPotentiallySuspendingPhase() throws {
+        let fileURL = try stateFile(object: validState())
+
+        let invalidBeforeStart = RestoreRecorder()
+        invalidBeforeStart.leaseIsValid = false
+        assertFailure(.restoreInvalidated, result: restore(fileURL, recorder: invalidBeforeStart))
+        XCTAssertTrue(invalidBeforeStart.events.isEmpty)
+
+        let phaseCases: [(String, [String])] = [
+            ("installCookies", ["installCookies"]),
+            ("navigateAndWait", ["installCookies", "navigateAndWait"]),
+            ("applyStorage", ["installCookies", "navigateAndWait", "applyStorage"]),
+        ]
+        for (phase, expectedEvents) in phaseCases {
+            let recorder = RestoreRecorder()
+            recorder.invalidateLeaseDuringEvent = phase
+            assertFailure(.restoreInvalidated, result: restore(fileURL, recorder: recorder))
+            XCTAssertEqual(
+                recorder.events,
+                expectedEvents,
+                "A replaced web view or invalidated restore lease must stop before the next mutation phase"
+            )
+        }
+    }
+
+    func testRestoreLeaseSerializesSiblingPanelsThatShareAWebsiteDataStore() throws {
+        let coordinator = TerminalController.V2BrowserStateRestoreLeaseCoordinator()
+        let sharedStore = WKWebsiteDataStore.nonPersistent()
+        let otherStore = WKWebsiteDataStore.nonPersistent()
+        let sharedStoreID = ObjectIdentifier(sharedStore)
+        let firstGeneration = UUID()
+        let firstLease = try XCTUnwrap(
+            coordinator.acquire(dataStoreID: sharedStoreID, generation: firstGeneration)
+        )
+
+        XCTAssertNil(
+            coordinator.acquire(dataStoreID: sharedStoreID, generation: UUID()),
+            "Sibling panels sharing one cookie/storage profile must not restore concurrently"
+        )
+        XCTAssertNotNil(
+            coordinator.acquire(dataStoreID: ObjectIdentifier(otherStore), generation: UUID()),
+            "Independent browser profiles may restore concurrently"
+        )
+        XCTAssertTrue(coordinator.isValid(firstLease, currentGeneration: firstGeneration))
+        XCTAssertFalse(
+            coordinator.isValid(firstLease, currentGeneration: UUID()),
+            "Replacing the panel/web view generation must invalidate the old transaction"
+        )
+
+        coordinator.release(firstLease)
+        XCTAssertNotNil(coordinator.acquire(dataStoreID: sharedStoreID, generation: UUID()))
+    }
+
+    func testRestoreLeaseDefersReleaseUntilPendingMutationCompletesAndIgnoresStaleCompletion() throws {
+        let coordinator = TerminalController.V2BrowserStateRestoreLeaseCoordinator()
+        let store = WKWebsiteDataStore.nonPersistent()
+        let storeID = ObjectIdentifier(store)
+        let firstGeneration = UUID()
+        let firstLease = try XCTUnwrap(
+            coordinator.acquire(dataStoreID: storeID, generation: firstGeneration)
+        )
+
+        XCTAssertTrue(coordinator.beginPendingMutation(firstLease))
+        coordinator.release(firstLease)
+        XCTAssertFalse(coordinator.isValid(firstLease, currentGeneration: firstGeneration))
+        XCTAssertFalse(
+            coordinator.beginPendingMutation(firstLease),
+            "A release-requested restore must not start another mutation"
+        )
+        XCTAssertNil(
+            coordinator.acquire(dataStoreID: storeID, generation: UUID()),
+            "The shared store must remain leased until its issued WebKit mutation callback drains"
+        )
+
+        XCTAssertTrue(coordinator.endPendingMutation(firstLease))
+        let secondGeneration = UUID()
+        let secondLease = try XCTUnwrap(
+            coordinator.acquire(dataStoreID: storeID, generation: secondGeneration)
+        )
+        XCTAssertFalse(
+            coordinator.endPendingMutation(firstLease),
+            "A stale or duplicate callback must not mutate the newer store lease"
+        )
+        XCTAssertTrue(coordinator.isValid(secondLease, currentGeneration: secondGeneration))
+
+        coordinator.release(secondLease)
+    }
+
+    func testRemoteProxyRestorePreservesLogicalOriginAndVerifiesAliasExecutionOrigin() throws {
+        let logicalURLs = try [
+            "http://127.0.0.1:3000/state",
+            "http://[::1]:3000/state",
+            "http://0.0.0.0:3000/state",
+            "http://localhost:3000/state",
+        ].map { try XCTUnwrap(URL(string: $0)) }
+
+        for logicalURL in logicalURLs {
+            let aliasURL = try XCTUnwrap(BrowserPanel.remoteProxyLoopbackAliasURL(for: logicalURL))
+            let recorder = RestoreRecorder()
+            let navigationID = UUID()
+            recorder.navigationOutcome = .finished(
+                committed: .init(
+                    navigationID: navigationID,
+                    url: logicalURL,
+                    executionURL: aliasURL
+                ),
+                finished: .init(
+                    navigationID: navigationID,
+                    url: logicalURL,
+                    executionURL: aliasURL
+                )
+            )
+            let fileURL = try stateFile(object: validState(
+                url: logicalURL.absoluteString,
+                localStorage: [:],
+                sessionStorage: [:],
+                frameSelector: nil
+            ))
+
+            switch restore(fileURL, recorder: recorder) {
+            case .success:
+                break
+            case .failure(let failure):
+                XCTFail("Remote loopback restore must preserve \(logicalURL): \(failure)")
+            }
+            let payload = try XCTUnwrap(recorder.capturedStorage)
+            XCTAssertEqual(
+                payload.expectedOrigin,
+                TerminalController.V2BrowserStateRestorer.originString(for: logicalURL)
+            )
+            XCTAssertEqual(
+                payload.executionOrigin,
+                TerminalController.V2BrowserStateRestorer.originString(for: aliasURL),
+                "JavaScript must verify the effective proxy alias while the saved state retains the requested loopback host"
+            )
+        }
+    }
+
+    func testDuplicateCookieIdentitiesAreRejectedBeforeConcurrentCookieWrites() throws {
+        let duplicateCookies: [[String: Any]] = [
+            ["name": "session", "value": "first", "domain": "example.com", "path": "/"],
+            ["name": "session", "value": "second", "domain": "EXAMPLE.COM", "path": "/"],
+        ]
+        let fileURL = try stateFile(object: validState(
+            cookies: duplicateCookies,
+            localStorage: [:],
+            sessionStorage: [:]
+        ))
+        let recorder = RestoreRecorder()
+
+        assertFailure(.duplicateCookie, result: restore(fileURL, recorder: recorder))
+        XCTAssertTrue(
+            recorder.events.isEmpty,
+            "Ambiguous duplicate identities must be resolved before an unordered cookie-store batch begins"
+        )
+    }
+}
+
+// MARK: - V2 Browser Download Event Invariants
+
+@MainActor
+final class TerminalControllerV2BrowserDownloadEventTests: XCTestCase {
+    private func event(sequence: Int) -> [String: Any] {
+        ["sequence": sequence]
+    }
+
+    private func sequence(
+        in event: [String: Any],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> Int {
+        guard let value = event["sequence"] as? Int else {
+            XCTFail("Expected a download event sequence", file: file, line: line)
+            return -1
+        }
+        return value
+    }
+
+    func testDownloadQueueRetainsNewestBoundedEventsAndReportsEvictionOnce() {
+        let controller = TerminalController.shared
+        let surfaceId = UUID()
+        defer { controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+
+        let limit = TerminalController.v2BrowserDownloadEventQueueLimit
+        XCTAssertEqual(limit, 256)
+        let overflowCount = 3
+        for index in 0 ..< (limit + overflowCount) {
+            controller.v2BrowserEnqueueDownloadEvent(
+                surfaceId: surfaceId,
+                event: event(sequence: index)
+            )
+        }
+
+        var retainedSequences: [Int] = []
+        var reportedDrops: [Int] = []
+        for _ in 0 ..< limit {
+            guard let consumed = controller.v2BrowserConsumeDownloadEvent(surfaceId: surfaceId) else {
+                return XCTFail("The bounded queue must retain exactly its newest \(limit) events")
+            }
+            retainedSequences.append(sequence(in: consumed.event))
+            reportedDrops.append(consumed.droppedEvents)
+        }
+
+        XCTAssertEqual(retainedSequences, Array(overflowCount ..< (limit + overflowCount)))
+        XCTAssertEqual(reportedDrops.first, overflowCount)
+        XCTAssertTrue(
+            reportedDrops.dropFirst().allSatisfy { $0 == 0 },
+            "Dropped-event metadata must be reported exactly once, not repeated for later downloads"
+        )
+        XCTAssertNil(controller.v2BrowserConsumeDownloadEvent(surfaceId: surfaceId))
+    }
+
+    func testOneNotificationSatisfiesExactlyOneEventModeWait() {
+        let controller = TerminalController.shared
+        let surfaceId = UUID()
+        defer { controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .browserDownloadEventDidArrive,
+                object: nil,
+                userInfo: [
+                    "surfaceId": surfaceId,
+                    "event": ["sequence": 42],
+                ]
+            )
+        }
+
+        switch controller.v2BrowserWaitForDownloadEvent(surfaceId: surfaceId, timeout: 1.0) {
+        case .event(let download, let droppedEvents):
+            XCTAssertEqual(sequence(in: download), 42)
+            XCTAssertEqual(droppedEvents, 0)
+        case .timedOut:
+            XCTFail("The posted download notification must satisfy the active waiter")
+        case .cancelled:
+            XCTFail("A live surface waiter must not be cancelled")
+        case .busy:
+            XCTFail("The only active event-mode wait must not report busy")
+        }
+
+        switch controller.v2BrowserWaitForDownloadEvent(surfaceId: surfaceId, timeout: 0.01) {
+        case .timedOut:
+            break
+        case .event(let duplicate, _):
+            XCTFail("One notification must not be returned by two waits: \(duplicate)")
+        case .cancelled:
+            XCTFail("A live surface waiter must time out rather than report cancellation")
+        case .busy:
+            XCTFail("The previous wait completed, so a later wait must not report busy")
+        }
+    }
+
+    func testNestedWaitReturnsBusyWithoutStealingTheOuterWaitEvent() {
+        let controller = TerminalController.shared
+        let outerSurfaceId = UUID()
+        let nestedSurfaceId = UUID()
+        defer {
+            controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: outerSurfaceId)
+            controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: nestedSurfaceId)
+        }
+
+        DispatchQueue.main.async {
+            switch controller.v2BrowserWaitForDownloadEvent(
+                surfaceId: nestedSurfaceId,
+                timeout: 0.1
+            ) {
+            case .busy:
+                break
+            case .event(let event, _):
+                XCTFail("A nested wait must not consume an unrelated event: \(event)")
+            case .timedOut:
+                XCTFail("A nested synchronous wait must fail busy instead of starting another run loop")
+            case .cancelled:
+                XCTFail("The live nested surface must report busy rather than cancellation")
+            }
+
+            controller.v2BrowserEnqueueDownloadEvent(
+                surfaceId: outerSurfaceId,
+                event: ["sequence": 77]
+            )
+        }
+
+        switch controller.v2BrowserWaitForDownloadEvent(surfaceId: outerSurfaceId, timeout: 1.0) {
+        case .event(let download, let droppedEvents):
+            XCTAssertEqual(sequence(in: download), 77)
+            XCTAssertEqual(droppedEvents, 0)
+        case .timedOut:
+            XCTFail("Rejecting the nested wait must leave the original waiter active")
+        case .cancelled:
+            XCTFail("Rejecting a nested wait must not cancel the original waiter")
+        case .busy:
+            XCTFail("The original wait establishes the active wait and must not report busy")
+        }
+
+        XCTAssertNil(
+            controller.v2BrowserConsumeDownloadEvent(surfaceId: outerSurfaceId),
+            "The event delivered to the original waiter must not also remain queued"
+        )
+    }
+
+    func testPermanentSurfaceCleanupClearsQueuedEventsAndOverflowMetadata() {
+        let controller = TerminalController.shared
+        let surfaceId = UUID()
+        defer { controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+
+        for index in 0 ... TerminalController.v2BrowserDownloadEventQueueLimit {
+            controller.v2BrowserEnqueueDownloadEvent(
+                surfaceId: surfaceId,
+                event: event(sequence: index)
+            )
+        }
+
+        controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId)
+        XCTAssertNil(
+            controller.v2BrowserConsumeDownloadEvent(surfaceId: surfaceId),
+            "Closing a surface must make every queued download unreachable"
+        )
+
+        controller.v2BrowserEnqueueDownloadEvent(
+            surfaceId: surfaceId,
+            event: event(sequence: 999)
+        )
+        guard let fresh = controller.v2BrowserConsumeDownloadEvent(surfaceId: surfaceId) else {
+            return XCTFail("A reused surface identifier must accept new download events after cleanup")
+        }
+        XCTAssertEqual(sequence(in: fresh.event), 999)
+        XCTAssertEqual(
+            fresh.droppedEvents,
+            0,
+            "Overflow metadata from the removed surface lifetime must not leak into a new lifetime"
+        )
+    }
+
+    func testPermanentSurfaceCleanupCancelsAnActiveWaiter() {
+        let controller = TerminalController.shared
+        let surfaceId = UUID()
+        defer { controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+
+        DispatchQueue.main.async {
+            controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId)
+        }
+
+        switch controller.v2BrowserWaitForDownloadEvent(surfaceId: surfaceId, timeout: 1.0) {
+        case .cancelled:
+            break
+        case .event(let event, _):
+            XCTFail("Removing the surface must not fabricate a download event: \(event)")
+        case .timedOut:
+            XCTFail("Surface cleanup must cancel an active waiter immediately")
+        case .busy:
+            XCTFail("The only active event-mode wait must not report busy")
+        }
+    }
+}
+
 // MARK: - V2 Browser Automation Ref Invariants (audit M6a / M8)
 
 @MainActor
 final class TerminalControllerV2RefInvariantTests: XCTestCase {
+    /// Test-facing allocator contract: returned tokens align positionally with `selectors`.
+    /// Existing selectors deduplicate; unseen selectors are committed atomically or the whole
+    /// request returns `resourceExhausted` without changing per-surface state.
+    private func allocateElementRefs(
+        surfaceId: UUID,
+        selectors: [String],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> [String] {
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: selectors
+        ) {
+        case .allocated(let refs):
+            XCTAssertEqual(refs.count, selectors.count, file: file, line: line)
+            return refs
+        case .resourceExhausted(let capacity):
+            XCTFail(
+                "Unexpected element-ref exhaustion: limit=\(capacity.limit) requested=\(capacity.requestedUnique) remaining=\(capacity.remaining) bytes=\(capacity.requestedBytes)/\(capacity.remainingBytes)",
+                file: file,
+                line: line
+            )
+            return []
+        }
+    }
+
+    private func allocateElementRef(
+        surfaceId: UUID,
+        selector: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> String {
+        let refs = allocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: [selector],
+            file: file,
+            line: line
+        )
+        guard let ref = refs.first else {
+            XCTFail("Expected one allocated element ref", file: file, line: line)
+            return ""
+        }
+        return ref
+    }
+
+    private func elementRefOrdinal(_ ref: String) -> Int? {
+        guard ref.hasPrefix("@e") else { return nil }
+        return Int(ref.dropFirst(2))
+    }
+
+    private func selector(byteCount: Int, suffix: String) -> String {
+        let suffix = "-\(suffix)"
+        precondition(suffix.utf8.count <= byteCount)
+        return String(repeating: "x", count: byteCount - suffix.utf8.count) + suffix
+    }
+
     /// M6a: an element ref (@eN) allocated before a navigation must not silently re-resolve
     /// against the new page's DOM after the surface navigates — it should report a structured
     /// `stale_element` error instead.
     func testElementRefResolvesUntilSurfaceNavigatesThenReportsStale() {
         let surfaceId = UUID()
-        let ref = TerminalController.shared.v2BrowserAllocateElementRef(surfaceId: surfaceId, selector: "#foo")
+        defer { TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+        let ref = allocateElementRef(surfaceId: surfaceId, selector: "#foo")
 
         // Before any navigation, the ref resolves normally.
         XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: surfaceId), "#foo")
@@ -4383,7 +5312,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
         }
 
         // A ref allocated *after* the navigation on the same surface resolves normally again.
-        let freshRef = TerminalController.shared.v2BrowserAllocateElementRef(surfaceId: surfaceId, selector: "#bar")
+        let freshRef = allocateElementRef(surfaceId: surfaceId, selector: "#bar")
         XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(freshRef, surfaceId: surfaceId), "#bar")
     }
 
@@ -4392,7 +5321,11 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
     func testElementRefDoesNotResolveAgainstAnotherSurface() {
         let surfaceA = UUID()
         let surfaceB = UUID()
-        let ref = TerminalController.shared.v2BrowserAllocateElementRef(surfaceId: surfaceA, selector: "#foo")
+        defer {
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceA)
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceB)
+        }
+        let ref = allocateElementRef(surfaceId: surfaceA, selector: "#foo")
 
         XCTAssertNil(TerminalController.shared.v2BrowserResolveSelector(ref, surfaceId: surfaceB))
         switch TerminalController.shared.v2BrowserSelectorResolutionError(ref, surfaceId: surfaceB) {
@@ -4401,6 +5334,582 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
         case .ok:
             XCTFail("expected an error result")
         }
+    }
+
+    func testElementRefsDeduplicateWithinSurfaceGenerationButNotAcrossSurfaces() {
+        let surfaceA = UUID()
+        let surfaceB = UUID()
+        defer {
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceA)
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceB)
+        }
+
+        let first = allocateElementRef(surfaceId: surfaceA, selector: "#same")
+        let duplicate = allocateElementRef(surfaceId: surfaceA, selector: "#same")
+        let otherSurface = allocateElementRef(surfaceId: surfaceB, selector: "#same")
+
+        XCTAssertEqual(duplicate, first)
+        XCTAssertNotEqual(otherSurface, first)
+        XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(first, surfaceId: surfaceA), "#same")
+        XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(otherSurface, surfaceId: surfaceB), "#same")
+    }
+
+    func testElementRefQuotaRejectsOnlyTheFirstUnseenSelectorBeyondTheLimit() {
+        let surfaceId = UUID()
+        defer { TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+
+        let limit = TerminalController.v2BrowserElementRefLimit
+        XCTAssertEqual(limit, 4096)
+        let selectors = (0 ..< limit).map { "#quota-\($0)" }
+        let refs = allocateElementRefs(surfaceId: surfaceId, selectors: selectors)
+        XCTAssertEqual(Set(refs).count, limit)
+
+        let duplicate = allocateElementRef(surfaceId: surfaceId, selector: selectors[0])
+        XCTAssertEqual(duplicate, refs[0], "A duplicate must not consume another quota slot")
+
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: ["#quota-overflow"]
+        ) {
+        case .allocated:
+            XCTFail("Expected the first unseen selector beyond the per-generation limit to fail")
+        case .resourceExhausted(let capacity):
+            XCTAssertEqual(capacity.limit, limit)
+            XCTAssertEqual(capacity.requestedUnique, 1)
+            XCTAssertEqual(capacity.remaining, 0)
+        }
+
+        XCTAssertTrue(zip(refs, selectors).allSatisfy { pair in
+            TerminalController.shared.v2BrowserResolveSelector(pair.0, surfaceId: surfaceId) == pair.1
+        }, "Resource exhaustion must not invalidate any previously allocated ref")
+    }
+
+    func testNavigationRetainsOnlyOneStaleGenerationAndResetsQuotaWithoutReusingOrdinals() throws {
+        let surfaceId = UUID()
+        defer { TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+
+        let limit = TerminalController.v2BrowserElementRefLimit
+        let generationNSelectors = (0 ..< limit).map { "#generation-n-\($0)" }
+        let generationNRefs = allocateElementRefs(surfaceId: surfaceId, selectors: generationNSelectors)
+        let generationNFirstOrdinal = elementRefOrdinal(generationNRefs[0])
+        let generationNLastOrdinal = elementRefOrdinal(generationNRefs[limit - 1])
+
+        TerminalController.shared.v2BrowserBumpNavigationGeneration(forSurface: surfaceId)
+        XCTAssertNil(TerminalController.shared.v2BrowserResolveSelector(generationNRefs[0], surfaceId: surfaceId))
+        switch TerminalController.shared.v2BrowserSelectorResolutionError(generationNRefs[0], surfaceId: surfaceId) {
+        case .err(let code, _, _):
+            XCTAssertEqual(code, "stale_element")
+        case .ok:
+            XCTFail("Expected generation N to be retained as stale")
+        }
+
+        let generationNPlusOneSelectors = (0 ..< limit).map { "#generation-n-plus-one-\($0)" }
+        let generationNPlusOneRefs = allocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: generationNPlusOneSelectors
+        )
+        let generationNPlusOneRef = generationNPlusOneRefs[0]
+        XCTAssertNotEqual(generationNPlusOneRef, generationNRefs[0])
+        let generationNPlusOneOrdinal = try XCTUnwrap(elementRefOrdinal(generationNPlusOneRef))
+        let unwrappedGenerationNLastOrdinal = try XCTUnwrap(generationNLastOrdinal)
+        XCTAssertGreaterThan(generationNPlusOneOrdinal, unwrappedGenerationNLastOrdinal)
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: ["#generation-n-plus-one-overflow"]
+        ) {
+        case .allocated:
+            XCTFail("A navigation must reset exactly one full generation of quota, not remove the limit")
+        case .resourceExhausted(let capacity):
+            XCTAssertEqual(capacity.requestedUnique, 1)
+            XCTAssertEqual(capacity.remaining, 0)
+        }
+
+        TerminalController.shared.v2BrowserBumpNavigationGeneration(forSurface: surfaceId)
+        switch TerminalController.shared.v2BrowserSelectorResolutionError(generationNRefs[0], surfaceId: surfaceId) {
+        case .err(let code, _, _):
+            XCTAssertEqual(code, "not_found", "Generation N must be discarded after the next navigation")
+        case .ok:
+            XCTFail("Expected generation N to be removed")
+        }
+        switch TerminalController.shared.v2BrowserSelectorResolutionError(generationNPlusOneRef, surfaceId: surfaceId) {
+        case .err(let code, _, _):
+            XCTAssertEqual(code, "stale_element", "Generation N+1 must remain available as stale")
+        case .ok:
+            XCTFail("Expected generation N+1 to be stale")
+        }
+
+        let generationNPlusTwoRef = allocateElementRef(surfaceId: surfaceId, selector: "#generation-n-plus-two")
+        let generationNPlusTwoOrdinal = try XCTUnwrap(elementRefOrdinal(generationNPlusTwoRef))
+        let unwrappedGenerationNFirstOrdinal = try XCTUnwrap(generationNFirstOrdinal)
+        XCTAssertGreaterThan(generationNPlusTwoOrdinal, generationNPlusOneOrdinal)
+        XCTAssertLessThan(unwrappedGenerationNFirstOrdinal, generationNPlusOneOrdinal)
+    }
+
+    func testBatchAllocationIsAtomicAndDuplicatesDoNotConsumeTheLastSlot() {
+        let surfaceId = UUID()
+        defer { TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+
+        let limit = TerminalController.v2BrowserElementRefLimit
+        let existingSelectors = (0 ..< (limit - 1)).map { "#atomic-existing-\($0)" }
+        let existingRefs = allocateElementRefs(surfaceId: surfaceId, selectors: existingSelectors)
+
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: ["#atomic-new-a", "#atomic-new-b"]
+        ) {
+        case .allocated:
+            XCTFail("Two unseen selectors must not partially consume the final slot")
+        case .resourceExhausted(let capacity):
+            XCTAssertEqual(capacity.limit, limit)
+            XCTAssertEqual(capacity.requestedUnique, 2)
+            XCTAssertEqual(capacity.remaining, 1)
+        }
+
+        let finalRefs = allocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: [existingSelectors[0], "#atomic-new-a", existingSelectors[0]]
+        )
+        XCTAssertEqual(finalRefs[0], existingRefs[0])
+        XCTAssertEqual(finalRefs[2], existingRefs[0])
+        XCTAssertEqual(
+            TerminalController.shared.v2BrowserResolveSelector(finalRefs[1], surfaceId: surfaceId),
+            "#atomic-new-a",
+            "The failed batch must not have allocated either unseen selector"
+        )
+
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: ["#atomic-new-b"]
+        ) {
+        case .allocated:
+            XCTFail("The one successful unseen selector must consume the final slot")
+        case .resourceExhausted(let capacity):
+            XCTAssertEqual(capacity.limit, limit)
+            XCTAssertEqual(capacity.requestedUnique, 1)
+            XCTAssertEqual(capacity.remaining, 0)
+        }
+    }
+
+    func testPermanentSurfaceCleanupRemovesCurrentStaleIndexedAndQuotaState() throws {
+        let surfaceId = UUID()
+        defer { TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+
+        let limit = TerminalController.v2BrowserElementRefLimit
+        let generationNSelectors = (0 ..< limit).map { "#cleanup-generation-n-\($0)" }
+        let generationNRefs = allocateElementRefs(surfaceId: surfaceId, selectors: generationNSelectors)
+        TerminalController.shared.v2BrowserBumpNavigationGeneration(forSurface: surfaceId)
+        let currentSelectors = (0 ..< limit).map { "#cleanup-current-\($0)" }
+        let currentRefs = allocateElementRefs(surfaceId: surfaceId, selectors: currentSelectors)
+        let currentRef = currentRefs[0]
+
+        TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId)
+
+        XCTAssertEqual(TerminalController.shared.v2BrowserNavigationGeneration(forSurface: surfaceId), 0)
+        for removedRef in [generationNRefs[0], currentRef] {
+            switch TerminalController.shared.v2BrowserSelectorResolutionError(removedRef, surfaceId: surfaceId) {
+            case .err(let code, _, _):
+                XCTAssertEqual(code, "not_found")
+            case .ok:
+                XCTFail("Permanent cleanup must remove current and retained-stale refs")
+            }
+        }
+
+        let replacementRefs = allocateElementRefs(surfaceId: surfaceId, selectors: currentSelectors)
+        XCTAssertNotEqual(replacementRefs[0], generationNRefs[0])
+        XCTAssertNotEqual(replacementRefs[0], currentRef)
+        XCTAssertEqual(
+            TerminalController.shared.v2BrowserResolveSelector(replacementRefs[0], surfaceId: surfaceId),
+            currentSelectors[0]
+        )
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: ["#cleanup-overflow"]
+        ) {
+        case .allocated:
+            XCTFail("Permanent cleanup must reset exactly one full quota, not disable enforcement")
+        case .resourceExhausted(let capacity):
+            XCTAssertEqual(capacity.requestedUnique, 1)
+            XCTAssertEqual(capacity.remaining, 0)
+        }
+        XCTAssertGreaterThan(
+            try XCTUnwrap(elementRefOrdinal(replacementRefs[0])),
+            try XCTUnwrap(elementRefOrdinal(currentRefs.last!)),
+            "Permanent cleanup must not rewind the global ref ordinal"
+        )
+    }
+
+    func testElementRefQuotaIsIndependentAcrossSurfacesAtCountAndByteCapacity() {
+        let surfaceA = UUID()
+        let surfaceB = UUID()
+        defer {
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceA)
+            TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceB)
+        }
+
+        XCTAssertEqual(TerminalController.v2BrowserElementRefLimit, 4_096)
+        XCTAssertEqual(TerminalController.v2BrowserElementRefSelectorByteLimit, 16_384)
+        XCTAssertEqual(TerminalController.v2BrowserElementRefByteLimit, 4_194_304)
+        let selectors = (0 ..< 4_096).map { selector(byteCount: 1_024, suffix: "pressure-\($0)") }
+        let refsA = allocateElementRefs(surfaceId: surfaceA, selectors: selectors)
+        let refsB = allocateElementRefs(surfaceId: surfaceB, selectors: selectors)
+
+        XCTAssertEqual(Set(refsA).count, 4_096)
+        XCTAssertEqual(Set(refsB).count, 4_096)
+        XCTAssertTrue(Set(refsA).isDisjoint(with: Set(refsB)))
+        XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(refsB.last!, surfaceId: surfaceB), selectors.last!)
+    }
+
+    func testElementRefByteLimitsRejectOversizeAndAggregateOverflowAtomically() throws {
+        let surfaceId = UUID()
+        defer { TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+
+        let selectorByteLimit = TerminalController.v2BrowserElementRefSelectorByteLimit
+        let byteLimit = TerminalController.v2BrowserElementRefByteLimit
+        XCTAssertEqual(selectorByteLimit, 16_384)
+        XCTAssertEqual(byteLimit, 4_194_304)
+
+        let oversized = selector(byteCount: selectorByteLimit + 1, suffix: "oversized")
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: surfaceId, selectors: [oversized]) {
+        case .allocated:
+            XCTFail("One selector must not exceed the per-selector UTF-8 byte limit")
+        case .resourceExhausted(let capacity):
+            XCTAssertEqual(capacity.selectorByteLimit, selectorByteLimit)
+            XCTAssertEqual(capacity.requestedBytes, oversized.utf8.count)
+            XCTAssertEqual(capacity.remainingBytes, byteLimit)
+        }
+
+        let existingSelectors = (0 ..< 255).map { selector(byteCount: selectorByteLimit, suffix: "existing-\($0)") }
+        let existingRefs = allocateElementRefs(surfaceId: surfaceId, selectors: existingSelectors)
+        let unseenA = selector(byteCount: 8_193, suffix: "unseen-a")
+        let unseenB = selector(byteCount: 8_193, suffix: "unseen-b")
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: [existingSelectors[0], unseenA, unseenB, existingSelectors[0]]
+        ) {
+        case .allocated:
+            XCTFail("A batch whose new selectors exceed remaining bytes must fail atomically")
+        case .resourceExhausted(let capacity):
+            XCTAssertEqual(capacity.limit, 4_096)
+            XCTAssertEqual(capacity.requestedUnique, 2)
+            XCTAssertEqual(capacity.remaining, 4_096 - existingSelectors.count)
+            XCTAssertEqual(capacity.selectorByteLimit, selectorByteLimit)
+            XCTAssertEqual(capacity.byteLimit, byteLimit)
+            XCTAssertEqual(capacity.requestedBytes, unseenA.utf8.count + unseenB.utf8.count)
+            XCTAssertEqual(capacity.remainingBytes, selectorByteLimit)
+
+            switch TerminalController.shared.v2BrowserElementRefResourceExhaustedResult(
+                surfaceId: surfaceId,
+                capacity: capacity
+            ) {
+            case .ok:
+                XCTFail("Capacity exhaustion must produce an error result")
+            case .err(let code, let message, let data):
+                XCTAssertEqual(code, "resource_exhausted")
+                XCTAssertEqual(message, "Browser element reference limit reached for this page")
+                XCTAssertEqual(data as? [String: AnyHashable], [
+                    "surface_id": surfaceId.uuidString,
+                    "limit": capacity.limit,
+                    "scope": "navigation",
+                    "retry": "navigate or reuse an existing selector",
+                    "requested_unique": capacity.requestedUnique,
+                    "remaining": capacity.remaining,
+                    "selector_byte_limit": capacity.selectorByteLimit,
+                    "byte_limit": capacity.byteLimit,
+                    "requested_bytes": capacity.requestedBytes,
+                    "remaining_bytes": capacity.remainingBytes
+                ])
+            }
+        }
+
+        XCTAssertTrue(zip(existingRefs, existingSelectors).allSatisfy { pair in
+            TerminalController.shared.v2BrowserResolveSelector(pair.0, surfaceId: surfaceId) == pair.1
+        }, "An aggregate-capacity rejection must leave every prior ref resolvable")
+        XCTAssertNil(TerminalController.shared.v2BrowserResolveSelector("@never-allocated", surfaceId: surfaceId))
+        let committedA = allocateElementRef(surfaceId: surfaceId, selector: unseenA)
+        XCTAssertEqual(
+            try XCTUnwrap(elementRefOrdinal(committedA)),
+            try XCTUnwrap(elementRefOrdinal(existingRefs.last!)) + 1,
+            "The rejected batch must not consume ordinals or pre-allocate either unseen selector"
+        )
+        XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(committedA, surfaceId: surfaceId), unseenA)
+        XCTAssertEqual(allocateElementRef(surfaceId: surfaceId, selector: unseenA), committedA, "An exact duplicate consumes no additional bytes")
+        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: surfaceId, selectors: [unseenB]) {
+        case .allocated:
+            XCTFail("The failed aggregate batch must not pre-allocate its second unseen selector")
+        case .resourceExhausted(let capacity):
+            XCTAssertEqual(capacity.requestedUnique, 1)
+            XCTAssertEqual(capacity.requestedBytes, unseenB.utf8.count)
+            XCTAssertEqual(capacity.remainingBytes, selectorByteLimit - unseenA.utf8.count)
+        }
+    }
+
+    func testNavigationAndPermanentCleanupResetElementRefByteBudget() throws {
+        let surfaceId = UUID()
+        defer { TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
+        let selectors = (0 ..< 256).map { selector(byteCount: 16_384, suffix: "byte-reset-\($0)") }
+
+        let generationN = allocateElementRefs(surfaceId: surfaceId, selectors: selectors)
+        TerminalController.shared.v2BrowserBumpNavigationGeneration(forSurface: surfaceId)
+        let generationNPlusOne = allocateElementRefs(surfaceId: surfaceId, selectors: selectors)
+        XCTAssertNotEqual(generationN[0], generationNPlusOne[0])
+
+        TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId)
+        let afterCleanup = allocateElementRefs(surfaceId: surfaceId, selectors: selectors)
+        XCTAssertNotEqual(generationNPlusOne[0], afterCleanup[0])
+        XCTAssertGreaterThan(
+            try XCTUnwrap(elementRefOrdinal(afterCleanup[0])),
+            try XCTUnwrap(elementRefOrdinal(generationNPlusOne.last!))
+        )
+    }
+
+    func testSnapshotPostProcessingBoundsRealResponseContentAndReportsEveryTruncationCause() {
+        XCTAssertEqual(TerminalController.v2BrowserSnapshotNodeVisitLimit, 4_096)
+        XCTAssertEqual(TerminalController.v2BrowserSnapshotEntryLimit, 256)
+        XCTAssertEqual(TerminalController.v2BrowserSnapshotTextCharacterLimit, 262_144)
+        XCTAssertEqual(TerminalController.v2BrowserSnapshotHTMLCharacterLimit, 1_048_576)
+        var entries: [[String: Any]] = (0 ..< 300).map { index in
+            ["selector": "#snapshot-\(index)", "role": "button"]
+        }
+        entries.insert(["selector": "#snapshot-0", "role": "duplicate"], at: 1)
+
+        let fullText = String(repeating: "t", count: TerminalController.v2BrowserSnapshotTextCharacterLimit + 1)
+        let fullHTML = String(repeating: "h", count: TerminalController.v2BrowserSnapshotHTMLCharacterLimit + 1)
+        let swiftTruncated = TerminalController.shared.v2BrowserPostProcessSnapshotResult([
+            "title": "title",
+            "url": "https://example.com",
+            "entries": entries,
+            "text": fullText,
+            "html": fullHTML,
+            "visited_nodes": 301
+        ])
+
+        XCTAssertEqual(swiftTruncated.entries.count, 256)
+        XCTAssertEqual(swiftTruncated.entries.first?["selector"] as? String, "#snapshot-0")
+        XCTAssertEqual(swiftTruncated.entries.last?["selector"] as? String, "#snapshot-255")
+        XCTAssertEqual(Set(swiftTruncated.entries.compactMap { $0["selector"] as? String }).count, 256)
+        XCTAssertEqual(swiftTruncated.text, String(fullText.prefix(TerminalController.v2BrowserSnapshotTextCharacterLimit)))
+        XCTAssertEqual(swiftTruncated.html, String(fullHTML.prefix(TerminalController.v2BrowserSnapshotHTMLCharacterLimit)))
+        XCTAssertEqual(swiftTruncated.text.count, TerminalController.v2BrowserSnapshotTextCharacterLimit)
+        XCTAssertEqual(swiftTruncated.html.count, TerminalController.v2BrowserSnapshotHTMLCharacterLimit)
+        XCTAssertEqual(swiftTruncated.metadata["truncated"] as? Bool, true)
+        XCTAssertEqual(swiftTruncated.metadata["element_limit"] as? Int, 256)
+        XCTAssertEqual(swiftTruncated.metadata["text_truncated"] as? Bool, true)
+        XCTAssertEqual(swiftTruncated.metadata["html_truncated"] as? Bool, true)
+
+        let browserTruncated = TerminalController.shared.v2BrowserPostProcessSnapshotResult([
+            "title": "title",
+            "url": "https://example.com",
+            "entries": [["selector": "#one", "role": "button"]],
+            "text": "short",
+            "html": "<p>short</p>",
+            "truncated": true,
+            "truncation_reasons": ["node_limit"],
+            "node_limit": 4_096,
+            "visited_nodes": 4_096,
+            "text_truncated": true,
+            "html_truncated": true
+        ])
+        XCTAssertEqual(browserTruncated.metadata["truncated"] as? Bool, true)
+        XCTAssertEqual(browserTruncated.metadata["element_limit"] as? Int, 256)
+        XCTAssertEqual(browserTruncated.metadata["text_truncated"] as? Bool, true)
+        XCTAssertEqual(browserTruncated.metadata["html_truncated"] as? Bool, true)
+    }
+
+    func testSnapshotPostProcessingMarksAggregateTruncatedWhenOnlyPageTextOrHTMLIsClipped() {
+        let oversizedText = String(
+            repeating: "t",
+            count: TerminalController.v2BrowserSnapshotTextCharacterLimit + 1
+        )
+        let textOnly = TerminalController.shared.v2BrowserPostProcessSnapshotResult([
+            "title": "title",
+            "url": "about:blank",
+            "entries": [],
+            "text": oversizedText,
+            "html": "<p>short</p>"
+        ])
+        XCTAssertEqual(textOnly.metadata["text_truncated"] as? Bool, true)
+        XCTAssertEqual(textOnly.metadata["truncated"] as? Bool, true)
+
+        let oversizedHTML = String(
+            repeating: "h",
+            count: TerminalController.v2BrowserSnapshotHTMLCharacterLimit + 1
+        )
+        let htmlOnly = TerminalController.shared.v2BrowserPostProcessSnapshotResult([
+            "title": "title",
+            "url": "about:blank",
+            "entries": [],
+            "text": "short",
+            "html": oversizedHTML
+        ])
+        XCTAssertEqual(htmlOnly.metadata["html_truncated"] as? Bool, true)
+        XCTAssertEqual(htmlOnly.metadata["truncated"] as? Bool, true)
+    }
+
+    func testSnapshotPostProcessingRevalidatesUntrustedEntryAndMetadataBounds() {
+        let oversizedSelector = "#" + String(repeating: "s", count: 16_384)
+        let longName = String(repeating: "é", count: 600)
+        let longRole = String(repeating: "r", count: 65)
+        let longTitle = String(repeating: "T", count: 1_025)
+        let longURL = "https://example.com/" + String(repeating: "u", count: 17_000)
+        let result = TerminalController.shared.v2BrowserPostProcessSnapshotResult([
+            "title": longTitle,
+            "url": longURL,
+            "text": "text",
+            "html": "<p>html</p>",
+            "entries": [
+                ["selector": "#first", "name": "first", "role": "button"],
+                ["selector": "#first", "name": "duplicate", "role": "button"],
+                ["selector": "", "name": "empty", "role": "button"],
+                ["selector": oversizedSelector, "name": "oversized", "role": "button"],
+                ["selector": "#long-name", "name": longName, "role": "button"],
+                ["selector": "#long-role", "name": "role", "role": longRole]
+            ],
+            "truncated": true,
+            "truncation_reasons": ["url_byte_limit", "unknown", "node_limit"],
+            "node_limit": 4_096,
+            "visited_nodes": 99_999,
+            "entry_bytes": Int.max,
+            "selector_skipped_count": 999,
+            "name_truncated_count": 999,
+            "role_skipped_count": 999
+        ])
+
+        XCTAssertEqual(result.title, String(longTitle.prefix(1_024)))
+        XCTAssertEqual(result.url, String(longURL.prefix(16_384)))
+        XCTAssertEqual(result.entries.count, 2)
+        XCTAssertEqual(result.entries[0]["selector"] as? String, "#first")
+        XCTAssertEqual(result.entries[1]["selector"] as? String, "#long-name")
+        XCTAssertEqual(result.entries[1]["name"] as? String, String(repeating: "é", count: 512))
+        XCTAssertEqual(((result.entries[1]["name"] as? String) ?? "").utf8.count, 1_024)
+        XCTAssertEqual(result.metadata["truncation_reasons"] as? [String], [
+            "node_limit",
+            "selector_byte_limit",
+            "name_byte_limit",
+            "role_byte_limit",
+            "title_byte_limit",
+            "url_byte_limit"
+        ])
+        XCTAssertEqual(result.metadata["node_limit"] as? Int, 4_096)
+        XCTAssertEqual(result.metadata["visited_nodes"] as? Int, 4_096)
+        XCTAssertEqual(result.metadata["selector_byte_limit"] as? Int, 16_384)
+        XCTAssertEqual(result.metadata["selector_skipped_count"] as? Int, 1)
+        XCTAssertEqual(result.metadata["name_byte_limit"] as? Int, 1_024)
+        XCTAssertEqual(result.metadata["name_truncated_count"] as? Int, 1)
+        XCTAssertEqual(result.metadata["role_byte_limit"] as? Int, 64)
+        XCTAssertEqual(result.metadata["role_skipped_count"] as? Int, 1)
+        XCTAssertEqual(result.metadata["title_byte_limit"] as? Int, 1_024)
+        XCTAssertEqual(result.metadata["url_byte_limit"] as? Int, 16_384)
+        let acceptedBytes = result.entries.reduce(into: 0) { total, entry in
+            total += ((entry["selector"] as? String) ?? "").utf8.count
+            total += ((entry["name"] as? String) ?? "").utf8.count
+            total += ((entry["role"] as? String) ?? "").utf8.count
+        }
+        XCTAssertEqual(result.metadata["entry_byte_limit"] as? Int, 262_144)
+        XCTAssertEqual(result.metadata["entry_bytes"] as? Int, acceptedBytes)
+        XCTAssertEqual(result.metadata["truncated"] as? Bool, true)
+    }
+
+    func testSnapshotPostProcessingCountAndAggregateByteLimitsKeepAtomicPrefixes() {
+        let countEntries: [[String: Any]] = (0 ..< 300).map {
+            ["selector": "#count-\($0)", "name": "n", "role": "button"]
+        }
+        let countBounded = TerminalController.shared.v2BrowserPostProcessSnapshotResult([
+            "title": "title", "url": "about:blank", "text": "", "html": "", "entries": countEntries
+        ])
+        XCTAssertEqual(countBounded.entries.count, 256)
+        XCTAssertEqual(countBounded.entries.last?["selector"] as? String, "#count-255")
+        XCTAssertEqual(countBounded.metadata["truncation_reasons"] as? [String], ["entry_limit"])
+        XCTAssertEqual(countBounded.metadata["element_limit"] as? Int, 256)
+
+        let byteEntries: [[String: Any]] = (0 ..< 300).map {
+            ["selector": "#bytes-\($0)", "name": String(repeating: "n", count: 1_024), "role": "button"]
+        }
+        let byteBounded = TerminalController.shared.v2BrowserPostProcessSnapshotResult([
+            "title": "title", "url": "about:blank", "text": "", "html": "", "entries": byteEntries
+        ])
+        let usedBytes = byteBounded.entries.reduce(into: 0) { total, entry in
+            total += ((entry["selector"] as? String) ?? "").utf8.count
+            total += ((entry["name"] as? String) ?? "").utf8.count
+            total += ((entry["role"] as? String) ?? "").utf8.count
+        }
+        XCTAssertLessThan(byteBounded.entries.count, 256)
+        XCTAssertEqual(byteBounded.entries.compactMap { $0["selector"] as? String }, (0 ..< byteBounded.entries.count).map { "#bytes-\($0)" })
+        XCTAssertEqual(byteBounded.metadata["entry_bytes"] as? Int, usedBytes)
+        XCTAssertLessThanOrEqual(usedBytes, 262_144)
+        XCTAssertEqual(byteBounded.metadata["truncation_reasons"] as? [String], ["entry_byte_limit"])
+    }
+
+    func testSnapshotPostProcessingClampsDepthAndDropsUnknownEntryPayload() {
+        let result = TerminalController.shared.v2BrowserPostProcessSnapshotResult([
+            "title": "title",
+            "url": "about:blank",
+            "text": "text",
+            "html": "<p>html</p>",
+            "entries": [[
+                "selector": "#bounded-entry",
+                "name": "Bounded entry",
+                "role": "button",
+                "depth": Int.max,
+                "unknown_payload": String(repeating: "x", count: 1_000_000)
+            ]]
+        ])
+
+        XCTAssertEqual(result.entries.count, 1)
+        guard let entry = result.entries.first else {
+            return XCTFail("Expected the valid bounded entry to survive post-processing")
+        }
+        XCTAssertEqual(Set(entry.keys), Set(["selector", "name", "role", "depth"]))
+        XCTAssertEqual(entry["selector"] as? String, "#bounded-entry")
+        XCTAssertEqual(entry["name"] as? String, "Bounded entry")
+        XCTAssertEqual(entry["role"] as? String, "button")
+        XCTAssertEqual(entry["depth"] as? Int, TerminalController.v2BrowserSnapshotMaxDepth)
+        XCTAssertNil(entry["unknown_payload"], "Post-processing must not retain unbounded unknown entry data")
+    }
+
+    func testSnapshotPostProcessingInspectsOnlyTheBoundedRawEntryPrefix() {
+        let rawLimit = TerminalController.v2BrowserSnapshotRawEntryLimit
+        XCTAssertEqual(rawLimit, 4_096)
+        let oversizedRole = String(repeating: "R", count: TerminalController.v2BrowserSnapshotRoleByteLimit + 1)
+        XCTAssertGreaterThan(oversizedRole.utf8.count, TerminalController.v2BrowserSnapshotRoleByteLimit)
+
+        var rawEntries: [[String: Any]] = [[
+            "selector": "#accepted-prefix",
+            "name": "Accepted prefix",
+            "role": "button",
+            "depth": 0
+        ], [
+            "selector": "#oversized-role",
+            "name": "Must be rejected before normalization",
+            "role": oversizedRole,
+            "depth": 0
+        ]]
+        while rawEntries.count < rawLimit {
+            rawEntries.append(
+                rawEntries.count.isMultiple(of: 2)
+                    ? ["selector": "#accepted-prefix", "name": "duplicate", "role": "button"]
+                    : ["selector": "", "name": "invalid", "role": "button"]
+            )
+        }
+        rawEntries.append([
+            "selector": "#valid-after-inspection-budget",
+            "name": "Tail must not be inspected",
+            "role": "button",
+            "depth": 0
+        ])
+
+        let result = TerminalController.shared.v2BrowserPostProcessSnapshotResult([
+            "title": "title",
+            "url": "about:blank",
+            "text": "",
+            "html": "",
+            "entries": rawEntries
+        ])
+
+        XCTAssertEqual(result.entries.count, 1)
+        XCTAssertEqual(result.entries.first?["selector"] as? String, "#accepted-prefix")
+        XCTAssertFalse(result.entries.contains { $0["selector"] as? String == "#valid-after-inspection-budget" })
+        XCTAssertEqual(result.metadata["truncated"] as? Bool, true)
+        XCTAssertEqual(result.metadata["raw_entry_limit"] as? Int, rawLimit)
     }
 
     /// M8: pruning dead handle-ref map entries must never let a ref string get reissued for a

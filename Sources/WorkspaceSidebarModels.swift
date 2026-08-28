@@ -59,7 +59,7 @@ struct SessionPaneRestoreEntry {
     let snapshot: SessionPaneLayoutSnapshot
 }
 
-enum SidebarLogLevel: String {
+enum SidebarLogLevel: String, Sendable {
     case info
     case progress
     case success
@@ -92,13 +92,13 @@ struct SidebarPanelObservationState: Equatable {
     }
 }
 
-enum SidebarPullRequestStatus: String {
+enum SidebarPullRequestStatus: String, Sendable {
     case open
     case merged
     case closed
 }
 
-enum SidebarPullRequestChecksStatus: String {
+enum SidebarPullRequestChecksStatus: String, Sendable {
     case pass
     case fail
     case pending

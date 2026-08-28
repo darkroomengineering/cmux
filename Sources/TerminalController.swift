@@ -49,10 +49,13 @@ class TerminalController {
     private nonisolated(unsafe) var pendingAcceptLoopRearmGeneration: UInt64?
     private nonisolated(unsafe) var pendingAcceptLoopResumeGeneration: UInt64?
     private nonisolated(unsafe) var listenerStartInProgress = false
+    private nonisolated(unsafe) var clientAuthorizationGeneration: UInt64 = 0
+    private nonisolated(unsafe) var authCredentialEpoch: UInt64 = 0
+    private nonisolated(unsafe) var registeredUnixClientFDs: Set<Int32> = []
+    private nonisolated(unsafe) var socketPasswordCredentialSource = SocketPasswordCredentialSource.live
     private nonisolated let listenerStateLock = NSLock()
-    private var clientHandlers: [Int32: Thread] = [:]
     var tabManager: TabManager?
-    private var accessMode: SocketControlMode = .cmuxOnly
+    private nonisolated(unsafe) var accessMode: SocketControlMode = .cmuxOnly
     private let myPid = getpid()
     private nonisolated(unsafe) static var socketCommandPolicyDepth: Int = 0
     private nonisolated static let socketCommandPolicyLock = NSLock()
@@ -76,6 +79,7 @@ class TerminalController {
 
     private struct ListenerStateSnapshot {
         let socketPath: String
+        let accessMode: SocketControlMode
         let serverSocket: Int32
         let isRunning: Bool
         let acceptLoopAlive: Bool
@@ -83,6 +87,41 @@ class TerminalController {
         let pendingRearmGeneration: UInt64?
         let pendingResumeGeneration: UInt64?
         let listenerStartInProgress: Bool
+    }
+
+    struct SocketRequestPolicy: Sendable {
+        let socketPath: String
+        let accessMode: SocketControlMode
+        let requiresPasswordAuthentication: Bool
+    }
+
+    struct SocketPasswordCredentialSource: Sendable {
+        let hasConfiguredPassword: @Sendable () -> Bool
+        let verify: @Sendable (String) -> Bool
+
+        static let live = SocketPasswordCredentialSource(
+            hasConfiguredPassword: {
+                SocketControlPasswordStore.hasConfiguredPassword(allowLazyKeychainFallback: true)
+            },
+            verify: { password in
+                SocketControlPasswordStore.verify(
+                    password: password,
+                    allowLazyKeychainFallback: true
+                )
+            }
+        )
+    }
+
+    struct UnixClientPolicy: Sendable {
+        let clientGeneration: UInt64
+        let authEpoch: UInt64
+        let request: SocketRequestPolicy
+    }
+
+    enum SocketConnectionSource: Sendable {
+        case unix(UnixClientPolicy)
+        case rejectedUnix
+        case mobileBridge
     }
 
     enum AcceptFailureRecoveryAction: Equatable {
@@ -137,34 +176,92 @@ class TerminalController {
         "debug.app.activate"
     ]
 
-    enum V2HandleKind: String, CaseIterable {
+    enum V2HandleKind: String, CaseIterable, Sendable {
         case window
         case workspace
         case pane
         case surface
     }
 
-    private var v2NextHandleOrdinal: [V2HandleKind: Int] = [
-        .window: 1,
-        .workspace: 1,
-        .pane: 1,
-        .surface: 1,
-    ]
-    // Socket v2 commands execute from detached threads; these mappings are shared across
-    // commands and must be serialized to avoid concurrent mutation crashes.
-    private let v2HandleRefStateLock = NSLock()
-    private var v2RefByUUID: [V2HandleKind: [UUID: String]] = [
-        .window: [:],
-        .workspace: [:],
-        .pane: [:],
-        .surface: [:],
-    ]
-    private var v2UUIDByRef: [V2HandleKind: [String: UUID]] = [
-        .window: [:],
-        .workspace: [:],
-        .pane: [:],
-        .surface: [:],
-    ]
+    private final class V2HandleRefStore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var nextOrdinal: [V2HandleKind: Int] = [
+            .window: 1,
+            .workspace: 1,
+            .pane: 1,
+            .surface: 1,
+        ]
+        private var refByUUID: [V2HandleKind: [UUID: String]] = [
+            .window: [:],
+            .workspace: [:],
+            .pane: [:],
+            .surface: [:],
+        ]
+        private var uuidByRef: [V2HandleKind: [String: UUID]] = [
+            .window: [:],
+            .workspace: [:],
+            .pane: [:],
+            .surface: [:],
+        ]
+
+        func ensure(kind: V2HandleKind, uuid: UUID) -> String {
+            lock.lock()
+            defer { lock.unlock() }
+
+            if let existing = refByUUID[kind]?[uuid] {
+                return existing
+            }
+            let next = nextOrdinal[kind] ?? 1
+            let ref = "\(kind.rawValue):\(next)"
+            var byUUID = refByUUID[kind] ?? [:]
+            var byRef = uuidByRef[kind] ?? [:]
+            byUUID[uuid] = ref
+            byRef[ref] = uuid
+            refByUUID[kind] = byUUID
+            uuidByRef[kind] = byRef
+            nextOrdinal[kind] = next + 1
+            return ref
+        }
+
+        func knownUUID(forHandle handle: String) -> UUID? {
+            lock.lock()
+            defer { lock.unlock() }
+
+            for kind in V2HandleKind.allCases {
+                if let id = uuidByRef[kind]?[handle] {
+                    return id
+                }
+            }
+            // Tab refs are aliases for surface refs in tab-facing APIs.
+            let trimmed = handle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if trimmed.hasPrefix("tab:"),
+               let ordinal = Int(trimmed.replacingOccurrences(of: "tab:", with: "")),
+               let id = uuidByRef[.surface]?["surface:\(ordinal)"] {
+                return id
+            }
+            return nil
+        }
+
+        func prune(liveByKind: [V2HandleKind: Set<UUID>]) {
+            lock.lock()
+            defer { lock.unlock() }
+
+            for kind in V2HandleKind.allCases {
+                guard let live = liveByKind[kind], var byUUID = refByUUID[kind] else { continue }
+                var byRef = uuidByRef[kind] ?? [:]
+                for (uuid, ref) in byUUID where !live.contains(uuid) {
+                    byUUID.removeValue(forKey: uuid)
+                    byRef.removeValue(forKey: ref)
+                }
+                refByUUID[kind] = byUUID
+                uuidByRef[kind] = byRef
+            }
+        }
+    }
+
+    // Socket v2 commands execute from detached threads, so the store owns both the mappings
+    // and the lock that serializes their mutation.
+    private nonisolated let v2HandleRefStore = V2HandleRefStore()
 
     struct V2BrowserElementRefEntry {
         let surfaceId: UUID
@@ -176,15 +273,69 @@ class TerminalController {
         let navigationGeneration: UInt64
     }
 
+    struct V2BrowserElementRefCapacity {
+        let limit: Int
+        let requestedUnique: Int
+        let remaining: Int
+        let selectorByteLimit: Int
+        let byteLimit: Int
+        let requestedBytes: Int
+        let remainingBytes: Int
+    }
+
+    enum V2BrowserElementRefAllocation {
+        case allocated([String])
+        case resourceExhausted(V2BrowserElementRefCapacity)
+    }
+
+    struct V2BrowserSnapshotContent {
+        let title: String
+        let url: String
+        let entries: [[String: Any]]
+        let text: String
+        let html: String
+        let metadata: [String: Any]
+    }
+
     final class V2BrowserUndefinedSentinel {}
+
+    enum V2BrowserDownloadEventWaitOutcome {
+        case event([String: Any], droppedEvents: Int)
+        case timedOut
+        case cancelled
+        case busy
+    }
+
+    struct V2BrowserDownloadEventWaiter {
+        let surfaceId: UUID
+        let id: UUID
+        let finish: (V2BrowserDownloadEventWaitOutcome) -> Void
+    }
 
     static let v2BrowserEvalEnvelopeTypeKey = "__programa_t"
     static let v2BrowserEvalEnvelopeValueKey = "__programa_v"
     static let v2BrowserEvalEnvelopeTypeUndefined = "undefined"
     static let v2BrowserEvalEnvelopeTypeValue = "value"
+    static let v2BrowserElementRefLimit = 4_096
+    static let v2BrowserElementRefSelectorByteLimit = 16_384
+    static let v2BrowserElementRefByteLimit = 4_194_304
+    static let v2BrowserDownloadEventQueueLimit = 256
+    static let v2BrowserSnapshotNodeVisitLimit = 4_096
+    static let v2BrowserSnapshotEntryLimit = 256
+    static let v2BrowserSnapshotMaxDepth = 64
+    static let v2BrowserSnapshotNameByteLimit = 1_024
+    static let v2BrowserSnapshotRoleByteLimit = 64
+    static let v2BrowserSnapshotEntryByteLimit = 262_144
+    static let v2BrowserSnapshotTitleByteLimit = 1_024
+    static let v2BrowserSnapshotURLByteLimit = 16_384
+    static let v2BrowserSnapshotTextCharacterLimit = 262_144
+    static let v2BrowserSnapshotHTMLCharacterLimit = 1_048_576
 
     var v2BrowserNextElementOrdinal: Int = 1
     var v2BrowserElementRefs: [String: V2BrowserElementRefEntry] = [:]
+    var v2BrowserElementRefTokensBySurface: [UUID: Set<String>] = [:]
+    var v2BrowserElementRefBySelectorBySurface: [UUID: [String: String]] = [:]
+    var v2BrowserElementRefBytesBySurface: [UUID: Int] = [:]
     var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
     /// Bumped on every committed main-frame navigation of a browser surface. Element refs
     /// (`v2BrowserElementRefs`) capture the generation at allocation time so a ref from a
@@ -194,9 +345,15 @@ class TerminalController {
     var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
     var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
     var v2BrowserDownloadEventsBySurface: [UUID: [[String: Any]]] = [:]
+    var v2BrowserDownloadDroppedEventCountBySurface: [UUID: Int] = [:]
+    // SHORTCUT: one process-wide event-mode download waiter avoids nested CFRunLoop waits.
+    // ceiling: concurrent browser.download.wait event calls return busy.
+    // upgrade: move socket command waiting to async continuations, then use per-surface waiter queues.
+    var v2BrowserPendingDownloadEventWaiter: V2BrowserDownloadEventWaiter?
     var v2BrowserUnsupportedNetworkRequestsBySurface: [UUID: [[String: Any]]] = [:]
     var v2BrowserUndefinedSentinel = V2BrowserUndefinedSentinel()
     private var browserDownloadObserver: NSObjectProtocol?
+    private var socketControlPasswordObserver: NSObjectProtocol?
 
     private init() {
         browserDownloadObserver = NotificationCenter.default.addObserver(
@@ -206,12 +363,17 @@ class TerminalController {
         ) { [weak self] note in
             guard let surfaceId = note.userInfo?["surfaceId"] as? UUID,
                   let event = note.userInfo?["event"] as? [String: Any] else { return }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                var queue = self.v2BrowserDownloadEventsBySurface[surfaceId] ?? []
-                queue.append(event)
-                self.v2BrowserDownloadEventsBySurface[surfaceId] = queue
+            MainActor.assumeIsolated {
+                self?.v2BrowserEnqueueDownloadEvent(surfaceId: surfaceId, event: event)
             }
+        }
+
+        socketControlPasswordObserver = NotificationCenter.default.addObserver(
+            forName: SocketControlPasswordStore.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.socketControlPasswordDidChange()
         }
 
         // Wire the session-WAL periodic frame capture's main-thread/AppKit
@@ -239,6 +401,7 @@ class TerminalController {
         withListenerState {
             ListenerStateSnapshot(
                 socketPath: socketPath,
+                accessMode: accessMode,
                 serverSocket: serverSocket,
                 isRunning: isRunning,
                 acceptLoopAlive: acceptLoopAlive,
@@ -249,6 +412,85 @@ class TerminalController {
             )
         }
     }
+
+    private nonisolated func invalidateUnixClientsLocked() {
+        clientAuthorizationGeneration &+= 1
+        for clientSocket in registeredUnixClientFDs {
+            _ = shutdown(clientSocket, SHUT_RDWR)
+        }
+    }
+
+    private nonisolated func registerUnixClient(
+        _ clientSocket: Int32,
+        acceptLoopGeneration: UInt64
+    ) -> UnixClientPolicy? {
+        withListenerState {
+            guard isRunning, acceptLoopGeneration == activeAcceptLoopGeneration else {
+                return nil
+            }
+            registeredUnixClientFDs.insert(clientSocket)
+            return UnixClientPolicy(
+                clientGeneration: clientAuthorizationGeneration,
+                authEpoch: authCredentialEpoch,
+                request: SocketRequestPolicy(
+                    socketPath: socketPath,
+                    accessMode: accessMode,
+                    requiresPasswordAuthentication: accessMode.requiresPasswordAuth
+                )
+            )
+        }
+    }
+
+    private nonisolated func unregisterUnixClient(_ clientSocket: Int32) {
+        withListenerState {
+            _ = registeredUnixClientFDs.remove(clientSocket)
+        }
+    }
+
+    private nonisolated func isUnixClientPolicyCurrent(
+        _ policy: UnixClientPolicy,
+        clientSocket: Int32
+    ) -> Bool {
+        withListenerState {
+            guard isRunning,
+                  registeredUnixClientFDs.contains(clientSocket),
+                  policy.clientGeneration == clientAuthorizationGeneration,
+                  policy.request.socketPath == socketPath,
+                  policy.request.accessMode == accessMode else {
+                return false
+            }
+            return !policy.request.requiresPasswordAuthentication || policy.authEpoch == authCredentialEpoch
+        }
+    }
+
+    private nonisolated func mobileBridgeRequestPolicy() -> SocketRequestPolicy {
+        withListenerState {
+            SocketRequestPolicy(
+                socketPath: socketPath,
+                accessMode: accessMode,
+                requiresPasswordAuthentication: false
+            )
+        }
+    }
+
+    private nonisolated func socketControlPasswordDidChange() {
+        withListenerState {
+            authCredentialEpoch &+= 1
+            if accessMode.requiresPasswordAuth {
+                invalidateUnixClientsLocked()
+            }
+        }
+    }
+
+    #if DEBUG
+    nonisolated func setSocketPasswordCredentialSourceForTesting(
+        _ source: SocketPasswordCredentialSource?
+    ) {
+        withListenerState {
+            socketPasswordCredentialSource = source ?? .live
+        }
+    }
+    #endif
 
     nonisolated func activeSocketPath(preferredPath: String) -> String {
         let snapshot = listenerStateSnapshot()
@@ -274,11 +516,11 @@ class TerminalController {
         (Thread.current.threadDictionary[socketCommandFocusAllowanceThreadKey] as? NSNumber)?.boolValue ?? false
     }
 
-    func socketCommandAllowsInAppFocusMutations() -> Bool {
+    nonisolated func socketCommandAllowsInAppFocusMutations() -> Bool {
         Self.socketCommandAllowsInAppFocusMutations()
     }
 
-    func v2FocusAllowed(requested: Bool = true) -> Bool {
+    nonisolated func v2FocusAllowed(requested: Bool = true) -> Bool {
         requested && socketCommandAllowsInAppFocusMutations()
     }
 
@@ -513,7 +755,7 @@ class TerminalController {
         }
     }
 
-    static let socketFastPathState = SocketFastPathState()
+    nonisolated static let socketFastPathState = SocketFastPathState()
     nonisolated static func explicitSocketScope(
         options: [String: String]
     ) -> (workspaceId: UUID, panelId: UUID)? {
@@ -637,7 +879,7 @@ class TerminalController {
     ///
     /// Entries are added when a surface is revived and removed when it is torn
     /// down, so a recycled pid cannot stay authorized past its session.
-    private static let revivedRootsLock = NSLock()
+    private nonisolated static let revivedRootsLock = NSLock()
     private nonisolated(unsafe) static var revivedRoots: Set<pid_t> = []
 
     nonisolated static func registerRevivedRoot(_ pid: pid_t) {
@@ -889,30 +1131,33 @@ class TerminalController {
 
     func start(tabManager: TabManager, socketPath: String, accessMode: SocketControlMode) {
         self.tabManager = tabManager
-        self.accessMode = accessMode
 
         // Screen-manifest agent detection (docs/plans/screen-manifest-detection.md): lazily
         // starts its own background sampling thread, independent of the socket listener below --
         // this is simply a convenient, always-reached app-bootstrap point to kick it off once.
         AgentScreenDetectionEngine.shared.startIfNeeded()
 
-        let existing = withListenerState {
-            (isRunning: isRunning, socketPath: self.socketPath, acceptLoopAlive: acceptLoopAlive)
+        let reusedListener = withListenerState {
+            isRunning
+                && self.socketPath == socketPath
+                && self.accessMode == accessMode
+                && acceptLoopAlive
         }
 
-        if existing.isRunning && existing.socketPath == socketPath && existing.acceptLoopAlive {
-            self.accessMode = accessMode
+        if reusedListener {
             applySocketPermissions()
             return
         }
 
-        if existing.isRunning {
+        if withListenerState({ isRunning }) {
             stop()
         }
 
         var activeSocketPath = socketPath
         withListenerState {
+            invalidateUnixClientsLocked()
             self.socketPath = activeSocketPath
+            self.accessMode = accessMode
             listenerStartInProgress = true
         }
         var listenerActivated = false
@@ -1147,6 +1392,7 @@ class TerminalController {
             listenerStartInProgress = false
             nextAcceptLoopGeneration &+= 1
             activeAcceptLoopGeneration = 0
+            invalidateUnixClientsLocked()
             let socketToClose = serverSocket
             serverSocket = -1
             return (socketToClose, socketPath)
@@ -1173,8 +1419,9 @@ class TerminalController {
     }
 
     private func applySocketPermissions() {
-        let permissions = mode_t(accessMode.socketFilePermissions)
-        let currentSocketPath = withListenerState { socketPath }
+        let (currentSocketPath, permissions) = withListenerState {
+            (socketPath, mode_t(accessMode.socketFilePermissions))
+        }
         if chmod(currentSocketPath, permissions) != 0 {
             print(
                 "TerminalController: Failed to set socket permissions to \(String(permissions, radix: 8)) for \(currentSocketPath)"
@@ -1211,7 +1458,11 @@ class TerminalController {
             return v2Error(id: id, code: "invalid_params", message: "auth.login requires params.password")
         }
 
-        guard SocketControlPasswordStore.hasConfiguredPassword(allowLazyKeychainFallback: true) else {
+        let credentialSource = withListenerState {
+            socketPasswordCredentialSource
+        }
+
+        guard credentialSource.hasConfiguredPassword() else {
             return v2Error(
                 id: id,
                 code: "auth_unconfigured",
@@ -1219,15 +1470,19 @@ class TerminalController {
             )
         }
 
-        guard SocketControlPasswordStore.verify(password: provided, allowLazyKeychainFallback: true) else {
+        guard credentialSource.verify(provided) else {
             return v2Error(id: id, code: "auth_failed", message: "Invalid password")
         }
         authenticated = true
         return v2Ok(id: id, result: ["authenticated": true])
     }
 
-    private func authResponseIfNeeded(for command: String, authenticated: inout Bool) -> String? {
-        guard accessMode.requiresPasswordAuth else {
+    private func authResponseIfNeeded(
+        for command: String,
+        authenticated: inout Bool,
+        requestPolicy: SocketRequestPolicy
+    ) -> String? {
+        guard requestPolicy.requiresPasswordAuthentication else {
             return nil
         }
         if let v2Response = passwordLoginV2ResponseIfNeeded(for: command, authenticated: &authenticated) {
@@ -1280,6 +1535,7 @@ class TerminalController {
                 isRunning = false
                 activeAcceptLoopGeneration = 0
                 pendingAcceptLoopResumeGeneration = nil
+                invalidateUnixClientsLocked()
 
                 var socketToClose: Int32 = -1
                 var pathToUnlink: String?
@@ -1379,10 +1635,16 @@ class TerminalController {
             // ncat --send-only closes the connection right after writing, so by
             // the time a new thread starts the peer may already be gone.
             let peerPid = getPeerPid(clientSocket)
+            let connectionSource: SocketConnectionSource
+            if let policy = registerUnixClient(clientSocket, acceptLoopGeneration: generation) {
+                connectionSource = .unix(policy)
+            } else {
+                connectionSource = .rejectedUnix
+            }
 
             // Handle client in new thread
-            Thread.detachNewThread { [weak self] in
-                self?.handleClient(clientSocket, peerPid: peerPid)
+            Thread.detachNewThread { [self] in
+                handleClient(clientSocket, peerPid: peerPid, source: connectionSource)
             }
         }
     }
@@ -1425,27 +1687,21 @@ class TerminalController {
         DispatchQueue.main.asyncAfter(deadline: deadline) { [weak self] in
             guard let self else { return }
             guard let tabManager = self.tabManager else { return }
-            guard let restartPath = self.withListenerState({ () -> String? in
+            guard let restartPolicy = self.withListenerState({ () -> (path: String, mode: SocketControlMode)? in
                 guard self.pendingAcceptLoopRearmGeneration == generation else { return nil }
                 self.pendingAcceptLoopRearmGeneration = nil
-                return self.socketPath
+                return (self.socketPath, self.accessMode)
             }) else { return }
 
-            let restartMode = self.accessMode
-
-            dilog("socket.accept", "rearm executing path=\(restartPath)")
+            dilog("socket.accept", "rearm executing path=\(restartPolicy.path)")
             self.stop()
-            self.start(tabManager: tabManager, socketPath: restartPath, accessMode: restartMode)
+            self.start(tabManager: tabManager, socketPath: restartPolicy.path, accessMode: restartPolicy.mode)
         }
     }
 
-    /// `ignoresListenerState: true` decouples this connection's lifetime from
-    /// the Unix-socket listener. The mobile bridge feeds sessions in over a
-    /// socketpair and is gated independently by `MobileBridgeMode`, so a user
-    /// who sets Socket Control Mode to Off must not silently break their paired
-    /// phone -- previously the read loop exited immediately and the phone
-    /// connected to a session that accepted nothing.
-    func handleClient(_ socket: Int32, peerPid: pid_t? = nil, ignoresListenerState: Bool = false) {
+    /// Unix clients carry the listener policy captured when they were accepted.
+    /// Mobile Bridge sessions are admitted independently by pairing and its method allow-list.
+    func handleClient(_ socket: Int32, peerPid: pid_t? = nil, source: SocketConnectionSource) {
         // Owns this connection's writes (both ordinary v2 responses and any #167 subscription
         // event pushes) and its subscription lifecycle. `teardown()` (which tears down any
         // attached subscription) must run before the fd is closed -- defers unwind LIFO, so the
@@ -1464,9 +1720,33 @@ class TerminalController {
             dilog("socket.conn", "close pid=\(peerPidDescription) reason=\(closeReason) durationMs=\(durationMs)")
         }
 
+        let requestPolicy: SocketRequestPolicy
+        let unixPolicy: UnixClientPolicy?
+        switch source {
+        case .unix(let policy):
+            requestPolicy = policy.request
+            unixPolicy = policy
+        case .rejectedUnix:
+            closeReason = "listener_stopped"
+            return
+        case .mobileBridge:
+            requestPolicy = mobileBridgeRequestPolicy()
+            unixPolicy = nil
+        }
+        defer {
+            if unixPolicy != nil {
+                unregisterUnixClient(socket)
+            }
+        }
+
+        if let unixPolicy, !isUnixClientPolicyCurrent(unixPolicy, clientSocket: socket) {
+            closeReason = "policy_revoked"
+            return
+        }
+
         // In cmuxOnly mode, verify the connecting process is a descendant of cmux.
         // In allowAll mode (env-var only), skip the ancestry check.
-        if accessMode == .cmuxOnly {
+        if unixPolicy != nil, requestPolicy.accessMode == .cmuxOnly {
             // Use pre-captured peer PID if available (captured in accept loop before
             // the peer can disconnect), falling back to live lookup.
             let pid = peerPid ?? getPeerPid(socket)
@@ -1503,7 +1783,7 @@ class TerminalController {
         var pending = Data()
         var authenticated = false
 
-        connectionLoop: while ignoresListenerState || withListenerState({ isRunning }) {
+        connectionLoop: while true {
             let bytesRead = read(socket, &buffer, buffer.count - 1)
             if bytesRead <= 0 {
                 if bytesRead == 0 {
@@ -1520,6 +1800,11 @@ class TerminalController {
                 let lineData = Data(pending[..<newlineIndex])
                 pending.removeSubrange(...newlineIndex)
 
+                if let unixPolicy, !isUnixClientPolicyCurrent(unixPolicy, clientSocket: socket) {
+                    closeReason = "policy_revoked"
+                    break connectionLoop
+                }
+
                 guard lineData.count <= maxPendingLineBytes else {
                     dilog("socket.conn", "request frame exceeded \(maxPendingLineBytes) bytes; closing")
                     connection.writeLine("{\"ok\":false,\"error\":{\"code\":\"payload_too_large\"}}")
@@ -1535,12 +1820,16 @@ class TerminalController {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
 
-                if let authResponse = authResponseIfNeeded(for: trimmed, authenticated: &authenticated) {
+                if let authResponse = authResponseIfNeeded(
+                    for: trimmed,
+                    authenticated: &authenticated,
+                    requestPolicy: requestPolicy
+                ) {
                     connection.writeLine(authResponse)
                     continue
                 }
 
-                let response = processCommand(trimmed, connection: connection)
+                let response = processCommand(trimmed, connection: connection, requestPolicy: requestPolicy)
                 connection.writeLine(response)
             }
 
@@ -1556,7 +1845,11 @@ class TerminalController {
         }
     }
 
-    private func processCommand(_ command: String, connection: SocketConnection) -> String {
+    private func processCommand(
+        _ command: String,
+        connection: SocketConnection,
+        requestPolicy: SocketRequestPolicy
+    ) -> String {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "ERROR: Empty command" }
 
@@ -1571,12 +1864,16 @@ class TerminalController {
             )
         }
 
-        return processV2Command(trimmed, connection: connection)
+        return processV2Command(trimmed, connection: connection, requestPolicy: requestPolicy)
     }
 
     // MARK: - V2 JSON Socket Protocol
 
-    private func processV2Command(_ jsonLine: String, connection: SocketConnection) -> String {
+    private func processV2Command(
+        _ jsonLine: String,
+        connection: SocketConnection,
+        requestPolicy: SocketRequestPolicy
+    ) -> String {
         // v1 access-mode gating applies to v2 as well. We can't know which v2 method maps
         // to which v1 command without parsing, so parse first and then apply allow-list.
 
@@ -1616,18 +1913,18 @@ class TerminalController {
         case "system.ping":
             return v2Ok(id: id, result: ["pong": true])
         case "system.capabilities":
-            return v2Ok(id: id, result: v2Capabilities())
+            return v2Ok(id: id, result: v2Capabilities(requestPolicy: requestPolicy))
 
         case "system.identify":
-            return v2Ok(id: id, result: v2Identify(params: params))
+            return v2Ok(id: id, result: v2Identify(params: params, requestPolicy: requestPolicy))
         case "system.tree":
-            return v2Result(id: id, self.v2SystemTree(params: params))
+            return v2Result(id: id, self.v2SystemTree(params: params, requestPolicy: requestPolicy))
         case "auth.login":
             return v2Ok(
                 id: id,
                 result: [
                     "authenticated": true,
-                    "required": accessMode.requiresPasswordAuth
+                    "required": requestPolicy.requiresPasswordAuthentication
                 ]
             )
 
@@ -2138,12 +2435,12 @@ class TerminalController {
         }
     }
 
-    private func v2Capabilities() -> [String: Any] {
+    private func v2Capabilities(requestPolicy: SocketRequestPolicy) -> [String: Any] {
         return [
             "protocol": "cmux-socket",
             "version": 2,
-            "socket_path": socketPath,
-            "access_mode": accessMode.rawValue,
+            "socket_path": requestPolicy.socketPath,
+            "access_mode": requestPolicy.accessMode.rawValue,
             "methods": V2CommandCatalog.methods.sorted()
         ]
     }
@@ -2151,25 +2448,29 @@ class TerminalController {
     // MARK: - V2 Helpers (encoding + result plumbing)
     // MARK: - V2 Helpers (encoding + result plumbing)
 
-    func v2OrNull(_ value: Any?) -> Any {
+    nonisolated func v2OrNull(_ value: Any?) -> Any {
         // Avoid relying on `?? NSNull()` inference (Swift toolchains can disagree).
         if let value { return value }
         return NSNull()
     }
 
-    func v2MainSync<T>(_ body: () -> T) -> T {
+    nonisolated func v2MainSync<T>(_ body: @MainActor () -> T) -> T {
         if Thread.isMainThread {
-            return body()
+            return MainActor.assumeIsolated {
+                body()
+            }
         }
         // AppDelegate and Workspace focus guards run inside the main-thread closure, so carry
         // only this request's allowance across the hop and restore the main thread afterward.
         let allowsFocusMutation = Self.socketCommandAllowsInAppFocusMutations()
         return DispatchQueue.main.sync {
-            Self.withSocketCommandFocusAllowance(allowsFocusMutation, body)
+            MainActor.assumeIsolated {
+                Self.withSocketCommandFocusAllowance(allowsFocusMutation, body)
+            }
         }
     }
 
-    private func v2Ok(id: Any?, result: Any) -> String {
+    private nonisolated func v2Ok(id: Any?, result: Any) -> String {
         return v2Encode([
             "id": v2OrNull(id),
             "ok": true,
@@ -2177,7 +2478,7 @@ class TerminalController {
         ])
     }
 
-    private func v2Error(id: Any?, code: String, message: String, data: Any? = nil) -> String {
+    private nonisolated func v2Error(id: Any?, code: String, message: String, data: Any? = nil) -> String {
         var err: [String: Any] = ["code": code, "message": message]
         if let data {
             err["data"] = data
@@ -2194,11 +2495,11 @@ class TerminalController {
         case err(code: String, message: String, data: Any?)
     }
 
-    func v2InvalidParam(_ what: String) -> V2CallResult {
+    nonisolated func v2InvalidParam(_ what: String) -> V2CallResult {
         return .err(code: "invalid_params", message: "Missing or invalid \(what)", data: nil)
     }
 
-    private func v2Result(id: Any?, _ res: V2CallResult) -> String {
+    private nonisolated func v2Result(id: Any?, _ res: V2CallResult) -> String {
         switch res {
         case .ok(let payload):
             return v2Ok(id: id, result: payload)
@@ -2207,7 +2508,7 @@ class TerminalController {
         }
     }
 
-    private func v2Encode(_ object: Any) -> String {
+    private nonisolated func v2Encode(_ object: Any) -> String {
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object, options: []),
               var s = String(data: data, encoding: .utf8) else {
@@ -2219,26 +2520,11 @@ class TerminalController {
         return s
     }
 
-    private func v2EnsureHandleRef(kind: V2HandleKind, uuid: UUID) -> String {
-        v2HandleRefStateLock.lock()
-        defer { v2HandleRefStateLock.unlock() }
-
-        if let existing = v2RefByUUID[kind]?[uuid] {
-            return existing
-        }
-        let next = v2NextHandleOrdinal[kind] ?? 1
-        let ref = "\(kind.rawValue):\(next)"
-        var byUUID = v2RefByUUID[kind] ?? [:]
-        var byRef = v2UUIDByRef[kind] ?? [:]
-        byUUID[uuid] = ref
-        byRef[ref] = uuid
-        v2RefByUUID[kind] = byUUID
-        v2UUIDByRef[kind] = byRef
-        v2NextHandleOrdinal[kind] = next + 1
-        return ref
+    private nonisolated func v2EnsureHandleRef(kind: V2HandleKind, uuid: UUID) -> String {
+        v2HandleRefStore.ensure(kind: kind, uuid: uuid)
     }
 
-    private func v2ResolveHandleRef(_ handle: String) -> UUID? {
+    private nonisolated func v2ResolveHandleRef(_ handle: String) -> UUID? {
         if let knownUUID = v2KnownUUID(forHandle: handle) {
             return knownUUID
         }
@@ -2251,31 +2537,16 @@ class TerminalController {
         return v2KnownUUID(forHandle: handle)
     }
 
-    private func v2KnownUUID(forHandle handle: String) -> UUID? {
-        v2HandleRefStateLock.lock()
-        defer { v2HandleRefStateLock.unlock() }
-
-        for kind in V2HandleKind.allCases {
-            if let id = v2UUIDByRef[kind]?[handle] {
-                return id
-            }
-        }
-        // Tab refs are aliases for surface refs in tab-facing APIs.
-        let trimmed = handle.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if trimmed.hasPrefix("tab:"),
-           let ordinal = Int(trimmed.replacingOccurrences(of: "tab:", with: "")),
-           let id = v2UUIDByRef[.surface]?["surface:\(ordinal)"] {
-            return id
-        }
-        return nil
+    private nonisolated func v2KnownUUID(forHandle handle: String) -> UUID? {
+        v2HandleRefStore.knownUUID(forHandle: handle)
     }
 
-    func v2Ref(kind: V2HandleKind, uuid: UUID?) -> Any {
+    nonisolated func v2Ref(kind: V2HandleKind, uuid: UUID?) -> Any {
         guard let uuid else { return NSNull() }
         return v2EnsureHandleRef(kind: kind, uuid: uuid)
     }
 
-    func v2TabRef(uuid: UUID?) -> Any {
+    nonisolated func v2TabRef(uuid: UUID?) -> Any {
         guard let uuid else { return NSNull() }
         let surfaceRef = v2EnsureHandleRef(kind: .surface, uuid: uuid)
         return surfaceRef.replacingOccurrences(of: "surface:", with: "tab:")
@@ -2317,17 +2588,17 @@ class TerminalController {
         )
     }
 
-    /// Drops `v2RefByUUID`/`v2UUIDByRef` entries for UUIDs no longer present in the live
+    /// Drops handle-ref entries for UUIDs no longer present in the live
     /// object graph (M8). Runs as a sweep at refresh time rather than adding teardown hooks
     /// at every window/workspace/pane/surface destruction site.
     ///
-    /// Never touches `v2NextHandleOrdinal`: the per-kind ordinal counter stays monotonic, so a
+    /// Never resets the store's per-kind ordinal counter, so it stays monotonic and a
     /// pruned-then-reappearing UUID gets a brand-new ref rather than reusing a number that
     /// might still be cached by a client as pointing at the old object. Only the map entries
     /// (the thing that actually grows unbounded) are dropped.
     /// Internal (not private) so the unit-test target can exercise the never-reissue invariant
     /// directly, bypassing the AppDelegate-dependent enumeration in `v2RefreshKnownRefs`.
-    func v2PruneDeadHandleRefs(
+    nonisolated func v2PruneDeadHandleRefs(
         liveWindowIds: Set<UUID>,
         liveWorkspaceIds: Set<UUID>,
         livePaneIds: Set<UUID>,
@@ -2340,30 +2611,18 @@ class TerminalController {
             .surface: liveSurfaceIds,
         ]
 
-        v2HandleRefStateLock.lock()
-        defer { v2HandleRefStateLock.unlock() }
-
-        for kind in V2HandleKind.allCases {
-            guard let live = liveByKind[kind], var byUUID = v2RefByUUID[kind] else { continue }
-            var byRef = v2UUIDByRef[kind] ?? [:]
-            for (uuid, ref) in byUUID where !live.contains(uuid) {
-                byUUID.removeValue(forKey: uuid)
-                byRef.removeValue(forKey: ref)
-            }
-            v2RefByUUID[kind] = byUUID
-            v2UUIDByRef[kind] = byRef
-        }
+        v2HandleRefStore.prune(liveByKind: liveByKind)
     }
 
     // MARK: - V2 Param Parsing
 
-    func v2String(_ params: [String: Any], _ key: String) -> String? {
+    nonisolated func v2String(_ params: [String: Any], _ key: String) -> String? {
         guard let raw = params[key] as? String else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    func v2StringArray(_ params: [String: Any], _ key: String) -> [String]? {
+    nonisolated func v2StringArray(_ params: [String: Any], _ key: String) -> [String]? {
         if let raw = params[key] as? [String] {
             let normalized = raw
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -2383,7 +2642,7 @@ class TerminalController {
         return nil
     }
 
-    func v2StringMap(_ params: [String: Any], _ key: String) -> [String: String]? {
+    nonisolated func v2StringMap(_ params: [String: Any], _ key: String) -> [String: String]? {
         guard let raw = params[key] else { return nil }
         if let dict = raw as? [String: String] {
             return dict
@@ -2399,16 +2658,16 @@ class TerminalController {
         return nil
     }
 
-    func v2ActionKey(_ params: [String: Any], _ key: String = "action") -> String? {
+    nonisolated func v2ActionKey(_ params: [String: Any], _ key: String = "action") -> String? {
         guard let action = v2String(params, key) else { return nil }
         return action.lowercased().replacingOccurrences(of: "-", with: "_")
     }
 
-    func v2RawString(_ params: [String: Any], _ key: String) -> String? {
+    nonisolated func v2RawString(_ params: [String: Any], _ key: String) -> String? {
         params[key] as? String
     }
 
-    func v2UUID(_ params: [String: Any], _ key: String) -> UUID? {
+    nonisolated func v2UUID(_ params: [String: Any], _ key: String) -> UUID? {
         guard let s = v2String(params, key) else { return nil }
         if let uuid = UUID(uuidString: s) {
             return uuid
@@ -2416,7 +2675,17 @@ class TerminalController {
         return v2ResolveHandleRef(s)
     }
 
-    func v2UUIDAny(_ raw: Any?) -> UUID? {
+    nonisolated func v2CachedUUID(_ params: [String: Any], _ key: String) -> UUID? {
+        guard let s = v2String(params, key) else { return nil }
+        if let uuid = UUID(uuidString: s) {
+            return uuid
+        }
+        // Telemetry must not block on main to refresh the handle store: clients can use UUIDs
+        // or already-issued cached refs, while unknown or unissued refs fail immediately by design.
+        return v2KnownUUID(forHandle: s)
+    }
+
+    nonisolated func v2UUIDAny(_ raw: Any?) -> UUID? {
         guard let s = raw as? String else { return nil }
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -2425,7 +2694,7 @@ class TerminalController {
         }
         return v2ResolveHandleRef(trimmed)
     }
-    func v2Bool(_ params: [String: Any], _ key: String) -> Bool? {
+    nonisolated func v2Bool(_ params: [String: Any], _ key: String) -> Bool? {
         if let b = params[key] as? Bool { return b }
         if let n = params[key] as? NSNumber { return n.boolValue }
         if let s = params[key] as? String {
@@ -2454,11 +2723,11 @@ class TerminalController {
         }
         return nil
     }
-    func v2Int(_ params: [String: Any], _ key: String) -> Int? {
+    nonisolated func v2Int(_ params: [String: Any], _ key: String) -> Int? {
         v2StrictIntAny(params[key])
     }
 
-    func v2Double(_ params: [String: Any], _ key: String) -> Double? {
+    nonisolated func v2Double(_ params: [String: Any], _ key: String) -> Double? {
         if let d = params[key] as? Double { return d }
         if let n = params[key] as? NSNumber { return n.doubleValue }
         if let s = params[key] as? String { return Double(s) }
@@ -2467,7 +2736,7 @@ class TerminalController {
 
     /// Parses an array-of-integers param (e.g. `ports`), also accepting a single scalar value.
     /// Returns `nil` if the param is present but contains a non-integer element.
-    func v2IntArray(_ params: [String: Any], _ key: String) -> [Int]? {
+    nonisolated func v2IntArray(_ params: [String: Any], _ key: String) -> [Int]? {
         guard let raw = params[key] as? [Any] else {
             if let single = v2Int(params, key) { return [single] }
             return nil
@@ -2484,16 +2753,16 @@ class TerminalController {
     }
 
 
-    func v2HasNonNullParam(_ params: [String: Any], _ key: String) -> Bool {
+    nonisolated func v2HasNonNullParam(_ params: [String: Any], _ key: String) -> Bool {
         guard let raw = params[key] else { return false }
         return !(raw is NSNull)
     }
 
-    func v2StrictInt(_ params: [String: Any], _ key: String) -> Int? {
+    nonisolated func v2StrictInt(_ params: [String: Any], _ key: String) -> Int? {
         v2StrictIntAny(params[key])
     }
 
-    private func v2StrictIntAny(_ raw: Any?) -> Int? {
+    private nonisolated func v2StrictIntAny(_ raw: Any?) -> Int? {
         guard let raw else { return nil }
 
         if let numberValue = raw as? NSNumber {
@@ -2518,7 +2787,7 @@ class TerminalController {
         return nil
     }
 
-    func v2PanelType(_ params: [String: Any], _ key: String) -> PanelType? {
+    nonisolated func v2PanelType(_ params: [String: Any], _ key: String) -> PanelType? {
         guard let s = v2String(params, key) else { return nil }
         return PanelType(rawValue: s.lowercased())
     }
@@ -2526,19 +2795,49 @@ class TerminalController {
     // MARK: - V2 Context Resolution
 
     func v2ResolveTabManager(params: [String: Any]) -> TabManager? {
-        // Prefer explicit window_id routing. Fall back to global lookup by workspace_id/surface_id/tab_id,
-        // and finally to the active window's TabManager.
-        if let windowId = v2UUID(params, "window_id") {
+        // The highest-priority present selector is authoritative. Prefer registered managers, but accept
+        // self.tabManager for an owned workspace/surface/tab; bare fallback requires all selectors absent/null.
+        if v2HasNonNullParam(params, "window_id") {
+            guard let windowId = v2UUID(params, "window_id") else { return nil }
             return v2MainSync { AppDelegate.shared?.tabManagerFor(windowId: windowId) }
         }
-        if let wsId = v2UUID(params, "workspace_id") {
-            if let tm = v2MainSync({ AppDelegate.shared?.tabManagerFor(tabId: wsId) }) {
-                return tm
+        if v2HasNonNullParam(params, "workspace_id") {
+            guard let workspaceId = v2UUID(params, "workspace_id") else { return nil }
+            return v2MainSync {
+                if let tabManager = AppDelegate.shared?.tabManagerFor(tabId: workspaceId) {
+                    return tabManager
+                }
+                guard let tabManager = self.tabManager,
+                      tabManager.tabs.contains(where: { $0.id == workspaceId }) else {
+                    return nil
+                }
+                return tabManager
             }
         }
-        if let surfaceId = v2UUID(params, "surface_id") ?? v2UUID(params, "tab_id") {
-            if let tm = v2MainSync({ AppDelegate.shared?.locateSurface(surfaceId: surfaceId)?.tabManager }) {
-                return tm
+        if v2HasNonNullParam(params, "surface_id") {
+            guard let surfaceId = v2UUID(params, "surface_id") else { return nil }
+            return v2MainSync {
+                if let tabManager = AppDelegate.shared?.locateSurface(surfaceId: surfaceId)?.tabManager {
+                    return tabManager
+                }
+                guard let tabManager = self.tabManager,
+                      tabManager.tabs.contains(where: { $0.panels[surfaceId] != nil }) else {
+                    return nil
+                }
+                return tabManager
+            }
+        }
+        if v2HasNonNullParam(params, "tab_id") {
+            guard let tabId = v2UUID(params, "tab_id") else { return nil }
+            return v2MainSync {
+                if let tabManager = AppDelegate.shared?.locateSurface(surfaceId: tabId)?.tabManager {
+                    return tabManager
+                }
+                guard let tabManager = self.tabManager,
+                      tabManager.tabs.contains(where: { $0.panels[tabId] != nil }) else {
+                    return nil
+                }
+                return tabManager
             }
         }
         return v2MainSync { self.tabManager }
@@ -2557,11 +2856,17 @@ class TerminalController {
     // AppDelegate+UITestCmdClick.swift, GhosttyTerminalView+Mouse.swift, and Workspace.swift.
 
     func v2ResolveWorkspace(params: [String: Any], tabManager: TabManager) -> Workspace? {
-        if let wsId = v2UUID(params, "workspace_id") {
-            return tabManager.tabs.first(where: { $0.id == wsId })
+        if v2HasNonNullParam(params, "workspace_id") {
+            guard let workspaceId = v2UUID(params, "workspace_id") else { return nil }
+            return tabManager.tabs.first(where: { $0.id == workspaceId })
         }
-        if let surfaceId = v2UUID(params, "surface_id") ?? v2UUID(params, "tab_id") {
+        if v2HasNonNullParam(params, "surface_id") {
+            guard let surfaceId = v2UUID(params, "surface_id") else { return nil }
             return tabManager.tabs.first(where: { $0.panels[surfaceId] != nil })
+        }
+        if v2HasNonNullParam(params, "tab_id") {
+            guard let tabId = v2UUID(params, "tab_id") else { return nil }
+            return tabManager.tabs.first(where: { $0.panels[tabId] != nil })
         }
         guard let wsId = tabManager.selectedTabId else { return nil }
         return tabManager.tabs.first(where: { $0.id == wsId })
@@ -2846,6 +3151,9 @@ class TerminalController {
     deinit {
         if let browserDownloadObserver {
             NotificationCenter.default.removeObserver(browserDownloadObserver)
+        }
+        if let socketControlPasswordObserver {
+            NotificationCenter.default.removeObserver(socketControlPasswordObserver)
         }
         stop()
     }

@@ -8,7 +8,7 @@ import WebKit
 extension TerminalController {
     // MARK: - V2 Window Methods
 
-    func v2WindowList(params _: [String: Any]) -> V2CallResult {
+    nonisolated func v2WindowList(params _: [String: Any]) -> V2CallResult {
         let windows = v2MainSync { AppDelegate.shared?.listMainWindowSummaries() } ?? []
         let payload: [[String: Any]] = windows.enumerated().map { index, item in
             return [
@@ -25,7 +25,7 @@ extension TerminalController {
         return .ok(["windows": payload])
     }
 
-    func v2WindowCurrent(params _: [String: Any]) -> V2CallResult {
+    nonisolated func v2WindowCurrent(params _: [String: Any]) -> V2CallResult {
         enum Resolution {
             case unavailable
             case notFound
@@ -49,7 +49,7 @@ extension TerminalController {
         }
     }
 
-    func v2WindowFocus(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2WindowFocus(params: [String: Any]) -> V2CallResult {
         guard let windowId = v2UUID(params, "window_id") else {
             return v2InvalidParam("window_id")
         }
@@ -65,7 +65,7 @@ extension TerminalController {
             ])
     }
 
-    func v2WindowCreate(params _: [String: Any]) -> V2CallResult {
+    nonisolated func v2WindowCreate(params _: [String: Any]) -> V2CallResult {
         guard let windowId = v2MainSync({ AppDelegate.shared?.createMainWindow() }) else {
             return .err(code: "internal_error", message: "Failed to create window", data: nil)
         }
@@ -81,7 +81,7 @@ extension TerminalController {
         ])
     }
 
-    func v2WindowClose(params: [String: Any]) -> V2CallResult {
+    nonisolated func v2WindowClose(params: [String: Any]) -> V2CallResult {
         guard let windowId = v2UUID(params, "window_id") else {
             return v2InvalidParam("window_id")
         }

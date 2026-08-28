@@ -60,6 +60,27 @@ def _expect_error_contains(label: str, fn, *needles: str) -> None:
     raise cmuxError(f"{label}: expected failure, but call succeeded")
 
 
+def _expect_exact_error(label: str, fn, expected: str) -> None:
+    try:
+        fn()
+    except cmuxError as exc:
+        actual = str(exc)
+        if actual == expected:
+            return
+        raise cmuxError(f"{label}: expected exact error {expected!r}, got: {actual!r}")
+    raise cmuxError(f"{label}: expected exact error {expected!r}, but call succeeded")
+
+
+def _assert_target_context(label: str, payload: dict, expected: dict) -> None:
+    for key, expected_value in expected.items():
+        actual_value = payload.get(key)
+        _must(bool(actual_value), f"{label}: expected nonempty {key}: {payload}")
+        _must(
+            actual_value == expected_value,
+            f"{label}: expected {key}={expected_value!r}, got {actual_value!r}: {payload}",
+        )
+
+
 def _value(res: dict, key: str = "value"):
     return (res or {}).get(key)
 
@@ -150,9 +171,22 @@ def main() -> int:
         sid = str(opened.get("surface_id") or "")
         sref = str(opened.get("surface_ref") or "")
         _must(bool(sid), f"browser.open_split returned no surface_id: {opened}")
+        expected_target_context = {
+            key: opened.get(key)
+            for key in (
+                "workspace_id",
+                "workspace_ref",
+                "surface_id",
+                "surface_ref",
+                "window_id",
+                "window_ref",
+            )
+        }
+        _must(
+            all(bool(value) for value in expected_target_context.values()),
+            f"browser.open_split returned incomplete target context: {opened}",
+        )
         target = sid
-        if sref:
-            _ = c._call("browser.url.get", {"surface_id": sref})
 
         probe_url = _data_url("<!doctype html><html><body><button id='probe'>P</button></body></html>")
         c._call("browser.navigate", {"surface_id": target, "url": probe_url})
@@ -205,15 +239,29 @@ def main() -> int:
             timeout_s=3.0,
             label="browser.get.title page1",
         )
-        url_payload = c._call("browser.url.get", {"surface_id": target}) or {}
-        _must("data:text/html" in str(url_payload.get("url") or ""), f"Expected data URL from browser.url.get: {url_payload}")
+        url_payload = c._call("browser.url.get", {"surface_id": sref}) or {}
+        _must(url_payload.get("surface_id") == target, f"Expected canonical surface_id from browser.url.get(ref): {url_payload}")
+        _must(url_payload.get("surface_ref") == sref, f"Expected surface_ref from browser.url.get(ref): {url_payload}")
+        _must(
+            url_payload.get("workspace_id") == opened.get("workspace_id"),
+            f"Expected workspace_id from browser.url.get(ref): {url_payload}",
+        )
+        _must(
+            url_payload.get("workspace_ref") == opened.get("workspace_ref"),
+            f"Expected workspace_ref from browser.url.get(ref): {url_payload}",
+        )
+        _must(page1_url in str(url_payload.get("url") or ""), f"Expected page1 data URL from browser.url.get(ref): {url_payload}")
 
         c._call("browser.fill", {"surface_id": target, "selector": "#name", "text": "cmux"})
-        c._call("browser.click", {"surface_id": target, "selector": "#btn"})
+        click_payload = c._call("browser.click", {"surface_id": target, "selector": "#btn"}) or {}
+        _must(click_payload.get("action") == "click", f"Expected click action metadata: {click_payload}")
+        _must(int(click_payload.get("attempts") or 0) == 1, f"Expected first-attempt click: {click_payload}")
+        _must(bool(click_payload.get("workspace_ref")), f"Expected workspace_ref from click: {click_payload}")
+        _must(bool(click_payload.get("surface_ref")), f"Expected surface_ref from click: {click_payload}")
         out_text = c._call("browser.get.text", {"surface_id": target, "selector": "#status"}) or {}
         _must(str(_value(out_text)) == "cmux", f"Expected status text to be cmux: {out_text}")
 
-        cleared = c._call("browser.fill", {"surface_id": target, "selector": "#name", "text": "", "snapshot_after": True}) or {}
+        cleared = c._call("browser.fill", {"surface_id": target, "selector": "#name", "value": "", "snapshot_after": True}) or {}
         _must(bool(cleared.get("post_action_snapshot")), f"Expected post_action_snapshot from fill(snapshot_after): {cleared}")
         cleared_value = c._call("browser.get.value", {"surface_id": target, "selector": "#name"}) or {}
         _must(str(_value(cleared_value)) == "", f"Expected fill with empty text to clear input: {cleared_value}")
@@ -233,7 +281,9 @@ def main() -> int:
         c._call("browser.hover", {"surface_id": target, "selector": "#hover"})
         c._call("browser.dblclick", {"surface_id": target, "selector": "#dbl"})
 
-        c._call("browser.press", {"surface_id": target, "key": "A"})
+        press_payload = c._call("browser.press", {"surface_id": target, "key": "A"}) or {}
+        _must(bool(press_payload.get("workspace_ref")), f"Expected workspace_ref from press: {press_payload}")
+        _must(bool(press_payload.get("surface_ref")), f"Expected surface_ref from press: {press_payload}")
         c._call("browser.keydown", {"surface_id": target, "key": "B"})
         c._call("browser.keyup", {"surface_id": target, "key": "C"})
 
@@ -259,7 +309,7 @@ def main() -> int:
         is_unchecked = c._call("browser.is.checked", {"surface_id": target, "selector": "#chk"}) or {}
         _must(bool(_value(is_unchecked)) is False, f"Expected checked=false: {is_unchecked}")
 
-        c._call("browser.select", {"surface_id": target, "selector": "#sel", "value": "b"})
+        c._call("browser.select", {"surface_id": target, "selector": "#sel", "text": "b"})
         sel_val = c._call("browser.get.value", {"surface_id": target, "selector": "#sel"}) or {}
         _must(str(_value(sel_val)) == "b", f"Expected selected value b: {sel_val}")
 
@@ -297,7 +347,9 @@ def main() -> int:
         _must(bool(_value(enabled_btn)) is True, f"Expected #btn enabled: {enabled_btn}")
         _must(bool(_value(enabled_disabled)) is False, f"Expected #disabled not enabled: {enabled_disabled}")
 
-        c._call("browser.scroll", {"surface_id": target, "selector": "#scroller", "dx": 0, "dy": 160})
+        scroll_payload = c._call("browser.scroll", {"surface_id": target, "selector": "#scroller", "dx": 0, "dy": 160}) or {}
+        _must(bool(scroll_payload.get("workspace_ref")), f"Expected workspace_ref from scroll: {scroll_payload}")
+        _must(bool(scroll_payload.get("surface_ref")), f"Expected surface_ref from scroll: {scroll_payload}")
         scrolled = c._call(
             "browser.eval",
             {"surface_id": target, "script": "document.querySelector('#scroller').scrollTop"},
@@ -341,7 +393,8 @@ def main() -> int:
             label="browser.get.title page2",
         )
 
-        c._call("browser.back", {"surface_id": target})
+        back_payload = c._call("browser.back", {"surface_id": target}) or {}
+        _assert_target_context("browser.back", back_payload, expected_target_context)
         _wait_with_fallback(
             c,
             target,
@@ -350,7 +403,8 @@ def main() -> int:
             timeout_s=5.0,
             label="browser.wait url_contains page1 (history)",
         )
-        c._call("browser.forward", {"surface_id": target})
+        forward_payload = c._call("browser.forward", {"surface_id": target}) or {}
+        _assert_target_context("browser.forward", forward_payload, expected_target_context)
         _wait_with_fallback(
             c,
             target,
@@ -359,7 +413,32 @@ def main() -> int:
             timeout_s=5.0,
             label="browser.wait url_contains page2 (history)",
         )
-        c._call("browser.reload", {"surface_id": target})
+        reload_payload = c._call(
+            "browser.reload",
+            {"surface_id": target, "snapshot_after": True},
+        ) or {}
+        _assert_target_context("browser.reload", reload_payload, expected_target_context)
+        snapshot_outcome_keys = [
+            key
+            for key in ("post_action_snapshot", "post_action_snapshot_error")
+            if key in reload_payload
+        ]
+        _must(
+            len(snapshot_outcome_keys) == 1,
+            f"browser.reload(snapshot_after) expected exactly one snapshot outcome: {reload_payload}",
+        )
+        snapshot_outcome_key = snapshot_outcome_keys[0]
+        snapshot_outcome = reload_payload[snapshot_outcome_key]
+        if snapshot_outcome_key == "post_action_snapshot":
+            _must(
+                bool(snapshot_outcome),
+                f"browser.reload(snapshot_after) returned an empty snapshot: {reload_payload}",
+            )
+        else:
+            _must(
+                isinstance(snapshot_outcome, dict) and bool(snapshot_outcome),
+                f"browser.reload(snapshot_after) returned an invalid snapshot error: {reload_payload}",
+            )
         _wait_with_fallback(
             c,
             target,
@@ -382,9 +461,56 @@ def main() -> int:
             lambda: c._call("browser.click", {"surface_id": target}),
             "invalid_params",
         )
+        _expect_error(
+            "get.text missing selector",
+            lambda: c._call("browser.get.text", {"surface_id": target}),
+            "invalid_params",
+        )
+        _expect_error(
+            "eval missing script",
+            lambda: c._call("browser.eval", {"surface_id": target}),
+            "invalid_params",
+        )
+        _expect_error(
+            "type missing text",
+            lambda: c._call("browser.type", {"surface_id": target, "selector": "#name"}),
+            "invalid_params",
+        )
+        _expect_error(
+            "fill missing text/value",
+            lambda: c._call("browser.fill", {"surface_id": target, "selector": "#name"}),
+            "invalid_params",
+        )
+        _expect_error(
+            "select missing value/text",
+            lambda: c._call("browser.select", {"surface_id": target, "selector": "#sel"}),
+            "invalid_params",
+        )
+        _expect_error(
+            "press missing key",
+            lambda: c._call("browser.press", {"surface_id": target}),
+            "invalid_params",
+        )
+        _expect_error(
+            "keydown missing key",
+            lambda: c._call("browser.keydown", {"surface_id": target}),
+            "invalid_params",
+        )
+        _expect_error(
+            "keyup missing key",
+            lambda: c._call("browser.keyup", {"surface_id": target}),
+            "invalid_params",
+        )
         _expect_error_contains(
             "click missing element",
             lambda: c._call("browser.click", {"surface_id": target, "selector": "#does-not-exist"}),
+            "not_found",
+            "snapshot",
+            "hint",
+        )
+        _expect_error_contains(
+            "scroll missing element",
+            lambda: c._call("browser.scroll", {"surface_id": target, "selector": "#does-not-exist"}),
             "not_found",
             "snapshot",
             "hint",
@@ -404,12 +530,29 @@ def main() -> int:
             lambda: c._call("browser.navigate", {"surface_id": target}),
             "invalid_params",
         )
+        _expect_exact_error(
+            "browser.back missing surface_id",
+            lambda: c._call("browser.back", {}),
+            "invalid_params: Missing or invalid surface_id",
+        )
+        _expect_exact_error(
+            "browser.url.get missing surface_id",
+            lambda: c._call("browser.url.get", {}),
+            "invalid_params: Missing or invalid surface_id",
+        )
 
         terminal_surface = c.new_surface(panel_type="terminal")
-        _expect_error(
-            "browser method on terminal surface",
+        _expect_error_contains(
+            "browser.forward on terminal surface",
+            lambda: c._call("browser.forward", {"surface_id": terminal_surface}),
+            "not_found",
+            terminal_surface,
+        )
+        _expect_error_contains(
+            "browser.url.get on terminal surface",
             lambda: c._call("browser.url.get", {"surface_id": terminal_surface}),
             "not_found",
+            terminal_surface,
         )
 
     print("PASS: comprehensive browser.* coverage (ported/adapted from agent-browser) is green")

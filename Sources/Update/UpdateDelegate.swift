@@ -12,6 +12,18 @@ enum UpdateFeedResolver {
     }
 }
 
+enum UpdateRelaunchPreparation {
+    static func performSynchronously(_ operation: @MainActor () -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { operation() }
+        } else {
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated { operation() }
+            }
+        }
+    }
+}
+
 extension UpdateDriver: SPUUpdaterDelegate {
     func updaterShouldPromptForPermissionToCheck(forUpdates _: SPUUpdater) -> Bool {
         false
@@ -105,7 +117,9 @@ extension UpdateDriver: SPUUpdaterDelegate {
     }
 
     func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
-        Task { @MainActor in
+        // Sparkle proceeds synchronously when this pre-relaunch callback returns,
+        // so preparation must finish here rather than be queued asynchronously.
+        UpdateRelaunchPreparation.performSynchronously {
             AppDelegate.shared?.persistSessionForUpdateRelaunch()
             TerminalController.shared.stop()
             NSApp.invalidateRestorableState()

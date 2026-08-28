@@ -2,26 +2,26 @@ import Foundation
 
 /// Why a file's content isn't rendered as a line-by-line diff. See
 /// docs/plans/diff-review-panel.md §3 "Binary detection" / "Size cap".
-enum ReviewNotDiffableReason: Equatable {
+enum ReviewNotDiffableReason: Equatable, Sendable {
     case binary
     case tooLarge(sizeBytes: Int64)
     case newUntrackedFile
 }
 
-enum ReviewFileDiffStatus: String, Equatable {
+enum ReviewFileDiffStatus: String, Equatable, Sendable {
     case added
     case modified
     case deleted
     case renamed
 }
 
-enum ReviewDiffLineKind: Equatable {
+enum ReviewDiffLineKind: Equatable, Sendable {
     case context
     case addition
     case deletion
 }
 
-struct ReviewDiffLine: Equatable {
+struct ReviewDiffLine: Equatable, Sendable {
     let kind: ReviewDiffLineKind
     /// 1-based line number in the pre-image (`nil` for pure additions).
     let oldLineNumber: Int?
@@ -31,12 +31,12 @@ struct ReviewDiffLine: Equatable {
     let text: String
 }
 
-struct ReviewHunk: Equatable {
+struct ReviewHunk: Equatable, Sendable {
     let header: String
     let lines: [ReviewDiffLine]
 }
 
-struct ReviewFileDiff: Identifiable, Equatable {
+struct ReviewFileDiff: Identifiable, Equatable, Sendable {
     var id: String { newPath ?? oldPath ?? "unknown" }
     let oldPath: String?
     let newPath: String?

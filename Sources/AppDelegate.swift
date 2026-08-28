@@ -775,6 +775,12 @@ func shouldSuppressWindowMoveForFolderDrag(window: NSWindow, event: NSEvent) -> 
     return shouldSuppressWindowMoveForFolderDrag(hitView: hitView)
 }
 
+struct ProgramaSingleInstanceProcessKey: Equatable, Sendable {
+    let startSeconds: Int64
+    let startMicroseconds: Int64
+    let processIdentifier: pid_t
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate, NSMenuItemValidation {
     nonisolated(unsafe) static var shared: AppDelegate?
@@ -2566,6 +2572,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         isApplyingStartupSessionRestore && !includeScrollback
     }
 
+    nonisolated static func performSessionPersistenceWrite(
+        on queue: DispatchQueue,
+        synchronously: Bool,
+        operation: @escaping () -> Void
+    ) {
+        if synchronously {
+            queue.sync(execute: operation)
+        } else {
+            queue.async(execute: DispatchWorkItem(block: operation))
+        }
+    }
+
     private func persistSessionSnapshot(
         _ snapshot: AppSessionSnapshot?,
         removeWhenEmpty: Bool,
@@ -2589,11 +2607,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             }
         }
 
-        if synchronously {
-            writeBlock()
-        } else {
-            sessionPersistenceQueue.async(execute: DispatchWorkItem(block: writeBlock))
-        }
+        Self.performSessionPersistenceWrite(
+            on: sessionPersistenceQueue,
+            synchronously: synchronously,
+            operation: writeBlock
+        )
     }
 
     private func buildSessionSnapshot(includeScrollback: Bool, cleanShutdown: Bool = false) -> AppSessionSnapshot? {
@@ -3085,19 +3103,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         let detachMs = elapsedMs(since: detachStart)
         let attachStart = ProcessInfo.processInfo.systemUptime
 #endif
-        guard destinationWorkspace.attachDetachedSurface(
-            detached,
-            inPane: resolvedTargetPane,
-            atIndex: targetIndex,
+        let rollbackTarget = detachedSurfaceAttachmentTarget(
+            workspace: sourceWorkspace,
+            pane: sourcePane,
+            index: sourceIndex,
             focus: focus
-        ) != nil else {
-            rollbackDetachedSurface(
-                detached,
-                to: sourceWorkspace,
-                sourcePane: sourcePane,
-                sourceIndex: sourceIndex,
+        )
+        let attachmentResult = detached.resolve(
+            primary: Workspace.DetachedSurfaceAttachmentTarget(
+                workspace: destinationWorkspace,
+                paneId: resolvedTargetPane,
+                index: targetIndex,
                 focus: focus
-            )
+            ),
+            rollback: rollbackTarget
+        )
+        guard case .attachedPrimary = attachmentResult else {
 #if DEBUG
             dlog(
                 "surface.move.fail panel=\(panelId.uuidString.prefix(5)) reason=attachFailed " +
@@ -3121,15 +3142,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                     orientation: splitTarget.orientation,
                     movingTab: movedTabId,
                     insertFirst: splitTarget.insertFirst
-                  ) != nil else {
+                ) != nil else {
                 if let detachedFromDestination = destinationWorkspace.detachSurface(panelId: panelId) {
-                    rollbackDetachedSurface(
-                        detachedFromDestination,
-                        to: sourceWorkspace,
-                        sourcePane: sourcePane,
-                        sourceIndex: sourceIndex,
+                    if let sourceTarget = detachedSurfaceAttachmentTarget(
+                        workspace: sourceWorkspace,
+                        pane: sourcePane,
+                        index: sourceIndex,
                         focus: focus
-                    )
+                    ) {
+                        _ = detachedFromDestination.resolve(primary: sourceTarget, rollback: nil)
+                    } else {
+                        detachedFromDestination.finalizePermanently()
+                    }
                 }
 #if DEBUG
                 dlog(
@@ -3941,22 +3965,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         return trimmed.isEmpty ? String(localized: "workspace.displayName.fallback", defaultValue: "Workspace") : trimmed
     }
 
-    private func rollbackDetachedSurface(
-        _ detached: Workspace.DetachedSurfaceTransfer,
-        to workspace: Workspace,
-        sourcePane: PaneID?,
-        sourceIndex: Int?,
+    private func detachedSurfaceAttachmentTarget(
+        workspace: Workspace,
+        pane: PaneID?,
+        index: Int?,
         focus: Bool
-    ) {
-        let rollbackPane = sourcePane.flatMap { pane in
+    ) -> Workspace.DetachedSurfaceAttachmentTarget? {
+        let resolvedPane = pane.flatMap { pane in
             workspace.bonsplitController.allPaneIds.first(where: { $0 == pane })
         } ?? workspace.bonsplitController.focusedPaneId
             ?? workspace.bonsplitController.allPaneIds.first
-        guard let rollbackPane else { return }
-        _ = workspace.attachDetachedSurface(
-            detached,
-            inPane: rollbackPane,
-            atIndex: sourceIndex,
+        guard let resolvedPane else { return nil }
+        return Workspace.DetachedSurfaceAttachmentTarget(
+            workspace: workspace,
+            paneId: resolvedPane,
+            index: index,
             focus: focus
         )
     }
@@ -6413,8 +6436,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     // strictly after the previous one; the first phase that returns wins). Refs #95.
     //   1. Setup: chord-prefix bookkeeping, Ctrl+D debug probe, close-confirmation-alert
     //      passthrough, modal/sheet passthrough, command-palette window/state computation.
-    //   2. Palette (highest real precedence): Escape-key routing (palette dismiss /
-    //      suppressed-escape grace window), palette selection-navigation (arrow keys),
+    //   2. Palette (highest real precedence while interactive): Escape-key routing
+    //      (palette dismiss / terminal-IME bypass / suppressed-escape grace window),
+    //      palette selection-navigation (arrow keys),
     //      palette interactive Return/dismiss handling, stale browser-address-bar-focus
     //      clear, palette "effective" actions (open palette / go-to-workspace + their
     //      chord arming), shouldConsumeShortcutWhileCommandPaletteVisible catch-all.
@@ -6526,14 +6550,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             String(localized: "dialog.closeOtherTabs.title", defaultValue: "Close other tabs?"),
             String(localized: "dialog.closeWindow.title", defaultValue: "Close window?"),
         ]
-        let closeConfirmationPanel = NSApp.windows
-            .compactMap { $0 as? NSPanel }
-            .first { panel in
-                guard panel.isVisible, let root = panel.contentView else { return false }
-                return closeConfirmationTitles.contains { title in
-                    findStaticText(in: root, equals: title)
-                }
-            }
+        let resolvedEventWindow = resolvedShortcutEventWindow(event)
+            ?? (event.windowNumber <= 0 ? NSApp.keyWindow : nil)
+        let closeConfirmationPanel = matchingCloseConfirmationPanel(
+            in: NSApp.modalWindow,
+            titles: closeConfirmationTitles
+        ) ?? matchingCloseConfirmationPanel(
+            in: resolvedEventWindow,
+            titles: closeConfirmationTitles
+        ) ?? matchingCloseConfirmationPanel(
+            in: resolvedEventWindow?.attachedSheet,
+            titles: closeConfirmationTitles
+        )
         if let closeConfirmationPanel {
             // Special-case: Cmd+D should confirm destructive close on alerts.
             // XCUITest key events often hit the app-level local monitor first, so forward the key
@@ -6553,7 +6581,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             return false
         }
 
-        if NSApp.modalWindow != nil || NSApp.keyWindow?.attachedSheet != nil {
+        if NSApp.modalWindow != nil
+            || resolvedEventWindow?.sheetParent != nil
+            || resolvedEventWindow?.attachedSheet != nil {
             return false
         }
 
@@ -6572,6 +6602,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         let commandPaletteResponderActiveInTargetWindow = commandPaletteState.isResponderActiveInTargetWindow
         let commandPaletteInteractiveInTargetWindow = commandPaletteState.isInteractiveInTargetWindow
         let commandPaletteEffectiveInTargetWindow = commandPaletteState.isEffectiveInTargetWindow
+        let terminalHasMarkedTextInEventWindow = !normalizedFlags.contains(.command)
+            && resolvedEventWindow.flatMap {
+                cmuxOwningGhosttyView(for: $0.firstResponder)
+            }?.hasMarkedText() == true
 
 #if DEBUG
         if event.keyCode == 36 || event.keyCode == 76 {
@@ -6622,6 +6656,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 )
             }
 #endif
+            if terminalHasMarkedTextInEventWindow,
+               !commandPaletteInteractiveInTargetWindow {
+#if DEBUG
+                dlog(
+                    "shortcut.escape terminalImeBypass consumed=0 " +
+                    "target={\(debugWindowToken(resolvedEventWindow))}"
+                )
+#endif
+                return false
+            }
             if let paletteWindow = escapePaletteWindow,
                isCommandPaletteEffectivelyVisible(in: paletteWindow) {
                 if commandPaletteMarkedTextInput(in: paletteWindow) != nil {
@@ -6801,9 +6845,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         // input), don't intercept non-Cmd key events — let them flow through to the
         // input method. Cmd-based shortcuts (Cmd+T, Cmd+Shift+L, etc.) should still
         // work during composition since Cmd is never part of IME input sequences.
-        if !normalizedFlags.contains(.command),
-           let ghosttyView = cmuxOwningGhosttyView(for: NSApp.keyWindow?.firstResponder),
-           ghosttyView.hasMarkedText() {
+        if terminalHasMarkedTextInEventWindow {
             return false
         }
 
@@ -8467,6 +8509,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         return nil
     }
 
+    private func matchingCloseConfirmationPanel(
+        in window: NSWindow?,
+        titles: [String]
+    ) -> NSPanel? {
+        guard let panel = window as? NSPanel,
+              panel.isVisible,
+              let root = panel.contentView,
+              titles.contains(where: { findStaticText(in: root, equals: $0) }) else {
+            return nil
+        }
+        return panel
+    }
+
     private func findStaticText(in view: NSView, equals text: String) -> Bool {
         if let field = view as? NSTextField, field.stringValue == text {
             return true
@@ -8845,16 +8900,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 #endif
 
+    nonisolated static func singleInstanceProcessKey(
+        for processIdentifier: pid_t
+    ) -> ProgramaSingleInstanceProcessKey? {
+        var processInfo = kinfo_proc()
+        var processInfoSize = MemoryLayout<kinfo_proc>.size
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, processIdentifier]
+        guard sysctl(&mib, UInt32(mib.count), &processInfo, &processInfoSize, nil, 0) == 0,
+              processInfoSize == MemoryLayout<kinfo_proc>.size,
+              processInfo.kp_proc.p_pid == processIdentifier else {
+            return nil
+        }
+
+        let startTime = processInfo.kp_proc.p_starttime
+        guard startTime.tv_sec > 0 || startTime.tv_usec > 0 else { return nil }
+        return ProgramaSingleInstanceProcessKey(
+            startSeconds: Int64(startTime.tv_sec),
+            startMicroseconds: Int64(startTime.tv_usec),
+            processIdentifier: processIdentifier
+        )
+    }
+
+    nonisolated static func shouldTerminateDuplicateInstance(
+        current: ProgramaSingleInstanceProcessKey,
+        other: ProgramaSingleInstanceProcessKey
+    ) -> Bool {
+        if current.startSeconds != other.startSeconds {
+            return current.startSeconds > other.startSeconds
+        }
+        if current.startMicroseconds != other.startMicroseconds {
+            return current.startMicroseconds > other.startMicroseconds
+        }
+        return current.processIdentifier > other.processIdentifier
+    }
+
+    nonisolated private static func terminateDuplicateApplication(_ app: NSRunningApplication) {
+        app.terminate()
+        if !app.isTerminated {
+            _ = app.forceTerminate()
+        }
+    }
+
     private func enforceSingleInstance() {
         guard let bundleId = Bundle.main.bundleIdentifier else { return }
-        let currentPid = ProcessInfo.processInfo.processIdentifier
+        let currentPid = NSRunningApplication.current.processIdentifier
+        guard let currentKey = Self.singleInstanceProcessKey(for: currentPid) else { return }
 
         for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId) {
-            guard app.processIdentifier != currentPid else { continue }
-            app.terminate()
-            if !app.isTerminated {
-                _ = app.forceTerminate()
+            guard app.processIdentifier != currentPid,
+                  let otherKey = Self.singleInstanceProcessKey(for: app.processIdentifier),
+                  Self.shouldTerminateDuplicateInstance(current: currentKey, other: otherKey) else {
+                continue
             }
+            Self.terminateDuplicateApplication(app)
         }
     }
 
@@ -8864,7 +8962,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             .appendingPathComponent("Contents/Resources/bin/programa", isDirectory: false)
             .standardizedFileURL
             .resolvingSymlinksInPath()
-        let currentPid = ProcessInfo.processInfo.processIdentifier
+        let currentPid = NSRunningApplication.current.processIdentifier
+        guard let currentKey = Self.singleInstanceProcessKey(for: currentPid) else { return }
 
         workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification,
@@ -8881,10 +8980,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 return
             }
 
-            app.terminate()
-            if !app.isTerminated {
-                _ = app.forceTerminate()
+            guard let otherKey = Self.singleInstanceProcessKey(for: app.processIdentifier),
+                  Self.shouldTerminateDuplicateInstance(current: currentKey, other: otherKey) else {
+                return
             }
+            Self.terminateDuplicateApplication(app)
             NSRunningApplication.current.activate(options: [.activateAllWindows])
         }
     }

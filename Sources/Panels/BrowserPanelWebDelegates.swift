@@ -64,7 +64,27 @@ func browserNavigationShouldFallbackNilTargetToNewTab(
     navigationType != .other
 }
 
+enum BrowserNavigationObservationPhase: Equatable {
+    case started
+    case committed
+    case finished
+    case failed
+    case provisionalFailed
+    case webContentProcessTerminated
+}
+
+struct BrowserNavigationObservation {
+    let phase: BrowserNavigationObservationPhase
+    let webView: WKWebView
+    let navigation: WKNavigation?
+    let url: URL?
+    let error: NSError?
+}
+
 class BrowserNavigationDelegate: NSObject, WKNavigationDelegate {
+    /// An additive, identity-preserving event stream for callers that must correlate a
+    /// particular WKNavigation. This fires before the delegate's UI-oriented filtering.
+    var didObserveNavigation: ((BrowserNavigationObservation) -> Void)?
     var didStartProvisionalNavigation: ((WKWebView) -> Void)?
     /// Fires once a main-frame navigation commits and the web view begins showing new content
     /// (WKNavigationDelegate contract — this is the single choke point for "the page changed").
@@ -84,18 +104,55 @@ class BrowserNavigationDelegate: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         lastAttemptedURL = webView.url
+        didObserveNavigation?(
+            BrowserNavigationObservation(
+                phase: .started,
+                webView: webView,
+                navigation: navigation,
+                url: webView.url,
+                error: nil
+            )
+        )
         didStartProvisionalNavigation?(webView)
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        didObserveNavigation?(
+            BrowserNavigationObservation(
+                phase: .committed,
+                webView: webView,
+                navigation: navigation,
+                url: webView.url,
+                error: nil
+            )
+        )
         didCommit?(webView)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        didObserveNavigation?(
+            BrowserNavigationObservation(
+                phase: .finished,
+                webView: webView,
+                navigation: navigation,
+                url: webView.url,
+                error: nil
+            )
+        )
         didFinish?(webView)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        let nsError = error as NSError
+        didObserveNavigation?(
+            BrowserNavigationObservation(
+                phase: .failed,
+                webView: webView,
+                navigation: navigation,
+                url: webView.url,
+                error: nsError
+            )
+        )
         NSLog("BrowserPanel navigation failed: %@", error.localizedDescription)
         // Treat committed-navigation failures the same as provisional ones so
         // stale favicon/title state from the prior page gets cleared.
@@ -105,6 +162,19 @@ class BrowserNavigationDelegate: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         let nsError = error as NSError
+        let failedObservedURL = (nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL)
+            ?? (nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String).flatMap(URL.init(string:))
+            ?? webView.url
+            ?? lastAttemptedURL
+        didObserveNavigation?(
+            BrowserNavigationObservation(
+                phase: .provisionalFailed,
+                webView: webView,
+                navigation: navigation,
+                url: failedObservedURL,
+                error: nsError
+            )
+        )
         NSLog("BrowserPanel provisional navigation failed: %@", error.localizedDescription)
 
         // Cancelled navigations (e.g. rapid typing) are not real errors.
@@ -145,6 +215,15 @@ class BrowserNavigationDelegate: NSObject, WKNavigationDelegate {
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        didObserveNavigation?(
+            BrowserNavigationObservation(
+                phase: .webContentProcessTerminated,
+                webView: webView,
+                navigation: nil,
+                url: webView.url,
+                error: nil
+            )
+        )
 #if DEBUG
         dlog("browser.webcontent.terminated panel=\(String(describing: self))")
 #endif

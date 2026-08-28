@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Browser parity matrix: advertised methods + explicit WKWebView not_supported gaps."""
 
+import ast
 import os
 import sys
 from pathlib import Path
@@ -122,15 +123,26 @@ def _must(cond: bool, msg: str) -> None:
         raise cmuxError(msg)
 
 
-def _expect_not_supported(c: cmux, method: str, params: dict) -> None:
+def _expect_not_supported(c: cmux, method: str, params: dict) -> str:
     try:
         c._call(method, params)
     except cmuxError as exc:
         text = str(exc)
-        if "not_supported" in text:
-            return
+        if text.startswith("not_supported:"):
+            return text
         raise cmuxError(f"Expected not_supported for {method}, got: {text}")
     raise cmuxError(f"Expected not_supported for {method}, but call succeeded")
+
+
+def _error_data(text: str) -> dict:
+    _, separator, serialized = text.partition(" (")
+    _must(bool(separator) and serialized.endswith(")"), f"Expected error data payload, got: {text}")
+    try:
+        data = ast.literal_eval(serialized[:-1])
+    except (SyntaxError, ValueError) as exc:
+        raise cmuxError(f"Expected parseable error data payload, got: {text}") from exc
+    _must(isinstance(data, dict), f"Expected dictionary error data, got: {data}")
+    return data
 
 
 def main() -> int:
@@ -149,10 +161,48 @@ def main() -> int:
         _must(bool(url_payload.get("workspace_ref")), f"browser.url.get returned no workspace_ref: {url_payload}")
         _must(bool(url_payload.get("surface_ref")), f"browser.url.get returned no surface_ref: {url_payload}")
 
+        network_methods = {
+            "browser.network.route",
+            "browser.network.unroute",
+            "browser.network.requests",
+        }
         for method, extra in WKWEBVIEW_NOT_SUPPORTED.items():
+            if method in network_methods:
+                continue
             payload = {"surface_id": sid}
             payload.update(extra)
             _expect_not_supported(c, method, payload)
+
+        route_params = {
+            "surface_id": sid,
+            "url": "https://route.invalid/api/*",
+            "method": "POST",
+        }
+        unroute_params = {
+            "surface_id": sid,
+            "url": "https://unroute.invalid/assets/*",
+            "method": "DELETE",
+        }
+        _expect_not_supported(c, "browser.network.route", route_params)
+        _expect_not_supported(c, "browser.network.unroute", unroute_params)
+
+        requests_error = _expect_not_supported(
+            c,
+            "browser.network.requests",
+            {"surface_id": sid},
+        )
+        recorded_requests = _error_data(requests_error).get("recorded_requests")
+        expected_requests = [
+            {"action": "route", "params": route_params},
+            {"action": "unroute", "params": unroute_params},
+        ]
+        _must(
+            recorded_requests == expected_requests,
+            f"Expected ordered unsupported-network history {expected_requests}, got: {recorded_requests}",
+        )
+
+        # Without a surface, requests keeps the generic not_supported contract.
+        _expect_not_supported(c, "browser.network.requests", {})
 
     print("PASS: browser method matrix is explicit (capabilities + WKWebView not_supported contract)")
     return 0

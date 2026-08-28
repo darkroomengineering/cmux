@@ -826,6 +826,178 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
     }
 
     @MainActor
+    func testFailedDetachedRemoteResolutionFinalizesCleanupExactlyOnce() throws {
+        let source = Workspace()
+        let destination = Workspace()
+        defer {
+            source.teardownAllPanels()
+            destination.teardownAllPanels()
+            Workspace.runSSHControlMasterCommandOverrideForTesting = nil
+        }
+        let config = WorkspaceRemoteConfiguration(
+            destination: "cmux-macmini",
+            port: nil,
+            identityFile: nil,
+            sshOptions: ["ControlMaster=auto", "ControlPersist=600", "ControlPath=/tmp/programa-ssh-%C"],
+            localProxyPort: nil,
+            relayPort: 64026,
+            relayID: String(repeating: "a", count: 16),
+            relayToken: String(repeating: "b", count: 64),
+            localSocketPath: "/tmp/programa-debug-test.sock",
+            terminalStartupCommand: "ssh cmux-macmini"
+        )
+        source.configureRemoteConnection(config, autoConnect: false)
+        let panel = try XCTUnwrap(source.focusedTerminalPanel)
+        let transfer = try XCTUnwrap(source.detachSurface(panelId: panel.id))
+        let cleanupRequested = expectation(description: "detached remote finalization cleanup")
+        var cleanupArguments: [[String]] = []
+        Workspace.runSSHControlMasterCommandOverrideForTesting = { arguments in
+            cleanupArguments.append(arguments)
+            cleanupRequested.fulfill()
+        }
+
+        let result = transfer.resolve(
+            primary: Workspace.DetachedSurfaceAttachmentTarget(workspace: destination, paneId: PaneID(), index: nil, focus: false),
+            rollback: Workspace.DetachedSurfaceAttachmentTarget(workspace: source, paneId: PaneID(), index: nil, focus: false)
+        )
+        guard case .finalized = result else {
+            return XCTFail("Failed primary and rollback attachment must finalize the carried remote surface")
+        }
+        transfer.finalizePermanently()
+        transfer.finalizePermanently()
+        wait(for: [cleanupRequested], timeout: 1.0)
+
+        XCTAssertEqual(cleanupArguments.count, 1)
+        XCTAssertEqual(cleanupArguments.first?.suffix(2), ["exit", "cmux-macmini"])
+        XCTAssertFalse(panel.surface.hasLiveSurface)
+    }
+
+    @MainActor
+    func testSuccessfulDetachedRemoteResolutionDefersCleanupUntilPermanentDestinationClose() throws {
+        let source = Workspace()
+        let destination = Workspace()
+        defer {
+            source.teardownAllPanels()
+            destination.teardownAllPanels()
+            Workspace.runSSHControlMasterCommandOverrideForTesting = nil
+        }
+        let config = WorkspaceRemoteConfiguration(
+            destination: "cmux-macmini",
+            port: nil,
+            identityFile: nil,
+            sshOptions: ["ControlMaster=auto", "ControlPersist=600", "ControlPath=/tmp/programa-ssh-%C"],
+            localProxyPort: nil,
+            relayPort: 64027,
+            relayID: String(repeating: "a", count: 16),
+            relayToken: String(repeating: "b", count: 64),
+            localSocketPath: "/tmp/programa-debug-test.sock",
+            terminalStartupCommand: "ssh cmux-macmini"
+        )
+        source.configureRemoteConnection(config, autoConnect: false)
+        let panelID = try XCTUnwrap(source.focusedTerminalPanel?.id)
+        let transfer = try XCTUnwrap(source.detachSurface(panelId: panelID))
+        let destinationPane = try XCTUnwrap(destination.bonsplitController.allPaneIds.first)
+        let prematureCleanup = expectation(description: "no cleanup after successful transfer")
+        prematureCleanup.isInverted = true
+        Workspace.runSSHControlMasterCommandOverrideForTesting = { _ in prematureCleanup.fulfill() }
+
+        let result = transfer.resolve(
+            primary: Workspace.DetachedSurfaceAttachmentTarget(
+                workspace: destination,
+                paneId: destinationPane,
+                index: nil,
+                focus: false
+            ),
+            rollback: nil
+        )
+        guard case .attachedPrimary(let attachedPanelID) = result else {
+            return XCTFail("Expected destination attachment to succeed")
+        }
+        XCTAssertEqual(attachedPanelID, panelID)
+        wait(for: [prematureCleanup], timeout: 0.1)
+
+        let cleanupRequested = expectation(description: "cleanup after permanent destination close")
+        var cleanupCount = 0
+        Workspace.runSSHControlMasterCommandOverrideForTesting = { _ in
+            cleanupCount += 1
+            cleanupRequested.fulfill()
+        }
+        destination.teardownAllPanels()
+        wait(for: [cleanupRequested], timeout: 1.0)
+        destination.teardownAllPanels()
+        source.teardownAllPanels()
+        XCTAssertEqual(cleanupCount, 1)
+    }
+
+    @MainActor
+    func testTransferredRemoteSurfaceWithMatchingPortButDifferentHostKeepsSourceCleanupOwnership() throws {
+        let source = Workspace()
+        let destination = Workspace()
+        defer {
+            Workspace.runSSHControlMasterCommandOverrideForTesting = nil
+            source.teardownAllPanels()
+            destination.teardownAllPanels()
+        }
+        let sharedRelayPort = 64028
+        let sourceConfiguration = WorkspaceRemoteConfiguration(
+            destination: "host-a.example",
+            port: nil,
+            identityFile: nil,
+            sshOptions: ["ControlMaster=auto", "ControlPersist=600", "ControlPath=/tmp/programa-host-a-%C"],
+            localProxyPort: nil,
+            relayPort: sharedRelayPort,
+            relayID: String(repeating: "a", count: 16),
+            relayToken: String(repeating: "a", count: 64),
+            localSocketPath: "/tmp/programa-host-a.sock",
+            terminalStartupCommand: "ssh host-a.example"
+        )
+        let destinationConfiguration = WorkspaceRemoteConfiguration(
+            destination: "host-b.example",
+            port: nil,
+            identityFile: nil,
+            sshOptions: ["ControlMaster=auto", "ControlPersist=600", "ControlPath=/tmp/programa-host-b-%C"],
+            localProxyPort: nil,
+            relayPort: sharedRelayPort,
+            relayID: String(repeating: "b", count: 16),
+            relayToken: String(repeating: "b", count: 64),
+            localSocketPath: "/tmp/programa-host-b.sock",
+            terminalStartupCommand: "ssh host-b.example"
+        )
+        source.configureRemoteConnection(sourceConfiguration, autoConnect: false)
+        destination.configureRemoteConnection(destinationConfiguration, autoConnect: false)
+        let sourcePanelID = try XCTUnwrap(source.focusedTerminalPanel?.id)
+        let transfer = try XCTUnwrap(source.detachSurface(panelId: sourcePanelID))
+        let destinationPane = try XCTUnwrap(destination.bonsplitController.allPaneIds.first)
+        var cleanupArguments: [[String]] = []
+        Workspace.runSSHControlMasterCommandOverrideForTesting = { cleanupArguments.append($0) }
+
+        let result = transfer.resolve(
+            primary: Workspace.DetachedSurfaceAttachmentTarget(
+                workspace: destination,
+                paneId: destinationPane,
+                index: nil,
+                focus: false
+            ),
+            rollback: nil
+        )
+        guard case .attachedPrimary(let attachedPanelID) = result else {
+            return XCTFail("The destination should accept the transferred terminal panel")
+        }
+        XCTAssertEqual(attachedPanelID, sourcePanelID)
+        XCTAssertFalse(
+            destination.isRemoteTerminalSurface(sourcePanelID),
+            "A matching relay port cannot make a host-A terminal part of host B's remote session"
+        )
+        XCTAssertEqual(destination.activeRemoteTerminalSessionCount, 1)
+
+        destination.teardownAllPanels()
+        destination.teardownAllPanels()
+
+        XCTAssertEqual(cleanupArguments.count, 1)
+        XCTAssertEqual(cleanupArguments.first?.suffix(2), ["exit", "host-a.example"])
+    }
+
+    @MainActor
     func testClosingSourceWorkspaceAfterDetachingRemoteSurfaceSkipsControlMasterCleanup() throws {
         let manager = TabManager()
         let sourceWorkspace = try XCTUnwrap(manager.selectedWorkspace)

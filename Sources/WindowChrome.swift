@@ -90,6 +90,16 @@ enum WindowGlassEffect {
     static var contentCardCornerRadius: CGFloat { windowCornerRadius - contentCardInset }
     /// Radius for floating glass controls: tab pills, icon capsule clusters.
     static let controlCornerRadius: CGFloat = 10
+    /// Shared "lit surface" tint for selected pills and control capsules.
+    /// A white lift reads as selection in dark mode, but the equivalent black
+    /// wash in light mode is muddy and drags the glass edge lensing into
+    /// visible gray rims at the capsule ends — light mode lifts with white too.
+    static func surfaceLiftTint(for appearance: NSAppearance, hover: Bool = false) -> NSColor {
+        if appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua {
+            return NSColor.white.withAlphaComponent(hover ? 0.06 : 0.12)
+        }
+        return NSColor.white.withAlphaComponent(hover ? 0.3 : 0.55)
+    }
     /// Gap between the content card and the window edges / sidebar.
     static let contentCardInset: CGFloat = 8
     /// Inverted (Aside-style) backdrop. The window stays a completely standard

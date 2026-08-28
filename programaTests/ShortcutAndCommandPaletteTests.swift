@@ -1070,6 +1070,99 @@ final class UpdateChannelSettingsTests: XCTestCase {
 }
 
 
+private final class UpdateRelaunchPreparationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [String] = []
+    private var operationRanOnMainThread = false
+
+    func recordPrepared() {
+        lock.lock()
+        operationRanOnMainThread = Thread.isMainThread
+        events.append("prepared")
+        lock.unlock()
+    }
+
+    func recordReturned() {
+        lock.lock()
+        events.append("returned")
+        lock.unlock()
+    }
+
+    func record(_ event: String) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func snapshot() -> (events: [String], operationRanOnMainThread: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (events, operationRanOnMainThread)
+    }
+}
+
+
+final class UpdateRelaunchPreparationTests: XCTestCase {
+    @MainActor
+    func testMainThreadCallCompletesPreparationBeforeReturning() {
+        var events: [String] = []
+        var operationRanOnMainThread = false
+
+        UpdateRelaunchPreparation.performSynchronously {
+            operationRanOnMainThread = Thread.isMainThread
+            events.append("prepared")
+        }
+        events.append("returned")
+
+        XCTAssertEqual(events, ["prepared", "returned"])
+        XCTAssertTrue(operationRanOnMainThread)
+    }
+
+    @MainActor
+    func testBackgroundCallCompletesMainThreadPreparationBeforeReturning() async {
+        let recorder = UpdateRelaunchPreparationRecorder()
+        let completed = expectation(description: "background relaunch preparation completed")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            UpdateRelaunchPreparation.performSynchronously {
+                recorder.recordPrepared()
+            }
+            recorder.recordReturned()
+            completed.fulfill()
+        }
+
+        await fulfillment(of: [completed], timeout: 1)
+
+        let snapshot = recorder.snapshot()
+        XCTAssertEqual(snapshot.events, ["prepared", "returned"])
+        XCTAssertTrue(snapshot.operationRanOnMainThread)
+    }
+
+    func testSynchronousPersistenceWriteDrainsEarlierQueuedWriteBeforeReturning() async {
+        let queue = DispatchQueue(label: "test.update-relaunch.persistence-order")
+        let recorder = UpdateRelaunchPreparationRecorder()
+        let completed = expectation(description: "synchronous persistence write completed")
+
+        queue.suspend()
+        queue.async {
+            recorder.record("earlier")
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            AppDelegate.performSessionPersistenceWrite(on: queue, synchronously: true) {
+                recorder.record("final")
+            }
+            recorder.recordReturned()
+            completed.fulfill()
+        }
+        queue.resume()
+
+        await fulfillment(of: [completed], timeout: 1)
+
+        XCTAssertEqual(recorder.snapshot().events, ["earlier", "final", "returned"])
+    }
+}
+
+
 final class UpdateSettingsTests: XCTestCase {
     func testApplyEnablesAutomaticChecksAndDailySchedule() {
         let defaults = makeDefaults()

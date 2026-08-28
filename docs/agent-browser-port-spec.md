@@ -248,9 +248,14 @@ P2 (advanced parity / optional):
 ### Object/Handle Semantics
 
 1. stable handles: `window_id`, `workspace_id`, `pane_id`, `surface_id`
-2. browser refs (`@e1`) are session-local and ephemeral
-3. move/reorder must preserve `surface_id`
-4. responses may include `index` for debugging/order, but requests should accept IDs
+2. browser refs (`@e1`) are session-local and ephemeral; the same selector reuses its ref within the current navigation only
+3. refs from the immediately previous navigation report `stale_element`; refs older than that report `not_found`
+4. each surface may retain 4,096 unique refs in its current navigation; further unique allocations return `resource_exhausted` until the caller navigates or reuses a selector
+5. each selector is limited to 16 KiB of UTF-8 and current-generation selectors are limited to 4 MiB per surface; byte-capacity failures use the same `resource_exhausted` result
+6. snapshots visit at most 4,096 DOM nodes to a maximum depth of 64 and return at most 256 unique element entries; selectors, names, and roles are limited to 16,384, 1,024, and 64 UTF-8 bytes, with a 262,144-byte aggregate entry budget
+7. snapshot titles and URLs are limited to 1,024 and 16,384 UTF-8 bytes; page text and HTML are limited to 262,144 and 1,048,576 characters. `truncation_reasons` identifies active node, entry, aggregate, or field limits in deterministic order, while `text_truncated` and `html_truncated` report page-payload truncation independently
+8. move/reorder must preserve `surface_id`; a detached surface retains its browser refs while a destination or source rollback owns it, and failed attachment finalizes the panel and its automation state exactly once
+9. responses may include `index` for debugging/order, but requests should accept IDs
 
 ## CLI Spec (Proposed)
 

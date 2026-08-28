@@ -41,17 +41,31 @@ final class SocketConnection: @unchecked Sendable {
     private let stateLock = NSLock()
     private var closed = false
     private(set) var subscription: EventSubscription?
+    private var pendingSubscription: EventSubscription?
 
     init(socket: Int32) {
         self.socket = socket
     }
 
-    /// Writes one newline-terminated line to the connection's socket. Used for both ordinary
-    /// v2 responses and pushed event frames -- the lock is what keeps them from interleaving.
+    /// Writes one newline-terminated ordinary v2 response to the connection's socket. Pushed
+    /// event frames use `writeEventLine`; both paths share the lock that prevents interleaving.
     /// Returns `false` on a write failure (client gone), at which point the caller should treat
     /// the connection as dead (the read loop will observe this on its next `read()` regardless).
     @discardableResult
     func writeLine(_ line: String) -> Bool {
+        writeLine(line, activatesPendingSubscription: true)
+    }
+
+    /// Event frames share the response write lock but must never activate a subscription that
+    /// is waiting for its subscribe acknowledgment. An old subscription can still have a frame
+    /// in flight while it is being replaced, so treating every successful write as an
+    /// acknowledgment would let that old frame activate the replacement too early.
+    @discardableResult
+    func writeEventLine(_ line: String) -> Bool {
+        writeLine(line, activatesPendingSubscription: false)
+    }
+
+    private func writeLine(_ line: String, activatesPendingSubscription: Bool) -> Bool {
         let bytes = Array((line + "\n").utf8)
         writeLock.lock()
         defer { writeLock.unlock() }
@@ -66,11 +80,34 @@ final class SocketConnection: @unchecked Sendable {
                 write(socket, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
             }
             if written <= 0 {
+                discardPendingSubscription(reason: "response_write_failure")
                 return false
             }
             offset += written
         }
+        if activatesPendingSubscription {
+            activatePendingSubscription()
+        }
         return true
+    }
+
+    private func activatePendingSubscription() {
+        stateLock.lock()
+        let pending = pendingSubscription
+        pendingSubscription = nil
+        if let pending {
+            subscription = pending
+        }
+        stateLock.unlock()
+        pending?.activate()
+    }
+
+    private func discardPendingSubscription(reason: String) {
+        stateLock.lock()
+        let pending = pendingSubscription
+        pendingSubscription = nil
+        stateLock.unlock()
+        pending?.teardown(reason: reason)
     }
 
     /// Attaches a subscription to this connection, tearing down any previous one first --
@@ -78,18 +115,37 @@ final class SocketConnection: @unchecked Sendable {
     /// connection has at most one).
     func attach(_ subscription: EventSubscription) {
         stateLock.lock()
-        let previous = self.subscription
-        self.subscription = subscription
+        guard !closed else {
+            stateLock.unlock()
+            subscription.teardown(reason: "connection_closed")
+            return
+        }
+        let previousActive = self.subscription
+        let previousPending = pendingSubscription
+        self.subscription = nil
+        pendingSubscription = subscription
+        SocketEventBroadcaster.shared.replace(
+            previous: [previousActive, previousPending].compactMap { $0 },
+            with: subscription
+        )
         stateLock.unlock()
-        previous?.teardown(reason: "replaced_by_new_subscription")
+        previousActive?.teardown(reason: "replaced_by_new_subscription")
+        if let previousPending, previousPending !== previousActive {
+            previousPending.teardown(reason: "replaced_by_new_subscription")
+        }
     }
 
     func detachSubscription() {
         stateLock.lock()
-        let previous = subscription
+        let previousActive = subscription
+        let previousPending = pendingSubscription
         subscription = nil
+        pendingSubscription = nil
         stateLock.unlock()
-        previous?.teardown(reason: "unsubscribed")
+        previousActive?.teardown(reason: "unsubscribed")
+        if let previousPending, previousPending !== previousActive {
+            previousPending.teardown(reason: "unsubscribed")
+        }
     }
 
     /// Called from `handleClient`'s `defer`, in addition to (and before) closing the raw fd.
@@ -97,14 +153,19 @@ final class SocketConnection: @unchecked Sendable {
         writeLock.lock()
         stateLock.lock()
         closed = true
-        let previous = subscription
+        let previousActive = subscription
+        let previousPending = pendingSubscription
         subscription = nil
+        pendingSubscription = nil
         stateLock.unlock()
         writeLock.unlock()
-        if previous != nil {
+        if previousActive != nil || previousPending != nil {
             dilog("socket.conn", "teardown hadSubscription=true")
         }
-        previous?.teardown(reason: "connection_closed")
+        previousActive?.teardown(reason: "connection_closed")
+        if let previousPending, previousPending !== previousActive {
+            previousPending.teardown(reason: "connection_closed")
+        }
     }
 }
 
@@ -132,6 +193,7 @@ final class EventSubscription: @unchecked Sendable {
     private var pending: [[String: Any]] = []
     private var droppedCount = 0
     private var isDraining = false
+    private var isActivated = false
     private var isTornDown = false
 
     init(connection: SocketConnection, classes: Set<SocketEventClass>, outputSurfaceIds: Set<UUID>) {
@@ -152,7 +214,23 @@ final class EventSubscription: @unchecked Sendable {
             droppedCount += 1
         }
         pending.append(frame)
-        let shouldSchedule = !isDraining
+        let shouldSchedule = isActivated && !isDraining
+        if shouldSchedule { isDraining = true }
+        lock.unlock()
+
+        if shouldSchedule {
+            drainQueue.async { [weak self] in self?.drain() }
+        }
+    }
+
+    /// Enables delivery after the subscribe acknowledgment has been written. The connection
+    /// keeps its write lock held while calling this, so a newly scheduled drain cannot overtake
+    /// those response bytes on the socket.
+    func activate() {
+        lock.lock()
+        guard !isTornDown, !isActivated else { lock.unlock(); return }
+        isActivated = true
+        let shouldSchedule = !isDraining && (droppedCount > 0 || !pending.isEmpty)
         if shouldSchedule { isDraining = true }
         lock.unlock()
 
@@ -165,6 +243,11 @@ final class EventSubscription: @unchecked Sendable {
         while true {
             lock.lock()
             if isTornDown {
+                isDraining = false
+                lock.unlock()
+                return
+            }
+            if !isActivated {
                 isDraining = false
                 lock.unlock()
                 return
@@ -198,7 +281,7 @@ final class EventSubscription: @unchecked Sendable {
         lock.unlock()
         guard shouldDeliver else { return true }
         guard let connection else { return false }
-        return connection.writeLine(line)
+        return connection.writeEventLine(line)
     }
 
     /// Idempotent. Called on write failure (client gone), on `unsubscribe`, and from
@@ -233,9 +316,16 @@ final class SocketEventBroadcaster: @unchecked Sendable {
     /// tail even when the viewport scrolls and its overall length stays constant.
     private var lastOutputText: [UUID: String] = [:]
 
-    func register(_ subscription: EventSubscription) {
+    /// Atomically swaps the connection's old subscription entries for its pending replacement.
+    /// Publishers can snapshot either generation, but never both from the broadcaster registry.
+    func replace(previous: [EventSubscription], with subscription: EventSubscription) {
         lock.lock()
+        for old in previous {
+            subscriptions.removeValue(forKey: old.id)
+        }
         subscriptions[subscription.id] = subscription
+        let stillWatched = Set(subscriptions.values.flatMap { $0.outputSurfaceIds })
+        lastOutputText = lastOutputText.filter { stillWatched.contains($0.key) }
         lock.unlock()
     }
 
@@ -356,7 +446,7 @@ extension TerminalController {
     /// `subscribe`: upgrades the calling connection to receive pushed events for the requested
     /// `classes` (any of `agent_state`, `output`, `workspace_lifecycle`). Replaces any existing
     /// subscription on this connection. `output` requires a non-empty `surface_ids` array.
-    func v2Subscribe(params: [String: Any], connection: SocketConnection) -> V2CallResult {
+    nonisolated func v2Subscribe(params: [String: Any], connection: SocketConnection) -> V2CallResult {
         guard let rawClasses = v2StringArray(params, "classes"), !rawClasses.isEmpty else {
             return .err(
                 code: "invalid_params",
@@ -394,7 +484,6 @@ extension TerminalController {
         }
 
         let subscription = EventSubscription(connection: connection, classes: classes, outputSurfaceIds: outputSurfaceIds)
-        SocketEventBroadcaster.shared.register(subscription)
         connection.attach(subscription)
         if classes.contains(.output) {
             v2StartOutputPollLoopIfNeeded()
@@ -410,15 +499,15 @@ extension TerminalController {
 
     /// `unsubscribe`: tears down any live subscription on the calling connection. No-ops (still
     /// `ok`) if there wasn't one, so a client doesn't need to track whether it subscribed.
-    func v2Unsubscribe(params: [String: Any], connection: SocketConnection) -> V2CallResult {
+    nonisolated func v2Unsubscribe(params: [String: Any], connection: SocketConnection) -> V2CallResult {
         connection.detachSubscription()
         return .ok(["unsubscribed": true])
     }
 
     // MARK: - Output event polling (#167 task 3)
 
-    private static let outputPollInterval: TimeInterval = 0.1
-    private static let outputPollLock = NSLock()
+    private nonisolated static let outputPollInterval: TimeInterval = 0.1
+    private nonisolated static let outputPollLock = NSLock()
     private nonisolated(unsafe) static var outputPollTimer: DispatchSourceTimer?
     private nonisolated(unsafe) static var outputPollGeneration: UInt64 = 0
 
@@ -430,7 +519,7 @@ extension TerminalController {
     /// of reusing a single point-in-time text read rather than a push-based content-changed
     /// callback (Ghostty doesn't expose one at the app layer). The timer cancels itself when
     /// the final output subscriber disconnects and restarts on a later subscription.
-    func v2StartOutputPollLoopIfNeeded() {
+    nonisolated func v2StartOutputPollLoopIfNeeded() {
         Self.outputPollLock.lock()
         defer { Self.outputPollLock.unlock() }
         guard Self.outputPollTimer == nil else { return }
@@ -450,7 +539,7 @@ extension TerminalController {
         timer.resume()
     }
 
-    private func v2PollSubscribedOutputOnce(generation: UInt64) {
+    private nonisolated func v2PollSubscribedOutputOnce(generation: UInt64) {
         Self.outputPollLock.lock()
         let isCurrentPoll = Self.outputPollGeneration == generation && Self.outputPollTimer != nil
         Self.outputPollLock.unlock()
@@ -484,7 +573,7 @@ extension TerminalController {
         }
     }
 
-    private func v2StopOutputPollIfIdle(generation: UInt64) {
+    private nonisolated func v2StopOutputPollIfIdle(generation: UInt64) {
         Self.outputPollLock.lock()
         defer { Self.outputPollLock.unlock() }
         guard Self.outputPollGeneration == generation,

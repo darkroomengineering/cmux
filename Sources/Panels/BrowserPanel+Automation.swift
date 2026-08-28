@@ -30,7 +30,7 @@ extension BrowserPanel {
     }
 
     /// Take a snapshot of the web view
-    func takeSnapshot(completion: @escaping (NSImage?) -> Void) {
+    func takeSnapshot(completion: @escaping @MainActor (NSImage?) -> Void) {
         let config = WKSnapshotConfiguration()
         webView.takeSnapshot(with: config) { image, error in
             if let error = error {
