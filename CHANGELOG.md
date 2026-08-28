@@ -22,7 +22,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - Clearing browser history now stays cleared after a temporary disk deletion failure or app termination.
 - Escape now cancels in-progress terminal input for Japanese, Chinese, and Korean keyboards even while the command palette is still opening or has just closed.
 - Cmd+D now confirms only the close alert in the window that received the shortcut, so another window's alert can no longer close the wrong tab or steal a split command.
-- Launching two copies of Programa at nearly the same time now deterministically keeps the newer instance instead of allowing both processes to terminate each other.
+- Concurrent Programa launches now use exact process identities and a durable per-target responsive state so overlapping contenders cannot force-close a healthy instance. Requests keep generation-owned cleanup, recognized stale state is pruned in bounded batches, live requesters are authenticated from running code, and an unresponsive instance can only be force-closed through a Cancel-first data-loss warning.
 - Browser imports now treat Unicode domains and their Punycode forms as the same filter, so internationalized domains no longer silently import zero matching cookies or history entries.
 - Socket automation no longer hangs on split Unicode requests or unsubscribe races, and malformed telemetry can no longer crash the app or grow retained workspace state without bounds.
 - Large command output no longer deadlocks the CLI or background Git checks, and stalled Git probes now time out instead of accumulating work.

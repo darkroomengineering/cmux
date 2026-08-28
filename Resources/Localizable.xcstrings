@@ -5718,6 +5718,12 @@
             "state": "translated",
             "value": "Cancel"
           }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キャンセル"
+          }
         }
       }
     },
@@ -7388,6 +7394,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "Rename Workspace"
+          }
+        }
+      }
+    },
+    "dialog.singleInstanceNotResponding.forceClose": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Force Close"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "強制終了"
+          }
+        }
+      }
+    },
+    "dialog.singleInstanceNotResponding.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The existing Programa instance is not responding. Force closing it may lose unsaved terminal or session state."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "既存のProgramaインスタンスが応答していません。強制終了すると、保存されていないターミナルまたはセッションの状態が失われる可能性があります。"
+          }
+        }
+      }
+    },
+    "dialog.singleInstanceNotResponding.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programa Isn’t Responding"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programaが応答していません"
           }
         }
       }
