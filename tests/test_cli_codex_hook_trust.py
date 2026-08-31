@@ -341,6 +341,115 @@ class CodexHookTrustTests(unittest.TestCase):
                     original_config,
                 )
 
+    def test_install_refuses_to_reassign_a_foreign_positional_trust_key(self) -> None:
+        """Removing a legacy group must not shift foreign trust onto Programa's replacement."""
+        hooks = {
+            "hooks": {
+                "Stop": [
+                    {"hooks": [owned_handler("stop")]},
+                    {"hooks": [foreign_handler("position-sensitive-stop")]},
+                ]
+            }
+        }
+        original_hooks = self.write_hooks(hooks)
+        foreign_key = f"{self.codex_home.resolve() / 'hooks.json'}:stop:1:0"
+        original_config = (
+            f'[hooks.state.{json.dumps(foreign_key)}]\n'
+            'trusted_hash = "sha256:foreign-position"\n'
+        ).encode("utf-8")
+        (self.codex_home / "config.toml").write_bytes(original_config)
+
+        install = self.run_cli("install-hooks")
+
+        self.assertNotEqual(
+            install.returncode,
+            0,
+            "install must refuse a rewrite that would reuse a foreign positional trust key",
+        )
+        self.assertEqual((self.codex_home / "hooks.json").read_bytes(), original_hooks)
+        self.assertEqual((self.codex_home / "config.toml").read_bytes(), original_config)
+
+    def test_uninstall_refuses_to_delete_a_user_comment_with_stale_trust(self) -> None:
+        """A positional trust table cannot own comments that follow its assignments."""
+        hooks = {"hooks": {"SessionStart": [{"hooks": [owned_handler("session-start")]}]}}
+        original_hooks = self.write_hooks(hooks)
+        owned_key = f"{self.codex_home.resolve() / 'hooks.json'}:session_start:0:0"
+        owned_hash = expected_trust_hash("session_start", owned_handler("session-start"))
+        original_config = (
+            f'[hooks.state.{json.dumps(owned_key)}]\n'
+            f'trusted_hash = "{owned_hash}"\n'
+            "# user note: keep this explanation for the following table\n"
+            "[history]\n"
+            'persistence = "save-all"\n'
+        ).encode("utf-8")
+        (self.codex_home / "config.toml").write_bytes(original_config)
+
+        uninstall = self.run_cli("uninstall-hooks")
+
+        self.assertNotEqual(
+            uninstall.returncode,
+            0,
+            "uninstall must refuse when deleting a stale table would also delete a user comment",
+        )
+        self.assertEqual((self.codex_home / "hooks.json").read_bytes(), original_hooks)
+        self.assertEqual((self.codex_home / "config.toml").read_bytes(), original_config)
+
+    def test_unrecognized_comment_inside_managed_trust_block_fails_closed(self) -> None:
+        """Programa markers do not authorize deleting user additions inside the block."""
+        hooks = {"hooks": {"SessionStart": [{"hooks": [owned_handler("session-start")]}]}}
+        owned_key = f"{self.codex_home.resolve() / 'hooks.json'}:session_start:0:0"
+        owned_hash = expected_trust_hash("session_start", owned_handler("session-start"))
+        for operation in ("install-hooks", "uninstall-hooks"):
+            with self.subTest(operation=operation):
+                original_hooks = self.write_hooks(hooks)
+                original_config = (
+                    "# >>> programa codex hook trust >>>\n"
+                    f'[hooks.state.{json.dumps(owned_key)}]\n'
+                    f'trusted_hash = "{owned_hash}"\n'
+                    "# user note: preserve this customization\n"
+                    "# <<< programa codex hook trust <<<\n"
+                ).encode("utf-8")
+                (self.codex_home / "config.toml").write_bytes(original_config)
+
+                process = self.run_cli(operation)
+
+                self.assertNotEqual(
+                    process.returncode,
+                    0,
+                    f"{operation} must refuse to erase an unrecognized managed-block comment",
+                )
+                self.assertEqual((self.codex_home / "hooks.json").read_bytes(), original_hooks)
+                self.assertEqual((self.codex_home / "config.toml").read_bytes(), original_config)
+
+    def test_multiline_toml_content_is_neutral_to_trust_editing(self) -> None:
+        """Config-like text inside a multiline value must remain user data, not edit syntax."""
+        multiline_source = (
+            '[hooks.state."pretend/hooks.json:stop:0:0"]\n'
+            'trusted_hash = "sha256:not-a-real-table"\n'
+            "[features]\n"
+            "codex_hooks = true\n"
+        )
+        original_config = (
+            'instructions = """\n'
+            + multiline_source
+            + '"""\n\n'
+            + 'model = "gpt-5.6"\n\n'
+            + "[features]\n"
+            + "foreign_feature = true\n"
+        )
+        expected_instructions = tomllib.loads(original_config)["instructions"]
+        (self.codex_home / "config.toml").write_text(original_config, encoding="utf-8")
+
+        install = self.run_cli("install-hooks")
+
+        self.assert_succeeded(install)
+        rendered_text = (self.codex_home / "config.toml").read_text(encoding="utf-8")
+        rendered = tomllib.loads(rendered_text)
+        self.assertEqual(rendered["instructions"], expected_instructions)
+        self.assertEqual(rendered["model"], "gpt-5.6")
+        self.assertTrue(rendered["features"]["foreign_feature"])
+        self.assertIn(multiline_source, rendered_text)
+
     def test_uninstall_from_empty_codex_home_is_a_non_creating_noop(self) -> None:
         """Removing an absent integration must not materialize Codex configuration."""
         hooks_path = self.codex_home / "hooks.json"
