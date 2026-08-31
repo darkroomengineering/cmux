@@ -16,6 +16,14 @@ from typing import Any
 
 CLI_PATH = os.environ.get("PROGRAMA_CLI_BIN", "")
 OWNED_MARKER = "programa codex-hook"
+FOREIGN_MARKER_COMMAND = "echo 'programa codex-hook'"
+OWNED_HOOK_EVENTS = (
+    "session-start",
+    "prompt-submit",
+    "stop",
+    "notification",
+    "session-end",
+)
 EVENT_LABELS = {
     "SessionStart": "session_start",
     "UserPromptSubmit": "user_prompt_submit",
@@ -37,6 +45,10 @@ def owned_handler(event: str) -> dict[str, Any]:
     }
 
 
+def is_programa_handler(command: str) -> bool:
+    return any(f"{OWNED_MARKER} {event}" in command for event in OWNED_HOOK_EVENTS)
+
+
 def initial_hooks() -> dict[str, Any]:
     """Represent user hooks plus stale Programa entries from an older install."""
     return {
@@ -44,6 +56,7 @@ def initial_hooks() -> dict[str, Any]:
         "hooks": {
             "SessionStart": [
                 {"matcher": "startup", "hooks": [foreign_handler("start-a")]},
+                {"hooks": [{"type": "command", "command": FOREIGN_MARKER_COMMAND}]},
                 {
                     "hooks": [
                         foreign_handler("start-b"),
@@ -86,7 +99,7 @@ def foreign_commands(root: dict[str, Any]) -> set[str]:
                 continue
             for handler in group.get("hooks", []):
                 command = handler.get("command") if isinstance(handler, dict) else None
-                if isinstance(command, str) and OWNED_MARKER not in command:
+                if isinstance(command, str) and not is_programa_handler(command):
                     commands.add(command)
     return commands
 
@@ -202,8 +215,13 @@ class CodexHookTrustTests(unittest.TestCase):
         hooks = self.read_hooks()
         self.assertEqual(hooks.get("owner"), "user")
         self.assertEqual(foreign_commands(hooks), expected_foreign)
+        self.assertIn(
+            FOREIGN_MARKER_COMMAND,
+            foreign_commands(hooks),
+            "ownership requires a known Programa command, not a marker substring",
+        )
         self.assertNotIn(
-            OWNED_MARKER,
+            f"{OWNED_MARKER} notification",
             json.dumps(hooks.get("hooks", {}).get("Notification", [])),
             "Codex has no Notification trust-state label, so the obsolete Programa hook cannot execute",
         )
@@ -226,7 +244,7 @@ class CodexHookTrustTests(unittest.TestCase):
             found: list[tuple[int, int, dict[str, Any]]] = []
             for group_index, group in enumerate(hooks["hooks"].get(event, [])):
                 for handler_index, handler in enumerate(group.get("hooks", [])):
-                    if OWNED_MARKER in handler.get("command", ""):
+                    if is_programa_handler(handler.get("command", "")):
                         found.append((group_index, handler_index, handler))
             self.assertEqual(len(found), 1, f"{event} must have one Programa handler: {found!r}")
             group_index, handler_index, handler = found[0]
@@ -256,8 +274,18 @@ class CodexHookTrustTests(unittest.TestCase):
         self.assert_succeeded(uninstall)
         uninstalled_hooks = self.read_hooks()
         self.assertEqual(foreign_commands(uninstalled_hooks), expected_foreign)
-        self.assertNotIn(OWNED_MARKER, json.dumps(uninstalled_hooks))
+        self.assertFalse(
+            any(
+                is_programa_handler(command)
+                for command in self._all_hook_commands(uninstalled_hooks)
+            )
+        )
         self.assertEqual(uninstalled_hooks.get("owner"), "user")
+        self.assertIn(
+            FOREIGN_MARKER_COMMAND,
+            foreign_commands(uninstalled_hooks),
+            "uninstall must not delete a foreign command that only quotes Programa's marker",
+        )
         self.assertIn(
             "foreign-permission-request",
             foreign_commands(uninstalled_hooks),
@@ -271,6 +299,22 @@ class CodexHookTrustTests(unittest.TestCase):
         self.assertNotIn("codex_hooks", uninstalled_config["features"])
         for key in owned_keys:
             self.assertNotIn(key, uninstalled_state)
+
+    @staticmethod
+    def _all_hook_commands(root: dict[str, Any]) -> list[str]:
+        commands: list[str] = []
+        for groups in root.get("hooks", {}).values():
+            if not isinstance(groups, list):
+                continue
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                commands.extend(
+                    handler["command"]
+                    for handler in group.get("hooks", [])
+                    if isinstance(handler, dict) and isinstance(handler.get("command"), str)
+                )
+        return commands
 
     def test_invalid_config_fails_before_hooks_are_mutated(self) -> None:
         """A failed trust preflight must not leave newly installed hooks disabled."""
