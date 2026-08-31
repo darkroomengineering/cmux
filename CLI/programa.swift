@@ -543,7 +543,7 @@ final class SocketClient {
         let challengeLine = try readLine()
         guard let challengeData = challengeLine.data(using: .utf8),
               let challenge = try JSONSerialization.jsonObject(with: challengeData) as? [String: Any],
-              (challenge["protocol"] as? String) == "cmux-relay-auth",
+              (challenge["protocol"] as? String) == "programa-relay-auth",
               let version = challenge["version"] as? Int,
               let relayID = challenge["relay_id"] as? String,
               relayID == credentials.relayID,
@@ -921,6 +921,8 @@ struct CLIProcessResult {
 }
 
 enum CLIProcessRunner {
+    private static let maximumCapturedBytesPerStream = 8 * 1024 * 1024
+
     private final class OutputCollector: @unchecked Sendable {
         private let lock = NSLock()
         private var stdoutData = Data()
@@ -943,6 +945,19 @@ enum CLIProcessRunner {
             defer { lock.unlock() }
             return (stdoutData, stderrData)
         }
+    }
+
+    private static func readBounded(_ handle: FileHandle) -> Data {
+        let chunkSize = 64 * 1024
+        var captured = Data()
+        while true {
+            let chunk = handle.readData(ofLength: chunkSize)
+            if chunk.isEmpty { break }
+            if captured.count < maximumCapturedBytesPerStream {
+                captured.append(contentsOf: chunk.prefix(maximumCapturedBytesPerStream - captured.count))
+            }
+        }
+        return captured
     }
 
     static func runProcess(
@@ -984,12 +999,12 @@ enum CLIProcessRunner {
         let outputReaders = DispatchGroup()
         outputReaders.enter()
         DispatchQueue.global(qos: .utility).async {
-            outputCollector.storeStdout(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+            outputCollector.storeStdout(readBounded(stdoutPipe.fileHandleForReading))
             outputReaders.leave()
         }
         outputReaders.enter()
         DispatchQueue.global(qos: .utility).async {
-            outputCollector.storeStderr(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+            outputCollector.storeStderr(readBounded(stderrPipe.fileHandleForReading))
             outputReaders.leave()
         }
 
@@ -1022,8 +1037,8 @@ enum CLIProcessRunner {
         inputWriter.wait()
         outputReaders.wait()
         let output = outputCollector.snapshot()
-        let stdout = String(data: output.stdout, encoding: .utf8) ?? ""
-        var stderr = String(data: output.stderr, encoding: .utf8) ?? ""
+        let stdout = String(decoding: output.stdout, as: UTF8.self)
+        var stderr = String(decoding: output.stderr, as: UTF8.self)
         if timedOut {
             let timeoutMessage = "process timed out"
             if stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1249,317 +1264,15 @@ struct ProgramaCLI {
     }
 
     func run() throws {
-        let processEnv = ProcessInfo.processInfo.environment
-        let envSocketPath: String? = {
-            for key in ["PROGRAMA_SOCKET_PATH", "PROGRAMA_SOCKET"] {
-                guard let raw = processEnv[key] else { continue }
-                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    return trimmed
-                }
-            }
-            return nil
-        }()
-        var socketPath = envSocketPath ?? CLISocketPathResolver.defaultSocketPath
-        var socketPathSource: CLISocketPathSource
-        if let envSocketPath {
-            socketPathSource = CLISocketPathResolver.isImplicitDefaultPath(envSocketPath) ? .implicitDefault : .environment
-        } else {
-            socketPathSource = .implicitDefault
-        }
-        var jsonOutput = false
-        var idFormatArg: String? = nil
-        var windowId: String? = nil
-        var socketPasswordArg: String? = nil
-
-        var index = 1
-        while index < args.count {
-            let arg = args[index]
-            if arg == "--socket" {
-                guard index + 1 < args.count else {
-                    throw CLIError(message: "--socket requires a path")
-                }
-                socketPath = args[index + 1]
-                socketPathSource = .explicitFlag
-                index += 2
-                continue
-            }
-            if arg == "--json" {
-                jsonOutput = true
-                index += 1
-                continue
-            }
-            if arg == "--id-format" {
-                guard index + 1 < args.count else {
-                    throw CLIError(message: "--id-format requires a value (refs|uuids|both)")
-                }
-                idFormatArg = args[index + 1]
-                index += 2
-                continue
-            }
-            if arg == "--window" {
-                guard index + 1 < args.count else {
-                    throw CLIError(message: "--window requires a window id")
-                }
-                windowId = args[index + 1]
-                index += 2
-                continue
-            }
-            if arg == "--password" {
-                guard index + 1 < args.count else {
-                    throw CLIError(message: "--password requires a value")
-                }
-                socketPasswordArg = args[index + 1]
-                index += 2
-                continue
-            }
-            if arg == "-v" || arg == "--version" {
-                print(versionSummary())
-                return
-            }
-            if arg == "-h" || arg == "--help" {
-                print(usage())
-                return
-            }
-            if arg.hasPrefix("-") {
-                throw CLIError(message: "Unknown global option: \(arg)")
-            }
-            break
-        }
-
-        guard index < args.count else {
-            print(usage())
-            throw CLIError(message: "Missing command")
-        }
-
-        let command = args[index]
-        let commandArgs = Array(args[(index + 1)...])
-
-        guard let descriptor = commandDescriptor(named: command) else {
-            // Filesystem opening is a fallback only after command lookup, so a
-            // registered command can never be mistaken for a path.
-            if looksLikePath(command) {
-                let resolvedSocketPath = CLISocketPathResolver.resolve(
-                    requestedPath: socketPath,
-                    source: socketPathSource,
-                    environment: processEnv
-                )
-                try openPath(command, socketPath: resolvedSocketPath)
-                return
-            }
-            throw CLIError(message: "Unknown command: \(command). Run 'programa help' to see available commands.")
-        }
-
-        if descriptor.helpPolicy == .programa,
-           commandArgs.contains(where: { $0 == "--help" || $0 == "-h" }) {
-            guard dispatchSubcommandHelp(command: command, commandArgs: commandArgs) else {
-                throw CLIError(message: "No help is available for command: \(command)")
-            }
-            return
-        }
-
-        try validateArguments(commandArgs, for: command, contract: descriptor.argumentContract)
-        let idFormat = try resolvedIDFormat(jsonOutput: jsonOutput, raw: idFormatArg)
-
-        var resolvedSocketPathCache: String?
-        func resolveSocketPath() -> String {
-            if let resolvedSocketPathCache { return resolvedSocketPathCache }
-            let resolved = CLISocketPathResolver.resolve(
-                requestedPath: socketPath,
-                source: socketPathSource,
-                environment: processEnv
-            )
-            resolvedSocketPathCache = resolved
-            return resolved
-        }
-
-        if command == "version" {
-            print(versionSummary())
-            return
-        }
-
-        if command == "remote-daemon-status" {
-            try runRemoteDaemonStatus(commandArgs: commandArgs, jsonOutput: jsonOutput)
-            return
-        }
-
-        if command == "help" {
-            print(usage())
-            return
-        }
-
-        if command == "welcome" {
-            printWelcome()
-            return
-        }
-
-        if command == "shortcuts" {
-            try runShortcuts(
-                commandArgs: commandArgs,
-                socketPath: resolveSocketPath(),
-                explicitPassword: socketPasswordArg,
-                jsonOutput: jsonOutput
-            )
-            return
-        }
-
-        if command == "feedback" {
-            try runFeedback(
-                commandArgs: commandArgs,
-                socketPath: resolveSocketPath(),
-                explicitPassword: socketPasswordArg,
-                jsonOutput: jsonOutput
-            )
-            return
-        }
-
-        if command == "themes" {
-            try runThemes(
-                commandArgs: commandArgs,
-                jsonOutput: jsonOutput
-            )
-            return
-        }
-
-        if command == "claude-teams" {
-            try runClaudeTeams(
-                commandArgs: commandArgs,
-                socketPath: resolveSocketPath(),
-                explicitPassword: socketPasswordArg
-            )
-            return
-        }
-
-        if command == "omo" {
-            try runOMO(
-                commandArgs: commandArgs,
-                socketPath: resolveSocketPath(),
-                explicitPassword: socketPasswordArg
-            )
-            return
-        }
-
-        if command == "omx" {
-            try runOMX(
-                commandArgs: commandArgs,
-                socketPath: resolveSocketPath(),
-                explicitPassword: socketPasswordArg
-            )
-            return
-        }
-
-        if command == "omc" {
-            try runOMC(
-                commandArgs: commandArgs,
-                socketPath: resolveSocketPath(),
-                explicitPassword: socketPasswordArg
-            )
-            return
-        }
-
-        // Codex hooks management (no socket needed)
-        if command == "codex" {
-            let sub = commandArgs.first?.lowercased() ?? "help"
-            if sub == "install-hooks" || sub == "install-integration" {
-                try runCodexInstallHooks()
-                return
-            } else if sub == "uninstall-hooks" || sub == "uninstall-integration" {
-                try runCodexUninstallHooks()
-                return
-            }
-        }
-
-        // Claude Code integration management (no socket needed)
-        if command == "claude" {
-            let sub = commandArgs.first?.lowercased() ?? "help"
-            if sub == "install-integration" {
-                try runClaudeInstallIntegration()
-                return
-            } else if sub == "uninstall-integration" {
-                try runClaudeUninstallIntegration()
-                return
-            }
-            print("Usage: programa claude <install-integration|uninstall-integration>")
-            throw CLIError(message: "Unknown claude subcommand: \(sub)")
-        }
-
-        // OpenCode plugin integration management (no socket needed)
-        if command == "opencode" {
-            let sub = commandArgs.first?.lowercased() ?? "help"
-            if sub == "install-integration" {
-                try runOpenCodeInstallIntegration()
-                return
-            } else if sub == "uninstall-integration" {
-                try runOpenCodeUninstallIntegration()
-                return
-            }
-            print("Usage: programa opencode <install-integration|uninstall-integration>")
-            throw CLIError(message: "Unknown opencode subcommand: \(sub)")
-        }
-
-        // Codex hook handler: gracefully no-op when not inside programa
-        // (before socket connection, so it doesn't fail when no socket exists)
-        if command == "codex-hook" {
-            guard ProcessInfo.processInfo.environment["PROGRAMA_SURFACE_ID"] != nil else {
-                print("{}")
-                return
-            }
-        }
-
-        // OpenCode hook handler: gracefully no-op when not inside programa
-        // (before socket connection, so it doesn't fail when no socket exists)
-        if command == "opencode-hook" {
-            guard ProcessInfo.processInfo.environment["PROGRAMA_SURFACE_ID"] != nil else {
-                print("{}")
-                return
-            }
-        }
-
-        guard descriptor.connectionPolicy == .socket else {
-            throw CLIError(message: "Unsupported \(command) subcommand")
-        }
-        guard let execute = descriptor.execute else {
-            throw CLIError(message: "Command is unavailable: \(command)")
-        }
-
-        let resolvedSocketPath = resolveSocketPath()
-
-        let client = SocketClient(path: resolvedSocketPath)
-        try client.connectWithTransientRetry()
-        defer { client.close() }
-
-        try authenticateClientIfNeeded(
-            client,
-            explicitPassword: socketPasswordArg,
-            socketPath: resolvedSocketPath
-        )
-
-        // If the user explicitly targets a window, focus it first so commands route correctly.
-        if let windowId {
-            let normalizedWindow = try normalizeWindowHandle(windowId, client: client) ?? windowId
-            _ = try client.sendV2(method: "window.focus", params: ["window_id": normalizedWindow])
-        }
-
-        let ctx = CommandContext(
-            command: command,
-            commandArgs: commandArgs,
-            client: client,
-            jsonOutput: jsonOutput,
-            idFormat: idFormat,
-            idFormatArgProvided: idFormatArg != nil,
-            windowId: windowId,
-            socketPasswordArg: socketPasswordArg
-        )
-        try execute(ctx)
+        try CLICommandDispatcher(cli: self).run()
     }
-
     /// Single source of truth for command existence, help text, and dispatch.
     /// See `CommandDescriptor` for the collapsed-knowledge rationale (CT1).
     ///
     /// Order matches the historical `Commands:` help block, since that order
     /// is externally visible; dispatch itself is by name lookup and does not
     /// depend on array order.
-    private func commandDescriptors() -> [CommandDescriptor] {
+    func commandDescriptors() -> [CommandDescriptor] {
         // Built imperatively (rather than as one large `[...] + f() + [...]`
         // expression) because the Swift type-checker times out trying to
         // infer a single expression spanning this many array-literal +
@@ -4340,7 +4053,7 @@ struct ProgramaCLI {
     }
 
     /// Looks up the descriptor whose `names` contains `command`, if any.
-    private func commandDescriptor(named command: String) -> CommandDescriptor? {
+    func commandDescriptor(named command: String) -> CommandDescriptor? {
         commandDescriptors().first { $0.names.contains(command) }
     }
 
@@ -4400,7 +4113,7 @@ struct ProgramaCLI {
 
     /// Open a path in programa by creating a new workspace with the given directory.
     /// Launches the app if it isn't already running.
-    private func openPath(_ path: String, socketPath: String) throws {
+    func openPath(_ path: String, socketPath: String) throws {
         let resolved = resolvePath(path)
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: resolved, isDirectory: &isDir)
@@ -4444,7 +4157,7 @@ struct ProgramaCLI {
         try activateApp()
     }
 
-    private func runFeedback(
+    func runFeedback(
         commandArgs: [String],
         socketPath: String,
         explicitPassword: String?,
@@ -4506,7 +4219,7 @@ struct ProgramaCLI {
         }
     }
 
-    private func runShortcuts(
+    func runShortcuts(
         commandArgs: [String],
         socketPath: String,
         explicitPassword: String?,
@@ -4596,7 +4309,7 @@ struct ProgramaCLI {
         process.waitUntilExit()
     }
 
-    private func resolvedIDFormat(jsonOutput: Bool, raw: String?) throws -> CLIIDFormat {
+    func resolvedIDFormat(jsonOutput: Bool, raw: String?) throws -> CLIIDFormat {
         _ = jsonOutput
         if let parsed = try CLIIDFormat.parse(raw) {
             return parsed
@@ -5875,28 +5588,16 @@ struct ProgramaCLI {
     /// Returns an empty set when git fails for any reason -- a listing failure should degrade
     /// to "start at 1 and let worktree.create report the real collision", not abort the run.
     private func existingRaceIndexes(repo: String, prefix: String) -> Set<Int> {
-        let process = Process()
-        let stdout = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [
-            "git", "-C", repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/\(prefix)/"
-        ]
-        process.standardOutput = stdout
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-        } catch {
-            return []
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return [] }
-
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        let result = CLIProcessRunner.runProcess(
+            executablePath: "/usr/bin/env",
+            arguments: [
+                "git", "-C", repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/\(prefix)/"
+            ]
+        )
+        guard result.status == 0 else { return [] }
 
         var indexes: Set<Int> = []
-        for line in output.split(separator: "\n") {
+        for line in result.stdout.split(separator: "\n") {
             let name = line.trimmingCharacters(in: .whitespaces)
             // Only `<prefix>/<number>` counts. `race/my-thing` or `race/1/nested` are somebody
             // else's branches and must not shift our numbering.
@@ -5909,24 +5610,12 @@ struct ProgramaCLI {
     }
 
     private func gitTopLevelDirectory(at directory: String) -> String? {
-        let process = Process()
-        let stdout = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git", "-C", directory, "rev-parse", "--show-toplevel"]
-        process.standardOutput = stdout
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return nil }
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = CLIProcessRunner.runProcess(
+            executablePath: "/usr/bin/env",
+            arguments: ["git", "-C", directory, "rev-parse", "--show-toplevel"]
+        )
+        guard result.status == 0 else { return nil }
+        let trimmed = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
@@ -6505,7 +6194,7 @@ struct ProgramaCLI {
     }
 
     /// Dispatch help for a subcommand. Returns true if help was printed.
-    private func dispatchSubcommandHelp(command: String, commandArgs: [String]) -> Bool {
+    func dispatchSubcommandHelp(command: String, commandArgs: [String]) -> Bool {
         guard commandArgs.contains("--help") || commandArgs.contains("-h") else { return false }
         guard let text = subcommandUsage(command) else { return false }
         print("programa \(command)")
@@ -7108,7 +6797,7 @@ struct ProgramaCLI {
         }
     }
 
-    private func validateArguments(
+    func validateArguments(
         _ args: [String],
         for command: String,
         contract: CLICommandArgumentContract
@@ -7454,7 +7143,7 @@ struct ProgramaCLI {
         return params
     }
 
-    private func versionSummary() -> String {
+    func versionSummary() -> String {
         let info = resolvedVersionInfo()
         let commit = info["ProgramaCommit"].flatMap { normalizedCommitHash($0) }
         let baseSummary: String
@@ -7471,7 +7160,7 @@ struct ProgramaCLI {
         return "\(baseSummary) [\(commit)]"
     }
 
-    private func printWelcome() {
+    func printWelcome() {
         let reset = "\u{001B}[0m"
         let bold = "\u{001B}[1m"
         func trueColor(_ red: Int, _ green: Int, _ blue: Int) -> String {
@@ -7836,7 +7525,7 @@ struct ProgramaCLI {
             .joined(separator: "\n")
     }
 
-    private func usage() -> String {
+    func usage() -> String {
         return """
         programa - control programa via Unix socket
 

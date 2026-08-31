@@ -103,6 +103,7 @@ run_unit_tests() {
     -project "$ROOT_DIR/GhosttyTabs.xcodeproj"
     -scheme programa-unit
     -configuration Debug
+    -derivedDataPath "$DERIVED_DATA_DIR"
     -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR"
     -disableAutomaticPackageResolution
     -destination "platform=macOS"

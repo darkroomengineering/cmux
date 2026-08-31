@@ -21,6 +21,10 @@ enum MCPSocketBridgeError: Error {
     case transport(String)
     /// The socket returned something that isn't valid v2 JSON.
     case invalidResponse(String)
+    /// Password-mode configuration or credential failure. Kept distinct from
+    /// ordinary v2 method failures so the MCP sidecar can tell operators how
+    /// to configure authentication instead of reporting a tool failure.
+    case authentication(String)
 }
 
 extension MCPSocketBridgeError: CustomStringConvertible {
@@ -30,6 +34,7 @@ extension MCPSocketBridgeError: CustomStringConvertible {
         case .v2Error(let code, let message): return "\(code): \(message)"
         case .transport(let message): return message
         case .invalidResponse(let message): return message
+        case .authentication(let message): return message
         }
     }
 }
@@ -58,9 +63,14 @@ struct MCPSocketBridge {
     private static let connectRetryDelays: [TimeInterval] = [0.25, 0.5, 0.75]
 
     let socketPath: String
+    private let socketPassword: String?
 
-    init(socketPath: String = MCPSocketBridge.resolveSocketPath()) {
+    init(
+        socketPath: String = MCPSocketBridge.resolveSocketPath(),
+        socketPassword: String? = MCPSocketBridge.resolveSocketPassword()
+    ) {
         self.socketPath = socketPath
+        self.socketPassword = socketPassword?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
     /// Resolves the Programa control socket path the same way the CLI does
@@ -87,14 +97,36 @@ struct MCPSocketBridge {
         return CLISocketPathResolver.resolve(requestedPath: requestedPath, source: source, environment: environment)
     }
 
+    static func resolveSocketPassword(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        environment["PROGRAMA_SOCKET_PASSWORD"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+    }
+
     /// Sends one v2 request (`{"id","method","params"}`) and returns the
     /// decoded `result` object on success, matching `SocketClient.sendV2`.
     func send(method: String, params: [String: Any] = [:]) throws -> [String: Any] {
-        let requestLine = try Self.encodeRequest(method: method, params: params)
-
         let socketFD = try Self.connectWithTransientRetry(path: socketPath)
         defer { Darwin.close(socketFD) }
 
+        if let socketPassword {
+            _ = try Self.sendRequest(
+                method: "auth.login",
+                params: ["password": socketPassword],
+                socketFD: socketFD
+            )
+        }
+        return try Self.sendRequest(method: method, params: params, socketFD: socketFD)
+    }
+
+    private static func sendRequest(
+        method: String,
+        params: [String: Any],
+        socketFD: Int32
+    ) throws -> [String: Any] {
+        let requestLine = try encodeRequest(method: method, params: params)
         try Self.writeAll(Data((requestLine + "\n").utf8), socketFD: socketFD)
         let raw = try Self.readResponse(socketFD: socketFD)
 
@@ -119,6 +151,12 @@ struct MCPSocketBridge {
         if let error = response["error"] as? [String: Any] {
             let code = (error["code"] as? String) ?? "error"
             let message = (error["message"] as? String) ?? "Unknown v2 error"
+            if ["auth_required", "auth_failed", "auth_unconfigured"].contains(code) {
+                let guidance = code == "auth_required"
+                    ? "Programa socket authentication is required. Set PROGRAMA_SOCKET_PASSWORD for programa-mcp."
+                    : "Programa socket authentication failed. Verify PROGRAMA_SOCKET_PASSWORD."
+                throw MCPSocketBridgeError.authentication(guidance)
+            }
             throw MCPSocketBridgeError.v2Error(code: code, message: message)
         }
 
@@ -356,4 +394,8 @@ struct MCPSocketBridge {
         }
         return response
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

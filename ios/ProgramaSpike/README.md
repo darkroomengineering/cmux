@@ -18,13 +18,8 @@ are on the same Wi-Fi.
    details automatically and connects.
 
 If scanning isn't possible (no camera access, a Simulator build, or the scan
-doesn't work), you have two fallbacks on the same screen:
-
-- Paste the full pairing code text from under the Mac's QR code into the
-  **Pairing code** field and tap **Use This Code**.
-- Expand **Can't scan? Paste the payload and token manually** on the Mac and
-  copy the two values into the **Advanced** section of the iOS pairing
-  screen separately.
+doesn't work), copy the full pairing code shown below the Mac's QR code. Paste
+it into the iPhone's **Pairing code** field and tap **Connect**.
 
 Once a device pairs successfully it's remembered — the pairing window is
 single-use, but reconnecting later doesn't require re-pairing or a new code.

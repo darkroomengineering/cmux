@@ -118,6 +118,79 @@ final class TerminalSurfaceRegistry {
     }
 }
 
+struct ProgramaPortRangeAssignment: Equatable, Sendable {
+    let start: Int
+    let end: Int
+    let size: Int
+}
+
+enum ProgramaPortRangePolicy {
+    static let baseDefaultsKey = "cmuxPortBase"
+    static let rangeDefaultsKey = "cmuxPortRange"
+    static let defaultBase = 9_100
+    static let defaultRange = 10
+    static let minimumPort = 1
+    static let maximumPort = 65_535
+
+    static func isValid(base: Int, range: Int) -> Bool {
+        guard (minimumPort ... maximumPort).contains(base),
+              (minimumPort ... maximumPort).contains(range) else {
+            return false
+        }
+        let (end, overflow) = base.addingReportingOverflow(range - 1)
+        return !overflow && end <= maximumPort
+    }
+
+    static func clamped(base: Int, range: Int) -> (base: Int, range: Int) {
+        let safeBase = min(max(base, minimumPort), maximumPort)
+        let maximumRange = maximumPort - safeBase + 1
+        return (safeBase, min(max(range, minimumPort), maximumRange))
+    }
+
+    static func assignment(
+        base requestedBase: Int,
+        range requestedRange: Int,
+        ordinal requestedOrdinal: Int
+    ) -> ProgramaPortRangeAssignment {
+        let base: Int
+        let range: Int
+        if isValid(base: requestedBase, range: requestedRange) {
+            base = requestedBase
+            range = requestedRange
+        } else {
+            base = defaultBase
+            range = defaultRange
+        }
+
+        let slotCount = max(1, (maximumPort - base + 1) / range)
+        let ordinal = max(0, requestedOrdinal) % slotCount
+        let (offset, offsetOverflow) = ordinal.multipliedReportingOverflow(by: range)
+        let (start, startOverflow) = base.addingReportingOverflow(offset)
+        let (end, endOverflow) = start.addingReportingOverflow(range - 1)
+
+        guard !offsetOverflow, !startOverflow, !endOverflow,
+              (minimumPort ... maximumPort).contains(start),
+              (minimumPort ... maximumPort).contains(end) else {
+            return ProgramaPortRangeAssignment(
+                start: defaultBase,
+                end: defaultBase + defaultRange - 1,
+                size: defaultRange
+            )
+        }
+        return ProgramaPortRangeAssignment(start: start, end: end, size: range)
+    }
+
+    static func assignment(defaults: UserDefaults, ordinal: Int) -> ProgramaPortRangeAssignment {
+        let storedBase = defaults.integer(forKey: baseDefaultsKey)
+        let storedRange = defaults.integer(forKey: rangeDefaultsKey)
+        return assignment(
+            base: storedBase > 0 ? storedBase : defaultBase,
+            range: storedRange > 0 ? storedRange : defaultRange,
+            ordinal: ordinal
+        )
+    }
+}
+
 // MARK: - Terminal Surface (owns the ghostty_surface_t lifecycle)
 
 final class TerminalSurface: Identifiable, ObservableObject {
@@ -192,15 +265,6 @@ final class TerminalSurface: Identifiable, ObservableObject {
     private(set) var tabId: UUID
     /// Port ordinal for PROGRAMA_PORT range assignment
     var portOrdinal: Int = 0
-    /// Snapshotted once per app session so all workspaces use consistent values
-    static let sessionPortBase: Int = {
-        let val = UserDefaults.standard.integer(forKey: "cmuxPortBase")
-        return val > 0 ? val : 9100
-    }()
-    static let sessionPortRangeSize: Int = {
-        let val = UserDefaults.standard.integer(forKey: "cmuxPortRange")
-        return val > 0 ? val : 10
-    }()
     private let surfaceContext: ghostty_surface_context_e
     private let configTemplate: ProgramaSurfaceConfigTemplate?
     private let workingDirectory: String?
@@ -1297,12 +1361,18 @@ final class TerminalSurface: Identifiable, ObservableObject {
             setManagedEnvironmentValue("PROGRAMA_DEFAULT_BROWSER_BUNDLE_ID", defaultBrowser.bundleIdentifier)
         }
 
-        // Port range for this workspace (base/range snapshotted once per app session)
+        // Resolve settings for each new terminal so Settings changes take effect without a restart.
+        // The policy validates the full range and wraps the monotonic ordinal within the available
+        // port space, so malformed defaults and long-running sessions can never trap or emit an
+        // invalid TCP port.
         do {
-            let startPort = Self.sessionPortBase + portOrdinal * Self.sessionPortRangeSize
-            setManagedEnvironmentValue("PROGRAMA_PORT", String(startPort))
-            setManagedEnvironmentValue("PROGRAMA_PORT_END", String(startPort + Self.sessionPortRangeSize - 1))
-            setManagedEnvironmentValue("PROGRAMA_PORT_RANGE", String(Self.sessionPortRangeSize))
+            let assignment = ProgramaPortRangePolicy.assignment(
+                defaults: .standard,
+                ordinal: portOrdinal
+            )
+            setManagedEnvironmentValue("PROGRAMA_PORT", String(assignment.start))
+            setManagedEnvironmentValue("PROGRAMA_PORT_END", String(assignment.end))
+            setManagedEnvironmentValue("PROGRAMA_PORT_RANGE", String(assignment.size))
         }
 
         let claudeHooksEnabled = ClaudeCodeIntegrationSettings.hooksEnabled()

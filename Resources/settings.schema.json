@@ -292,14 +292,16 @@
         "portBase": {
           "type": "integer",
           "minimum": 1,
+          "maximum": 65535,
           "default": 9100,
-          "description": "Starting value for workspace CMUX_PORT assignments."
+          "description": "Starting value for workspace PROGRAMA_PORT assignments. The complete range must fit within 1-65535."
         },
         "portRange": {
           "type": "integer",
           "minimum": 1,
+          "maximum": 65535,
           "default": 10,
-          "description": "Number of ports reserved per workspace."
+          "description": "Number of ports reserved per workspace. The complete range must fit within 1-65535."
         }
       }
     },

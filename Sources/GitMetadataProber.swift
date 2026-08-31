@@ -1,5 +1,435 @@
 import Foundation
 import Bonsplit
+import Darwin
+
+struct CanonicalSubprocessResult {
+    enum Outcome: Equatable {
+        case exited
+        case launchError(String)
+        case timedOut
+        case stdoutLimitExceeded
+        case stderrLimitExceeded
+        case decodingFailure
+        case pipeReadFailure
+    }
+
+    let stdout: String?
+    let stderr: String?
+    let exitStatus: Int32?
+    let outcome: Outcome
+
+    var timedOut: Bool { outcome == .timedOut }
+    var executionError: String? {
+        switch outcome {
+        case .exited:
+            nil
+        case .launchError(let message):
+            message
+        case .timedOut:
+            nil
+        case .stdoutLimitExceeded:
+            "stdout exceeded its byte limit"
+        case .stderrLimitExceeded:
+            "stderr exceeded its byte limit"
+        case .decodingFailure:
+            "process output was not valid UTF-8"
+        case .pipeReadFailure:
+            "failed to read process output"
+        }
+    }
+}
+
+enum CanonicalSubprocessRunner {
+    private static let terminationGrace: DispatchTimeInterval = .milliseconds(200)
+    private static let pipeDrainGrace: DispatchTimeInterval = .milliseconds(500)
+
+    private final class BoundedPipeCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private let limit: Int
+        private var data = Data()
+        private var overflowed = false
+        private var readFailed = false
+
+        init(limit: Int) {
+            self.limit = max(0, limit)
+        }
+
+        func consume(_ chunk: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !overflowed else { return }
+            guard chunk.count <= limit - data.count else {
+                overflowed = true
+                data.removeAll(keepingCapacity: false)
+                return
+            }
+            data.append(chunk)
+        }
+
+        func markReadFailed() {
+            lock.lock()
+            readFailed = true
+            data.removeAll(keepingCapacity: false)
+            lock.unlock()
+        }
+
+        func snapshot() -> (data: Data, overflowed: Bool, readFailed: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (data, overflowed, readFailed)
+        }
+    }
+
+    private final class WaitStatusBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var status: Int32?
+
+        func store(_ status: Int32) {
+            lock.lock()
+            self.status = status
+            lock.unlock()
+        }
+
+        func load() -> Int32? {
+            lock.lock()
+            defer { lock.unlock() }
+            return status
+        }
+    }
+
+    private static let fallbackSearchDirectories = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/opt/local/bin",
+    ]
+
+    static func run(
+        executable: String,
+        arguments: [String],
+        currentDirectory: String,
+        timeout: TimeInterval?,
+        stdoutLimit: Int,
+        stderrLimit: Int,
+        executableURL: URL? = nil
+    ) -> CanonicalSubprocessResult {
+        let stdout = Pipe()
+        let stderr = Pipe()
+        let launchPath: String
+        let launchArguments: [String]
+        if let resolvedURL = executableURL ?? resolvedExecutableURL(for: executable) {
+            launchPath = resolvedURL.path
+            launchArguments = arguments
+        } else {
+            launchPath = "/usr/bin/env"
+            launchArguments = [executable] + arguments
+        }
+
+        let completion = DispatchSemaphore(value: 0)
+        let processID: pid_t
+        switch spawn(
+            path: launchPath,
+            arguments: launchArguments,
+            currentDirectory: currentDirectory,
+            stdout: stdout,
+            stderr: stderr
+        ) {
+        case .success(let pid):
+            processID = pid
+        case .failure(let message):
+            closeAllEnds(stdout, stderr)
+            return CanonicalSubprocessResult(
+                stdout: nil,
+                stderr: nil,
+                exitStatus: nil,
+                outcome: .launchError(message)
+            )
+        }
+        try? stdout.fileHandleForWriting.close()
+        try? stderr.fileHandleForWriting.close()
+
+        let waitStatus = WaitStatusBox()
+        DispatchQueue.global(qos: .utility).async {
+            var status: Int32 = 0
+            while waitpid(processID, &status, 0) < 0 {
+                if errno == EINTR { continue }
+                break
+            }
+            waitStatus.store(status)
+            completion.signal()
+        }
+
+        let stdoutCollector = BoundedPipeCollector(limit: stdoutLimit)
+        let stderrCollector = BoundedPipeCollector(limit: stderrLimit)
+        let readers = DispatchGroup()
+        drain(stdout.fileHandleForReading, into: stdoutCollector, group: readers)
+        drain(stderr.fileHandleForReading, into: stderrCollector, group: readers)
+
+        let didTimeOut: Bool
+        if let timeout {
+            didTimeOut = completion.wait(timeout: .now() + timeout) == .timedOut
+        } else {
+            completion.wait()
+            didTimeOut = false
+        }
+
+        if didTimeOut {
+            _ = kill(-processID, SIGTERM)
+            let leaderStillRunning = completion.wait(timeout: .now() + terminationGrace) == .timedOut
+            // Always send SIGKILL after the grace period: the group leader may have exited on
+            // SIGTERM while a descendant ignored it and still owns the output pipes.
+            _ = kill(-processID, SIGKILL)
+            if leaderStillRunning {
+                _ = completion.wait(timeout: .now() + terminationGrace)
+            }
+            closeReadEnds(stdout, stderr)
+        }
+
+        if readers.wait(timeout: .now() + pipeDrainGrace) == .timedOut {
+            closeReadEnds(stdout, stderr)
+            guard readers.wait(timeout: .now() + terminationGrace) == .success else {
+                return CanonicalSubprocessResult(
+                    stdout: nil,
+                    stderr: nil,
+                    exitStatus: nil,
+                    outcome: didTimeOut ? .timedOut : .pipeReadFailure
+                )
+            }
+        }
+        if didTimeOut {
+            return CanonicalSubprocessResult(
+                stdout: nil,
+                stderr: nil,
+                exitStatus: nil,
+                outcome: .timedOut
+            )
+        }
+
+        let exitStatus = waitStatus.load().map(terminationStatus(from:))
+        let stdoutSnapshot = stdoutCollector.snapshot()
+        let stderrSnapshot = stderrCollector.snapshot()
+        if stdoutSnapshot.readFailed || stderrSnapshot.readFailed {
+            return CanonicalSubprocessResult(
+                stdout: nil,
+                stderr: nil,
+                exitStatus: exitStatus,
+                outcome: .pipeReadFailure
+            )
+        }
+        if stdoutSnapshot.overflowed {
+            return CanonicalSubprocessResult(
+                stdout: nil,
+                stderr: nil,
+                exitStatus: exitStatus,
+                outcome: .stdoutLimitExceeded
+            )
+        }
+        if stderrSnapshot.overflowed {
+            return CanonicalSubprocessResult(
+                stdout: nil,
+                stderr: nil,
+                exitStatus: exitStatus,
+                outcome: .stderrLimitExceeded
+            )
+        }
+        guard
+            let stdoutString = String(data: stdoutSnapshot.data, encoding: .utf8),
+            let stderrString = String(data: stderrSnapshot.data, encoding: .utf8)
+        else {
+            return CanonicalSubprocessResult(
+                stdout: nil,
+                stderr: nil,
+                exitStatus: exitStatus,
+                outcome: .decodingFailure
+            )
+        }
+        return CanonicalSubprocessResult(
+            stdout: stdoutString,
+            stderr: stderrString,
+            exitStatus: exitStatus,
+            outcome: .exited
+        )
+    }
+
+    private enum SpawnResult {
+        case success(pid_t)
+        case failure(String)
+    }
+
+    /// Uses `POSIX_SPAWN_SETPGROUP` so the child becomes a group leader atomically, before any
+    /// executable code can fork. Timeout cleanup can therefore signal the exact launched tree
+    /// without racing `exec` or risking Programa's own process group.
+    private static func spawn(
+        path: String,
+        arguments: [String],
+        currentDirectory: String,
+        stdout: Pipe,
+        stderr: Pipe
+    ) -> SpawnResult {
+        var fileActions: posix_spawn_file_actions_t? = nil
+        var attributes: posix_spawnattr_t? = nil
+        guard posix_spawn_file_actions_init(&fileActions) == 0 else {
+            return .failure("could not initialize subprocess file actions")
+        }
+        defer { posix_spawn_file_actions_destroy(&fileActions) }
+        guard posix_spawnattr_init(&attributes) == 0 else {
+            return .failure("could not initialize subprocess attributes")
+        }
+        defer { posix_spawnattr_destroy(&attributes) }
+
+        let stdoutReadFD = stdout.fileHandleForReading.fileDescriptor
+        let stdoutWriteFD = stdout.fileHandleForWriting.fileDescriptor
+        let stderrReadFD = stderr.fileHandleForReading.fileDescriptor
+        let stderrWriteFD = stderr.fileHandleForWriting.fileDescriptor
+        let actionResults = [
+            posix_spawn_file_actions_adddup2(&fileActions, stdoutWriteFD, STDOUT_FILENO),
+            posix_spawn_file_actions_adddup2(&fileActions, stderrWriteFD, STDERR_FILENO),
+            posix_spawn_file_actions_addclose(&fileActions, stdoutReadFD),
+            posix_spawn_file_actions_addclose(&fileActions, stderrReadFD),
+            posix_spawn_file_actions_addclose(&fileActions, stdoutWriteFD),
+            posix_spawn_file_actions_addclose(&fileActions, stderrWriteFD),
+        ]
+        guard actionResults.allSatisfy({ $0 == 0 }) else {
+            return .failure("could not configure subprocess output pipes")
+        }
+        let chdirResult = currentDirectory.withCString { directory in
+            if #available(macOS 26, *) {
+                posix_spawn_file_actions_addchdir(&fileActions, directory)
+            } else {
+                posix_spawn_file_actions_addchdir_np(&fileActions, directory)
+            }
+        }
+        guard chdirResult == 0 else {
+            return .failure("could not configure subprocess working directory: \(String(cString: strerror(chdirResult)))")
+        }
+        let spawnFlags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT
+        guard posix_spawnattr_setflags(&attributes, Int16(spawnFlags)) == 0,
+              posix_spawnattr_setpgroup(&attributes, 0) == 0 else {
+            return .failure("could not configure subprocess process group")
+        }
+
+        guard var argv = duplicatedCStringArray([path] + arguments),
+              var environment = duplicatedCStringArray(
+                  ProcessInfo.processInfo.environment.map { "\($0.key)=\($0.value)" }
+              ) else {
+            return .failure("could not allocate subprocess arguments")
+        }
+        defer {
+            freeCStringArray(&argv)
+            freeCStringArray(&environment)
+        }
+        var pid: pid_t = 0
+        let spawnResult = path.withCString { executablePath in
+            argv.withUnsafeMutableBufferPointer { argvBuffer in
+                environment.withUnsafeMutableBufferPointer { environmentBuffer in
+                    posix_spawn(
+                        &pid,
+                        executablePath,
+                        &fileActions,
+                        &attributes,
+                        argvBuffer.baseAddress!,
+                        environmentBuffer.baseAddress!
+                    )
+                }
+            }
+        }
+        guard spawnResult == 0 else {
+            return .failure(String(cString: strerror(spawnResult)))
+        }
+        return .success(pid)
+    }
+
+    private static func duplicatedCStringArray(_ strings: [String]) -> [UnsafeMutablePointer<CChar>?]? {
+        var result: [UnsafeMutablePointer<CChar>?] = []
+        result.reserveCapacity(strings.count + 1)
+        for string in strings {
+            guard let copy = strdup(string) else {
+                freeCStringArray(&result)
+                return nil
+            }
+            result.append(copy)
+        }
+        result.append(nil)
+        return result
+    }
+
+    private static func freeCStringArray(_ strings: inout [UnsafeMutablePointer<CChar>?]) {
+        for string in strings {
+            free(string)
+        }
+        strings.removeAll()
+    }
+
+    private static func terminationStatus(from waitStatus: Int32) -> Int32 {
+        let terminatingSignal = waitStatus & 0x7F
+        return terminatingSignal == 0 ? (waitStatus >> 8) & 0xFF : terminatingSignal
+    }
+
+    private static func closeReadEnds(_ pipes: Pipe...) {
+        for pipe in pipes {
+            try? pipe.fileHandleForReading.close()
+        }
+    }
+
+    private static func closeAllEnds(_ pipes: Pipe...) {
+        for pipe in pipes {
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
+        }
+    }
+
+    static func resolvedExecutableURL(
+        for executable: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fallbackDirectories: [String] = fallbackSearchDirectories
+    ) -> URL? {
+        guard !executable.isEmpty else { return nil }
+        let fileManager = FileManager.default
+        if executable.contains("/") {
+            return fileManager.isExecutableFile(atPath: executable) ? URL(fileURLWithPath: executable) : nil
+        }
+
+        var directories: [String] = []
+        var seen = Set<String>()
+        func append(_ path: String?) {
+            guard let path else { return }
+            for raw in path.split(separator: ":") {
+                let directory = String(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !directory.isEmpty, seen.insert(directory).inserted { directories.append(directory) }
+            }
+        }
+        append(environment["PATH"])
+        append(getenv("PATH").map { String(cString: $0) })
+        append(Bundle.main.resourceURL?.appendingPathComponent("bin").path)
+        fallbackDirectories.forEach { append($0) }
+        append("/usr/bin:/bin:/usr/sbin:/sbin")
+
+        for directory in directories {
+            let candidate = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent(executable)
+            if fileManager.isExecutableFile(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
+
+    private static func drain(
+        _ handle: FileHandle,
+        into collector: BoundedPipeCollector,
+        group: DispatchGroup
+    ) {
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            defer { group.leave() }
+            while true {
+                do {
+                    guard let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty else { return }
+                    collector.consume(chunk)
+                } catch {
+                    collector.markReadFailed()
+                    return
+                }
+            }
+        }
+    }
+}
 
 // MARK: - GitMetadataProber
 //
@@ -21,38 +451,6 @@ struct GitMetadataProber {
         let branch: String?
         let isDirty: Bool
         let pullRequest: WorkspacePullRequestSnapshot
-    }
-
-    private struct CommandResult {
-        let stdout: String?
-        let stderr: String?
-        let exitStatus: Int32?
-        let timedOut: Bool
-        let executionError: String?
-    }
-
-    private final class CommandOutputCollector: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stdoutData = Data()
-        private var stderrData = Data()
-
-        func storeStdout(_ data: Data) {
-            lock.lock()
-            stdoutData = data
-            lock.unlock()
-        }
-
-        func storeStderr(_ data: Data) {
-            lock.lock()
-            stderrData = data
-            lock.unlock()
-        }
-
-        func snapshot() -> (stdout: Data, stderr: Data) {
-            lock.lock()
-            defer { lock.unlock() }
-            return (stdoutData, stderrData)
-        }
     }
 
     struct GitHubPullRequestProbeItem: Decodable, Equatable {
@@ -142,16 +540,6 @@ struct GitMetadataProber {
             ],
             timeout: workspacePullRequestProbeTimeout
         )
-
-        guard let result else {
-#if DEBUG
-            dlog(
-                "workspace.gitProbe.pr.fail dir=\(directory) branch=\(branch) " +
-                "repo=\(repoSlug) status=nil"
-            )
-#endif
-            return .transientFailure
-        }
 
         guard !result.timedOut,
               result.executionError == nil,
@@ -323,8 +711,7 @@ struct GitMetadataProber {
             timeout: workspacePullRequestProbeTimeout
         )
 
-        guard let result,
-              !result.timedOut,
+        guard !result.timedOut,
               result.executionError == nil,
               let output = result.stdout,
               let exitStatus = result.exitStatus,
@@ -409,67 +796,19 @@ struct GitMetadataProber {
         }
     }
 
-    private nonisolated static let fallbackCommandSearchDirectories: [String] = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/opt/local/bin",
-    ]
+    private nonisolated static let commandStdoutLimit = 4 * 1024 * 1024
+    private nonisolated static let commandStderrLimit = 1024 * 1024
 
     nonisolated static func resolvedCommandPathForTesting(
         executable: String,
         environment: [String: String],
         fallbackDirectories: [String]
     ) -> String? {
-        resolvedCommandPath(
-            executable: executable,
+        CanonicalSubprocessRunner.resolvedExecutableURL(
+            for: executable,
             environment: environment,
             fallbackDirectories: fallbackDirectories
-        )
-    }
-
-    private nonisolated static func resolvedCommandPath(
-        executable: String,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        fallbackDirectories: [String] = fallbackCommandSearchDirectories
-    ) -> String? {
-        guard !executable.isEmpty else { return nil }
-        let fileManager = FileManager.default
-        if executable.contains("/") {
-            return fileManager.isExecutableFile(atPath: executable) ? executable : nil
-        }
-
-        var searchDirectories: [String] = []
-        var seenDirectories: Set<String> = []
-
-        func appendSearchPath(_ path: String?) {
-            guard let path else { return }
-            for rawComponent in path.split(separator: ":") {
-                let component = String(rawComponent).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !component.isEmpty,
-                      seenDirectories.insert(component).inserted else {
-                    continue
-                }
-                searchDirectories.append(component)
-            }
-        }
-
-        appendSearchPath(environment["PATH"])
-        appendSearchPath(getenv("PATH").map { String(cString: $0) })
-        if let bundledBinPath = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
-            appendSearchPath(bundledBinPath)
-        }
-        fallbackDirectories.forEach { appendSearchPath($0) }
-        appendSearchPath("/usr/bin:/bin:/usr/sbin:/sbin")
-
-        for directory in searchDirectories {
-            let candidate = URL(fileURLWithPath: directory, isDirectory: true)
-                .appendingPathComponent(executable)
-                .path
-            if fileManager.isExecutableFile(atPath: candidate) {
-                return candidate
-            }
-        }
-        return nil
+        )?.path
     }
 
     private nonisolated static func runCommand(
@@ -484,8 +823,7 @@ struct GitMetadataProber {
             arguments: arguments,
             timeout: timeout
         )
-        guard let result,
-              result.exitStatus == 0,
+        guard result.exitStatus == 0,
               !result.timedOut else {
             return nil
         }
@@ -497,77 +835,14 @@ struct GitMetadataProber {
         executable: String,
         arguments: [String],
         timeout: TimeInterval? = nil
-    ) -> CommandResult? {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        if let resolvedExecutable = resolvedCommandPath(executable: executable) {
-            process.executableURL = URL(fileURLWithPath: resolvedExecutable)
-            process.arguments = arguments
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = [executable] + arguments
-        }
-        process.currentDirectoryURL = URL(fileURLWithPath: directory)
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        let completion = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in
-            completion.signal()
-        }
-
-        do {
-            try process.run()
-        } catch {
-            return CommandResult(
-                stdout: nil,
-                stderr: nil,
-                exitStatus: nil,
-                timedOut: false,
-                executionError: String(describing: error)
-            )
-        }
-
-        let outputCollector = CommandOutputCollector()
-        let outputReaders = DispatchGroup()
-        outputReaders.enter()
-        DispatchQueue.global(qos: .utility).async {
-            outputCollector.storeStdout(stdout.fileHandleForReading.readDataToEndOfFile())
-            outputReaders.leave()
-        }
-        outputReaders.enter()
-        DispatchQueue.global(qos: .utility).async {
-            outputCollector.storeStderr(stderr.fileHandleForReading.readDataToEndOfFile())
-            outputReaders.leave()
-        }
-
-        if let timeout,
-           completion.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            if completion.wait(timeout: .now() + 0.2) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                _ = completion.wait(timeout: .now() + 0.2)
-            }
-            return CommandResult(
-                stdout: nil,
-                stderr: nil,
-                exitStatus: nil,
-                timedOut: true,
-                executionError: nil
-            )
-        } else if timeout == nil {
-            completion.wait()
-        }
-
-        outputReaders.wait()
-        let output = outputCollector.snapshot()
-        return CommandResult(
-            stdout: String(data: output.stdout, encoding: .utf8),
-            stderr: String(data: output.stderr, encoding: .utf8),
-            exitStatus: process.terminationStatus,
-            timedOut: false,
-            executionError: nil
+    ) -> CanonicalSubprocessResult {
+        CanonicalSubprocessRunner.run(
+            executable: executable,
+            arguments: arguments,
+            currentDirectory: directory,
+            timeout: timeout,
+            stdoutLimit: commandStdoutLimit,
+            stderrLimit: commandStderrLimit
         )
     }
 

@@ -17,10 +17,7 @@ on:
       - "Assets.xcassets/**"
       - "vendor/**"
       - "scripts/**"
-      - ".github/workflows/ci.yml"
-      - ".github/workflows/ci-macos-compat.yml"
-      - ".github/workflows/build-ghosttykit.yml"
-      - ".github/workflows/release.yml"
+      - ".github/workflows/**"
       - "GhosttyTabs.xcodeproj/**"
       - "programa.entitlements"
       - "programa-Bridging-Header.h"
@@ -73,6 +70,15 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+
+      - name: Validate immutable workflow action pins
+        run: ./scripts/validate-workflow-action-pins.py
+
+      - name: Enforce structural lifecycle budgets
+        run: ./scripts/check-structural-budgets.py
+
+      - name: Validate deterministic app discovery
+        run: ./tests/test_locate_built_app.sh
 
       - name: Detect changed files
         id: detect
@@ -206,6 +212,8 @@ jobs:
     if: needs.change-detection.outputs.run_app_jobs == 'true'
     runs-on: macos-26
     timeout-minutes: 60
+    env:
+      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-unit-derived-data
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -267,8 +275,8 @@ jobs:
 
       - name: Install zig
         run: |
-          ZIG_REQUIRED="0.16.0"
-          if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
+          ZIG_REQUIRED="$(./scripts/required-zig-version.sh)"
+          if command -v zig >/dev/null 2>&1 && [ "$(zig version 2>/dev/null)" = "$ZIG_REQUIRED" ]; then
             echo "zig ${ZIG_REQUIRED} already installed"
           else
             echo "Installing zig ${ZIG_REQUIRED} from tarball"
@@ -291,7 +299,7 @@ jobs:
       - name: Cache DerivedData
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
-          path: ~/Library/Developer/Xcode/DerivedData/GhosttyTabs-*
+          path: ${{ env.PROGRAMA_DERIVED_DATA_DIR }}
           key: deriveddata-tests-macos26-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.pbxproj') }}
           restore-keys: |
             deriveddata-tests-macos26-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
@@ -409,7 +417,7 @@ jobs:
 
       - name: Upload unit-test result bundles on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unit-test-xcresults-${{ github.run_attempt }}
           path: /tmp/programa-unit-xcresults/
@@ -426,14 +434,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          CLI_BIN="$(
-            find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Debug/programa" -exec stat -f '%m %N' {} \; \
-              | sort -nr \
-              | head -1 \
-              | cut -d' ' -f2-
-          )"
+          CLI_BIN="$RUNNER_TEMP/programa-cli-regression/Debug/programa"
           if [ -z "${CLI_BIN:-}" ] || [ ! -x "$CLI_BIN" ]; then
-            echo "programa CLI binary not found in DerivedData" >&2
+            echo "programa CLI binary not found at the job's exact build path" >&2
             exit 1
           fi
 
@@ -444,6 +447,8 @@ jobs:
     if: needs.change-detection.outputs.run_app_jobs == 'true'
     runs-on: macos-15
     timeout-minutes: 40
+    env:
+      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-socket-integration-derived-data
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -493,8 +498,8 @@ jobs:
 
       - name: Install zig
         run: |
-          ZIG_REQUIRED="0.16.0"
-          if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
+          ZIG_REQUIRED="$(./scripts/required-zig-version.sh)"
+          if command -v zig >/dev/null 2>&1 && [ "$(zig version 2>/dev/null)" = "$ZIG_REQUIRED" ]; then
             echo "zig ${ZIG_REQUIRED} already installed"
           else
             echo "Installing zig ${ZIG_REQUIRED} from tarball"
@@ -557,6 +562,7 @@ jobs:
           xcodebuild -project GhosttyTabs.xcodeproj -scheme programa -configuration Debug \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \
+            -derivedDataPath "$PROGRAMA_DERIVED_DATA_DIR" \
             -destination "platform=macOS" build
 
       - name: Create virtual display
@@ -593,6 +599,8 @@ jobs:
     # still run via test-e2e.yml on GitHub-hosted runners.
     runs-on: macos-26
     timeout-minutes: 90
+    env:
+      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-lag-derived-data
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -642,8 +650,8 @@ jobs:
 
       - name: Install zig
         run: |
-          ZIG_REQUIRED="0.16.0"
-          if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
+          ZIG_REQUIRED="$(./scripts/required-zig-version.sh)"
+          if command -v zig >/dev/null 2>&1 && [ "$(zig version 2>/dev/null)" = "$ZIG_REQUIRED" ]; then
             echo "zig ${ZIG_REQUIRED} already installed"
           else
             echo "Installing zig ${ZIG_REQUIRED} from tarball"
@@ -706,6 +714,7 @@ jobs:
           xcodebuild -project GhosttyTabs.xcodeproj -scheme programa -configuration Debug \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \
+            -derivedDataPath "$PROGRAMA_DERIVED_DATA_DIR" \
             -destination "platform=macOS" build
 
       - name: Create virtual display
@@ -723,11 +732,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          APP="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Debug/Programa DEV.app" -print -quit)"
-          if [ -z "${APP:-}" ] || [ ! -d "$APP" ]; then
-            echo "Programa DEV.app not found in DerivedData" >&2
-            exit 1
-          fi
+          APP="$(./scripts/locate-built-app.sh \
+            --configuration Debug \
+            --primary "Programa DEV" \
+            --derived-data-root "$PROGRAMA_DERIVED_DATA_DIR")"
 
           TAG="ci-lag"
           SOCK="/tmp/programa-debug-${TAG}.sock"
@@ -766,11 +774,10 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: |
           set -euo pipefail
-          APP="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Debug/Programa DEV.app" -print -quit)"
-          if [ -z "${APP:-}" ] || [ ! -d "$APP" ]; then
-            echo "Programa DEV.app not found in DerivedData" >&2
-            exit 1
-          fi
+          APP="$(./scripts/locate-built-app.sh \
+            --configuration Debug \
+            --primary "Programa DEV" \
+            --derived-data-root "$PROGRAMA_DERIVED_DATA_DIR")"
           PROGRAMA_LAG_KEY_COMBO="${{ inputs.lag_combo || 'up' }}" \
             ./scripts/run-glass-perf-gate.sh "$APP" "${{ inputs.glass_surface || 'window' }}"
 
@@ -790,8 +797,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          APP="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Debug/Programa DEV.app" -print -quit)"
-          [ -n "$APP" ] || { echo "Programa DEV.app not found" >&2; exit 1; }
+          APP="$(./scripts/locate-built-app.sh \
+            --configuration Debug \
+            --primary "Programa DEV" \
+            --derived-data-root "$PROGRAMA_DERIVED_DATA_DIR")"
 
           TAG="ci-refresh-cost"
           SOCK="/tmp/programa-debug-${TAG}.sock"
@@ -848,6 +857,8 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.change-detection.outputs.run_app_jobs == 'true'
     runs-on: macos-26
     timeout-minutes: 60
+    env:
+      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-ui-regressions-derived-data
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -882,8 +893,8 @@ jobs:
 
       - name: Install zig
         run: |
-          ZIG_REQUIRED="0.16.0"
-          if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
+          ZIG_REQUIRED="$(./scripts/required-zig-version.sh)"
+          if command -v zig >/dev/null 2>&1 && [ "$(zig version 2>/dev/null)" = "$ZIG_REQUIRED" ]; then
             echo "zig ${ZIG_REQUIRED} already installed"
           else
             echo "Installing zig ${ZIG_REQUIRED} from tarball"
@@ -937,6 +948,7 @@ jobs:
           xcodebuild -project GhosttyTabs.xcodeproj -scheme programa -configuration Debug \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \
+            -derivedDataPath "$PROGRAMA_DERIVED_DATA_DIR" \
             -destination "platform=macOS" \
             build-for-testing
 
@@ -994,12 +1006,11 @@ jobs:
           clang -framework Foundation -framework CoreGraphics \
             -o "$HELPER_PATH" scripts/create-virtual-display.m
 
-          # Find the app binary
-          APP_BINARY=$(find ~/Library/Developer/Xcode/DerivedData -path "*/Build/Products/Debug/Programa DEV.app/Contents/MacOS/Programa DEV" -print -quit 2>/dev/null || true)
-          if [ -z "$APP_BINARY" ]; then
-            echo "ERROR: App binary not found in DerivedData" >&2
-            exit 1
-          fi
+          APP="$(./scripts/locate-built-app.sh \
+            --configuration Debug \
+            --primary "Programa DEV" \
+            --derived-data-root "$PROGRAMA_DERIVED_DATA_DIR")"
+          APP_BINARY="$APP/Contents/MacOS/Programa DEV"
           echo "App binary: $APP_BINARY"
 
           for attempt in 1 2; do
@@ -1116,6 +1127,7 @@ jobs:
             if xcodebuild -project GhosttyTabs.xcodeproj -scheme programa -configuration Debug \
               -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
               -disableAutomaticPackageResolution \
+              -derivedDataPath "$PROGRAMA_DERIVED_DATA_DIR" \
               -destination "platform=macOS" \
               -only-testing:programaUITests/DisplayResolutionRegressionUITests \
               test-without-building; then
@@ -1140,6 +1152,7 @@ jobs:
           xcodebuild -project GhosttyTabs.xcodeproj -scheme programa -configuration Debug \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \
+            -derivedDataPath "$PROGRAMA_DERIVED_DATA_DIR" \
             -destination "platform=macOS" \
             -maximum-test-execution-time-allowance 180 \
             -only-testing:programaUITests/BrowserPaneNavigationKeybindUITests/testCmdFFocusesBrowserFindFieldAfterCmdDCmdLNavigation \

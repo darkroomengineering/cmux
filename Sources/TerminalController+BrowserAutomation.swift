@@ -1251,98 +1251,8 @@ extension TerminalController {
         .err(code: "not_supported", message: "\(method) is not supported on WKWebView", data: ["details": details])
     }
 
-    /// Current navigation generation for a surface. Bumped by `v2BrowserBumpNavigationGeneration`
-    /// on every committed main-frame navigation (see `BrowserPanel.configureNavigationDelegateCallbacks`).
-    func v2BrowserNavigationGeneration(forSurface surfaceId: UUID) -> UInt64 {
-        v2BrowserNavigationGenerationBySurface[surfaceId] ?? 0
-    }
-
-    /// Advances the surface to a new page while retaining only the page that just ended. Refs
-    /// from that immediately previous generation remain diagnosable as stale; older refs are
-    /// discarded. Call from the single main-frame-commit choke point only.
     func v2BrowserBumpNavigationGeneration(forSurface surfaceId: UUID) {
-        let previousGeneration = v2BrowserNavigationGeneration(forSurface: surfaceId)
-        let ownedTokens = v2BrowserElementRefTokensBySurface[surfaceId] ?? []
-        var retainedTokens: Set<String> = []
-        retainedTokens.reserveCapacity(ownedTokens.count)
-        for token in ownedTokens {
-            guard let entry = v2BrowserElementRefs[token],
-                  entry.navigationGeneration == previousGeneration else {
-                v2BrowserElementRefs.removeValue(forKey: token)
-                continue
-            }
-            retainedTokens.insert(token)
-        }
-        if retainedTokens.isEmpty {
-            v2BrowserElementRefTokensBySurface.removeValue(forKey: surfaceId)
-        } else {
-            v2BrowserElementRefTokensBySurface[surfaceId] = retainedTokens
-        }
-        v2BrowserNavigationGenerationBySurface[surfaceId] = previousGeneration + 1
-        v2BrowserElementRefBySelectorBySurface.removeValue(forKey: surfaceId)
-        v2BrowserElementRefBytesBySurface.removeValue(forKey: surfaceId)
-    }
-
-    func v2BrowserAllocateElementRefs(
-        surfaceId: UUID,
-        selectors: [String]
-    ) -> V2BrowserElementRefAllocation {
-        var selectorIndex = v2BrowserElementRefBySelectorBySurface[surfaceId] ?? [:]
-        var unseenSelectors: Set<String> = []
-        var requestedBytes = 0
-        var hasOversizedSelector = false
-        for selector in selectors where selectorIndex[selector] == nil {
-            guard unseenSelectors.insert(selector).inserted else { continue }
-            let byteCount = selector.utf8.count
-            hasOversizedSelector = hasOversizedSelector
-                || byteCount > Self.v2BrowserElementRefSelectorByteLimit
-            let (sum, overflow) = requestedBytes.addingReportingOverflow(byteCount)
-            requestedBytes = overflow ? Int.max : sum
-        }
-
-        let currentBytes = v2BrowserElementRefBytesBySurface[surfaceId] ?? 0
-        let remaining = max(0, Self.v2BrowserElementRefLimit - selectorIndex.count)
-        let remainingBytes = max(0, Self.v2BrowserElementRefByteLimit - currentBytes)
-        let capacity = V2BrowserElementRefCapacity(
-            limit: Self.v2BrowserElementRefLimit,
-            requestedUnique: unseenSelectors.count,
-            remaining: remaining,
-            selectorByteLimit: Self.v2BrowserElementRefSelectorByteLimit,
-            byteLimit: Self.v2BrowserElementRefByteLimit,
-            requestedBytes: requestedBytes,
-            remainingBytes: remainingBytes
-        )
-        guard !hasOversizedSelector,
-              unseenSelectors.count <= remaining,
-              requestedBytes <= remainingBytes else {
-            return .resourceExhausted(capacity)
-        }
-
-        let generation = v2BrowserNavigationGeneration(forSurface: surfaceId)
-        var ownedTokens = v2BrowserElementRefTokensBySurface[surfaceId] ?? []
-        var refs: [String] = []
-        refs.reserveCapacity(selectors.count)
-        for selector in selectors {
-            if let existingRef = selectorIndex[selector] {
-                refs.append(existingRef)
-                continue
-            }
-
-            let ref = "@e\(v2BrowserNextElementOrdinal)"
-            v2BrowserNextElementOrdinal += 1
-            v2BrowserElementRefs[ref] = V2BrowserElementRefEntry(
-                surfaceId: surfaceId,
-                selector: selector,
-                navigationGeneration: generation
-            )
-            selectorIndex[selector] = ref
-            ownedTokens.insert(ref)
-            refs.append(ref)
-        }
-        v2BrowserElementRefBySelectorBySurface[surfaceId] = selectorIndex
-        v2BrowserElementRefTokensBySurface[surfaceId] = ownedTokens
-        v2BrowserElementRefBytesBySurface[surfaceId] = currentBytes + requestedBytes
-        return .allocated(refs)
+        browserRPCState.advanceNavigationGeneration(for: surfaceId)
     }
 
     func v2BrowserPostProcessSnapshotResult(_ browserResult: [String: Any]) -> V2BrowserSnapshotContent {
@@ -1557,41 +1467,6 @@ extension TerminalController {
     }
 
     @MainActor
-    func v2BrowserEnqueueDownloadEvent(surfaceId: UUID, event: [String: Any]) {
-        if let waiter = v2BrowserPendingDownloadEventWaiter,
-           waiter.surfaceId == surfaceId {
-            v2BrowserPendingDownloadEventWaiter = nil
-            let droppedEvents = v2BrowserDownloadDroppedEventCountBySurface.removeValue(forKey: surfaceId) ?? 0
-            waiter.finish(.event(event, droppedEvents: droppedEvents))
-            return
-        }
-
-        var queue = v2BrowserDownloadEventsBySurface[surfaceId] ?? []
-        queue.append(event)
-        let overflow = max(0, queue.count - Self.v2BrowserDownloadEventQueueLimit)
-        if overflow > 0 {
-            queue.removeFirst(overflow)
-            v2BrowserDownloadDroppedEventCountBySurface[surfaceId, default: 0] += overflow
-        }
-        v2BrowserDownloadEventsBySurface[surfaceId] = queue
-    }
-
-    @MainActor
-    func v2BrowserConsumeDownloadEvent(surfaceId: UUID) -> (event: [String: Any], droppedEvents: Int)? {
-        guard var queue = v2BrowserDownloadEventsBySurface[surfaceId], !queue.isEmpty else {
-            return nil
-        }
-        let event = queue.removeFirst()
-        if queue.isEmpty {
-            v2BrowserDownloadEventsBySurface.removeValue(forKey: surfaceId)
-        } else {
-            v2BrowserDownloadEventsBySurface[surfaceId] = queue
-        }
-        let droppedEvents = v2BrowserDownloadDroppedEventCountBySurface.removeValue(forKey: surfaceId) ?? 0
-        return (event, droppedEvents)
-    }
-
-    @MainActor
     func v2BrowserWaitForDownloadEvent(
         surfaceId: UUID,
         timeout: TimeInterval
@@ -1599,7 +1474,7 @@ extension TerminalController {
         guard v2BrowserPendingDownloadEventWaiter == nil else {
             return .busy
         }
-        if let queued = v2BrowserConsumeDownloadEvent(surfaceId: surfaceId) {
+        if let queued = browserRPCState.consumeDownloadEvent(surfaceId: surfaceId) {
             return .event(queued.event, droppedEvents: queued.droppedEvents)
         }
 
@@ -1622,26 +1497,7 @@ extension TerminalController {
     }
 
     func v2BrowserPermanentlyRemoveSurfaceState(surfaceId: UUID) {
-        let downloadWaiter: V2BrowserDownloadEventWaiter?
-        if v2BrowserPendingDownloadEventWaiter?.surfaceId == surfaceId {
-            downloadWaiter = v2BrowserPendingDownloadEventWaiter
-            v2BrowserPendingDownloadEventWaiter = nil
-        } else {
-            downloadWaiter = nil
-        }
-        for token in v2BrowserElementRefTokensBySurface.removeValue(forKey: surfaceId) ?? [] {
-            v2BrowserElementRefs.removeValue(forKey: token)
-        }
-        v2BrowserElementRefBySelectorBySurface.removeValue(forKey: surfaceId)
-        v2BrowserElementRefBytesBySurface.removeValue(forKey: surfaceId)
-        v2BrowserNavigationGenerationBySurface.removeValue(forKey: surfaceId)
-        v2BrowserInitScriptsBySurface.removeValue(forKey: surfaceId)
-        v2BrowserInitStylesBySurface.removeValue(forKey: surfaceId)
-        v2BrowserDownloadEventsBySurface.removeValue(forKey: surfaceId)
-        v2BrowserDownloadDroppedEventCountBySurface.removeValue(forKey: surfaceId)
-        v2BrowserUnsupportedNetworkRequestsBySurface.removeValue(forKey: surfaceId)
-        v2BrowserFrameSelectorBySurface.removeValue(forKey: surfaceId)
-        downloadWaiter?.finish(.cancelled)
+        browserRPCState.permanentlyRemoveSurface(surfaceId)
     }
 
     func v2BrowserElementRefResourceExhaustedResult(
@@ -1672,7 +1528,7 @@ extension TerminalController {
         selector: String,
         buildResult: (String) -> V2CallResult
     ) -> V2CallResult {
-        switch v2BrowserAllocateElementRefs(surfaceId: surfaceId, selectors: [selector]) {
+        switch browserRPCState.allocateElementRefs(surfaceId: surfaceId, selectors: [selector]) {
         case .allocated(let refs):
             guard let ref = refs.first else {
                 return .err(code: "internal_error", message: "Element reference allocation failed", data: nil)
@@ -1716,7 +1572,7 @@ extension TerminalController {
         guard let entry = v2BrowserElementRefs[refKey], entry.surfaceId == surfaceId else {
             return .notFound
         }
-        guard entry.navigationGeneration == v2BrowserNavigationGeneration(forSurface: surfaceId) else {
+        guard entry.navigationGeneration == browserRPCState.navigationGeneration(for: surfaceId) else {
             return .stale
         }
         return .literal(entry.selector)
@@ -3414,7 +3270,7 @@ extension TerminalController {
                 var treeLines: [String] = []
                 let selectors = boundedEntries.compactMap { $0["selector"] as? String }
                 let allocatedRefs: [String]
-                switch v2BrowserAllocateElementRefs(surfaceId: surfaceId, selectors: selectors) {
+                switch browserRPCState.allocateElementRefs(surfaceId: surfaceId, selectors: selectors) {
                 case .allocated(let values):
                     allocatedRefs = values
                 case .resourceExhausted(let capacity):

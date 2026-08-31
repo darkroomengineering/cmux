@@ -42,7 +42,7 @@ This is a **living implementation spec** (also called an **execution spec**): a 
 - `DONE` bootstrap installs `~/.programa/bin/programa` wrapper (also tries `/usr/local/bin/programa`) so `programa` is available in PATH on the remote.
 
 ### 3.5 CLI Relay (Running Programa Commands From Remote)
-- `DONE` `programad-remote` includes a table-driven CLI relay (`cli` subcommand) that maps CLI args to v1 text or v2 JSON-RPC messages.
+- `DONE` `programad-remote` includes a table-driven CLI relay (`cli` subcommand) that maps every supported CLI command to the app's v2 JSON protocol; the removed v1 text protocol is never emitted.
 - `DONE` busybox-style argv[0] detection: when invoked as `programa` via wrapper/symlink, auto-dispatches to CLI relay.
 - `DONE` background `ssh -N -R 127.0.0.1:PORT:127.0.0.1:LOCAL_RELAY_PORT` process reverse-forwards a TCP port to a dedicated authenticated local relay server. Uses TCP instead of Unix socket forwarding because many servers have `AllowStreamLocalForwarding` disabled.
 - `DONE` relay process uses `-S none` / standalone SSH transport (avoids ControlMaster multiplexing and inherited `RemoteForward` directives) and `ExitOnForwardFailure=yes` so dead reverse binds fail fast instead of publishing bad relay metadata.
@@ -50,7 +50,7 @@ This is a **living implementation spec** (also called an **execution spec**): a 
 - `DONE` Go CLI no longer polls for relay readiness. It dials the published relay once and only refreshes `~/.programa/socket_addr` a single time to recover from a stale shared address rewrite.
 - `DONE` `programa ssh` startup exports session-local `PROGRAMA_SOCKET_PATH=127.0.0.1:<relay_port>` so parallel sessions pin to their own relay instead of racing on shared socket_addr.
 - `DONE` relay startup writes `~/.programa/relay/<relay_port>.daemon_path`; remote `programa` wrapper uses this to select the right daemon binary per session, including mixed local Programa versions.
-- `DONE` relay startup writes `~/.programa/relay/<relay_port>.auth` with a relay ID and token; the local relay requires HMAC-SHA256 challenge-response before forwarding any command to the real local socket.
+- `DONE` relay startup writes `~/.programa/relay/<relay_port>.auth` with a relay ID and token; Swift, Go, and the local relay share the `programa-relay-auth` HMAC-SHA256 challenge-response identifier before forwarding any command to the real local socket.
 - `DONE` ephemeral port range (49152-65535) filtered from probe results to exclude relay ports from other workspaces.
 - `DONE` multi-workspace port conflict detection uses TCP connect check (`isLoopbackPortReachable`) so ports already forwarded by another workspace are silently skipped instead of flagged as conflicts.
 - `DONE` orphaned relay SSH processes from previous app sessions are cleaned up before starting a new relay.

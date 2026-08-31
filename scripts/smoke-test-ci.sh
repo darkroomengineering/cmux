@@ -4,15 +4,21 @@ set -euo pipefail
 
 SOCKET_PATH="/tmp/programa-debug.sock"
 STABILITY_WAIT=15
+APP_LOCATOR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/locate-built-app.sh"
+DERIVED_DATA_ROOT="${PROGRAMA_DERIVED_DATA_DIR:-}"
+
+if [[ -z "$DERIVED_DATA_ROOT" || "$DERIVED_DATA_ROOT" != /* ]]; then
+  echo "ERROR: PROGRAMA_DERIVED_DATA_DIR must be the absolute DerivedData path built by this CI job" >&2
+  exit 1
+fi
 
 echo "=== Smoke Test ==="
 
 # --- Find the built app ---
-APP=$(find ~/Library/Developer/Xcode/DerivedData -path "*/Build/Products/Debug/Programa DEV.app" -print -quit 2>/dev/null || true)
-if [ -z "$APP" ]; then
-  echo "ERROR: Built app not found in DerivedData"
-  exit 1
-fi
+APP="$($APP_LOCATOR \
+  --configuration Debug \
+  --primary "Programa DEV" \
+  --derived-data-root "$DERIVED_DATA_ROOT")"
 echo "App: $APP"
 BINARY="$APP/Contents/MacOS/Programa DEV"
 if [ ! -x "$BINARY" ]; then

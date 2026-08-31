@@ -50,8 +50,10 @@ struct SettingsView: View {
     @AppStorage(AgentScreenDetectionSettings.enabledKey)
     private var agentScreenDetectionEnabled = AgentScreenDetectionSettings.defaultEnabled
     @AppStorage(PreferredEditorSettings.key) private var preferredEditorCommand = ""
-    @AppStorage("cmuxPortBase") private var programaPortBase = 9100
-    @AppStorage("cmuxPortRange") private var programaPortRange = 10
+    @AppStorage(ProgramaPortRangePolicy.baseDefaultsKey)
+    private var programaPortBase = ProgramaPortRangePolicy.defaultBase
+    @AppStorage(ProgramaPortRangePolicy.rangeDefaultsKey)
+    private var programaPortRange = ProgramaPortRangePolicy.defaultRange
     @AppStorage(BrowserSearchSettings.searchEngineKey) private var browserSearchEngine = BrowserSearchSettings.defaultSearchEngine.rawValue
     @AppStorage(BrowserSearchSettings.searchSuggestionsEnabledKey) private var browserSearchSuggestionsEnabled = BrowserSearchSettings.defaultSearchSuggestionsEnabled
     @AppStorage(BrowserThemeSettings.modeKey) private var browserThemeMode = BrowserThemeSettings.defaultMode.rawValue
@@ -1280,7 +1282,7 @@ struct SettingsView: View {
         SettingsSectionHeader(title: String(localized: "settings.section.ports", defaultValue: "Ports"))
         SettingsCard {
             SettingsCardRow(String(localized: "settings.automation.portBase", defaultValue: "Port Base"), subtitle: String(localized: "settings.automation.portBase.subtitle", defaultValue: "Starting port for PROGRAMA_PORT env var."), controlWidth: pickerColumnWidth) {
-                TextField("", value: $programaPortBase, format: .number)
+                TextField("", value: programaPortBaseBinding, format: .number)
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
             }
@@ -1288,7 +1290,7 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardRow(String(localized: "settings.automation.portRange", defaultValue: "Port Range Size"), subtitle: String(localized: "settings.automation.portRange.subtitle", defaultValue: "Number of ports per workspace."), controlWidth: pickerColumnWidth) {
-                TextField("", value: $programaPortRange, format: .number)
+                TextField("", value: programaPortRangeBinding, format: .number)
                     .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
             }
@@ -1298,6 +1300,34 @@ struct SettingsView: View {
             SettingsCardNote(String(localized: "settings.automation.port.note", defaultValue: "Each workspace gets PROGRAMA_PORT and PROGRAMA_PORT_END env vars with a dedicated port range. New terminals inherit these values."))
         }
 
+    }
+
+    private var programaPortBaseBinding: Binding<Int> {
+        Binding(
+            get: { programaPortBase },
+            set: { requestedBase in
+                let value = ProgramaPortRangePolicy.clamped(
+                    base: requestedBase,
+                    range: programaPortRange
+                )
+                programaPortBase = value.base
+                programaPortRange = value.range
+            }
+        )
+    }
+
+    private var programaPortRangeBinding: Binding<Int> {
+        Binding(
+            get: { programaPortRange },
+            set: { requestedRange in
+                let value = ProgramaPortRangePolicy.clamped(
+                    base: programaPortBase,
+                    range: requestedRange
+                )
+                programaPortBase = value.base
+                programaPortRange = value.range
+            }
+        )
     }
 
     private var selectedMobileBridgeMode: MobileBridgeMode {

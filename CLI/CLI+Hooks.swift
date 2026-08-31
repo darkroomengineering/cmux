@@ -1366,7 +1366,7 @@ extension ProgramaCLI {
 
     // MARK: - Codex hooks
 
-    private static let codexMaximumFileBytes = 16 * 1024 * 1024
+    static let codexMaximumFileBytes = 16 * 1024 * 1024
     private static let codexTrustBlockStart = "# >>> programa managed codex hook trust v1 >>>"
     private static let codexTrustBlockEnd = "# <<< programa managed codex hook trust v1 <<<"
     private static let codexLegacyTrustBlockStart = "# >>> programa codex hook trust >>>"
@@ -1392,12 +1392,12 @@ extension ProgramaCLI {
         return result
     }()
 
-    private struct CodexFileSnapshot: Equatable {
+    struct CodexFileSnapshot: Equatable {
         let data: Data
         let mode: mode_t
     }
 
-    private struct CodexPaths {
+    struct CodexPaths {
         let home: String
         let lockHome: String
         let hooks: String
@@ -1405,7 +1405,7 @@ extension ProgramaCLI {
         let configTarget: String
     }
 
-    private struct CodexTrustEdit {
+    struct CodexTrustEdit {
         let configPath: String
         let configLinkPath: String
         let hooksKeyPrefix: String
@@ -1414,7 +1414,7 @@ extension ProgramaCLI {
         let ownedHashes: Set<String>
     }
 
-    private struct CodexPreparedConfig {
+    struct CodexPreparedConfig {
         let edit: CodexTrustEdit
         let snapshot: CodexFileSnapshot?
         let rendered: Data
@@ -1524,7 +1524,7 @@ extension ProgramaCLI {
         }
     }
 
-    private struct CodexHooksError: LocalizedError {
+    struct CodexHooksError: LocalizedError {
         let message: String
         var errorDescription: String? { message }
     }
@@ -1534,131 +1534,7 @@ extension ProgramaCLI {
         "[ -n \"$PROGRAMA_SURFACE_ID\" ] && command -v programa >/dev/null 2>&1 && programa codex-hook \(event) || echo '{}'"
     }
 
-    func runCodexInstallHooks() throws {
-        try runCodexHooksMutation(install: true)
-    }
-
-    func runCodexUninstallHooks() throws {
-        try runCodexHooksMutation(install: false)
-    }
-
-    private func runCodexHooksMutation(install: Bool) throws {
-        let paths = try codexPaths()
-        try withCodexHooksLock(at: paths.lockHome) {
-            let hooksSnapshot = try codexReadRegularFile(paths.hooks, limit: Self.codexMaximumFileBytes, refuseSymlink: true)
-            let previousRoot = try codexHooksRoot(from: hooksSnapshot?.data, path: paths.hooks)
-            let nextRoot = try codexRewriteHooks(previousRoot, install: install)
-            let nextHooksData: Data? = install || hooksSnapshot != nil ? try codexEncodeHooks(nextRoot) : nil
-            let hooksChanged: Bool
-            if install {
-                hooksChanged = hooksSnapshot?.data != nextHooksData
-            } else if hooksSnapshot != nil {
-                hooksChanged = try codexEncodeHooks(previousRoot) != nextHooksData
-            } else {
-                hooksChanged = false
-            }
-
-            let hooksKeyPath = paths.hooks
-            let desired = install ? try codexExpectedTrustEntries(hooksPath: hooksKeyPath, root: nextRoot) : [:]
-            let edit = CodexTrustEdit(
-                configPath: paths.configTarget,
-                configLinkPath: paths.configLink,
-                hooksKeyPrefix: hooksKeyPath + ":",
-                desired: desired,
-                removalKeys: codexOwnedEntryKeys(hooksPath: hooksKeyPath, root: previousRoot),
-                ownedHashes: try codexOwnedTrustHashes()
-            )
-            let preparedConfig = try codexPrepareConfig(edit)
-            let existingConfig = preparedConfig.snapshot.flatMap { String(data: $0.data, encoding: .utf8) } ?? ""
-            let renderedConfig = String(data: preparedConfig.rendered, encoding: .utf8) ?? ""
-            let configChanged = (preparedConfig.snapshot?.data ?? Data()) != preparedConfig.rendered
-
-            let skillPath = Self.agentSkillFilePath(
-                skillsRoot: NSString(string: "~/.agents/skills").expandingTildeInPath
-            )
-            let skillInstall = install ? agentSkillInstallState(path: skillPath) : nil
-            let skillUninstall = install ? nil : agentSkillUninstallState(path: skillPath)
-            let skillChanged = skillInstall?.changed == true || skillUninstall != nil
-
-            if !hooksChanged && !configChanged && !skillChanged {
-                print(install ? "programa hooks are already installed. Nothing to change." : "No programa hooks found.")
-                return
-            }
-
-            if hooksChanged {
-                print("  \(paths.hooks):")
-                if let old = hooksSnapshot.flatMap({ String(data: $0.data, encoding: .utf8) }), let nextHooksData {
-                    printSimpleDiff(old: old, new: String(data: nextHooksData, encoding: .utf8) ?? "")
-                } else {
-                    print("    (new file)")
-                }
-                print("")
-            }
-            if configChanged {
-                print("  \(paths.configLink):")
-                if existingConfig.isEmpty { print("    (new file)") }
-                printSimpleDiff(old: existingConfig, new: renderedConfig)
-                print("")
-            }
-            if let skillInstall, skillInstall.changed {
-                printAgentSkillDiff(path: skillPath, existing: skillInstall.existing)
-            } else if let skillUninstall {
-                printAgentSkillRemovalDiff(path: skillPath, content: skillUninstall)
-            }
-
-            let skipConfirm = ProcessInfo.processInfo.arguments.contains("--yes")
-                || ProcessInfo.processInfo.arguments.contains("-y")
-            if !skipConfirm {
-                print("Apply these changes? [Y/n] ", terminator: "")
-                if let response = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-                   !response.isEmpty && response != "y" && response != "yes" {
-                    print("Aborted.")
-                    return
-                }
-            }
-
-            let freshHooks = try codexReadRegularFile(paths.hooks, limit: Self.codexMaximumFileBytes, refuseSymlink: true)
-            guard freshHooks == hooksSnapshot else {
-                throw CodexHooksError(message: "\(paths.hooks) changed while awaiting confirmation; retry the command")
-            }
-            if hooksChanged {
-                if let nextHooksData {
-                    try codexAtomicWrite(nextHooksData, to: paths.hooks, mode: hooksSnapshot?.mode ?? 0o600)
-                } else {
-                    try codexRestoreFile(nil, at: paths.hooks)
-                }
-            }
-            do {
-                try codexCommitConfig(preparedConfig)
-            } catch {
-                guard hooksChanged else { throw error }
-                do {
-                    try codexRestoreFile(hooksSnapshot, at: paths.hooks)
-                } catch let rollbackError {
-                    throw CodexHooksError(message: "Codex config update failed: \(error.localizedDescription); restoring hooks.json also failed: \(rollbackError.localizedDescription)")
-                }
-                throw error
-            }
-
-            // The shared skill is deliberately last: hooks.json and trust state
-            // must commit together before any adjacent integration is changed.
-            if install, skillInstall?.changed == true {
-                try writeAgentSkillFile(path: skillPath)
-            } else if !install, skillUninstall != nil {
-                try removeAgentSkillFileIfManaged(path: skillPath)
-            }
-
-            print("")
-            if install {
-                print("Installed. Codex trusts programa hooks inside programa; they silently no-op elsewhere.")
-                print("To remove: programa codex uninstall-hooks")
-            } else {
-                print("Removed programa Codex hooks and their trust entries.")
-            }
-        }
-    }
-
-    private func codexPaths() throws -> CodexPaths {
+    func codexPaths() throws -> CodexPaths {
         let environment = ProcessInfo.processInfo.environment
         let override = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         let explicit = override?.isEmpty == false
@@ -1695,7 +1571,7 @@ extension ProgramaCLI {
         return String(cString: resolved)
     }
 
-    private func withCodexHooksLock<T>(at home: String, _ body: () throws -> T) throws -> T {
+    func withCodexHooksLock<T>(at home: String, _ body: () throws -> T) throws -> T {
         let path = (home as NSString).appendingPathComponent(".programa-hooks.lock")
         let descriptor = path.withCString { Darwin.open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600) }
         guard descriptor >= 0 else { throw codexPOSIXError("open lock", path: path) }
@@ -1709,7 +1585,7 @@ extension ProgramaCLI {
         return try body()
     }
 
-    private func codexReadRegularFile(_ path: String, limit: Int, refuseSymlink: Bool) throws -> CodexFileSnapshot? {
+    func codexReadRegularFile(_ path: String, limit: Int, refuseSymlink: Bool) throws -> CodexFileSnapshot? {
         if refuseSymlink {
             var linkInfo = stat()
             let result = path.withCString { Darwin.lstat($0, &linkInfo) }
@@ -1751,7 +1627,7 @@ extension ProgramaCLI {
         return CodexFileSnapshot(data: data, mode: info.st_mode & 0o777)
     }
 
-    private func codexHooksRoot(from data: Data?, path: String) throws -> [String: Any] {
+    func codexHooksRoot(from data: Data?, path: String) throws -> [String: Any] {
         guard let data else { return [:] }
         let value: Any
         do { value = try JSONSerialization.jsonObject(with: data) }
@@ -1762,7 +1638,7 @@ extension ProgramaCLI {
         return root
     }
 
-    private func codexRewriteHooks(_ source: [String: Any], install: Bool) throws -> [String: Any] {
+    func codexRewriteHooks(_ source: [String: Any], install: Bool) throws -> [String: Any] {
         var root = source
         let rawHooks = root["hooks"]
         guard rawHooks == nil || rawHooks is [String: Any] else {
@@ -1854,7 +1730,7 @@ extension ProgramaCLI {
             || command == "programa codex-hook \(commandEvent)"
     }
 
-    private func codexEncodeHooks(_ root: [String: Any]) throws -> Data {
+    func codexEncodeHooks(_ root: [String: Any]) throws -> Data {
         guard JSONSerialization.isValidJSONObject(root) else {
             throw CodexHooksError(message: "merged hooks.json is not serializable")
         }
@@ -1866,7 +1742,7 @@ extension ProgramaCLI {
         return data
     }
 
-    private func codexExpectedTrustEntries(hooksPath: String, root: [String: Any]) throws -> [String: String] {
+    func codexExpectedTrustEntries(hooksPath: String, root: [String: Any]) throws -> [String: String] {
         var result: [String: String] = [:]
         for spec in Self.codexHookSpecs {
             let entry = try codexOwnedHookEntry(root: root, spec: spec)
@@ -1893,7 +1769,7 @@ extension ProgramaCLI {
         throw CodexHooksError(message: "installed Codex hook for \(spec.event) is missing")
     }
 
-    private func codexOwnedEntryKeys(hooksPath: String, root: [String: Any]) -> Set<String> {
+    func codexOwnedEntryKeys(hooksPath: String, root: [String: Any]) -> Set<String> {
         guard let hooks = root["hooks"] as? [String: Any] else { return [] }
         let labels = Dictionary(uniqueKeysWithValues: Self.codexHookSpecs.map { ($0.event, $0.label) })
         var keys: Set<String> = []
@@ -1909,7 +1785,7 @@ extension ProgramaCLI {
         return keys
     }
 
-    private func codexOwnedTrustHashes() throws -> Set<String> {
+    func codexOwnedTrustHashes() throws -> Set<String> {
         var hashes: Set<String> = []
         for spec in Self.codexHookSpecs {
             let group: [String: Any] = [:]
@@ -1978,7 +1854,7 @@ extension ProgramaCLI {
         return number.intValue
     }
 
-    private func codexPrepareConfig(_ edit: CodexTrustEdit) throws -> CodexPreparedConfig {
+    func codexPrepareConfig(_ edit: CodexTrustEdit) throws -> CodexPreparedConfig {
         let snapshot = try codexReadRegularFile(edit.configPath, limit: Self.codexMaximumFileBytes, refuseSymlink: true)
         let original = try codexUTF8(snapshot?.data ?? Data(), path: edit.configPath)
         let rendered = try codexRenderConfig(original, edit: edit)
@@ -1986,7 +1862,7 @@ extension ProgramaCLI {
         return CodexPreparedConfig(edit: edit, snapshot: snapshot, rendered: Data(rendered.utf8))
     }
 
-    private func codexCommitConfig(_ prepared: CodexPreparedConfig) throws {
+    func codexCommitConfig(_ prepared: CodexPreparedConfig) throws {
         let resolvedTarget = try codexResolveConfigTarget(prepared.edit.configLinkPath)
         guard resolvedTarget == prepared.edit.configPath else {
             throw CodexHooksError(message: "\(prepared.edit.configLinkPath) changed targets during installation; retry the command")
@@ -2569,7 +2445,7 @@ extension ProgramaCLI {
         guard unlink(probe) == 0 else { throw codexPOSIXError("remove preflight", path: probe) }
     }
 
-    private func codexAtomicWrite(_ data: Data, to path: String, mode: mode_t) throws {
+    func codexAtomicWrite(_ data: Data, to path: String, mode: mode_t) throws {
         var targetInfo = stat()
         if path.withCString({ Darwin.lstat($0, &targetInfo) }) == 0 {
             guard (targetInfo.st_mode & S_IFMT) == S_IFREG else {
@@ -2617,7 +2493,7 @@ extension ProgramaCLI {
         codexSyncDirectoryAfterCommit(directoryDescriptor, path: parent)
     }
 
-    private func codexRestoreFile(_ snapshot: CodexFileSnapshot?, at path: String) throws {
+    func codexRestoreFile(_ snapshot: CodexFileSnapshot?, at path: String) throws {
         if let snapshot {
             try codexAtomicWrite(snapshot.data, to: path, mode: snapshot.mode)
             return
@@ -2859,7 +2735,7 @@ extension ProgramaCLI {
 
     /// Skill file path under a given skill-directory root (e.g. `~/.claude/skills`,
     /// `~/.agents/skills`, `$OPENCODE_CONFIG_DIR/skills`): `<root>/programa/SKILL.md`.
-    private static func agentSkillFilePath(skillsRoot: String) -> String {
+    static func agentSkillFilePath(skillsRoot: String) -> String {
         (skillsRoot as NSString).appendingPathComponent("programa/SKILL.md")
     }
 
@@ -2869,7 +2745,7 @@ extension ProgramaCLI {
     /// `runCodexInstallHooks` so callers can fold this into a single
     /// "anything changed?" check across multiple files before printing any
     /// diffs or asking for confirmation.
-    private func agentSkillInstallState(path: String) -> (changed: Bool, existing: String?) {
+    func agentSkillInstallState(path: String) -> (changed: Bool, existing: String?) {
         let fm = FileManager.default
         let existing: String? = fm.fileExists(atPath: path)
             ? (try? String(contentsOfFile: path, encoding: .utf8))
@@ -2879,7 +2755,7 @@ extension ProgramaCLI {
 
     /// Prints the agent skill file's diff, matching the format used for the
     /// caller's own primary-artifact diff (new-file listing vs. unified diff).
-    private func printAgentSkillDiff(path: String, existing: String?) {
+    func printAgentSkillDiff(path: String, existing: String?) {
         let new = Self.agentSkillMarkdown
         print("  \(path):")
         if let existing {
@@ -2896,7 +2772,7 @@ extension ProgramaCLI {
     }
 
     /// Writes the agent skill file to `path`, creating its parent directory.
-    private func writeAgentSkillFile(path: String) throws {
+    func writeAgentSkillFile(path: String) throws {
         let fm = FileManager.default
         try fm.createDirectory(
             atPath: (path as NSString).deletingLastPathComponent,
@@ -2911,7 +2787,7 @@ extension ProgramaCLI {
     /// plugin uninstall's marker check: never remove a file that doesn't
     /// look like ours. Returns its content so the caller can print the
     /// removal diff itself before confirming.
-    private func agentSkillUninstallState(path: String) -> String? {
+    func agentSkillUninstallState(path: String) -> String? {
         let fm = FileManager.default
         guard fm.fileExists(atPath: path),
               let content = try? String(contentsOfFile: path, encoding: .utf8),
@@ -2921,13 +2797,13 @@ extension ProgramaCLI {
         return content
     }
 
-    private func printAgentSkillRemovalDiff(path: String, content: String) {
+    func printAgentSkillRemovalDiff(path: String, content: String) {
         print("  \(path):")
         printSimpleDiff(old: content, new: "")
         print("")
     }
 
-    private func removeAgentSkillFileIfManaged(path: String) throws {
+    func removeAgentSkillFileIfManaged(path: String) throws {
         let fm = FileManager.default
         guard fm.fileExists(atPath: path),
               let content = try? String(contentsOfFile: path, encoding: .utf8),
@@ -3180,7 +3056,7 @@ extension ProgramaCLI {
     }
 
     /// Print a unified-diff-style view with context lines and line numbers.
-    private func printSimpleDiff(old: String, new: String, contextLines: Int = 2) {
+    func printSimpleDiff(old: String, new: String, contextLines: Int = 2) {
         let red = "\u{001B}[31m"
         let green = "\u{001B}[32m"
         let dim = "\u{001B}[2m"

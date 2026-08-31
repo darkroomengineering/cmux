@@ -33,39 +33,9 @@ struct GitWorktreeManager {
         case gitCommandFailed(message: String)
     }
 
-    private struct CommandResult {
-        let stdout: String?
-        let stderr: String?
-        let exitStatus: Int32?
-        let timedOut: Bool
-        let executionError: String?
-    }
-
-    private final class CommandOutputCollector: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stdoutData = Data()
-        private var stderrData = Data()
-
-        func storeStdout(_ data: Data) {
-            lock.lock()
-            stdoutData = data
-            lock.unlock()
-        }
-
-        func storeStderr(_ data: Data) {
-            lock.lock()
-            stderrData = data
-            lock.unlock()
-        }
-
-        func snapshot() -> (stdout: Data, stderr: Data) {
-            lock.lock()
-            defer { lock.unlock() }
-            return (stdoutData, stderrData)
-        }
-    }
-
     private static let defaultTimeout: TimeInterval = 15.0
+    private static let commandStdoutLimit = 4 * 1024 * 1024
+    private static let commandStderrLimit = 1024 * 1024
 
     // MARK: - Repo resolution
 
@@ -264,74 +234,21 @@ struct GitWorktreeManager {
             || lowered.contains("use --force")
     }
 
-    // MARK: - Process plumbing (mirrors GitMetadataProber.runCommandResult)
+    // MARK: - Process plumbing
 
     private nonisolated static func runGitCommand(
         directory: String,
         arguments: [String],
         timeout: TimeInterval = defaultTimeout
-    ) -> CommandResult? {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        if let gitPath = resolvedGitExecutablePath() {
-            process.executableURL = URL(fileURLWithPath: gitPath)
-            process.arguments = arguments
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["git"] + arguments
-        }
-        process.currentDirectoryURL = URL(fileURLWithPath: directory)
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        let completion = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in
-            completion.signal()
-        }
-
-        do {
-            try process.run()
-        } catch {
-            return CommandResult(
-                stdout: nil,
-                stderr: nil,
-                exitStatus: nil,
-                timedOut: false,
-                executionError: String(describing: error)
-            )
-        }
-
-        let outputCollector = CommandOutputCollector()
-        let outputReaders = DispatchGroup()
-        outputReaders.enter()
-        DispatchQueue.global(qos: .utility).async {
-            outputCollector.storeStdout(stdout.fileHandleForReading.readDataToEndOfFile())
-            outputReaders.leave()
-        }
-        outputReaders.enter()
-        DispatchQueue.global(qos: .utility).async {
-            outputCollector.storeStderr(stderr.fileHandleForReading.readDataToEndOfFile())
-            outputReaders.leave()
-        }
-
-        if completion.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            if completion.wait(timeout: .now() + 0.2) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                _ = completion.wait(timeout: .now() + 0.2)
-            }
-            return CommandResult(stdout: nil, stderr: nil, exitStatus: nil, timedOut: true, executionError: nil)
-        }
-
-        outputReaders.wait()
-        let output = outputCollector.snapshot()
-        return CommandResult(
-            stdout: String(data: output.stdout, encoding: .utf8),
-            stderr: String(data: output.stderr, encoding: .utf8),
-            exitStatus: process.terminationStatus,
-            timedOut: false,
-            executionError: nil
+    ) -> CanonicalSubprocessResult? {
+        CanonicalSubprocessRunner.run(
+            executable: "git",
+            arguments: arguments,
+            currentDirectory: directory,
+            timeout: timeout,
+            stdoutLimit: commandStdoutLimit,
+            stderrLimit: commandStderrLimit,
+            executableURL: resolvedGitExecutablePath().map { URL(fileURLWithPath: $0) }
         )
     }
 

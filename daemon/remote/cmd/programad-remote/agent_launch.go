@@ -391,15 +391,111 @@ func writeShimIfChanged(path string, content string) error {
 }
 
 func ensureClaudeNodeOptionsRestoreModule() (string, error) {
-	dir := filepath.Join(os.TempDir(), "programa-claude-node-options")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
+	programaDir := filepath.Join(home, ".programa")
+	runtimeDir := filepath.Join(programaDir, "runtime")
+	dir := filepath.Join(runtimeDir, "claude-node-options")
+	for _, component := range []string{programaDir, runtimeDir, dir} {
+		if err := ensureOwnedPrivateDirectory(component); err != nil {
+			return "", err
+		}
+	}
+
 	restoreModulePath := filepath.Join(dir, "restore-node-options.cjs")
-	if err := writeShimIfChanged(restoreModulePath, claudeNodeOptionsRestoreModuleScript); err != nil {
+	if err := writeOwnedPrivateFileAtomically(restoreModulePath, claudeNodeOptionsRestoreModuleScript); err != nil {
 		return "", err
 	}
 	return restoreModulePath, nil
+}
+
+func ensureOwnedPrivateDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		if err := os.Mkdir(path, 0700); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("create secure runtime directory: %w", err)
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect secure runtime directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("secure runtime path is not a real directory")
+	}
+
+	directory, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		return fmt.Errorf("open secure runtime directory: %w", err)
+	}
+	defer directory.Close()
+	openedInfo, err := directory.Stat()
+	if err != nil {
+		return fmt.Errorf("stat secure runtime directory: %w", err)
+	}
+	stat, ok := openedInfo.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("secure runtime directory is not owned by the current user")
+	}
+	if err := directory.Chmod(0700); err != nil {
+		return fmt.Errorf("set secure runtime directory permissions: %w", err)
+	}
+	verifiedInfo, err := directory.Stat()
+	if err != nil || verifiedInfo.Mode().Perm() != 0700 {
+		return fmt.Errorf("verify secure runtime directory permissions")
+	}
+	return nil
+}
+
+func writeOwnedPrivateFileAtomically(path, content string) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("secure runtime file is not a real file")
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Geteuid()) {
+			return fmt.Errorf("secure runtime file is not owned by the current user")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect secure runtime file: %w", err)
+	}
+
+	tempFile, err := os.CreateTemp(filepath.Dir(path), ".restore-node-options.tmp-*")
+	if err != nil {
+		return fmt.Errorf("create secure runtime file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+	if err := tempFile.Chmod(0600); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("set secure runtime file permissions: %w", err)
+	}
+	if _, err := tempFile.WriteString(content); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("write secure runtime file: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("sync secure runtime file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close secure runtime file: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace secure runtime file: %w", err)
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		return fmt.Errorf("verify secure runtime file")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("secure runtime file is not owned by the current user")
+	}
+	return nil
 }
 
 // --- Focused context ---

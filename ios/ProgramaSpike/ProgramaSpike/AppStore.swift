@@ -59,6 +59,7 @@ final class AppStore {
     private let connection = BridgeConnection()
     private var currentTicket: String?
     private var reconnectTask: Task<Void, Never>?
+    private var reconnectGeneration: UInt64 = 0
 
     // MARK: - Live Activity state
     // See the "Live Activity" section below for the full lifecycle. Kept as
@@ -85,11 +86,30 @@ final class AppStore {
     private nonisolated(unsafe) var willTerminateObserver: NSObjectProtocol?
     // `nonisolated(unsafe)` for the same reason as `willTerminateObserver` above.
     private nonisolated(unsafe) var didBecomeActiveObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var cloudKitAccountChangedObserver: NSObjectProtocol?
+    private var cloudKitAccountGeneration: UInt64 = 0
 
     init() {
-        let savedTicket = PairingStore.loadTicket()
+        let savedTicket: String?
+        let credentialLoadError: Error?
+        do {
+            savedTicket = try PairingStore.loadTicket()
+            credentialLoadError = nil
+        } catch {
+            savedTicket = nil
+            credentialLoadError = error
+        }
         pairingTicketDraft = savedTicket ?? ""
         currentTicket = (savedTicket?.isEmpty == false) ? savedTicket : nil
+        if let credentialLoadError {
+            lastSyncError = String.localizedStringWithFormat(
+                String(
+                    localized: "pairing.error.credentialLoadFailed",
+                    defaultValue: "Could not load saved pairing credentials: %@"
+                ),
+                "\(credentialLoadError)"
+            )
+        }
 
         Task { [weak self] in await self?.consumePhase() }
         Task { [weak self] in await self?.consumePath() }
@@ -129,6 +149,16 @@ final class AppStore {
                 await self.reconcileFromCloudKit()
             }
         }
+        cloudKitAccountChangedObserver = NotificationCenter.default.addObserver(
+            forName: .CKAccountChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.reconcileFromCloudKit()
+            }
+        }
     }
 
     // `deinit` is nonisolated even on a @MainActor type, so it cannot read
@@ -137,6 +167,7 @@ final class AppStore {
     deinit {
         Self.removeObserver(willTerminateObserver)
         Self.removeObserver(didBecomeActiveObserver)
+        Self.removeObserver(cloudKitAccountChangedObserver)
     }
 
     private nonisolated static func removeObserver(_ token: NSObjectProtocol?) {
@@ -147,6 +178,7 @@ final class AppStore {
     // MARK: - User actions
 
     func connectManually() async {
+        cancelReconnect()
         var ticket = pairingTicketDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         var token = pairingTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         // A combined `programa-pair://` code pasted straight into the
@@ -157,7 +189,18 @@ final class AppStore {
             if token.isEmpty { token = parsed.token }
         }
         guard !ticket.isEmpty else { return }
-        PairingStore.saveTicket(ticket)
+        do {
+            try PairingStore.saveTicket(ticket)
+        } catch {
+            lastSyncError = String.localizedStringWithFormat(
+                String(
+                    localized: "pairing.error.credentialSaveFailed",
+                    defaultValue: "Could not save pairing credentials: %@"
+                ),
+                "\(error)"
+            )
+            return
+        }
         currentTicket = ticket
         pairingTicketDraft = ticket
         pairingTokenDraft = ""
@@ -191,6 +234,7 @@ final class AppStore {
     }
 
     func returnToPairing() {
+        cancelReconnect()
         stage = .pairing
     }
 
@@ -253,7 +297,8 @@ final class AppStore {
 
     // MARK: - Connection plumbing
 
-    private func attemptConnect(ticket: String, token: String?) async {
+    @discardableResult
+    private func attemptConnect(ticket: String, token: String?) async -> Bool {
         isConnecting = true
         lastSyncError = nil
         defer { isConnecting = false }
@@ -268,8 +313,10 @@ final class AppStore {
                 pairingToken: token,
                 deviceLabel: deviceLabel.isEmpty ? nil : deviceLabel
             )
+            return true
         } catch {
             lastSyncError = "\(error)"
+            return false
         }
     }
 
@@ -277,6 +324,7 @@ final class AppStore {
         for await phase in connection.phaseStream {
             switch phase {
             case .disconnected:
+                cancelReconnect()
                 connectionBanner = .disconnected
                 await endLiveActivity()
             case .connecting, .pairing:
@@ -284,8 +332,7 @@ final class AppStore {
             case .connected:
                 connectionBanner = .connected
                 lastSyncError = nil
-                reconnectTask?.cancel()
-                reconnectTask = nil
+                cancelReconnect()
                 await handleConnected()
             case let .failed(reason):
                 lastSyncError = reason
@@ -296,8 +343,7 @@ final class AppStore {
                     // loop runs the Connect button stays disabled, so the user
                     // cannot enter the token that would actually fix it. Stop,
                     // and put them back on the pairing screen.
-                    reconnectTask?.cancel()
-                    reconnectTask = nil
+                    cancelReconnect()
                     connectionBanner = .disconnected
                     stage = .pairing
                 } else {
@@ -419,12 +465,60 @@ final class AppStore {
 
     private func scheduleReconnect() {
         guard reconnectTask == nil, let ticket = currentTicket, !ticket.isEmpty else { return }
+        reconnectGeneration &+= 1
+        let generation = reconnectGeneration
         reconnectTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            guard let self, !Task.isCancelled else { return }
-            await self.attemptConnect(ticket: ticket, token: nil)
-            self.reconnectTask = nil
+            var delaySeconds = 2
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(delaySeconds))
+                } catch {
+                    return
+                }
+                guard let outcome = await self?.performReconnectAttempt(
+                    ticket: ticket,
+                    generation: generation
+                ) else {
+                    return
+                }
+                switch outcome {
+                case .stale:
+                    return
+                case .connected:
+                    self?.finishReconnect(generation: generation)
+                    return
+                case .retry:
+                    delaySeconds = min(delaySeconds * 2, 30)
+                }
+            }
         }
+    }
+
+    private enum ReconnectAttemptOutcome {
+        case stale
+        case connected
+        case retry
+    }
+
+    private func performReconnectAttempt(
+        ticket: String,
+        generation: UInt64
+    ) async -> ReconnectAttemptOutcome {
+        guard reconnectGeneration == generation, !Task.isCancelled else { return .stale }
+        let connected = await attemptConnect(ticket: ticket, token: nil)
+        guard reconnectGeneration == generation, !Task.isCancelled else { return .stale }
+        return connected ? .connected : .retry
+    }
+
+    private func finishReconnect(generation: UInt64) {
+        guard reconnectGeneration == generation else { return }
+        reconnectTask = nil
+    }
+
+    private func cancelReconnect() {
+        reconnectGeneration &+= 1
+        reconnectTask?.cancel()
+        reconnectTask = nil
     }
 
     // MARK: - Live Activity
@@ -604,8 +698,16 @@ final class AppStore {
     /// Refreshes the iCloud status banner and rebuilds Live Activity state from the last
     /// summary the Mac wrote, independent of whether the iroh bridge is currently connected.
     func reconcileFromCloudKit() async {
-        iCloudAccountStatus = await CloudKitPush.accountStatus()
+        cloudKitAccountGeneration &+= 1
+        let generation = cloudKitAccountGeneration
+        let accountStatus = await CloudKitPush.accountStatus()
+        guard generation == cloudKitAccountGeneration else { return }
+        iCloudAccountStatus = accountStatus
+        guard accountStatus == .available else { return }
+        await CloudKitPush.ensureSubscription()
+        guard generation == cloudKitAccountGeneration else { return }
         guard let summary = await CloudKitPush.fetchSummary() else { return }
+        guard generation == cloudKitAccountGeneration else { return }
         applyCloudKitSummary(summary)
     }
 

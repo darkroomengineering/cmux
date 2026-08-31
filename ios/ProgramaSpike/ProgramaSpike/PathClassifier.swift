@@ -2,9 +2,7 @@ import Darwin
 import Foundation
 import IrohLib
 
-/// Duplicated (not shared) from `tools/mobile-spike/Sources/iroh-spike`; see
-/// that copy's doc comment for why this reimplements — rather than reuses —
-/// `CmuxIrohTransport`'s internal path classification.
+/// The mobile app's user-facing classification of iroh's selected path.
 enum ObservedPath: CustomStringConvertible, Equatable, Sendable {
     case direct
     case privateNetwork
@@ -43,16 +41,47 @@ enum PathClassifier {
         connection: Connection,
         timeout: Duration
     ) async -> ObservedPath {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
-            let classified = classify(connection.paths())
-            if case .unavailable = classified {
-                try? await Task.sleep(for: .milliseconds(100))
-                continue
+        await waitForSelectedPath(
+            timeout: timeout,
+            now: { ContinuousClock.now },
+            selectedPath: { classify(connection.paths()) },
+            sleep: { try await Task.sleep(for: $0) }
+        )
+    }
+
+    static func waitForSelectedPath(
+        timeout: Duration,
+        now: () -> ContinuousClock.Instant,
+        selectedPath: () -> ObservedPath,
+        sleep: (Duration) async throws -> Void
+    ) async -> ObservedPath {
+        let deadline = now().advanced(by: timeout)
+        var lastRelay: ObservedPath?
+        var lastObserved = ObservedPath.unavailable
+
+        while now() < deadline {
+            guard !Task.isCancelled else { return lastRelay ?? lastObserved }
+            let classified = selectedPath()
+            lastObserved = classified
+            switch classified {
+            case .direct, .privateNetwork:
+                return classified
+            case .relay:
+                lastRelay = classified
+            case .unavailable:
+                break
             }
-            return classified
+            do {
+                try await sleep(.milliseconds(100))
+            } catch {
+                // Task.sleep throws on cancellation. Returning the last useful observation
+                // preserves this non-throwing connection-status contract without hot-spinning
+                // until the original deadline.
+                return lastRelay ?? lastObserved
+            }
         }
-        return classify(connection.paths())
+
+        return lastRelay ?? selectedPath()
     }
 
     private static func isPrivateAddress(_ socketAddress: String) -> Bool {

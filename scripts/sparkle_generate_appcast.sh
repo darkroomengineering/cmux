@@ -35,7 +35,7 @@ if [[ -z "${SPARKLE_PRIVATE_KEY:-}" ]]; then
   exit 1
 fi
 
-SPARKLE_VERSION="${SPARKLE_VERSION:-2.9.4}"
+SPARKLE_VERSION="${SPARKLE_VERSION:-2.9.6}"
 DOWNLOAD_URL_PREFIX="${DOWNLOAD_URL_PREFIX:-https://github.com/darkroomengineering/programa/releases/download/$TAG/}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-https://github.com/darkroomengineering/programa/releases/tag/$TAG}"
 

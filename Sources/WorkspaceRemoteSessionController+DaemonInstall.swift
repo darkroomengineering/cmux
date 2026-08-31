@@ -10,6 +10,32 @@ import Darwin
 import Network
 import CoreText
 
+final class RemoteDaemonTransferResult<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<Value, Error>?
+    private var isCancelled = false
+
+    func storeIfActive(_ makeResult: () -> Result<Value, Error>) {
+        lock.lock()
+        if !isCancelled, stored == nil {
+            stored = makeResult()
+        }
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        lock.unlock()
+    }
+
+    func result() -> Result<Value, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+}
+
 extension WorkspaceRemoteSessionController {
     static let remotePlatformProbeOSMarker = "__PROGRAMA_REMOTE_OS__="
     static let remotePlatformProbeArchMarker = "__PROGRAMA_REMOTE_ARCH__="
@@ -259,6 +285,37 @@ extension WorkspaceRemoteSessionController {
             .appendingPathComponent("programad-remote", isDirectory: false)
     }
 
+    static func preserveRemoteDaemonDownload(
+        temporaryURL: URL?,
+        response: URLResponse?,
+        error: Error?,
+        destinationURL: URL,
+        fileManager: FileManager = .default
+    ) -> Result<URL, Error> {
+        if let error {
+            return .failure(error)
+        }
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200 ... 299).contains(httpResponse.statusCode) {
+            return .failure(NSError(domain: "programa.remote.daemon", code: 26, userInfo: [
+                NSLocalizedDescriptionKey: "remote daemon download failed with HTTP \(httpResponse.statusCode)",
+            ]))
+        }
+        guard let temporaryURL else {
+            return .failure(NSError(domain: "programa.remote.daemon", code: 27, userInfo: [
+                NSLocalizedDescriptionKey: "remote daemon download did not produce a file",
+            ]))
+        }
+
+        do {
+            try? fileManager.removeItem(at: destinationURL)
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+            return .success(destinationURL)
+        } catch {
+            return .failure(error)
+        }
+    }
+
     /// Fetch the live manifest JSON from the release, returning nil on any failure.
     static func fetchRemoteManifestLocked(releaseURL: String, version: String) -> WorkspaceRemoteDaemonManifest? {
         guard let manifestURL = URL(string: "\(releaseURL)/programad-remote-manifest.json") else { return nil }
@@ -267,17 +324,32 @@ extension WorkspaceRemoteSessionController {
         request.setValue("programa/\(version)", forHTTPHeaderField: "User-Agent")
         let session = URLSession(configuration: .ephemeral)
         let semaphore = DispatchSemaphore(value: 0)
-        var resultData: Data?
-        session.dataTask(with: request as URLRequest) { data, response, error in
+        let result = RemoteDaemonTransferResult<Data>()
+        let task = session.dataTask(with: request as URLRequest) { data, response, error in
             defer { semaphore.signal() }
-            guard error == nil,
-                  let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode) else { return }
-            resultData = data
-        }.resume()
-        _ = semaphore.wait(timeout: .now() + 20.0)
+            if let error {
+                result.storeIfActive { .failure(error) }
+                return
+            }
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200 ... 299).contains(httpResponse.statusCode),
+                  let data else {
+                result.storeIfActive {
+                    .failure(NSError(domain: "programa.remote.daemon", code: 30, userInfo: nil))
+                }
+                return
+            }
+            result.storeIfActive { .success(data) }
+        }
+        task.resume()
+        guard semaphore.wait(timeout: .now() + 20.0) == .success else {
+            result.cancel()
+            task.cancel()
+            session.invalidateAndCancel()
+            return nil
+        }
         session.finishTasksAndInvalidate()
-        guard let data = resultData else { return nil }
+        guard case .success(let data)? = result.result() else { return nil }
         return try? JSONDecoder().decode(WorkspaceRemoteDaemonManifest.self, from: data)
     }
 
@@ -298,34 +370,40 @@ extension WorkspaceRemoteSessionController {
         let session = URLSession(configuration: .ephemeral)
 
         let semaphore = DispatchSemaphore(value: 0)
-        var downloadedURL: URL?
-        var downloadError: Error?
-        session.downloadTask(with: request as URLRequest) { localURL, response, error in
+        let transferResult = RemoteDaemonTransferResult<URL>()
+        let ownedDownloadURL = cacheURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(cacheURL.lastPathComponent).download-\(UUID().uuidString)")
+        let task = session.downloadTask(with: request as URLRequest) { localURL, response, error in
             defer { semaphore.signal() }
-            if let error {
-                downloadError = error
-                return
+            transferResult.storeIfActive {
+                Self.preserveRemoteDaemonDownload(
+                    temporaryURL: localURL,
+                    response: response,
+                    error: error,
+                    destinationURL: ownedDownloadURL,
+                    fileManager: fileManager
+                )
             }
-            if let httpResponse = response as? HTTPURLResponse,
-               !(200...299).contains(httpResponse.statusCode) {
-                downloadError = NSError(domain: "programa.remote.daemon", code: 26, userInfo: [
-                    NSLocalizedDescriptionKey: "remote daemon download failed with HTTP \(httpResponse.statusCode)",
-                ])
-                return
-            }
-            downloadedURL = localURL
-        }.resume()
-        _ = semaphore.wait(timeout: .now() + 75.0)
+        }
+        task.resume()
+        guard semaphore.wait(timeout: .now() + 75.0) == .success else {
+            transferResult.cancel()
+            task.cancel()
+            session.invalidateAndCancel()
+            try? fileManager.removeItem(at: ownedDownloadURL)
+            throw NSError(domain: "programa.remote.daemon", code: 29, userInfo: [
+                NSLocalizedDescriptionKey: "remote daemon download timed out",
+            ])
+        }
         session.finishTasksAndInvalidate()
 
-        if let downloadError {
-            throw downloadError
-        }
-        guard let downloadedURL else {
+        guard let completedTransfer = transferResult.result() else {
             throw NSError(domain: "programa.remote.daemon", code: 27, userInfo: [
                 NSLocalizedDescriptionKey: "remote daemon download did not produce a file",
             ])
         }
+        let downloadedURL = try completedTransfer.get()
+        defer { try? fileManager.removeItem(at: downloadedURL) }
 
         let downloadedSHA = try Self.sha256Hex(forFile: downloadedURL)
         if downloadedSHA != entry.sha256.lowercased() {
@@ -345,13 +423,9 @@ extension WorkspaceRemoteSessionController {
             }
         }
 
-        let tempURL = cacheURL.deletingLastPathComponent()
-            .appendingPathComponent(".\(cacheURL.lastPathComponent).tmp-\(UUID().uuidString)")
-        try? fileManager.removeItem(at: tempURL)
-        try fileManager.moveItem(at: downloadedURL, to: tempURL)
-        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tempURL.path)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: downloadedURL.path)
         try? fileManager.removeItem(at: cacheURL)
-        try fileManager.moveItem(at: tempURL, to: cacheURL)
+        try fileManager.moveItem(at: downloadedURL, to: cacheURL)
         return cacheURL
     }
 

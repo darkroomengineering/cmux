@@ -24,6 +24,16 @@ enum SessionPersistencePolicy {
     static let maxScrollbackLinesPerTerminal: Int = 4000
     static let maxScrollbackCharactersPerTerminal: Int = 400_000
     static let maxSnapshotHistoryEntries: Int = 10
+    static let maxSnapshotBytes: Int = 128 * 1024 * 1024
+    static let maxJSONNestingDepth: Int = 96
+    static let maxLayoutDepth: Int = 64
+    static let maxLayoutNodesPerWorkspace: Int = (maxPanelsPerWorkspace * 2) - 1
+    static let maxTotalPanelsPerSnapshot: Int = 8_192
+    static let maxMetadataStringBytes: Int = 64 * 1024
+    static let maxPathStringBytes: Int = 16 * 1024
+    static let maxURLStringBytes: Int = 64 * 1024
+    static let maxBrowserHistoryEntriesPerDirection: Int = 2_048
+    static let maxLogEntriesPerWorkspace: Int = 500
 
     static func sanitizedSidebarWidth(_ candidate: Double?) -> Double {
         let fallback = defaultSidebarWidth
@@ -385,11 +395,17 @@ struct AppSessionSnapshot: Codable, Sendable {
 }
 
 enum SessionPersistenceStore {
+    static let historyDirectoryScanLimit = 256
+
+    struct HistoryScanResult {
+        let entries: [URL]
+        let inspectedEntryCount: Int
+    }
+
     static func load(fileURL: URL? = nil) -> AppSessionSnapshot? {
         guard let fileURL = fileURL ?? defaultSnapshotFileURL() else { return nil }
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        let decoder = JSONDecoder()
-        guard let snapshot = try? decoder.decode(AppSessionSnapshot.self, from: data) else { return nil }
+        guard let data = boundedSnapshotData(at: fileURL),
+              let snapshot = decodeSnapshot(from: data) else { return nil }
         guard snapshot.version == SessionSnapshotSchema.currentVersion else { return nil }
         guard !snapshot.windows.isEmpty else { return nil }
         return snapshot
@@ -407,15 +423,28 @@ enum SessionPersistenceStore {
     /// e.g. first launch, is neither -- no diagnostics line, matching `load(fileURL:)`).
     static func loadWithHistoryFallback(fileURL: URL? = nil, historyLookupLimit: Int = 5) -> AppSessionSnapshot? {
         guard let fileURL = fileURL ?? defaultSnapshotFileURL() else { return nil }
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        guard let data = boundedSnapshotData(at: fileURL) else {
+            return fallbackAfterPrimarySnapshotFailure(
+                reason: "read_bounds",
+                fileURL: fileURL,
+                limit: historyLookupLimit
+            )
+        }
 
-        guard let snapshot = try? JSONDecoder().decode(AppSessionSnapshot.self, from: data) else {
-            return fallbackAfterPrimarySnapshotFailure(reason: "decode", fileURL: fileURL, limit: historyLookupLimit)
+        guard let snapshot = decodeSnapshot(from: data) else {
+            return fallbackAfterPrimarySnapshotFailure(
+                reason: "decode_or_limits",
+                fileURL: fileURL,
+                limit: historyLookupLimit
+            )
         }
         guard snapshot.version == SessionSnapshotSchema.currentVersion else {
             return fallbackAfterPrimarySnapshotFailure(reason: "version", fileURL: fileURL, limit: historyLookupLimit)
         }
-        guard !snapshot.windows.isEmpty else { return nil }
+        guard !snapshot.windows.isEmpty else {
+            return fallbackAfterPrimarySnapshotFailure(reason: "empty", fileURL: fileURL, limit: historyLookupLimit)
+        }
         return snapshot
     }
 
@@ -424,11 +453,18 @@ enum SessionPersistenceStore {
         fileURL: URL,
         limit: Int
     ) -> AppSessionSnapshot? {
+        let quarantinedURL = quarantineInvalidSnapshot(fileURL: fileURL)
         guard let fallback = newestRestorableHistorySnapshot(fileURL: fileURL, limit: limit) else {
-            dilog("session.restore", "primary snapshot unusable reason=\(reason) fallback=none")
+            dilog(
+                "session.restore",
+                "primary snapshot unusable reason=\(reason) quarantine=\(quarantinedURL?.lastPathComponent ?? "failed") fallback=none"
+            )
             return nil
         }
-        dilog("session.restore", "primary snapshot unusable reason=\(reason) fallback=\(fallback.filename)")
+        dilog(
+            "session.restore",
+            "primary snapshot unusable reason=\(reason) quarantine=\(quarantinedURL?.lastPathComponent ?? "failed") fallback=\(fallback.filename)"
+        )
         return fallback.snapshot
     }
 
@@ -442,7 +478,7 @@ enum SessionPersistenceStore {
     ) -> (snapshot: AppSessionSnapshot, filename: String)? {
         let candidates = historyFileURLs(fileURL: fileURL).prefix(max(0, limit))
         for entry in candidates {
-            guard let data = try? Data(contentsOf: entry),
+            guard let data = boundedSnapshotData(at: entry),
                   let snapshot = decodeSnapshot(from: data),
                   snapshot.version == SessionSnapshotSchema.currentVersion,
                   !snapshot.windows.isEmpty
@@ -454,12 +490,16 @@ enum SessionPersistenceStore {
 
     @discardableResult
     static func save(_ snapshot: AppSessionSnapshot, fileURL: URL? = nil) -> Bool {
-        guard let fileURL = fileURL ?? defaultSnapshotFileURL() else { return false }
+        guard let fileURL = fileURL ?? defaultSnapshotFileURL(),
+              isStructurallyValid(snapshot) else {
+            return false
+        }
         let directory = fileURL.deletingLastPathComponent()
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
             let data = try encodedSnapshotData(snapshot)
-            if let existingData = try? Data(contentsOf: fileURL), existingData == data {
+            guard data.count <= SessionPersistencePolicy.maxSnapshotBytes else { return false }
+            if let existingData = boundedSnapshotData(at: fileURL), existingData == data {
                 return true
             }
             try data.write(to: fileURL, options: .atomic)
@@ -520,16 +560,25 @@ enum SessionPersistenceStore {
     }
 
     /// Newest-first list of archived snapshot files, or `[]` if none exist yet.
-    static func historyFileURLs(fileURL: URL? = nil) -> [URL] {
+    static func historyFileURLs(
+        fileURL: URL? = nil,
+        scanLimit: Int = historyDirectoryScanLimit
+    ) -> [URL] {
         guard let historyDirectory = historyDirectoryURL(fileURL: fileURL) else { return [] }
-        return historyEntries(in: historyDirectory)
+        return historyEntries(in: historyDirectory, scanLimit: scanLimit).entries
     }
 
     /// Decodes an archived (or live) snapshot file's bytes without enforcing the current
     /// schema version, so a caller can inspect `version`/`cleanShutdown` on an older file
     /// before deciding whether it is restorable.
     static func decodeSnapshot(from data: Data) -> AppSessionSnapshot? {
-        try? JSONDecoder().decode(AppSessionSnapshot.self, from: data)
+        guard data.count <= SessionPersistencePolicy.maxSnapshotBytes,
+              isJSONNestingWithinLimit(data),
+              let snapshot = try? JSONDecoder().decode(AppSessionSnapshot.self, from: data),
+              isStructurallyValid(snapshot) else {
+            return nil
+        }
+        return snapshot
     }
 
     /// The windows a restore should actually reconstruct. Startup restore already clamps to
@@ -553,11 +602,12 @@ enum SessionPersistenceStore {
     static func rotateIntoHistory(
         fileURL: URL? = nil,
         now: Date = Date(),
-        maxHistoryEntries: Int = SessionPersistencePolicy.maxSnapshotHistoryEntries
+        maxHistoryEntries: Int = SessionPersistencePolicy.maxSnapshotHistoryEntries,
+        historyScanObserver: ((HistoryScanResult) -> Void)? = nil
     ) -> Bool {
         guard let fileURL = fileURL ?? defaultSnapshotFileURL(),
               let historyDirectory = historyDirectoryURL(fileURL: fileURL),
-              let data = try? Data(contentsOf: fileURL) else {
+              let data = boundedSnapshotData(at: fileURL) else {
             return false
         }
 
@@ -567,8 +617,10 @@ enum SessionPersistenceStore {
             return false
         }
 
-        if let newestEntry = historyEntries(in: historyDirectory).first,
-           let newestData = try? Data(contentsOf: newestEntry),
+        let duplicateScan = historyEntries(in: historyDirectory, scanLimit: historyDirectoryScanLimit)
+        historyScanObserver?(duplicateScan)
+        if let newestEntry = duplicateScan.entries.first,
+           let newestData = boundedSnapshotData(at: newestEntry),
            newestData == data {
             return false
         }
@@ -606,30 +658,294 @@ enum SessionPersistenceStore {
             return false
         }
 
-        pruneHistory(in: historyDirectory, keeping: maxHistoryEntries)
+        let pruneScan = pruneHistory(in: historyDirectory, keeping: maxHistoryEntries)
+        historyScanObserver?(pruneScan)
         return true
     }
 
-    private static func historyEntries(in directory: URL) -> [URL] {
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return []
+    static func historyScan(
+        fileURL: URL,
+        scanLimit: Int = historyDirectoryScanLimit
+    ) -> HistoryScanResult {
+        guard let historyDirectory = historyDirectoryURL(fileURL: fileURL) else {
+            return HistoryScanResult(entries: [], inspectedEntryCount: 0)
+        }
+        return historyEntries(in: historyDirectory, scanLimit: scanLimit)
+    }
+
+    private static func historyEntries(in directory: URL, scanLimit: Int) -> HistoryScanResult {
+        let boundedLimit = min(max(0, scanLimit), historyDirectoryScanLimit)
+        guard boundedLimit > 0,
+              let enumerator = FileManager.default.enumerator(
+                  at: directory,
+                  includingPropertiesForKeys: nil,
+                  options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+              ) else {
+            return HistoryScanResult(entries: [], inspectedEntryCount: 0)
+        }
+        var inspectedEntryCount = 0
+        var candidates: [URL] = []
+        candidates.reserveCapacity(boundedLimit)
+        while inspectedEntryCount < boundedLimit, let candidate = enumerator.nextObject() as? URL {
+            inspectedEntryCount += 1
+            if candidate.pathExtension == "json" {
+                candidates.append(candidate)
+            }
         }
         // Filenames are `<yyyyMMdd-HHmmss>-<bundleId>.json`; the fixed-width timestamp prefix
         // sorts newest-first lexicographically without needing to parse it back into a Date.
-        return contents
-            .filter { $0.pathExtension == "json" }
-            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+        candidates.sort { $0.lastPathComponent > $1.lastPathComponent }
+        return HistoryScanResult(entries: candidates, inspectedEntryCount: inspectedEntryCount)
     }
 
-    private static func pruneHistory(in directory: URL, keeping maxEntries: Int) {
-        let entries = historyEntries(in: directory)
-        guard entries.count > maxEntries else { return }
-        for staleEntry in entries.dropFirst(maxEntries) {
+    @discardableResult
+    private static func pruneHistory(in directory: URL, keeping maxEntries: Int) -> HistoryScanResult {
+        let scan = historyEntries(in: directory, scanLimit: historyDirectoryScanLimit)
+        for staleEntry in scan.entries.dropFirst(max(0, maxEntries)) {
             try? FileManager.default.removeItem(at: staleEntry)
+        }
+        return scan
+    }
+
+    /// Reads at most one byte beyond the policy cap so a file that changes after its metadata
+    /// is inspected still cannot force an unbounded allocation.
+    static func boundedSnapshotData(
+        at fileURL: URL,
+        maximumBytes: Int = SessionPersistencePolicy.maxSnapshotBytes
+    ) -> Data? {
+        guard maximumBytes >= 0, maximumBytes < Int.max,
+              let handle = try? FileHandle(forReadingFrom: fileURL) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        let data: Data
+        do {
+            data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+        } catch {
+            return nil
+        }
+        return data.count <= maximumBytes ? data : nil
+    }
+
+    /// Rejects adversarial recursive JSON before `JSONDecoder` constructs the indirect layout
+    /// tree. Braces inside strings are ignored, including escaped quotes and backslashes.
+    private static func isJSONNestingWithinLimit(_ data: Data) -> Bool {
+        var depth = 0
+        var inString = false
+        var isEscaped = false
+
+        for byte in data {
+            if inString {
+                if isEscaped {
+                    isEscaped = false
+                } else if byte == 0x5C {
+                    isEscaped = true
+                } else if byte == 0x22 {
+                    inString = false
+                }
+                continue
+            }
+
+            switch byte {
+            case 0x22:
+                inString = true
+            case 0x7B, 0x5B:
+                depth += 1
+                if depth > SessionPersistencePolicy.maxJSONNestingDepth { return false }
+            case 0x7D, 0x5D:
+                depth -= 1
+                if depth < 0 { return false }
+            default:
+                break
+            }
+        }
+
+        return depth == 0 && !inString && !isEscaped
+    }
+
+    private static func isStructurallyValid(_ snapshot: AppSessionSnapshot) -> Bool {
+        guard snapshot.windows.count <= SessionPersistencePolicy.maxWindowsPerSnapshot else {
+            return false
+        }
+
+        var totalPanels = 0
+        for window in snapshot.windows {
+            if let display = window.display,
+               !isValidString(display.stableID) {
+                return false
+            }
+            let workspaces = window.tabManager.workspaces
+            guard workspaces.count <= SessionPersistencePolicy.maxWorkspacesPerWindow else {
+                return false
+            }
+            for workspace in workspaces {
+                guard workspace.panels.count <= SessionPersistencePolicy.maxPanelsPerWorkspace else {
+                    return false
+                }
+                guard isValidString(workspace.processTitle),
+                      isValidString(workspace.customTitle),
+                      isValidString(workspace.customDescription),
+                      isValidString(workspace.customColor),
+                      isValidString(
+                          workspace.currentDirectory,
+                          maxBytes: SessionPersistencePolicy.maxPathStringBytes
+                      ),
+                      workspace.statusEntries.count <= SidebarTelemetryLimits.maxStatusEntries,
+                      workspace.logEntries.count <= SessionPersistencePolicy.maxLogEntriesPerWorkspace,
+                      isValidString(workspace.progress?.label),
+                      isValidString(workspace.gitBranch?.branch),
+                      workspace.statusEntries.allSatisfy(isValidStatusEntry),
+                      workspace.logEntries.allSatisfy(isValidLogEntry),
+                      workspace.panels.allSatisfy(isValidPanel) else {
+                    return false
+                }
+                totalPanels += workspace.panels.count
+                guard totalPanels <= SessionPersistencePolicy.maxTotalPanelsPerSnapshot else {
+                    return false
+                }
+
+                var layoutNodeCount = 0
+                var panelReferenceCount = 0
+                guard isValidLayout(
+                    workspace.layout,
+                    depth: 1,
+                    nodeCount: &layoutNodeCount,
+                    panelReferenceCount: &panelReferenceCount
+                ) else {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    private static func isValidPanel(_ panel: SessionPanelSnapshot) -> Bool {
+        guard isValidString(panel.title),
+              isValidString(panel.customTitle),
+              isValidString(panel.directory, maxBytes: SessionPersistencePolicy.maxPathStringBytes),
+              isValidString(panel.ttyName),
+              isValidString(panel.gitBranch?.branch),
+              panel.listeningPorts.count <= SidebarTelemetryLimits.maxReportedPorts else {
+            return false
+        }
+
+        if let terminal = panel.terminal {
+            guard isValidString(
+                terminal.workingDirectory,
+                maxBytes: SessionPersistencePolicy.maxPathStringBytes
+            ) else {
+                return false
+            }
+            if let scrollback = terminal.scrollback {
+                guard scrollback.count <= SessionPersistencePolicy.maxScrollbackCharactersPerTerminal,
+                      scrollback.utf8.count <= SessionPersistencePolicy.maxScrollbackCharactersPerTerminal * 4 else {
+                    return false
+                }
+            }
+        }
+
+        if let browser = panel.browser {
+            guard isValidString(
+                browser.urlString,
+                maxBytes: SessionPersistencePolicy.maxURLStringBytes
+            ),
+            isValidURLHistory(browser.backHistoryURLStrings),
+            isValidURLHistory(browser.forwardHistoryURLStrings) else {
+                return false
+            }
+        }
+
+        if let markdown = panel.markdown,
+           !isValidString(
+               markdown.filePath,
+               maxBytes: SessionPersistencePolicy.maxPathStringBytes
+           ) {
+            return false
+        }
+        if let review = panel.review,
+           (!isValidString(review.mode) || !isValidString(review.baseBranch)) {
+            return false
+        }
+        return true
+    }
+
+    private static func isValidStatusEntry(_ entry: SessionStatusEntrySnapshot) -> Bool {
+        entry.key.utf8.count <= SidebarTelemetryLimits.maxKeyBytes
+            && entry.value.utf8.count <= SidebarTelemetryLimits.maxStatusValueBytes
+            && SidebarTelemetryLimits.isWithinUTF8Limit(
+                entry.icon,
+                maxBytes: SidebarTelemetryLimits.maxStatusIconBytes
+            )
+            && SidebarTelemetryLimits.isWithinUTF8Limit(
+                entry.color,
+                maxBytes: SidebarTelemetryLimits.maxStatusColorBytes
+            )
+    }
+
+    private static func isValidLogEntry(_ entry: SessionLogEntrySnapshot) -> Bool {
+        entry.message.utf8.count <= SidebarTelemetryLimits.maxLogMessageBytes
+            && entry.level.utf8.count <= SessionPersistencePolicy.maxMetadataStringBytes
+            && SidebarTelemetryLimits.isWithinUTF8Limit(
+                entry.source,
+                maxBytes: SidebarTelemetryLimits.maxLogSourceBytes
+            )
+    }
+
+    private static func isValidURLHistory(_ values: [String]?) -> Bool {
+        guard let values else { return true }
+        return values.count <= SessionPersistencePolicy.maxBrowserHistoryEntriesPerDirection
+            && values.allSatisfy {
+                $0.utf8.count <= SessionPersistencePolicy.maxURLStringBytes
+            }
+    }
+
+    private static func isValidString(
+        _ value: String?,
+        maxBytes: Int = SessionPersistencePolicy.maxMetadataStringBytes
+    ) -> Bool {
+        value.map { $0.utf8.count <= maxBytes } ?? true
+    }
+
+    private static func isValidLayout(
+        _ layout: SessionWorkspaceLayoutSnapshot,
+        depth: Int,
+        nodeCount: inout Int,
+        panelReferenceCount: inout Int
+    ) -> Bool {
+        guard depth <= SessionPersistencePolicy.maxLayoutDepth else { return false }
+        nodeCount += 1
+        guard nodeCount <= SessionPersistencePolicy.maxLayoutNodesPerWorkspace else { return false }
+
+        switch layout {
+        case .pane(let pane):
+            panelReferenceCount += pane.panelIds.count
+            return panelReferenceCount <= SessionPersistencePolicy.maxPanelsPerWorkspace
+        case .split(let split):
+            return isValidLayout(
+                split.first,
+                depth: depth + 1,
+                nodeCount: &nodeCount,
+                panelReferenceCount: &panelReferenceCount
+            ) && isValidLayout(
+                split.second,
+                depth: depth + 1,
+                nodeCount: &nodeCount,
+                panelReferenceCount: &panelReferenceCount
+            )
+        }
+    }
+
+    @discardableResult
+    private static func quarantineInvalidSnapshot(fileURL: URL) -> URL? {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        let quarantineURL = fileURL.deletingPathExtension().appendingPathExtension(
+            "invalid-\(UUID().uuidString).json-quarantine"
+        )
+        do {
+            try FileManager.default.moveItem(at: fileURL, to: quarantineURL)
+            return quarantineURL
+        } catch {
+            return nil
         }
     }
 

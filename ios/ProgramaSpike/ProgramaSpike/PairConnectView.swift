@@ -110,7 +110,7 @@ struct PairConnectView: View {
         guard store.applyPairingCode(trimmed) else {
             pairingCodeError = String(
                 localized: "pairing.connect.error.invalidPastedCode",
-                defaultValue: "That doesn't look like a Programa pairing code. Scan the QR code, or paste the ticket and token below instead."
+                defaultValue: "That doesn't look like a Programa pairing code. Scan the QR code, or paste the full code shown below it on your Mac."
             )
             return
         }

@@ -63,6 +63,8 @@ enum MCPErrorMapping {
             return ("transport_error", message)
         case .invalidResponse(let message):
             return ("invalid_response", message)
+        case .authentication(let message):
+            return ("authentication_error", message)
         }
     }
 }

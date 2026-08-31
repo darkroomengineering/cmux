@@ -41,184 +41,6 @@ struct ContentView: View {
     @State var isSidebarResizerCursorActive = false
     @State var sidebarResizerCursorStabilizer: DispatchSourceTimer?
     @StateObject private var commandPaletteController = CommandPaletteController()
-    private var isCommandPalettePresented: Bool {
-        get { commandPaletteController.isCommandPalettePresented }
-        nonmutating set { commandPaletteController.isCommandPalettePresented = newValue }
-    }
-    private var commandPaletteQuery: String {
-        get { commandPaletteController.commandPaletteQuery }
-        nonmutating set { commandPaletteController.commandPaletteQuery = newValue }
-    }
-    private var commandPaletteMode: CommandPaletteMode {
-        get { commandPaletteController.commandPaletteMode }
-        nonmutating set { commandPaletteController.commandPaletteMode = newValue }
-    }
-    private var commandPaletteRenameDraft: String {
-        get { commandPaletteController.commandPaletteRenameDraft }
-        nonmutating set { commandPaletteController.commandPaletteRenameDraft = newValue }
-    }
-    private var commandPaletteWorkspaceDescriptionDraft: String {
-        get { commandPaletteController.commandPaletteWorkspaceDescriptionDraft }
-        nonmutating set { commandPaletteController.commandPaletteWorkspaceDescriptionDraft = newValue }
-    }
-    private var commandPaletteWorkspaceDescriptionHeight: CGFloat {
-        get { commandPaletteController.commandPaletteWorkspaceDescriptionHeight }
-        nonmutating set { commandPaletteController.commandPaletteWorkspaceDescriptionHeight = newValue }
-    }
-    private var commandPaletteSelectedResultIndex: Int {
-        get { commandPaletteController.commandPaletteSelectedResultIndex }
-        nonmutating set { commandPaletteController.commandPaletteSelectedResultIndex = newValue }
-    }
-    private var commandPaletteSelectionAnchorCommandID: String? {
-        get { commandPaletteController.commandPaletteSelectionAnchorCommandID }
-        nonmutating set { commandPaletteController.commandPaletteSelectionAnchorCommandID = newValue }
-    }
-    private var commandPaletteHoveredResultIndex: Int? {
-        get { commandPaletteController.commandPaletteHoveredResultIndex }
-        nonmutating set { commandPaletteController.commandPaletteHoveredResultIndex = newValue }
-    }
-    private var commandPaletteScrollTargetIndex: Int? {
-        get { commandPaletteController.commandPaletteScrollTargetIndex }
-        nonmutating set { commandPaletteController.commandPaletteScrollTargetIndex = newValue }
-    }
-    private var commandPaletteScrollTargetAnchor: UnitPoint? {
-        get { commandPaletteController.commandPaletteScrollTargetAnchor }
-        nonmutating set { commandPaletteController.commandPaletteScrollTargetAnchor = newValue }
-    }
-    private var commandPaletteRestoreFocusTarget: CommandPaletteRestoreFocusTarget? {
-        get { commandPaletteController.commandPaletteRestoreFocusTarget }
-        nonmutating set { commandPaletteController.commandPaletteRestoreFocusTarget = newValue }
-    }
-    private var commandPaletteSearchCorpus: [CommandPaletteSearchCorpusEntry<String>] {
-        get { commandPaletteController.commandPaletteSearchCorpus }
-        nonmutating set { commandPaletteController.commandPaletteSearchCorpus = newValue }
-    }
-    private var commandPaletteSearchCorpusByID: [String: CommandPaletteSearchCorpusEntry<String>] {
-        get { commandPaletteController.commandPaletteSearchCorpusByID }
-        nonmutating set { commandPaletteController.commandPaletteSearchCorpusByID = newValue }
-    }
-    private var commandPaletteSearchCommandsByID: [String: CommandPaletteCommand] {
-        get { commandPaletteController.commandPaletteSearchCommandsByID }
-        nonmutating set { commandPaletteController.commandPaletteSearchCommandsByID = newValue }
-    }
-    private var cachedCommandPaletteResults: [CommandPaletteSearchResult] {
-        get { commandPaletteController.cachedCommandPaletteResults }
-        nonmutating set { commandPaletteController.cachedCommandPaletteResults = newValue }
-    }
-    private var commandPaletteVisibleResults: [CommandPaletteSearchResult] {
-        get { commandPaletteController.commandPaletteVisibleResults }
-        nonmutating set { commandPaletteController.commandPaletteVisibleResults = newValue }
-    }
-    private var commandPaletteVisibleResultsScope: CommandPaletteListScope? {
-        get { commandPaletteController.commandPaletteVisibleResultsScope }
-        nonmutating set { commandPaletteController.commandPaletteVisibleResultsScope = newValue }
-    }
-    private var commandPaletteVisibleResultsFingerprint: Int? {
-        get { commandPaletteController.commandPaletteVisibleResultsFingerprint }
-        nonmutating set { commandPaletteController.commandPaletteVisibleResultsFingerprint = newValue }
-    }
-    private var cachedCommandPaletteScope: CommandPaletteListScope? {
-        get { commandPaletteController.cachedCommandPaletteScope }
-        nonmutating set { commandPaletteController.cachedCommandPaletteScope = newValue }
-    }
-    private var cachedCommandPaletteFingerprint: Int? {
-        get { commandPaletteController.cachedCommandPaletteFingerprint }
-        nonmutating set { commandPaletteController.cachedCommandPaletteFingerprint = newValue }
-    }
-    private var commandPalettePendingDismissFocusTarget: CommandPaletteRestoreFocusTarget? {
-        get { commandPaletteController.commandPalettePendingDismissFocusTarget }
-        nonmutating set { commandPaletteController.commandPalettePendingDismissFocusTarget = newValue }
-    }
-    private var commandPaletteRestoreTimeoutWorkItem: DispatchWorkItem? {
-        get { commandPaletteController.commandPaletteRestoreTimeoutWorkItem }
-        nonmutating set { commandPaletteController.commandPaletteRestoreTimeoutWorkItem = newValue }
-    }
-    private var commandPalettePendingTextSelectionBehavior: CommandPaletteTextSelectionBehavior? {
-        get { commandPaletteController.commandPalettePendingTextSelectionBehavior }
-        nonmutating set { commandPaletteController.commandPalettePendingTextSelectionBehavior = newValue }
-    }
-    private var commandPaletteSearchTask: Task<Void, Never>? {
-        get { commandPaletteController.commandPaletteSearchTask }
-        nonmutating set { commandPaletteController.commandPaletteSearchTask = newValue }
-    }
-    private var commandPaletteSearchRequestID: UInt64 {
-        get { commandPaletteController.commandPaletteSearchRequestID }
-        nonmutating set { commandPaletteController.commandPaletteSearchRequestID = newValue }
-    }
-    private var commandPaletteResolvedSearchRequestID: UInt64 {
-        get { commandPaletteController.commandPaletteResolvedSearchRequestID }
-        nonmutating set { commandPaletteController.commandPaletteResolvedSearchRequestID = newValue }
-    }
-    private var commandPaletteResolvedSearchScope: CommandPaletteListScope? {
-        get { commandPaletteController.commandPaletteResolvedSearchScope }
-        nonmutating set { commandPaletteController.commandPaletteResolvedSearchScope = newValue }
-    }
-    private var commandPaletteResolvedSearchFingerprint: Int? {
-        get { commandPaletteController.commandPaletteResolvedSearchFingerprint }
-        nonmutating set { commandPaletteController.commandPaletteResolvedSearchFingerprint = newValue }
-    }
-    private var commandPaletteResolvedMatchingQuery: String {
-        get { commandPaletteController.commandPaletteResolvedMatchingQuery }
-        nonmutating set { commandPaletteController.commandPaletteResolvedMatchingQuery = newValue }
-    }
-    private var commandPaletteTerminalOpenTargetAvailability: Set<TerminalDirectoryOpenTarget> {
-        get { commandPaletteController.commandPaletteTerminalOpenTargetAvailability }
-        nonmutating set { commandPaletteController.commandPaletteTerminalOpenTargetAvailability = newValue }
-    }
-    private var isCommandPaletteSearchPending: Bool {
-        get { commandPaletteController.isCommandPaletteSearchPending }
-        nonmutating set { commandPaletteController.isCommandPaletteSearchPending = newValue }
-    }
-    private var commandPalettePendingActivation: CommandPalettePendingActivation? {
-        get { commandPaletteController.commandPalettePendingActivation }
-        nonmutating set { commandPaletteController.commandPalettePendingActivation = newValue }
-    }
-    private var commandPaletteResultsRevision: UInt64 {
-        get { commandPaletteController.commandPaletteResultsRevision }
-        nonmutating set { commandPaletteController.commandPaletteResultsRevision = newValue }
-    }
-    private var commandPaletteUsageHistoryByCommandId: [String: CommandPaletteUsageEntry] {
-        get { commandPaletteController.commandPaletteUsageHistoryByCommandId }
-        nonmutating set { commandPaletteController.commandPaletteUsageHistoryByCommandId = newValue }
-    }
-    private var commandPaletteSearchAllSurfaces: Bool {
-        get { commandPaletteController.commandPaletteSearchAllSurfaces }
-        nonmutating set { commandPaletteController.commandPaletteSearchAllSurfaces = newValue }
-    }
-    private var commandPaletteShouldFocusWorkspaceDescriptionEditor: Bool {
-        get { commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor }
-        nonmutating set { commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor = newValue }
-    }
-    private var commandPaletteQueryBinding: Binding<String> {
-        Binding(
-            get: { commandPaletteController.commandPaletteQuery },
-            set: { commandPaletteController.commandPaletteQuery = $0 }
-        )
-    }
-    private var commandPaletteRenameDraftBinding: Binding<String> {
-        Binding(
-            get: { commandPaletteController.commandPaletteRenameDraft },
-            set: { commandPaletteController.commandPaletteRenameDraft = $0 }
-        )
-    }
-    private var commandPaletteWorkspaceDescriptionDraftBinding: Binding<String> {
-        Binding(
-            get: { commandPaletteController.commandPaletteWorkspaceDescriptionDraft },
-            set: { commandPaletteController.commandPaletteWorkspaceDescriptionDraft = $0 }
-        )
-    }
-    private var commandPaletteWorkspaceDescriptionHeightBinding: Binding<CGFloat> {
-        Binding(
-            get: { commandPaletteController.commandPaletteWorkspaceDescriptionHeight },
-            set: { commandPaletteController.commandPaletteWorkspaceDescriptionHeight = $0 }
-        )
-    }
-    private var commandPaletteShouldFocusWorkspaceDescriptionEditorBinding: Binding<Bool> {
-        Binding(
-            get: { commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor },
-            set: { commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor = $0 }
-        )
-    }
     @FocusState private var isCommandPaletteSearchFocused: Bool
     @FocusState private var isCommandPaletteRenameFocused: Bool
 
@@ -1196,7 +1018,7 @@ struct ContentView: View {
                 attemptCommandPaletteTextSelectionIfNeeded()
             }
             .onReceive(NotificationCenter.default.publisher(for: NSText.didBeginEditingNotification)) { notification in
-                guard commandPalettePendingTextSelectionBehavior != nil else { return }
+                guard commandPaletteController.commandPalettePendingTextSelectionBehavior != nil else { return }
                 guard let editor = notification.object as? NSTextView,
                       editor.isFieldEditor else { return }
                 guard let observedWindow else { return }
@@ -1290,7 +1112,7 @@ struct ContentView: View {
                 openCommandPaletteSwitcher()
             }
             .onReceive(NotificationCenter.default.publisher(for: .commandPaletteSubmitRequested)) { notification in
-                guard isCommandPalettePresented else { return }
+                guard commandPaletteController.isCommandPalettePresented else { return }
                 let requestedWindow = notification.object as? NSWindow
                 guard Self.shouldHandleCommandPaletteRequest(
                     observedWindow: observedWindow,
@@ -1301,7 +1123,7 @@ struct ContentView: View {
                 handleCommandPaletteSubmitRequest()
             }
             .onReceive(NotificationCenter.default.publisher(for: .commandPaletteDismissRequested)) { notification in
-                guard isCommandPalettePresented else { return }
+                guard commandPaletteController.isCommandPalettePresented else { return }
                 let requestedWindow = notification.object as? NSWindow
                 guard Self.shouldHandleCommandPaletteRequest(
                     observedWindow: observedWindow,
@@ -1343,16 +1165,16 @@ struct ContentView: View {
                 dlog(
                     "palette.wsDescription.request observed={\(debugCommandPaletteWindowSummary(observedWindow))} " +
                     "requested={\(debugCommandPaletteWindowSummary(requestedWindow))} " +
-                    "shouldHandle=\(shouldHandle ? 1 : 0) presented=\(isCommandPalettePresented ? 1 : 0) " +
-                    "mode=\(debugCommandPaletteModeLabel(commandPaletteMode))"
+                    "shouldHandle=\(shouldHandle ? 1 : 0) presented=\(commandPaletteController.isCommandPalettePresented ? 1 : 0) " +
+                    "mode=\(debugCommandPaletteModeLabel(commandPaletteController.commandPaletteMode))"
                 )
     #endif
                 guard shouldHandle else { return }
                 openCommandPaletteWorkspaceDescriptionInput()
             }
             .onReceive(NotificationCenter.default.publisher(for: .commandPaletteMoveSelection)) { notification in
-                guard isCommandPalettePresented else { return }
-                guard case .commands = commandPaletteMode else { return }
+                guard commandPaletteController.isCommandPalettePresented else { return }
+                guard case .commands = commandPaletteController.commandPaletteMode else { return }
                 let requestedWindow = notification.object as? NSWindow
                 guard Self.shouldHandleCommandPaletteRequest(
                     observedWindow: observedWindow,
@@ -1364,8 +1186,8 @@ struct ContentView: View {
                 moveCommandPaletteSelection(by: delta)
             }
             .onReceive(NotificationCenter.default.publisher(for: .commandPaletteRenameInputInteractionRequested)) { notification in
-                guard isCommandPalettePresented else { return }
-                guard case .renameInput = commandPaletteMode else { return }
+                guard commandPaletteController.isCommandPalettePresented else { return }
+                guard case .renameInput = commandPaletteController.commandPaletteMode else { return }
                 let requestedWindow = notification.object as? NSWindow
                 guard Self.shouldHandleCommandPaletteRequest(
                     observedWindow: observedWindow,
@@ -1376,8 +1198,8 @@ struct ContentView: View {
                 handleCommandPaletteRenameInputInteraction()
             }
             .onReceive(NotificationCenter.default.publisher(for: .commandPaletteRenameInputDeleteBackwardRequested)) { notification in
-                guard isCommandPalettePresented else { return }
-                guard case .renameInput = commandPaletteMode else { return }
+                guard commandPaletteController.isCommandPalettePresented else { return }
+                guard case .renameInput = commandPaletteController.commandPaletteMode else { return }
                 let requestedWindow = notification.object as? NSWindow
                 guard Self.shouldHandleCommandPaletteRequest(
                     observedWindow: observedWindow,
@@ -1407,7 +1229,7 @@ struct ContentView: View {
                     let tmuxOverlayController = tmuxWorkspacePaneWindowOverlayController(for: window)
                     tmuxOverlayController.update(state: tmuxWorkspacePaneWindowOverlayState(for: window))
                     let overlayController = commandPaletteWindowOverlayController(for: window)
-                    overlayController.update(rootView: AnyView(commandPaletteOverlay), isVisible: isCommandPalettePresented)
+                    overlayController.update(rootView: AnyView(commandPaletteOverlay), isVisible: commandPaletteController.isCommandPalettePresented)
                 }
             })
     }
@@ -1950,7 +1772,7 @@ struct ContentView: View {
                     .accessibilityIdentifier("CommandPaletteBackdrop")
 
                 VStack(spacing: 0) {
-                    switch commandPaletteMode {
+                    switch commandPaletteController.commandPaletteMode {
                     case .commands:
                         commandPaletteCommandListView
                     case .renameInput(let target):
@@ -1985,9 +1807,9 @@ struct ContentView: View {
     }
 
     private var commandPaletteCommandListView: some View {
-        let visibleResults = commandPaletteVisibleResults
+        let visibleResults = commandPaletteController.commandPaletteVisibleResults
         let selectedIndex = commandPaletteSelectedIndex(resultCount: visibleResults.count)
-        let commandPaletteListIdentity = "\(commandPaletteListScope.rawValue):\(commandPaletteQuery)"
+        let commandPaletteListIdentity = "\(commandPaletteListScope.rawValue):\(commandPaletteController.commandPaletteQuery)"
         let commandPaletteListMaxHeight: CGFloat = 450
         let commandPaletteRowHeight: CGFloat = 24
         let commandPaletteEmptyStateHeight: CGFloat = 44
@@ -1999,7 +1821,7 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 CommandPaletteSearchFieldRepresentable(
                     placeholder: commandPaletteSearchPlaceholder,
-                    text: commandPaletteQueryBinding,
+                    text: $commandPaletteController.commandPaletteQuery,
                     isFocused: Binding(
                         get: { isCommandPaletteSearchFocused },
                         set: { isCommandPaletteSearchFocused = $0 }
@@ -2035,7 +1857,7 @@ struct ContentView: View {
                     } else {
                         ForEach(Array(visibleResults.enumerated()), id: \.element.id) { index, result in
                             let isSelected = index == selectedIndex
-                            let isHovered = commandPaletteHoveredResultIndex == index
+                            let isHovered = commandPaletteController.commandPaletteHoveredResultIndex == index
                             let trailingLabel = commandPaletteTrailingLabel(for: result.command)
                             let rowBackground: Color = isSelected
                                 ? programaAccentColor().opacity(0.12)
@@ -2061,9 +1883,9 @@ struct ContentView: View {
                             .id(index)
                             .onHover { hovering in
                                 if hovering {
-                                    commandPaletteHoveredResultIndex = index
-                                } else if commandPaletteHoveredResultIndex == index {
-                                    commandPaletteHoveredResultIndex = nil
+                                    commandPaletteController.commandPaletteHoveredResultIndex = index
+                                } else if commandPaletteController.commandPaletteHoveredResultIndex == index {
+                                    commandPaletteController.commandPaletteHoveredResultIndex = nil
                                 }
                             }
                         }
@@ -2075,13 +1897,13 @@ struct ContentView: View {
             .frame(height: commandPaletteListHeight)
             .scrollPosition(
                 id: Binding(
-                    get: { commandPaletteScrollTargetIndex },
+                    get: { commandPaletteController.commandPaletteScrollTargetIndex },
                     // Ignore passive readback so manual scrolling doesn't mutate selection-follow state.
                     set: { _ in }
                 ),
-                anchor: commandPaletteScrollTargetAnchor
+                anchor: commandPaletteController.commandPaletteScrollTargetAnchor
             )
-            .onChange(of: commandPaletteSelectedResultIndex) {
+            .onChange(of: commandPaletteController.commandPaletteSelectedResultIndex) {
                 updateCommandPaletteScrollTarget(resultCount: visibleResults.count, animated: true)
             }
 
@@ -2096,28 +1918,28 @@ struct ContentView: View {
             .accessibilityHidden(true)
         }
         .onAppear {
-            commandPaletteHoveredResultIndex = nil
-            updateCommandPaletteScrollTarget(resultCount: commandPaletteVisibleResults.count, animated: false)
+            commandPaletteController.commandPaletteHoveredResultIndex = nil
+            updateCommandPaletteScrollTarget(resultCount: commandPaletteController.commandPaletteVisibleResults.count, animated: false)
             resetCommandPaletteSearchFocus()
         }
-        .onChange(of: commandPaletteQuery) { oldValue, newValue in
-            commandPaletteSelectedResultIndex = 0
-            commandPaletteSelectionAnchorCommandID = nil
-            commandPaletteHoveredResultIndex = nil
-            commandPaletteScrollTargetIndex = nil
-            commandPaletteScrollTargetAnchor = nil
+        .onChange(of: commandPaletteController.commandPaletteQuery) { oldValue, newValue in
+            commandPaletteController.commandPaletteSelectedResultIndex = 0
+            commandPaletteController.commandPaletteSelectionAnchorCommandID = nil
+            commandPaletteController.commandPaletteHoveredResultIndex = nil
+            commandPaletteController.commandPaletteScrollTargetIndex = nil
+            commandPaletteController.commandPaletteScrollTargetAnchor = nil
             if Self.commandPaletteShouldResetVisibleResultsForQueryTransition(
                 oldQuery: oldValue,
                 newQuery: newValue,
-                hasVisibleResults: commandPaletteVisibleResultsScope != nil
+                hasVisibleResults: commandPaletteController.commandPaletteVisibleResultsScope != nil
             ) {
-                cachedCommandPaletteResults = []
-                commandPaletteVisibleResults = []
-                commandPaletteVisibleResultsScope = nil
-                commandPaletteVisibleResultsFingerprint = nil
+                commandPaletteController.cachedCommandPaletteResults = []
+                commandPaletteController.commandPaletteVisibleResults = []
+                commandPaletteController.commandPaletteVisibleResultsScope = nil
+                commandPaletteController.commandPaletteVisibleResultsFingerprint = nil
             }
             scheduleCommandPaletteResultsRefresh(query: newValue)
-            updateCommandPaletteScrollTarget(resultCount: commandPaletteVisibleResults.count, animated: false)
+            updateCommandPaletteScrollTarget(resultCount: commandPaletteController.commandPaletteVisibleResults.count, animated: false)
             syncCommandPaletteDebugStateForObservedWindow()
         }
         .onChange(of: commandPaletteCurrentSearchFingerprint) {
@@ -2126,29 +1948,29 @@ struct ContentView: View {
                 // cannot rebuild the old command list after deleting the ">" prefix.
                 await Task.yield()
                 scheduleCommandPaletteResultsRefresh(
-                    query: commandPaletteQuery,
+                    query: commandPaletteController.commandPaletteQuery,
                     forceSearchCorpusRefresh: true
                 )
-                updateCommandPaletteScrollTarget(resultCount: commandPaletteVisibleResults.count, animated: false)
+                updateCommandPaletteScrollTarget(resultCount: commandPaletteController.commandPaletteVisibleResults.count, animated: false)
                 syncCommandPaletteDebugStateForObservedWindow()
             }
         }
-        .onChange(of: commandPaletteResultsRevision) {
-            let resultIDs = cachedCommandPaletteResults.map(\.id)
-            commandPaletteSelectedResultIndex = Self.commandPaletteResolvedSelectionIndex(
-                preferredCommandID: commandPaletteSelectionAnchorCommandID,
-                fallbackSelectedIndex: commandPaletteSelectedResultIndex,
+        .onChange(of: commandPaletteController.commandPaletteResultsRevision) {
+            let resultIDs = commandPaletteController.cachedCommandPaletteResults.map(\.id)
+            commandPaletteController.commandPaletteSelectedResultIndex = Self.commandPaletteResolvedSelectionIndex(
+                preferredCommandID: commandPaletteController.commandPaletteSelectionAnchorCommandID,
+                fallbackSelectedIndex: commandPaletteController.commandPaletteSelectedResultIndex,
                 resultIDs: resultIDs
             )
             syncCommandPaletteSelectionAnchorFromCurrentResults()
-            let visibleResultCount = commandPaletteVisibleResults.count
+            let visibleResultCount = commandPaletteController.commandPaletteVisibleResults.count
             updateCommandPaletteScrollTarget(resultCount: visibleResultCount, animated: false)
-            if let hoveredIndex = commandPaletteHoveredResultIndex, hoveredIndex >= visibleResultCount {
-                commandPaletteHoveredResultIndex = nil
+            if let hoveredIndex = commandPaletteController.commandPaletteHoveredResultIndex, hoveredIndex >= visibleResultCount {
+                commandPaletteController.commandPaletteHoveredResultIndex = nil
             }
             syncCommandPaletteDebugStateForObservedWindow()
         }
-        .onChange(of: commandPaletteSelectedResultIndex) {
+        .onChange(of: commandPaletteController.commandPaletteSelectedResultIndex) {
             syncCommandPaletteDebugStateForObservedWindow()
         }
     }
@@ -2219,7 +2041,7 @@ struct ContentView: View {
                     onDeleteBackward: handleCommandPaletteRenameDeleteBackward(modifiers:)
                 ),
                 placeholder: target.placeholder,
-                text: commandPaletteRenameDraftBinding,
+                text: $commandPaletteController.commandPaletteRenameDraft,
                 onSubmit: { _ in continueRenameFlow(target: target) },
                 onEscape: { dismissCommandPalette() },
                 onInteraction: handleCommandPaletteRenameInputInteraction
@@ -2303,12 +2125,12 @@ struct ContentView: View {
                         localized: "command.editWorkspaceDescription.title",
                         defaultValue: "Edit Workspace Description…"
                     ),
-                    focus: commandPaletteShouldFocusWorkspaceDescriptionEditorBinding,
-                    measuredHeight: commandPaletteWorkspaceDescriptionHeightBinding,
+                    focus: $commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor,
+                    measuredHeight: $commandPaletteController.commandPaletteWorkspaceDescriptionHeight,
                     maxHeight: maxEditorHeight
                 ),
                 placeholder: target.placeholder,
-                text: commandPaletteWorkspaceDescriptionDraftBinding,
+                text: $commandPaletteController.commandPaletteWorkspaceDescriptionDraft,
                 onSubmit: { proposedDescription in
                     applyWorkspaceDescriptionFlow(target: target, proposedDescription: proposedDescription)
                 },
@@ -2331,18 +2153,18 @@ struct ContentView: View {
 #if DEBUG
             dlog(
                 "palette.wsDescription.view.appear workspace=\(target.workspaceId.uuidString.prefix(8)) " +
-                "draftLen=\((commandPaletteWorkspaceDescriptionDraft as NSString).length) " +
-                "height=\(String(format: "%.1f", commandPaletteWorkspaceDescriptionHeight)) " +
-                "focusFlag=\(commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0)"
+                "draftLen=\((commandPaletteController.commandPaletteWorkspaceDescriptionDraft as NSString).length) " +
+                "height=\(String(format: "%.1f", commandPaletteController.commandPaletteWorkspaceDescriptionHeight)) " +
+                "focusFlag=\(commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0)"
             )
 #endif
             resetCommandPaletteWorkspaceDescriptionFocus()
         }
-        .onChange(of: commandPaletteShouldFocusWorkspaceDescriptionEditor) { _, newValue in
+        .onChange(of: commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor) { _, newValue in
 #if DEBUG
             dlog(
                 "palette.wsDescription.focus.binding new=\(newValue ? 1 : 0) " +
-                "mode=\(debugCommandPaletteModeLabel(commandPaletteMode)) " +
+                "mode=\(debugCommandPaletteModeLabel(commandPaletteController.commandPaletteMode)) " +
                 "window={\(debugCommandPaletteWindowSummary(observedWindow ?? NSApp.keyWindow ?? NSApp.mainWindow))} " +
                 "fr=\(debugCommandPaletteResponderSummary((observedWindow ?? NSApp.keyWindow ?? NSApp.mainWindow)?.firstResponder))"
             )
@@ -3169,7 +2991,7 @@ struct ContentView: View {
     }
 
     private var commandPaletteListScope: CommandPaletteListScope {
-        Self.commandPaletteListScope(for: commandPaletteQuery)
+        Self.commandPaletteListScope(for: commandPaletteController.commandPaletteQuery)
     }
 
     private var commandPaletteCurrentSearchFingerprint: Int {
@@ -3183,8 +3005,8 @@ struct ContentView: View {
 
     var commandPaletteSwitcherIncludesSurfaceEntries: Bool {
         Self.commandPaletteSwitcherIncludesSurfaceEntries(
-            searchAllSurfaces: commandPaletteSearchAllSurfaces,
-            query: commandPaletteQuery
+            searchAllSurfaces: commandPaletteController.commandPaletteSearchAllSurfaces,
+            query: commandPaletteController.commandPaletteQuery
         )
     }
 
@@ -3193,7 +3015,7 @@ struct ContentView: View {
         case .commands:
             return String(localized: "commandPalette.search.commandsPlaceholder", defaultValue: "Type a command")
         case .switcher:
-            return commandPaletteSearchAllSurfaces
+            return commandPaletteController.commandPaletteSearchAllSurfaces
                 ? String(localized: "commandPalette.search.switcherPlaceholderAllSurfaces", defaultValue: "Search workspaces and surfaces")
                 : String(localized: "commandPalette.search.switcherPlaceholder", defaultValue: "Search workspaces")
         }
@@ -3204,7 +3026,7 @@ struct ContentView: View {
         case .commands:
             return String(localized: "commandPalette.search.commandsEmpty", defaultValue: "No commands match your search.")
         case .switcher:
-            return commandPaletteSearchAllSurfaces
+            return commandPaletteController.commandPaletteSearchAllSurfaces
                 ? String(localized: "commandPalette.search.switcherEmptyAllSurfaces", defaultValue: "No workspaces or surfaces match your search.")
                 : String(localized: "commandPalette.search.switcherEmpty", defaultValue: "No workspaces match your search.")
         }
@@ -3212,7 +3034,7 @@ struct ContentView: View {
 
     private var commandPaletteQueryForMatching: String {
         Self.commandPaletteQueryForMatching(
-            query: commandPaletteQuery,
+            query: commandPaletteController.commandPaletteQuery,
             scope: commandPaletteListScope
         )
     }
@@ -3222,17 +3044,17 @@ struct ContentView: View {
         query: String? = nil
     ) {
         let effectiveQuery = Self.commandPaletteRefreshQuery(
-            stateQuery: commandPaletteQuery,
+            stateQuery: commandPaletteController.commandPaletteQuery,
             observedQuery: query
         )
         let scope = Self.commandPaletteListScope(for: effectiveQuery)
         let includeSurfaces = Self.commandPaletteSwitcherIncludesSurfaceEntries(
-            searchAllSurfaces: commandPaletteSearchAllSurfaces,
+            searchAllSurfaces: commandPaletteController.commandPaletteSearchAllSurfaces,
             query: effectiveQuery
         )
         let terminalOpenTargets = resolveCommandPaletteTerminalOpenTargets(for: scope)
-        if commandPaletteTerminalOpenTargetAvailability != terminalOpenTargets {
-            commandPaletteTerminalOpenTargetAvailability = terminalOpenTargets
+        if commandPaletteController.commandPaletteTerminalOpenTargetAvailability != terminalOpenTargets {
+            commandPaletteController.commandPaletteTerminalOpenTargetAvailability = terminalOpenTargets
         }
         let commandsContext = scope == .commands
             ? commandPaletteCommandsContext(terminalOpenTargets: terminalOpenTargets)
@@ -3242,7 +3064,7 @@ struct ContentView: View {
             includeSurfaces: includeSurfaces,
             commandsContext: commandsContext
         )
-        guard force || cachedCommandPaletteScope != scope || cachedCommandPaletteFingerprint != fingerprint else {
+        guard force || commandPaletteController.cachedCommandPaletteScope != scope || commandPaletteController.cachedCommandPaletteFingerprint != fingerprint else {
             return
         }
 
@@ -3251,7 +3073,7 @@ struct ContentView: View {
             includeSurfaces: includeSurfaces,
             commandsContext: commandsContext
         )
-        commandPaletteSearchCommandsByID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+        commandPaletteController.commandPaletteSearchCommandsByID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
         let searchCorpus = entries.map { entry in
             CommandPaletteSearchCorpusEntry(
                 payload: entry.id,
@@ -3260,15 +3082,14 @@ struct ContentView: View {
                 searchableTexts: entry.searchableTexts
             )
         }
-        commandPaletteSearchCorpus = searchCorpus
-        commandPaletteSearchCorpusByID = Dictionary(uniqueKeysWithValues: searchCorpus.map { ($0.payload, $0) })
-        cachedCommandPaletteScope = scope
-        cachedCommandPaletteFingerprint = fingerprint
+        commandPaletteController.commandPaletteSearchCorpus = searchCorpus
+        commandPaletteController.commandPaletteSearchCorpusByID = Dictionary(uniqueKeysWithValues: searchCorpus.map { ($0.payload, $0) })
+        commandPaletteController.cachedCommandPaletteScope = scope
+        commandPaletteController.cachedCommandPaletteFingerprint = fingerprint
     }
 
     private func cancelCommandPaletteSearch() {
-        commandPaletteSearchTask?.cancel()
-        commandPaletteSearchTask = nil
+        commandPaletteController.cancelSearch()
     }
 
     private func setCommandPaletteVisibleResults(
@@ -3276,9 +3097,7 @@ struct ContentView: View {
         scope: CommandPaletteListScope,
         fingerprint: Int?
     ) {
-        commandPaletteVisibleResults = results
-        commandPaletteVisibleResultsScope = scope
-        commandPaletteVisibleResultsFingerprint = fingerprint
+        commandPaletteController.setVisibleResults(results, scope: scope, fingerprint: fingerprint)
     }
 
     private func refreshPendingCommandPaletteVisibleResults(
@@ -3290,10 +3109,10 @@ struct ContentView: View {
         historyTimestamp: TimeInterval
     ) {
         let candidateCommandIDs: [String]
-        if commandPaletteVisibleResultsScope == scope,
-           commandPaletteVisibleResultsFingerprint == fingerprint {
+        if commandPaletteController.commandPaletteVisibleResultsScope == scope,
+           commandPaletteController.commandPaletteVisibleResultsFingerprint == fingerprint {
             candidateCommandIDs = Self.commandPalettePreviewCandidateCommandIDs(
-                resultIDs: commandPaletteVisibleResults.map(\.id),
+                resultIDs: commandPaletteController.commandPaletteVisibleResults.map(\.id),
                 limit: Self.commandPaletteVisiblePreviewCandidateLimit
             )
         } else {
@@ -3302,9 +3121,9 @@ struct ContentView: View {
 
         let previewMatches = Self.commandPalettePreviewSearchMatches(
             scope: scope,
-            searchCorpus: commandPaletteSearchCorpus,
+            searchCorpus: commandPaletteController.commandPaletteSearchCorpus,
             candidateCommandIDs: candidateCommandIDs,
-            searchCorpusByID: commandPaletteSearchCorpusByID,
+            searchCorpusByID: commandPaletteController.commandPaletteSearchCorpusByID,
             query: query,
             usageHistory: usageHistory,
             queryIsEmpty: queryIsEmpty,
@@ -3313,7 +3132,7 @@ struct ContentView: View {
         )
         let previewResults = Self.commandPaletteMaterializedSearchResults(
             matches: previewMatches,
-            commandsByID: commandPaletteSearchCommandsByID
+            commandsByID: commandPaletteController.commandPaletteSearchCommandsByID
         )
         setCommandPaletteVisibleResults(
             previewResults,
@@ -3327,7 +3146,7 @@ struct ContentView: View {
         forceSearchCorpusRefresh: Bool = false
     ) {
         let effectiveQuery = Self.commandPaletteRefreshQuery(
-            stateQuery: commandPaletteQuery,
+            stateQuery: commandPaletteController.commandPaletteQuery,
             observedQuery: query
         )
         let scope = Self.commandPaletteListScope(for: effectiveQuery)
@@ -3341,18 +3160,18 @@ struct ContentView: View {
             query: effectiveQuery
         )
 
-        commandPaletteSearchRequestID &+= 1
-        let requestID = commandPaletteSearchRequestID
-        let fingerprint = cachedCommandPaletteFingerprint
-        let searchCorpus = commandPaletteSearchCorpus
-        let commandsByID = commandPaletteSearchCommandsByID
-        let usageHistory = commandPaletteUsageHistoryByCommandId
+        commandPaletteController.commandPaletteSearchRequestID &+= 1
+        let requestID = commandPaletteController.commandPaletteSearchRequestID
+        let fingerprint = commandPaletteController.cachedCommandPaletteFingerprint
+        let searchCorpus = commandPaletteController.commandPaletteSearchCorpus
+        let commandsByID = commandPaletteController.commandPaletteSearchCommandsByID
+        let usageHistory = commandPaletteController.commandPaletteUsageHistoryByCommandId
         let queryIsEmpty = CommandPaletteFuzzyMatcher.preparedQuery(matchingQuery).isEmpty
         let historyTimestamp = Date().timeIntervalSince1970
-        commandPalettePendingActivation = nil
+        commandPaletteController.commandPalettePendingActivation = nil
         cancelCommandPaletteSearch()
         if Self.commandPaletteShouldSynchronouslySeedResults(
-            hasVisibleResultsForScope: commandPaletteVisibleResultsScope == scope
+            hasVisibleResultsForScope: commandPaletteController.commandPaletteVisibleResultsScope == scope
         ) {
             let matches = Self.commandPaletteResolvedSearchMatches(
                 searchCorpus: searchCorpus,
@@ -3361,21 +3180,21 @@ struct ContentView: View {
                 queryIsEmpty: queryIsEmpty,
                 historyTimestamp: historyTimestamp
             )
-            cachedCommandPaletteResults = Self.commandPaletteMaterializedSearchResults(
+            commandPaletteController.cachedCommandPaletteResults = Self.commandPaletteMaterializedSearchResults(
                 matches: matches,
                 commandsByID: commandsByID
             )
-            commandPaletteResolvedSearchRequestID = requestID
-            commandPaletteResolvedSearchScope = scope
-            commandPaletteResolvedSearchFingerprint = fingerprint
-            commandPaletteResolvedMatchingQuery = matchingQuery
-            isCommandPaletteSearchPending = false
+            commandPaletteController.commandPaletteResolvedSearchRequestID = requestID
+            commandPaletteController.commandPaletteResolvedSearchScope = scope
+            commandPaletteController.commandPaletteResolvedSearchFingerprint = fingerprint
+            commandPaletteController.commandPaletteResolvedMatchingQuery = matchingQuery
+            commandPaletteController.isCommandPaletteSearchPending = false
             setCommandPaletteVisibleResults(
-                cachedCommandPaletteResults,
+                commandPaletteController.cachedCommandPaletteResults,
                 scope: scope,
                 fingerprint: fingerprint
             )
-            commandPaletteResultsRevision &+= 1
+            commandPaletteController.commandPaletteResultsRevision &+= 1
             return
         }
         refreshPendingCommandPaletteVisibleResults(
@@ -3386,9 +3205,9 @@ struct ContentView: View {
             queryIsEmpty: queryIsEmpty,
             historyTimestamp: historyTimestamp
         )
-        isCommandPaletteSearchPending = true
+        commandPaletteController.isCommandPaletteSearchPending = true
 
-        commandPaletteSearchTask = Task.detached(priority: .userInitiated) {
+        commandPaletteController.commandPaletteSearchTask = Task.detached(priority: .userInitiated) {
             let matches = Self.commandPaletteResolvedSearchMatches(
                 searchCorpus: searchCorpus,
                 query: matchingQuery,
@@ -3401,45 +3220,45 @@ struct ContentView: View {
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
-                let currentScope = Self.commandPaletteListScope(for: commandPaletteQuery)
-                guard commandPaletteSearchRequestID == requestID,
-                      isCommandPalettePresented,
+                let currentScope = Self.commandPaletteListScope(for: commandPaletteController.commandPaletteQuery)
+                guard commandPaletteController.commandPaletteSearchRequestID == requestID,
+                      commandPaletteController.isCommandPalettePresented,
                       currentScope == scope,
                       Self.commandPaletteQueryForMatching(
-                          query: commandPaletteQuery,
+                          query: commandPaletteController.commandPaletteQuery,
                           scope: currentScope
                       ) == matchingQuery,
-                      cachedCommandPaletteFingerprint == fingerprint else {
+                      commandPaletteController.cachedCommandPaletteFingerprint == fingerprint else {
                     return
                 }
 
-                cachedCommandPaletteResults = Self.commandPaletteMaterializedSearchResults(
+                commandPaletteController.cachedCommandPaletteResults = Self.commandPaletteMaterializedSearchResults(
                     matches: matches,
-                    commandsByID: commandPaletteSearchCommandsByID
+                    commandsByID: commandPaletteController.commandPaletteSearchCommandsByID
                 )
-                let resultIDs = cachedCommandPaletteResults.map(\.id)
-                let pendingActivation = commandPalettePendingActivation
+                let resultIDs = commandPaletteController.cachedCommandPaletteResults.map(\.id)
+                let pendingActivation = commandPaletteController.commandPalettePendingActivation
                 let resolvedActivation = Self.commandPaletteResolvedPendingActivation(
                     pendingActivation,
                     requestID: requestID,
                     resultIDs: resultIDs
                 )
-                commandPaletteResolvedSearchRequestID = requestID
-                commandPaletteResolvedSearchScope = scope
-                commandPaletteResolvedSearchFingerprint = fingerprint
-                commandPaletteResolvedMatchingQuery = matchingQuery
-                isCommandPaletteSearchPending = false
+                commandPaletteController.commandPaletteResolvedSearchRequestID = requestID
+                commandPaletteController.commandPaletteResolvedSearchScope = scope
+                commandPaletteController.commandPaletteResolvedSearchFingerprint = fingerprint
+                commandPaletteController.commandPaletteResolvedMatchingQuery = matchingQuery
+                commandPaletteController.isCommandPaletteSearchPending = false
                 setCommandPaletteVisibleResults(
-                    cachedCommandPaletteResults,
+                    commandPaletteController.cachedCommandPaletteResults,
                     scope: scope,
                     fingerprint: fingerprint
                 )
                 if Self.commandPalettePendingActivationRequestID(pendingActivation) == requestID {
-                    commandPalettePendingActivation = nil
+                    commandPaletteController.commandPalettePendingActivation = nil
                 }
-                commandPaletteResultsRevision &+= 1
-                if commandPaletteSearchRequestID == requestID {
-                    commandPaletteSearchTask = nil
+                commandPaletteController.commandPaletteResultsRevision &+= 1
+                if commandPaletteController.commandPaletteSearchRequestID == requestID {
+                    commandPaletteController.commandPaletteSearchTask = nil
                 }
                 if let resolvedActivation {
                     runCommandPaletteResolvedActivation(resolvedActivation)
@@ -3555,7 +3374,7 @@ struct ContentView: View {
 
     func commandPaletteCachedCommandsContext() -> CommandPaletteCommandsContext {
         commandPaletteCommandsContext(
-            terminalOpenTargets: commandPaletteTerminalOpenTargetAvailability
+            terminalOpenTargets: commandPaletteController.commandPaletteTerminalOpenTargetAvailability
         )
     }
 
@@ -4876,25 +4695,24 @@ struct ContentView: View {
     }
 
     private func commandPaletteSelectedIndex(resultCount: Int) -> Int {
-        guard resultCount > 0 else { return 0 }
-        return min(max(commandPaletteSelectedResultIndex, 0), resultCount - 1)
+        commandPaletteController.selectedIndex(resultCount: resultCount)
     }
 
     private func updateCommandPaletteScrollTarget(resultCount: Int, animated: Bool) {
         guard resultCount > 0 else {
-            commandPaletteScrollTargetIndex = nil
-            commandPaletteScrollTargetAnchor = nil
+            commandPaletteController.commandPaletteScrollTargetIndex = nil
+            commandPaletteController.commandPaletteScrollTargetAnchor = nil
             return
         }
 
         let selectedIndex = commandPaletteSelectedIndex(resultCount: resultCount)
-        commandPaletteScrollTargetAnchor = Self.commandPaletteScrollPositionAnchor(
+        commandPaletteController.commandPaletteScrollTargetAnchor = Self.commandPaletteScrollPositionAnchor(
             selectedIndex: selectedIndex,
             resultCount: resultCount
         )
 
         let assignTarget = {
-            commandPaletteScrollTargetIndex = selectedIndex
+            commandPaletteController.commandPaletteScrollTargetIndex = selectedIndex
         }
         if animated {
             withAnimation(.easeOut(duration: 0.1)) {
@@ -4906,48 +4724,42 @@ struct ContentView: View {
     }
 
     private func syncCommandPaletteSelectionAnchor(resultIDs: [String]) {
-        commandPaletteSelectionAnchorCommandID = Self.commandPaletteSelectionAnchorCommandID(
-            selectedIndex: commandPaletteSelectedResultIndex,
-            resultIDs: resultIDs
-        )
+        commandPaletteController.syncSelectionAnchor(resultIDs: resultIDs)
     }
 
     private func syncCommandPaletteSelectionAnchorFromCurrentResults() {
-        syncCommandPaletteSelectionAnchor(resultIDs: cachedCommandPaletteResults.map(\.id))
+        syncCommandPaletteSelectionAnchor(resultIDs: commandPaletteController.cachedCommandPaletteResults.map(\.id))
     }
 
     private func syncCommandPaletteSelectionAnchorFromVisibleResults() {
-        syncCommandPaletteSelectionAnchor(resultIDs: commandPaletteVisibleResults.map(\.id))
+        syncCommandPaletteSelectionAnchor(resultIDs: commandPaletteController.commandPaletteVisibleResults.map(\.id))
     }
 
     private func moveCommandPaletteSelection(by delta: Int) {
-        let count = commandPaletteVisibleResults.count
+        let count = commandPaletteController.commandPaletteVisibleResults.count
         guard count > 0 else {
             NSSound.beep()
             return
         }
-        let current = commandPaletteSelectedIndex(resultCount: count)
-        commandPaletteSelectedResultIndex = min(max(current + delta, 0), count - 1)
-        if commandPaletteHasCurrentResolvedResults {
-            syncCommandPaletteSelectionAnchorFromCurrentResults()
-        } else {
-            syncCommandPaletteSelectionAnchorFromVisibleResults()
-        }
+        let resultIDs = commandPaletteHasCurrentResolvedResults
+            ? commandPaletteController.cachedCommandPaletteResults.map(\.id)
+            : commandPaletteController.commandPaletteVisibleResults.map(\.id)
+        _ = commandPaletteController.moveSelection(by: delta, resultIDs: resultIDs)
         syncCommandPaletteDebugStateForObservedWindow()
     }
 
     private func handleCommandPaletteRenameDeleteBackward(
         modifiers: EventModifiers
     ) -> BackportKeyPressResult {
-        guard case .renameInput = commandPaletteMode else { return .ignored }
+        guard case .renameInput = commandPaletteController.commandPaletteMode else { return .ignored }
         let blockedModifiers: EventModifiers = [.command, .control, .option, .shift]
         guard modifiers.intersection(blockedModifiers).isEmpty else { return .ignored }
 
         if Self.commandPaletteShouldPopRenameInputOnDelete(
-            renameDraft: commandPaletteRenameDraft,
+            renameDraft: commandPaletteController.commandPaletteRenameDraft,
             modifiers: modifiers
         ) {
-            commandPaletteMode = .commands
+            commandPaletteController.commandPaletteMode = .commands
             resetCommandPaletteSearchFocus()
             syncCommandPaletteDebugStateForObservedWindow()
             return .handled
@@ -4957,9 +4769,9 @@ struct ContentView: View {
            let editor = window.firstResponder as? NSTextView,
            editor.isFieldEditor {
             editor.deleteBackward(nil)
-            commandPaletteRenameDraft = editor.string
-        } else if !commandPaletteRenameDraft.isEmpty {
-            commandPaletteRenameDraft.removeLast()
+            commandPaletteController.commandPaletteRenameDraft = editor.string
+        } else if !commandPaletteController.commandPaletteRenameDraft.isEmpty {
+            commandPaletteController.commandPaletteRenameDraft.removeLast()
         }
 
         syncCommandPaletteDebugStateForObservedWindow()
@@ -4967,54 +4779,54 @@ struct ContentView: View {
     }
 
     private var commandPaletteHasCurrentResolvedResults: Bool {
-        !isCommandPaletteSearchPending && commandPaletteResolvedSearchRequestID == commandPaletteSearchRequestID
+        !commandPaletteController.isCommandPaletteSearchPending && commandPaletteController.commandPaletteResolvedSearchRequestID == commandPaletteController.commandPaletteSearchRequestID
     }
 
     private var commandPaletteShouldShowEmptyState: Bool {
-        guard commandPaletteVisibleResults.isEmpty else { return false }
+        guard commandPaletteController.commandPaletteVisibleResults.isEmpty else { return false }
         if commandPaletteHasCurrentResolvedResults {
             return true
         }
 
         return Self.commandPaletteShouldPreserveEmptyStateWhileSearchPending(
-            isSearchPending: isCommandPaletteSearchPending,
-            visibleResultsScopeMatches: commandPaletteVisibleResultsScope == commandPaletteListScope,
-            resolvedSearchScopeMatches: commandPaletteResolvedSearchScope == commandPaletteListScope,
-            resolvedSearchFingerprintMatches: commandPaletteResolvedSearchFingerprint == commandPaletteVisibleResultsFingerprint,
-            resolvedResultsAreEmpty: cachedCommandPaletteResults.isEmpty,
+            isSearchPending: commandPaletteController.isCommandPaletteSearchPending,
+            visibleResultsScopeMatches: commandPaletteController.commandPaletteVisibleResultsScope == commandPaletteListScope,
+            resolvedSearchScopeMatches: commandPaletteController.commandPaletteResolvedSearchScope == commandPaletteListScope,
+            resolvedSearchFingerprintMatches: commandPaletteController.commandPaletteResolvedSearchFingerprint == commandPaletteController.commandPaletteVisibleResultsFingerprint,
+            resolvedResultsAreEmpty: commandPaletteController.cachedCommandPaletteResults.isEmpty,
             currentMatchingQuery: commandPaletteQueryForMatching,
-            resolvedMatchingQuery: commandPaletteResolvedMatchingQuery
+            resolvedMatchingQuery: commandPaletteController.commandPaletteResolvedMatchingQuery
         )
     }
 
     private func runCommandPaletteResolvedActivation(_ activation: CommandPaletteResolvedActivation) {
         switch activation {
         case .command(let commandID):
-            guard let command = cachedCommandPaletteResults.first(where: { $0.id == commandID })?.command else {
+            guard let command = commandPaletteController.cachedCommandPaletteResults.first(where: { $0.id == commandID })?.command else {
                 return
             }
             runCommandPaletteCommand(command)
         case .selected(let fallbackIndex):
-            guard !cachedCommandPaletteResults.isEmpty else {
+            guard !commandPaletteController.cachedCommandPaletteResults.isEmpty else {
                 NSSound.beep()
                 return
             }
             let resolvedIndex = Self.commandPaletteResolvedSelectionIndex(
-                preferredCommandID: commandPaletteSelectionAnchorCommandID,
+                preferredCommandID: commandPaletteController.commandPaletteSelectionAnchorCommandID,
                 fallbackSelectedIndex: fallbackIndex,
-                resultIDs: cachedCommandPaletteResults.map(\.id)
+                resultIDs: commandPaletteController.cachedCommandPaletteResults.map(\.id)
             )
-            commandPaletteSelectedResultIndex = resolvedIndex
+            commandPaletteController.commandPaletteSelectedResultIndex = resolvedIndex
             syncCommandPaletteSelectionAnchorFromCurrentResults()
-            runCommandPaletteCommand(cachedCommandPaletteResults[resolvedIndex].command)
+            runCommandPaletteCommand(commandPaletteController.cachedCommandPaletteResults[resolvedIndex].command)
         }
     }
 
     private func runCommandPaletteResult(commandID: String) {
         guard commandPaletteHasCurrentResolvedResults else {
-            if isCommandPalettePresented {
-                commandPalettePendingActivation = .command(
-                    requestID: commandPaletteSearchRequestID,
+            if commandPaletteController.isCommandPalettePresented {
+                commandPaletteController.commandPalettePendingActivation = .command(
+                    requestID: commandPaletteController.commandPaletteSearchRequestID,
                     commandID: commandID
                 )
             }
@@ -5025,21 +4837,21 @@ struct ContentView: View {
 
     private func runSelectedCommandPaletteResult() {
         guard commandPaletteHasCurrentResolvedResults else {
-            if isCommandPalettePresented {
-                commandPalettePendingActivation = .selected(
-                    requestID: commandPaletteSearchRequestID,
-                    fallbackSelectedIndex: commandPaletteSelectedResultIndex,
-                    preferredCommandID: commandPaletteSelectionAnchorCommandID
+            if commandPaletteController.isCommandPalettePresented {
+                commandPaletteController.commandPalettePendingActivation = .selected(
+                    requestID: commandPaletteController.commandPaletteSearchRequestID,
+                    fallbackSelectedIndex: commandPaletteController.commandPaletteSelectedResultIndex,
+                    preferredCommandID: commandPaletteController.commandPaletteSelectionAnchorCommandID
                 )
             }
             return
         }
 
-        runCommandPaletteResolvedActivation(.selected(index: commandPaletteSelectedResultIndex))
+        runCommandPaletteResolvedActivation(.selected(index: commandPaletteController.commandPaletteSelectedResultIndex))
     }
 
     private func handleCommandPaletteSubmitRequest() {
-        switch commandPaletteMode {
+        switch commandPaletteController.commandPaletteMode {
         case .commands:
             runSelectedCommandPaletteResult()
         case .renameInput(let target):
@@ -5048,18 +4860,18 @@ struct ContentView: View {
             applyRenameFlow(target: target, proposedName: proposedName)
         case .workspaceDescriptionInput(let target):
 #if DEBUG
-            let newlineCount = commandPaletteWorkspaceDescriptionDraft.reduce(into: 0) { count, character in
+            let newlineCount = commandPaletteController.commandPaletteWorkspaceDescriptionDraft.reduce(into: 0) { count, character in
                 if character == "\n" { count += 1 }
             }
             dlog(
                 "palette.wsDescription.submit.request workspace=\(target.workspaceId.uuidString.prefix(8)) " +
-                "draftLen=\((commandPaletteWorkspaceDescriptionDraft as NSString).length) " +
+                "draftLen=\((commandPaletteController.commandPaletteWorkspaceDescriptionDraft as NSString).length) " +
                 "newlines=\(newlineCount)"
             )
 #endif
             applyWorkspaceDescriptionFlow(
                 target: target,
-                proposedDescription: commandPaletteWorkspaceDescriptionDraft
+                proposedDescription: commandPaletteController.commandPaletteWorkspaceDescriptionDraft
             )
         }
     }
@@ -5076,7 +4888,7 @@ struct ContentView: View {
     }
 
     private func toggleCommandPalette() {
-        if isCommandPalettePresented {
+        if commandPaletteController.isCommandPalettePresented {
             dismissCommandPalette()
         } else {
             presentCommandPalette(initialQuery: Self.commandPaletteCommandsPrefix)
@@ -5093,12 +4905,12 @@ struct ContentView: View {
 
     private func handleCommandPaletteListRequest(scope: CommandPaletteListScope) {
         let initialQuery = (scope == .commands) ? Self.commandPaletteCommandsPrefix : ""
-        guard isCommandPalettePresented else {
+        guard commandPaletteController.isCommandPalettePresented else {
             presentCommandPalette(initialQuery: initialQuery)
             return
         }
 
-        if case .commands = commandPaletteMode,
+        if case .commands = commandPaletteController.commandPaletteMode,
            commandPaletteListScope == scope {
             dismissCommandPalette()
             return
@@ -5108,14 +4920,14 @@ struct ContentView: View {
     }
 
     private func openCommandPaletteRenameTabInput() {
-        if !isCommandPalettePresented {
+        if !commandPaletteController.isCommandPalettePresented {
             presentCommandPalette(initialQuery: Self.commandPaletteCommandsPrefix)
         }
         beginRenameTabFlow()
     }
 
     private func openCommandPaletteRenameWorkspaceInput() {
-        if !isCommandPalettePresented {
+        if !commandPaletteController.isCommandPalettePresented {
             presentCommandPalette(initialQuery: Self.commandPaletteCommandsPrefix)
         }
         beginRenameWorkspaceFlow()
@@ -5124,20 +4936,20 @@ struct ContentView: View {
     private func openCommandPaletteWorkspaceDescriptionInput() {
 #if DEBUG
         dlog(
-            "palette.wsDescription.open begin presented=\(isCommandPalettePresented ? 1 : 0) " +
-            "mode=\(debugCommandPaletteModeLabel(commandPaletteMode)) " +
+            "palette.wsDescription.open begin presented=\(commandPaletteController.isCommandPalettePresented ? 1 : 0) " +
+            "mode=\(debugCommandPaletteModeLabel(commandPaletteController.commandPaletteMode)) " +
             "window={\(debugCommandPaletteWindowSummary(observedWindow ?? NSApp.keyWindow ?? NSApp.mainWindow))}"
         )
 #endif
-        if !isCommandPalettePresented {
+        if !commandPaletteController.isCommandPalettePresented {
             presentCommandPalette(initialQuery: Self.commandPaletteCommandsPrefix)
         }
         beginWorkspaceDescriptionFlow()
 #if DEBUG
         dlog(
-            "palette.wsDescription.open end presented=\(isCommandPalettePresented ? 1 : 0) " +
-            "mode=\(debugCommandPaletteModeLabel(commandPaletteMode)) " +
-            "focusFlag=\(commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0)"
+            "palette.wsDescription.open end presented=\(commandPaletteController.isCommandPalettePresented ? 1 : 0) " +
+            "mode=\(debugCommandPaletteModeLabel(commandPaletteController.commandPaletteMode)) " +
+            "focusFlag=\(commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0)"
         )
 #endif
     }
@@ -5150,18 +4962,18 @@ struct ContentView: View {
 
     private func syncCommandPaletteDebugStateForObservedWindow() {
         guard let window = observedWindow ?? NSApp.keyWindow ?? NSApp.mainWindow else { return }
-        AppDelegate.shared?.setCommandPaletteVisible(isCommandPalettePresented, for: window)
-        let visibleResultCount = commandPaletteVisibleResults.count
-        let selectedIndex = isCommandPalettePresented ? commandPaletteSelectedIndex(resultCount: visibleResultCount) : 0
+        AppDelegate.shared?.setCommandPaletteVisible(commandPaletteController.isCommandPalettePresented, for: window)
+        let visibleResultCount = commandPaletteController.commandPaletteVisibleResults.count
+        let selectedIndex = commandPaletteController.isCommandPalettePresented ? commandPaletteSelectedIndex(resultCount: visibleResultCount) : 0
         AppDelegate.shared?.setCommandPaletteSelectionIndex(selectedIndex, for: window)
         AppDelegate.shared?.setCommandPaletteSnapshot(commandPaletteDebugSnapshot(), for: window)
     }
 
     private func commandPaletteDebugSnapshot() -> CommandPaletteDebugSnapshot {
-        guard isCommandPalettePresented else { return .empty }
+        guard commandPaletteController.isCommandPalettePresented else { return .empty }
 
         let mode: String
-        switch commandPaletteMode {
+        switch commandPaletteController.commandPaletteMode {
         case .commands:
             mode = commandPaletteListScope.rawValue
         case .renameInput:
@@ -5172,7 +4984,7 @@ struct ContentView: View {
             mode = "workspace_description_input"
         }
 
-        let rows = Array(commandPaletteVisibleResults.prefix(20)).map { result in
+        let rows = Array(commandPaletteController.commandPaletteVisibleResults.prefix(20)).map { result in
                 CommandPaletteDebugResultRow(
                     commandId: result.command.id,
                     title: result.command.title,
@@ -5190,32 +5002,32 @@ struct ContentView: View {
     }
 
     private func presentCommandPalette(initialQuery: String) {
+        let restoreFocusTarget: CommandPaletteRestoreFocusTarget?
         if let panelContext = focusedPanelContext {
-            commandPaletteRestoreFocusTarget = CommandPaletteRestoreFocusTarget(
+            restoreFocusTarget = CommandPaletteRestoreFocusTarget(
                 workspaceId: panelContext.workspace.id,
                 panelId: panelContext.panelId,
                 intent: panelContext.panel.captureFocusIntent(in: observedWindow)
             )
         } else {
-            commandPaletteRestoreFocusTarget = nil
+            restoreFocusTarget = nil
         }
-        isCommandPalettePresented = true
+        commandPaletteController.beginPresentation(
+            initialQuery: initialQuery,
+            restoreFocusTarget: restoreFocusTarget,
+            minimumEditorHeight: CommandPaletteMultilineTextEditorRepresentable.defaultMinimumHeight
+        )
         refreshCommandPaletteUsageHistory()
-        resetCommandPaletteListState(initialQuery: initialQuery)
+        scheduleCommandPaletteResultsRefresh(forceSearchCorpusRefresh: true)
+        resetCommandPaletteSearchFocus()
+        syncCommandPaletteDebugStateForObservedWindow()
     }
 
     private func resetCommandPaletteListState(initialQuery: String) {
-        commandPaletteMode = .commands
-        commandPaletteQuery = initialQuery
-        commandPaletteRenameDraft = ""
-        commandPaletteWorkspaceDescriptionDraft = ""
-        commandPaletteWorkspaceDescriptionHeight = CommandPaletteMultilineTextEditorRepresentable.defaultMinimumHeight
-        commandPaletteSelectedResultIndex = 0
-        commandPaletteSelectionAnchorCommandID = nil
-        commandPaletteHoveredResultIndex = nil
-        commandPaletteScrollTargetIndex = nil
-        commandPaletteScrollTargetAnchor = nil
-        commandPaletteShouldFocusWorkspaceDescriptionEditor = false
+        commandPaletteController.resetListState(
+            initialQuery: initialQuery,
+            minimumEditorHeight: CommandPaletteMultilineTextEditorRepresentable.defaultMinimumHeight
+        )
         scheduleCommandPaletteResultsRefresh(forceSearchCorpusRefresh: true)
         resetCommandPaletteSearchFocus()
         syncCommandPaletteDebugStateForObservedWindow()
@@ -5229,55 +5041,26 @@ struct ContentView: View {
         restoreFocus: Bool,
         preferredFocusTarget: CommandPaletteRestoreFocusTarget?
     ) {
-        let focusTarget = preferredFocusTarget ?? commandPaletteRestoreFocusTarget
 #if DEBUG
-        if case .workspaceDescriptionInput(let target) = commandPaletteMode {
-            let newlineCount = commandPaletteWorkspaceDescriptionDraft.reduce(into: 0) { count, character in
+        if case .workspaceDescriptionInput(let target) = commandPaletteController.commandPaletteMode {
+            let newlineCount = commandPaletteController.commandPaletteWorkspaceDescriptionDraft.reduce(into: 0) { count, character in
                 if character == "\n" { count += 1 }
             }
             dlog(
                 "palette.wsDescription.dismiss workspace=\(target.workspaceId.uuidString.prefix(8)) " +
                 "restoreFocus=\(restoreFocus ? 1 : 0) " +
-                "draftLen=\((commandPaletteWorkspaceDescriptionDraft as NSString).length) " +
+                "draftLen=\((commandPaletteController.commandPaletteWorkspaceDescriptionDraft as NSString).length) " +
                 "newlines=\(newlineCount) " +
                 "window={\(debugCommandPaletteWindowSummary(observedWindow ?? NSApp.keyWindow ?? NSApp.mainWindow))}"
             )
         }
 #endif
-        cancelCommandPaletteSearch()
-        commandPaletteSearchRequestID &+= 1
-        isCommandPalettePresented = false
-        commandPaletteMode = .commands
-        commandPaletteQuery = ""
-        commandPaletteRenameDraft = ""
-        commandPaletteWorkspaceDescriptionDraft = ""
-        commandPaletteWorkspaceDescriptionHeight = CommandPaletteMultilineTextEditorRepresentable.defaultMinimumHeight
-        commandPaletteSelectedResultIndex = 0
-        commandPaletteSelectionAnchorCommandID = nil
-        commandPaletteHoveredResultIndex = nil
-        commandPaletteScrollTargetIndex = nil
-        commandPaletteScrollTargetAnchor = nil
-        commandPaletteShouldFocusWorkspaceDescriptionEditor = false
+        let storedFocusTarget = commandPaletteController.prepareDismissal(
+            minimumEditorHeight: CommandPaletteMultilineTextEditorRepresentable.defaultMinimumHeight
+        )
+        let focusTarget = preferredFocusTarget ?? storedFocusTarget
         isCommandPaletteSearchFocused = false
         isCommandPaletteRenameFocused = false
-        commandPaletteRestoreFocusTarget = nil
-        commandPaletteSearchCorpus = []
-        commandPaletteSearchCorpusByID = [:]
-        commandPaletteSearchCommandsByID = [:]
-        cachedCommandPaletteResults = []
-        commandPaletteVisibleResults = []
-        commandPaletteVisibleResultsScope = nil
-        commandPaletteVisibleResultsFingerprint = nil
-        cachedCommandPaletteScope = nil
-        cachedCommandPaletteFingerprint = nil
-        commandPalettePendingTextSelectionBehavior = nil
-        commandPaletteResolvedSearchRequestID = commandPaletteSearchRequestID
-        commandPaletteResolvedSearchScope = nil
-        commandPaletteResolvedSearchFingerprint = nil
-        commandPaletteTerminalOpenTargetAvailability = []
-        isCommandPaletteSearchPending = false
-        commandPalettePendingActivation = nil
-        commandPaletteResultsRevision &+= 1
         if let window = observedWindow {
             _ = window.makeFirstResponder(nil)
         }
@@ -5332,7 +5115,7 @@ struct ContentView: View {
            let workspaceId = terminalView.tabId,
            let panelId = terminalView.terminalSurface?.id,
            tabManager.tabs.contains(where: { $0.id == workspaceId }) {
-            return commandPaletteRestoreFocusTarget(
+            return makeCommandPaletteRestoreFocusTarget(
                 workspaceId: workspaceId,
                 panelId: panelId,
                 fallbackIntent: .terminal(.surface),
@@ -5348,7 +5131,7 @@ struct ContentView: View {
            let workspaceId = terminalView.tabId,
            let panelId = terminalView.terminalSurface?.id,
            tabManager.tabs.contains(where: { $0.id == workspaceId }) {
-            return commandPaletteRestoreFocusTarget(
+            return makeCommandPaletteRestoreFocusTarget(
                 workspaceId: workspaceId,
                 panelId: panelId,
                 fallbackIntent: .terminal(.surface),
@@ -5390,7 +5173,7 @@ struct ContentView: View {
                 continue
             }
 
-            return commandPaletteRestoreFocusTarget(
+            return makeCommandPaletteRestoreFocusTarget(
                 workspaceId: workspace.id,
                 panelId: panelId,
                 fallbackIntent: .browser(.webView),
@@ -5401,7 +5184,7 @@ struct ContentView: View {
         return nil
     }
 
-    private func commandPaletteRestoreFocusTarget(
+    private func makeCommandPaletteRestoreFocusTarget(
         workspaceId: UUID,
         panelId: UUID,
         fallbackIntent: PanelFocusIntent,
@@ -5420,24 +5203,24 @@ struct ContentView: View {
     }
 
     private func requestCommandPaletteFocusRestore(target: CommandPaletteRestoreFocusTarget) {
-        commandPalettePendingDismissFocusTarget = target
-        commandPaletteRestoreTimeoutWorkItem?.cancel()
+        commandPaletteController.commandPalettePendingDismissFocusTarget = target
+        commandPaletteController.commandPaletteRestoreTimeoutWorkItem?.cancel()
         let timeoutWork = DispatchWorkItem {
-            commandPalettePendingDismissFocusTarget = nil
-            commandPaletteRestoreTimeoutWorkItem = nil
+            commandPaletteController.commandPalettePendingDismissFocusTarget = nil
+            commandPaletteController.commandPaletteRestoreTimeoutWorkItem = nil
         }
-        commandPaletteRestoreTimeoutWorkItem = timeoutWork
+        commandPaletteController.commandPaletteRestoreTimeoutWorkItem = timeoutWork
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: timeoutWork)
         attemptCommandPaletteFocusRestoreIfNeeded()
     }
 
     private func attemptCommandPaletteFocusRestoreIfNeeded() {
-        guard !isCommandPalettePresented else { return }
-        guard let target = commandPalettePendingDismissFocusTarget else { return }
+        guard !commandPaletteController.isCommandPalettePresented else { return }
+        guard let target = commandPaletteController.commandPalettePendingDismissFocusTarget else { return }
         guard tabManager.tabs.contains(where: { $0.id == target.workspaceId }) else {
-            commandPalettePendingDismissFocusTarget = nil
-            commandPaletteRestoreTimeoutWorkItem?.cancel()
-            commandPaletteRestoreTimeoutWorkItem = nil
+            commandPaletteController.commandPalettePendingDismissFocusTarget = nil
+            commandPaletteController.commandPaletteRestoreTimeoutWorkItem?.cancel()
+            commandPaletteController.commandPaletteRestoreTimeoutWorkItem = nil
             return
         }
 
@@ -5452,9 +5235,9 @@ struct ContentView: View {
             return
         }
         guard context.panel.restoreFocusIntent(target.intent) else { return }
-        commandPalettePendingDismissFocusTarget = nil
-        commandPaletteRestoreTimeoutWorkItem?.cancel()
-        commandPaletteRestoreTimeoutWorkItem = nil
+        commandPaletteController.commandPalettePendingDismissFocusTarget = nil
+        commandPaletteController.commandPaletteRestoreTimeoutWorkItem?.cancel()
+        commandPaletteController.commandPaletteRestoreTimeoutWorkItem = nil
     }
 
 #if DEBUG
@@ -5500,9 +5283,9 @@ struct ContentView: View {
     private func resetCommandPaletteWorkspaceDescriptionFocus() {
 #if DEBUG
         dlog(
-            "palette.wsDescription.focus.reset schedule presented=\(isCommandPalettePresented ? 1 : 0) " +
-            "mode=\(debugCommandPaletteModeLabel(commandPaletteMode)) " +
-            "focusFlag=\(commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0)"
+            "palette.wsDescription.focus.reset schedule presented=\(commandPaletteController.isCommandPalettePresented ? 1 : 0) " +
+            "mode=\(debugCommandPaletteModeLabel(commandPaletteController.commandPaletteMode)) " +
+            "focusFlag=\(commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0)"
         )
 #endif
         DispatchQueue.main.async {
@@ -5510,20 +5293,20 @@ struct ContentView: View {
             dlog(
                 "palette.wsDescription.focus.reset apply.before search=\(isCommandPaletteSearchFocused ? 1 : 0) " +
                 "rename=\(isCommandPaletteRenameFocused ? 1 : 0) " +
-                "editor=\(commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0) " +
+                "editor=\(commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0) " +
                 "window={\(debugCommandPaletteWindowSummary(observedWindow ?? NSApp.keyWindow ?? NSApp.mainWindow))} " +
                 "fr=\(debugCommandPaletteResponderSummary((observedWindow ?? NSApp.keyWindow ?? NSApp.mainWindow)?.firstResponder))"
             )
 #endif
             isCommandPaletteSearchFocused = false
             isCommandPaletteRenameFocused = false
-            commandPaletteShouldFocusWorkspaceDescriptionEditor = true
-            commandPalettePendingTextSelectionBehavior = nil
+            commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor = true
+            commandPaletteController.commandPalettePendingTextSelectionBehavior = nil
 #if DEBUG
             dlog(
                 "palette.wsDescription.focus.reset apply.after search=\(isCommandPaletteSearchFocused ? 1 : 0) " +
                 "rename=\(isCommandPaletteRenameFocused ? 1 : 0) " +
-                "editor=\(commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0) " +
+                "editor=\(commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor ? 1 : 0) " +
                 "fr=\(debugCommandPaletteResponderSummary((observedWindow ?? NSApp.keyWindow ?? NSApp.mainWindow)?.firstResponder))"
             )
 #endif
@@ -5531,8 +5314,8 @@ struct ContentView: View {
     }
 
     private func handleCommandPaletteRenameInputInteraction() {
-        guard isCommandPalettePresented else { return }
-        guard case .renameInput = commandPaletteMode else { return }
+        guard commandPaletteController.isCommandPalettePresented else { return }
+        guard case .renameInput = commandPaletteController.commandPaletteMode else { return }
         applyCommandPaletteInputFocusPolicy(commandPaletteRenameInputFocusPolicy())
     }
 
@@ -5548,7 +5331,7 @@ struct ContentView: View {
 
     private func applyCommandPaletteInputFocusPolicy(_ policy: CommandPaletteInputFocusPolicy) {
         DispatchQueue.main.async {
-            commandPaletteShouldFocusWorkspaceDescriptionEditor = false
+            commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor = false
             switch policy.focusTarget {
             case .search:
                 isCommandPaletteRenameFocused = false
@@ -5562,21 +5345,21 @@ struct ContentView: View {
     }
 
     private func applyCommandPaletteTextSelection(_ behavior: CommandPaletteTextSelectionBehavior) {
-        commandPalettePendingTextSelectionBehavior = behavior
+        commandPaletteController.commandPalettePendingTextSelectionBehavior = behavior
         attemptCommandPaletteTextSelectionIfNeeded()
     }
 
     private func attemptCommandPaletteTextSelectionIfNeeded() {
-        guard isCommandPalettePresented else {
-            commandPalettePendingTextSelectionBehavior = nil
+        guard commandPaletteController.isCommandPalettePresented else {
+            commandPaletteController.commandPalettePendingTextSelectionBehavior = nil
             return
         }
-        guard let behavior = commandPalettePendingTextSelectionBehavior else { return }
+        guard let behavior = commandPaletteController.commandPalettePendingTextSelectionBehavior else { return }
         switch behavior {
         case .selectAll:
-            guard case .renameInput = commandPaletteMode else { return }
+            guard case .renameInput = commandPaletteController.commandPaletteMode else { return }
         case .caretAtEnd:
-            switch commandPaletteMode {
+            switch commandPaletteController.commandPaletteMode {
             case .commands, .renameInput:
                 break
             case .renameConfirm:
@@ -5598,11 +5381,11 @@ struct ContentView: View {
         case .caretAtEnd:
             editor.setSelectedRange(NSRange(location: length, length: 0))
         }
-        commandPalettePendingTextSelectionBehavior = nil
+        commandPaletteController.commandPalettePendingTextSelectionBehavior = nil
     }
 
     private func refreshCommandPaletteUsageHistory() {
-        commandPaletteUsageHistoryByCommandId = loadCommandPaletteUsageHistory()
+        commandPaletteController.commandPaletteUsageHistoryByCommandId = loadCommandPaletteUsageHistory()
     }
 
     private func loadCommandPaletteUsageHistory() -> [String: CommandPaletteUsageEntry] {
@@ -5618,20 +5401,16 @@ struct ContentView: View {
     }
 
     private func recordCommandPaletteUsage(_ commandId: String) {
-        var history = commandPaletteUsageHistoryByCommandId
-        var entry = history[commandId] ?? CommandPaletteUsageEntry(useCount: 0, lastUsedAt: 0)
-        entry.useCount += 1
-        entry.lastUsedAt = Date().timeIntervalSince1970
-        history[commandId] = entry
-        commandPaletteUsageHistoryByCommandId = history
-        persistCommandPaletteUsageHistory(history)
+        persistCommandPaletteUsageHistory(
+            commandPaletteController.recordUsage(commandId: commandId, usedAt: Date().timeIntervalSince1970)
+        )
     }
 
     private func commandPaletteHistoryBoost(for commandId: String, queryIsEmpty: Bool) -> Int {
         Self.commandPaletteHistoryBoost(
             for: commandId,
             queryIsEmpty: queryIsEmpty,
-            history: commandPaletteUsageHistoryByCommandId,
+            history: commandPaletteController.commandPaletteUsageHistoryByCommandId,
             now: Date().timeIntervalSince1970
         )
     }
@@ -5750,9 +5529,9 @@ struct ContentView: View {
     }
 
     private func startRenameFlow(_ target: CommandPaletteRenameTarget) {
-        commandPaletteRenameDraft = target.currentName
-        commandPaletteShouldFocusWorkspaceDescriptionEditor = false
-        commandPaletteMode = .renameInput(target)
+        commandPaletteController.commandPaletteRenameDraft = target.currentName
+        commandPaletteController.commandPaletteShouldFocusWorkspaceDescriptionEditor = false
+        commandPaletteController.commandPaletteMode = .renameInput(target)
         resetCommandPaletteRenameFocus()
         syncCommandPaletteDebugStateForObservedWindow()
     }
@@ -5762,29 +5541,29 @@ struct ContentView: View {
         dlog(
             "palette.wsDescription.flow.start workspace=\(target.workspaceId.uuidString.prefix(8)) " +
             "descLen=\((target.currentDescription as NSString).length) " +
-            "presented=\(isCommandPalettePresented ? 1 : 0) " +
-            "modeBefore=\(debugCommandPaletteModeLabel(commandPaletteMode))"
+            "presented=\(commandPaletteController.isCommandPalettePresented ? 1 : 0) " +
+            "modeBefore=\(debugCommandPaletteModeLabel(commandPaletteController.commandPaletteMode))"
         )
 #endif
-        commandPaletteWorkspaceDescriptionDraft = target.currentDescription
-        commandPaletteWorkspaceDescriptionHeight = CommandPaletteMultilineTextEditorRepresentable.defaultMinimumHeight
-        commandPalettePendingTextSelectionBehavior = nil
-        commandPaletteMode = .workspaceDescriptionInput(target)
+        commandPaletteController.commandPaletteWorkspaceDescriptionDraft = target.currentDescription
+        commandPaletteController.commandPaletteWorkspaceDescriptionHeight = CommandPaletteMultilineTextEditorRepresentable.defaultMinimumHeight
+        commandPaletteController.commandPalettePendingTextSelectionBehavior = nil
+        commandPaletteController.commandPaletteMode = .workspaceDescriptionInput(target)
         resetCommandPaletteWorkspaceDescriptionFocus()
 #if DEBUG
         dlog(
             "palette.wsDescription.flow.armed workspace=\(target.workspaceId.uuidString.prefix(8)) " +
-            "height=\(String(format: "%.1f", commandPaletteWorkspaceDescriptionHeight)) " +
-            "modeAfter=\(debugCommandPaletteModeLabel(commandPaletteMode))"
+            "height=\(String(format: "%.1f", commandPaletteController.commandPaletteWorkspaceDescriptionHeight)) " +
+            "modeAfter=\(debugCommandPaletteModeLabel(commandPaletteController.commandPaletteMode))"
         )
 #endif
         syncCommandPaletteDebugStateForObservedWindow()
     }
 
     private func continueRenameFlow(target: CommandPaletteRenameTarget) {
-        guard case .renameInput(let activeTarget) = commandPaletteMode,
+        guard case .renameInput(let activeTarget) = commandPaletteController.commandPaletteMode,
               activeTarget == target else { return }
-        applyRenameFlow(target: target, proposedName: commandPaletteRenameDraft)
+        applyRenameFlow(target: target, proposedName: commandPaletteController.commandPaletteRenameDraft)
     }
 
     private func applyRenameFlow(target: CommandPaletteRenameTarget, proposedName: String) {

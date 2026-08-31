@@ -26,55 +26,15 @@ struct ReviewDiffSnapshot: Equatable, Sendable {
     }
 }
 
-/// Stateless git-subprocess probing for the diff review panel. Deliberately a sibling of
-/// `GitMetadataProber` (not a modification of it -- that file's header comment scopes it to
-/// sidebar git/PR metadata) mirroring its exact process-running shape: `Process` + stdout/stderr
-/// `Pipe`s + a `DispatchSemaphore`/`terminationHandler` timeout pattern. See
-/// docs/plans/diff-review-panel.md §3.
+/// Stateless git-subprocess probing for the diff review panel.
 struct ReviewDiffProber {
-    private struct CommandResult {
-        let stdout: String?
-        let stderr: String?
-        let exitStatus: Int32?
-        let timedOut: Bool
-        let executionError: String?
-    }
-
-    private final class CommandOutputCollector: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stdoutData = Data()
-        private var stderrData = Data()
-
-        func storeStdout(_ data: Data) {
-            lock.lock()
-            stdoutData = data
-            lock.unlock()
-        }
-
-        func storeStderr(_ data: Data) {
-            lock.lock()
-            stderrData = data
-            lock.unlock()
-        }
-
-        func snapshot() -> (stdout: Data, stderr: Data) {
-            lock.lock()
-            defer { lock.unlock() }
-            return (stdoutData, stderrData)
-        }
-    }
-
     /// Files whose diff hunk text exceeds this many bytes are treated as "not diffable -- too
     /// large" rather than rendered in full, to keep the SwiftUI diff view responsive.
     static let maxDiffBytesPerFile: Int64 = 400_000
 
     private static let defaultTimeout: TimeInterval = 5.0
-
-    private static let fallbackCommandSearchDirectories: [String] = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/opt/local/bin",
-    ]
+    private static let commandStdoutLimit = 32 * 1024 * 1024
+    private static let commandStderrLimit = 1024 * 1024
 
     // MARK: - Public entry point
 
@@ -222,119 +182,20 @@ struct ReviewDiffProber {
         return sample.contains(0)
     }
 
-    // MARK: - Process plumbing (copied from GitMetadataProber's shape -- see file header)
+    // MARK: - Process plumbing
 
     private nonisolated static func runCommand(directory: String, executable: String, arguments: [String]) -> String? {
-        let result = runCommandResult(directory: directory, executable: executable, arguments: arguments, timeout: defaultTimeout)
-        guard let result, result.exitStatus == 0, !result.timedOut else {
+        let result = CanonicalSubprocessRunner.run(
+            executable: executable,
+            arguments: arguments,
+            currentDirectory: directory,
+            timeout: defaultTimeout,
+            stdoutLimit: commandStdoutLimit,
+            stderrLimit: commandStderrLimit
+        )
+        guard result.exitStatus == 0, result.outcome == .exited else {
             return nil
         }
         return result.stdout
-    }
-
-    private nonisolated static func runCommandResult(
-        directory: String,
-        executable: String,
-        arguments: [String],
-        timeout: TimeInterval?
-    ) -> CommandResult? {
-        let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        if let resolvedExecutable = resolvedCommandPath(executable: executable) {
-            process.executableURL = URL(fileURLWithPath: resolvedExecutable)
-            process.arguments = arguments
-        } else {
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = [executable] + arguments
-        }
-        process.currentDirectoryURL = URL(fileURLWithPath: directory)
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        let completion = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in
-            completion.signal()
-        }
-
-        do {
-            try process.run()
-        } catch {
-            return CommandResult(stdout: nil, stderr: nil, exitStatus: nil, timedOut: false, executionError: String(describing: error))
-        }
-
-        let outputCollector = CommandOutputCollector()
-        let outputReaders = DispatchGroup()
-        outputReaders.enter()
-        DispatchQueue.global(qos: .utility).async {
-            outputCollector.storeStdout(stdout.fileHandleForReading.readDataToEndOfFile())
-            outputReaders.leave()
-        }
-        outputReaders.enter()
-        DispatchQueue.global(qos: .utility).async {
-            outputCollector.storeStderr(stderr.fileHandleForReading.readDataToEndOfFile())
-            outputReaders.leave()
-        }
-
-        if let timeout, completion.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
-            if completion.wait(timeout: .now() + 0.2) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                _ = completion.wait(timeout: .now() + 0.2)
-            }
-            return CommandResult(stdout: nil, stderr: nil, exitStatus: nil, timedOut: true, executionError: nil)
-        } else if timeout == nil {
-            completion.wait()
-        }
-
-        outputReaders.wait()
-        let output = outputCollector.snapshot()
-        return CommandResult(
-            stdout: String(data: output.stdout, encoding: .utf8),
-            stderr: String(data: output.stderr, encoding: .utf8),
-            exitStatus: process.terminationStatus,
-            timedOut: false,
-            executionError: nil
-        )
-    }
-
-    private nonisolated static func resolvedCommandPath(
-        executable: String,
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        fallbackDirectories: [String] = fallbackCommandSearchDirectories
-    ) -> String? {
-        guard !executable.isEmpty else { return nil }
-        let fileManager = FileManager.default
-        if executable.contains("/") {
-            return fileManager.isExecutableFile(atPath: executable) ? executable : nil
-        }
-
-        var searchDirectories: [String] = []
-        var seenDirectories: Set<String> = []
-
-        func appendSearchPath(_ path: String?) {
-            guard let path else { return }
-            for rawComponent in path.split(separator: ":") {
-                let component = String(rawComponent).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !component.isEmpty, seenDirectories.insert(component).inserted else { continue }
-                searchDirectories.append(component)
-            }
-        }
-
-        appendSearchPath(environment["PATH"])
-        appendSearchPath(getenv("PATH").map { String(cString: $0) })
-        if let bundledBinPath = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
-            appendSearchPath(bundledBinPath)
-        }
-        fallbackDirectories.forEach { appendSearchPath($0) }
-        appendSearchPath("/usr/bin:/bin:/usr/sbin:/sbin")
-
-        for directory in searchDirectories {
-            let candidate = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent(executable).path
-            if fileManager.isExecutableFile(atPath: candidate) {
-                return candidate
-            }
-        }
-        return nil
     }
 }

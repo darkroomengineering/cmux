@@ -64,6 +64,11 @@ final class ProgramaSettingsFileStore {
     private let terminalThemeStore: TerminalThemeStore
     private let terminalThemeReloadHandler: () -> Void
     private let stateLock = NSLock()
+    private let managedSettingsQueue = DispatchQueue(
+        label: "com.darkroom.programa.settings-file.managed-apply",
+        qos: .userInitiated
+    )
+    private let managedSettingsQueueKey = DispatchSpecificKey<UInt8>()
 
     private var primaryWatcher: ShortcutSettingsFileWatcher?
     private var fallbackWatcher: ShortcutSettingsFileWatcher?
@@ -97,6 +102,7 @@ final class ProgramaSettingsFileStore {
         self.notificationCenter = notificationCenter
         self.terminalThemeStore = terminalThemeStore
         self.terminalThemeReloadHandler = terminalThemeReloadHandler
+        managedSettingsQueue.setSpecific(key: managedSettingsQueueKey, value: 1)
 
         bootstrapPrimaryTemplateIfNeeded()
         reload()
@@ -148,6 +154,12 @@ final class ProgramaSettingsFileStore {
     }
 
     func reload() {
+        onManagedSettingsQueue {
+            reloadOnManagedSettingsQueue()
+        }
+    }
+
+    private func reloadOnManagedSettingsQueue() {
         let previousShortcuts = synchronized { shortcutsByAction }
         let previousActiveSourcePath = synchronized { activeSourcePath }
         let resolved = resolveSettings()
@@ -232,6 +244,12 @@ final class ProgramaSettingsFileStore {
     }
 
     private func reapplyManagedSettingsIfNeeded() {
+        onManagedSettingsQueue {
+            reapplyManagedSettingsOnManagedSettingsQueueIfNeeded()
+        }
+    }
+
+    private func reapplyManagedSettingsOnManagedSettingsQueueIfNeeded() {
         let snapshot: ResolvedSettingsSnapshot? = synchronized {
             guard !isApplyingManagedSettings else { return nil }
             if activeManagedUserDefaults.isEmpty && activeManagedCustomSettings.isEmpty {
@@ -246,6 +264,13 @@ final class ProgramaSettingsFileStore {
         }
         guard let snapshot else { return }
         applyManagedSettings(snapshot: snapshot, updateBackups: false)
+    }
+
+    private func onManagedSettingsQueue<T>(_ body: () -> T) -> T {
+        if DispatchQueue.getSpecific(key: managedSettingsQueueKey) != nil {
+            return body()
+        }
+        return managedSettingsQueue.sync(execute: body)
     }
 
     private func synchronized<T>(_ body: () -> T) -> T {
@@ -668,19 +693,30 @@ final class ProgramaSettingsFileStore {
         if let raw = jsonString(section["claudeBinaryPath"]) {
             snapshot.managedUserDefaults[ClaudeCodeIntegrationSettings.customClaudePathKey] = .string(raw)
         }
-        if let value = jsonInt(section["portBase"]) {
-            if value > 0 {
-                snapshot.managedUserDefaults["cmuxPortBase"] = .int(value)
-            } else {
+        let managesPortBase = section.keys.contains("portBase")
+        let managesPortRange = section.keys.contains("portRange")
+        if managesPortBase || managesPortRange {
+            guard !managesPortBase || jsonInt(section["portBase"]) != nil else {
                 logInvalid("automation.portBase", sourcePath: sourcePath)
+                return
             }
-        }
-        if let value = jsonInt(section["portRange"]) {
-            if value > 0 {
-                snapshot.managedUserDefaults["cmuxPortRange"] = .int(value)
-            } else {
+            guard !managesPortRange || jsonInt(section["portRange"]) != nil else {
                 logInvalid("automation.portRange", sourcePath: sourcePath)
+                return
             }
+
+            let portBase = jsonInt(section["portBase"]) ?? ProgramaPortRangePolicy.defaultBase
+            let portRange = jsonInt(section["portRange"]) ?? ProgramaPortRangePolicy.defaultRange
+            guard ProgramaPortRangePolicy.isValid(base: portBase, range: portRange) else {
+                logInvalid("automation.portBase/portRange", sourcePath: sourcePath)
+                return
+            }
+
+            // Manage the resolved pair atomically. If the file supplies only one key, the
+            // documented default counterpart must replace any persisted value that could make
+            // the effective interval overflow.
+            snapshot.managedUserDefaults[ProgramaPortRangePolicy.baseDefaultsKey] = .int(portBase)
+            snapshot.managedUserDefaults[ProgramaPortRangePolicy.rangeDefaultsKey] = .int(portRange)
         }
     }
 

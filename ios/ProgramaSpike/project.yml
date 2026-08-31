@@ -2,8 +2,6 @@ name: ProgramaSpike
 options:
   bundleIdPrefix: com.darkroom.programa
 packages:
-  CmuxIrohTransport:
-    path: ../../vendor/CmuxIrohTransport
   iroh-ffi:
     url: https://github.com/manaflow-ai/iroh-ffi.git
     exactVersion: 1.0.2-cmux.3
@@ -14,9 +12,9 @@ targets:
     deploymentTarget: "18.0"
     sources:
       - path: ProgramaSpike
+      - path: ../../tools/mobile-spike/Sources/MobileSpikeFraming/BoundedLineFramer.swift
+        group: Shared
     dependencies:
-      - package: CmuxIrohTransport
-        product: CmuxIrohTransport
       - package: iroh-ffi
         product: IrohLib
       - target: ProgramaSpikeWidgets
@@ -191,3 +189,16 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  ProgramaSpikeTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: ProgramaSpikeTests
+    dependencies:
+      - target: ProgramaSpike
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.darkroom.programa.spike.tests
+        SWIFT_VERSION: "6.0"

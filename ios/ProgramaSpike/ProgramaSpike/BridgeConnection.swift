@@ -40,6 +40,7 @@ actor BridgeConnection {
     // version skew between the two halves of this feature.
     private static let alpn = Data("programa/mobile-bridge/1".utf8)
     private static let pathPollInterval: Duration = .seconds(3)
+    private static let pairingReplyTimeout: Duration = .seconds(15)
 
     private(set) var phase: Phase = .disconnected
     private(set) var observedPath: ObservedPath = .unavailable
@@ -56,14 +57,19 @@ actor BridgeConnection {
     private var connection: Connection?
     private var sendStream: SendStream?
     private var recvStream: RecvStream?
-    private var readBuffer = Data()
+    private var lineFramer = BoundedLineFramer()
 
     private var readLoopTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var pathLoopTask: Task<Void, Never>?
 
+    private struct PendingRequest {
+        let continuation: CheckedContinuation<Data, Error>
+        let timeoutTask: Task<Void, Never>
+    }
+
     private var nextRequestId = 1
-    private var pending: [Int: CheckedContinuation<Data, Error>] = [:]
+    private var pending: [Int: PendingRequest] = [:]
 
     init() {
         var phaseContinuation: AsyncStream<Phase>.Continuation!
@@ -77,6 +83,10 @@ actor BridgeConnection {
         var eventContinuation: AsyncStream<BridgeEvent>.Continuation!
         events = AsyncStream { eventContinuation = $0 }
         self.eventContinuation = eventContinuation
+    }
+
+    func pendingRequestCountForTesting() -> Int {
+        pending.count
     }
 
     // MARK: - Connection lifecycle
@@ -129,7 +139,7 @@ actor BridgeConnection {
             // with no error and no way out. `Endpoint.connect` routes through
             // `irohConnectWithTaskCancellation`, so unlike the raw stream reads
             // it genuinely honours cancellation.
-            let newConnection = try await withRequestTimeout(seconds: 20) {
+            let newConnection = try await withCooperativeTimeout(seconds: 20) {
                 try await newEndpoint.connect(addr: targetAddress, alpn: Self.alpn)
             }
             establishedConnection = newConnection
@@ -168,7 +178,7 @@ actor BridgeConnection {
             connection = newConnection
             sendStream = stream.send()
             recvStream = stream.recv()
-            readBuffer.removeAll()
+            lineFramer = BoundedLineFramer()
         } catch {
             try? newConnection.close(errorCode: 0, reason: Data())
             try? await newEndpoint.close()
@@ -181,7 +191,17 @@ actor BridgeConnection {
             do {
                 let pairPayload = try JSONEncoder().encode(PairRequest(pair: pairingToken, label: deviceLabel))
                 try await writeLine(pairPayload)
-                guard let replyLine = try await nextBufferedLine() else {
+                let replyDeadline = InitialPairingReplyDeadline()
+                guard let replyLine = try await replyDeadline.run(
+                    timeout: Self.pairingReplyTimeout,
+                    read: { [weak self] in
+                        guard let self else { return nil }
+                        return try await self.nextBufferedLine()
+                    },
+                    abort: { [weak self] in
+                        await self?.teardownConnection()
+                    }
+                ) else {
                     throw BridgeError.disconnected
                 }
                 let reply = try JSONDecoder().decode(PairResponse.self, from: replyLine)
@@ -214,9 +234,7 @@ actor BridgeConnection {
         // Programa's socket is up, and Programa answered. Only then is
         // "connected" true in any sense the user cares about.
         do {
-            _ = try await withRequestTimeout(seconds: 15) {
-                try await self.performRequestUnchecked(method: "system.ping", params: [:])
-            }
+            _ = try await performRequestUnchecked(method: "system.ping", params: [:])
         } catch {
             await teardownConnection()
             setPhase(.failed(
@@ -278,11 +296,10 @@ actor BridgeConnection {
         phaseContinuation.yield(newPhase)
     }
 
-    /// Races an operation against a deadline. Needed because a request whose
-    /// reply never arrives would otherwise park its continuation forever --
-    /// which is what left the app wedged on "Connecting". Teardown resumes any
-    /// still-pending continuation, so a timed-out request cannot leak.
-    private func withRequestTimeout<T: Sendable>(
+    /// Races only cancellation-cooperative operations against a deadline.
+    /// RPC requests use ID-owned deadlines below because cancelling a task
+    /// suspended on a checked continuation does not resume that continuation.
+    private func withCooperativeTimeout<T: Sendable>(
         seconds: Double,
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
@@ -317,9 +334,7 @@ actor BridgeConnection {
     private func sendHeartbeat() async {
         guard case .connected = phase else { return }
         do {
-            _ = try await withRequestTimeout(seconds: 15) {
-                try await self.performRequestUnchecked(method: "system.ping", params: [:])
-            }
+            _ = try await performRequestUnchecked(method: "system.ping", params: [:])
         } catch {
             // The read loop owns disconnect handling; surface the phase here so
             // a silently dead connection doesn't keep looking healthy.
@@ -380,29 +395,12 @@ actor BridgeConnection {
         }
     }
 
-    // MARK: - Framing (buffered read, split on '\n' — mirrors
-    // tools/mobile-spike/Sources/iroh-spike/StreamFraming.swift's
-    // StreamLineReader, inlined here as actor-isolated state instead of a
-    // separate `@unchecked Sendable` reader class).
+    // MARK: - Framing
 
     private func nextBufferedLine() async throws -> Data? {
-        while true {
-            if let newlineIndex = readBuffer.firstIndex(of: 0x0A) {
-                let line = Data(readBuffer[readBuffer.startIndex ..< newlineIndex])
-                readBuffer.removeSubrange(readBuffer.startIndex ... newlineIndex)
-                return line
-            }
-            guard let recvStream else { return nil }
-            let chunk = try await recvStream.read(sizeLimit: 65536)
-            if chunk.isEmpty {
-                if !readBuffer.isEmpty {
-                    let remaining = readBuffer
-                    readBuffer.removeAll()
-                    return remaining
-                }
-                return nil
-            }
-            readBuffer.append(chunk)
+        guard let recvStream else { return nil }
+        return try await lineFramer.nextLine { sizeLimit in
+            try await recvStream.read(sizeLimit: sizeLimit)
         }
     }
 
@@ -438,15 +436,17 @@ actor BridgeConnection {
         } else {
             id = nil
         }
-        guard let id, let continuation = pending.removeValue(forKey: id) else { return }
-        continuation.resume(returning: line)
+        guard let id, let request = pending.removeValue(forKey: id) else { return }
+        request.timeoutTask.cancel()
+        request.continuation.resume(returning: line)
     }
 
     private func failAllPending(with error: Error) {
         let outstanding = pending
         pending.removeAll()
-        for (_, continuation) in outstanding {
-            continuation.resume(throwing: error)
+        for (_, request) in outstanding {
+            request.timeoutTask.cancel()
+            request.continuation.resume(throwing: error)
         }
     }
 
@@ -496,12 +496,13 @@ actor BridgeConnection {
         endpoint = nil
         sendStream = nil
         recvStream = nil
-        readBuffer.removeAll()
+        lineFramer = BoundedLineFramer()
 
         let pendingCopy = pending
         pending.removeAll()
-        for (_, continuation) in pendingCopy {
-            continuation.resume(throwing: BridgeError.disconnected)
+        for (_, request) in pendingCopy {
+            request.timeoutTask.cancel()
+            request.continuation.resume(throwing: BridgeError.disconnected)
         }
     }
 
@@ -523,7 +524,11 @@ actor BridgeConnection {
     /// the admission ping issued during `connect()` -- which by definition runs
     /// before the phase is `.connected` -- can use the normal request/response
     /// machinery. Everything else must go through `performRequest`.
-    private func performRequestUnchecked(method: String, params: [String: RPCParam]) async throws -> Data {
+    private func performRequestUnchecked(
+        method: String,
+        params: [String: RPCParam],
+        timeout: Duration = .seconds(15)
+    ) async throws -> Data {
         let id = nextRequestId
         nextRequestId += 1
         let request = RPCRequest(id: id, method: method, params: params)
@@ -534,21 +539,42 @@ actor BridgeConnection {
             throw BridgeError.encodingFailed
         }
 
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-            pending[id] = continuation
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
+                let timeoutTask = Task { [weak self] in
+                    do {
+                        try await Task.sleep(for: timeout)
+                    } catch {
+                        return
+                    }
+                    await self?.failPendingRequest(id: id, error: BridgeError.timedOut)
+                }
+                pending[id] = PendingRequest(
+                    continuation: continuation,
+                    timeoutTask: timeoutTask
+                )
+                Task { [weak self] in
+                    await self?.performWrite(id: id, payload: payload)
+                }
+            }
+        } onCancel: {
             Task { [weak self] in
-                await self?.performWrite(id: id, payload: payload)
+                await self?.failPendingRequest(id: id, error: CancellationError())
             }
         }
+    }
+
+    private func failPendingRequest(id: Int, error: Error) {
+        guard let request = pending.removeValue(forKey: id) else { return }
+        request.timeoutTask.cancel()
+        request.continuation.resume(throwing: error)
     }
 
     private func performWrite(id: Int, payload: Data) async {
         do {
             try await writeLine(payload)
         } catch {
-            if let continuation = pending.removeValue(forKey: id) {
-                continuation.resume(throwing: error)
-            }
+            failPendingRequest(id: id, error: error)
         }
     }
 
@@ -561,6 +587,144 @@ actor BridgeConnection {
             throw BridgeError.malformedResponse
         }
         return result
+    }
+}
+
+/// Races the initial pairing reply against timeout and caller cancellation without relying on
+/// the underlying iroh read to cooperate with task cancellation. The abort action closes the
+/// transport before the winning error is resumed, which releases a read blocked on a silent peer.
+final class InitialPairingReplyDeadline: @unchecked Sendable {
+    private enum Completion: @unchecked Sendable {
+        case value(Data?)
+        case failure(Error)
+    }
+
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Data?, Error>?
+    private var completion: Completion?
+    private var completionRequiresAbort = false
+    private var abortAction: (@Sendable () async -> Void)?
+    private var readTask: Task<Void, Never>?
+    private var timeoutTask: Task<Void, Never>?
+
+    func run(
+        timeout: Duration,
+        read: @escaping @Sendable () async throws -> Data?,
+        abort: @escaping @Sendable () async -> Void
+    ) async throws -> Data? {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard install(continuation: continuation, abort: abort) else { return }
+                storeReadTask(Task { [weak self] in
+                    do {
+                        let value = try await read()
+                        self?.resolve(.value(value), abort: false)
+                    } catch {
+                        self?.resolve(.failure(error), abort: false)
+                    }
+                })
+                storeTimeoutTask(Task { [weak self] in
+                    do {
+                        try await Task.sleep(for: timeout)
+                    } catch {
+                        return
+                    }
+                    self?.resolve(.failure(BridgeError.timedOut), abort: true)
+                })
+            }
+        } onCancel: {
+            self.resolve(.failure(CancellationError()), abort: true)
+        }
+    }
+
+    private func install(
+        continuation: CheckedContinuation<Data?, Error>,
+        abort: @escaping @Sendable () async -> Void
+    ) -> Bool {
+        lock.lock()
+        if let completion {
+            let shouldAbort = completionRequiresAbort
+            lock.unlock()
+            Task {
+                if shouldAbort { await abort() }
+                Self.resume(continuation, with: completion)
+            }
+            return false
+        }
+        self.continuation = continuation
+        abortAction = abort
+        lock.unlock()
+        return true
+    }
+
+    private func storeReadTask(_ task: Task<Void, Never>) {
+        lock.lock()
+        if completion == nil {
+            readTask = task
+            lock.unlock()
+        } else {
+            lock.unlock()
+            task.cancel()
+        }
+    }
+
+    private func storeTimeoutTask(_ task: Task<Void, Never>) {
+        lock.lock()
+        if completion == nil {
+            timeoutTask = task
+            lock.unlock()
+        } else {
+            lock.unlock()
+            task.cancel()
+        }
+    }
+
+    private func resolve(_ completion: Completion, abort shouldAbort: Bool) {
+        lock.lock()
+        guard self.completion == nil else {
+            lock.unlock()
+            return
+        }
+        self.completion = completion
+        completionRequiresAbort = shouldAbort
+        let continuation = self.continuation
+        self.continuation = nil
+        let abortAction = self.abortAction
+        self.abortAction = nil
+        let readTask = self.readTask
+        self.readTask = nil
+        let timeoutTask = self.timeoutTask
+        self.timeoutTask = nil
+        lock.unlock()
+
+        readTask?.cancel()
+        timeoutTask?.cancel()
+        guard let continuation else { return }
+        Task {
+            if shouldAbort, let abortAction {
+                await abortAction()
+            }
+            Self.resume(continuation, with: completion)
+        }
+    }
+
+    private static func resume(
+        _ continuation: CheckedContinuation<Data?, Error>,
+        with completion: Completion
+    ) {
+        switch completion {
+        case .value(let value):
+            continuation.resume(returning: value)
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func resume(
+        _ continuation: CheckedContinuation<Data?, Error>,
+        with completion: Completion
+    ) {
+        Self.resume(continuation, with: completion)
     }
 }
 

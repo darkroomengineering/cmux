@@ -413,6 +413,13 @@ enum EscrowWireFormat {
 /// more reliable for this one piece; everything else (framing, session
 /// bookkeeping, heartbeats, retry/backoff) stays in Swift.
 enum UnixDomainFDPassing {
+    enum ConnectionProbeResult {
+        case live(Int32)
+        case stale
+        case missing
+        case indeterminate(Int32)
+    }
+
     enum ChunkResult {
         case data(Data, Int32?)
         case eof
@@ -420,21 +427,20 @@ enum UnixDomainFDPassing {
         case error
     }
 
-    /// Connects to `socketPath`, blocking (local `AF_UNIX` connects do not
-    /// hang the way TCP connects can -- they fail immediately if nothing is
-    /// listening, so no async/timeout machinery is needed here). Returns
-    /// nil on any failure.
-    static func connect(to socketPath: String) -> Int32? {
+    /// Probes `socketPath` without collapsing a definitely stale listener
+    /// into setup failures that must preserve the incumbent socket inode.
+    static func probeConnection(to socketPath: String) -> ConnectionProbeResult {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return nil }
+        guard fd >= 0 else { return .indeterminate(errno) }
         guard setCloseOnExec(on: fd) else {
+            let probeErrno = errno
             close(fd)
-            return nil
+            return .indeterminate(probeErrno)
         }
         suppressSigPipe(on: fd)
         guard var addr = makeSockaddr(path: socketPath) else {
             close(fd)
-            return nil
+            return .indeterminate(ENAMETOOLONG)
         }
         let result = withUnsafePointer(to: &addr) { ptr -> Int32 in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
@@ -442,9 +448,23 @@ enum UnixDomainFDPassing {
             }
         }
         guard result == 0 else {
+            let connectErrno = errno
             close(fd)
-            return nil
+            switch connectErrno {
+            case ECONNREFUSED:
+                return .stale
+            case ENOENT:
+                return .missing
+            default:
+                return .indeterminate(connectErrno)
+            }
         }
+        return .live(fd)
+    }
+
+    /// Compatibility wrapper for callers that only need a connected fd.
+    static func connect(to socketPath: String) -> Int32? {
+        guard case .live(let fd) = probeConnection(to: socketPath) else { return nil }
         return fd
     }
 
@@ -488,11 +508,50 @@ enum UnixDomainFDPassing {
         }
     }
 
-    /// Binds and listens on `socketPath`. Removes a stale socket file first
-    /// (the caller is expected to have already confirmed nothing is
-    /// listening there via a `connect` probe). Returns nil on any failure.
-    static func bindListening(socketPath: String) -> Int32? {
-        unlink(socketPath)
+    /// Binds and listens on `socketPath` under a cross-process election lock. A live listener
+    /// is never unlinked: on `EADDRINUSE`, the winner is probed while the lock is held, and only
+    /// a socket inode owned by this user that no longer accepts connections is removed.
+    static func bindListening(
+        socketPath: String,
+        connectionProbe: (String) -> ConnectionProbeResult = probeConnection(to:)
+    ) -> Int32? {
+        let electionPath = socketPath + ".election"
+        let electionFD = electionPath.withCString {
+            Darwin.open($0, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        }
+        guard electionFD >= 0 else { return nil }
+        defer { close(electionFD) }
+
+        var electionStat = stat()
+        guard fstat(electionFD, &electionStat) == 0,
+              electionStat.st_uid == geteuid(),
+              (electionStat.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              flock(electionFD, LOCK_EX) == 0 else {
+            return nil
+        }
+        defer { _ = flock(electionFD, LOCK_UN) }
+        _ = fchmod(electionFD, S_IRUSR | S_IWUSR)
+
+        if let fd = bindListeningWithoutUnlink(socketPath: socketPath) {
+            return fd
+        }
+        guard errno == EADDRINUSE else { return nil }
+
+        switch connectionProbe(socketPath) {
+        case .live(let existingFD):
+            close(existingFD)
+            return nil
+        case .stale:
+            guard removeStaleSocketOwnedByCurrentUser(socketPath) else { return nil }
+        case .missing:
+            break
+        case .indeterminate:
+            return nil
+        }
+        return bindListeningWithoutUnlink(socketPath: socketPath)
+    }
+
+    private static func bindListeningWithoutUnlink(socketPath: String) -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         guard setCloseOnExec(on: fd) else {
@@ -509,12 +568,37 @@ enum UnixDomainFDPassing {
                 bind(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard bindResult == 0, listen(fd, 16) == 0 else {
+        guard bindResult == 0 else {
+            let bindErrno = errno
             close(fd)
+            errno = bindErrno
             return nil
         }
-        chmod(socketPath, 0o600)
+        guard listen(fd, 16) == 0 else {
+            let listenErrno = errno
+            close(fd)
+            unlink(socketPath)
+            errno = listenErrno
+            return nil
+        }
+        guard chmod(socketPath, 0o600) == 0 else {
+            close(fd)
+            unlink(socketPath)
+            return nil
+        }
         return fd
+    }
+
+    private static func removeStaleSocketOwnedByCurrentUser(_ socketPath: String) -> Bool {
+        var socketStat = stat()
+        guard lstat(socketPath, &socketStat) == 0 else {
+            return errno == ENOENT
+        }
+        guard socketStat.st_uid == geteuid(),
+              (socketStat.st_mode & mode_t(S_IFMT)) == mode_t(S_IFSOCK) else {
+            return false
+        }
+        return unlink(socketPath) == 0 || errno == ENOENT
     }
 
     private static func makeSockaddr(path: String) -> sockaddr_un? {
@@ -1285,16 +1369,6 @@ enum SessionEscrowHolder {
         #if DEBUG
         dlog("session.escrow.holder.sigpipe_ignored")
         #endif
-        guard bindOrDetectExistingHolder(socketPath: socketPath) == false else {
-            // Another holder is already live at this path (this process
-            // lost a spawn race, or was spawned redundantly by a second
-            // surface before the first holder was reachable) -- exit
-            // quietly, nothing to do.
-            #if DEBUG
-            dlog("session.escrow.holder.run redundant socket=\(socketPath)")
-            #endif
-            Darwin.exit(0)
-        }
         guard let listenFD = UnixDomainFDPassing.bindListening(socketPath: socketPath) else {
             #if DEBUG
             dlog("session.escrow.holder.run bind_failed socket=\(socketPath)")
@@ -1346,15 +1420,6 @@ enum SessionEscrowHolder {
                 serve(connectionFD: clientFD)
             }
         }
-    }
-
-    /// Returns true if a holder is already listening at `socketPath` (this
-    /// process should exit rather than bind). Never binds itself; the
-    /// caller does that separately once this returns false.
-    private static func bindOrDetectExistingHolder(socketPath: String) -> Bool {
-        guard let probeFD = UnixDomainFDPassing.connect(to: socketPath) else { return false }
-        close(probeFD)
-        return true
     }
 
     /// One dedicated thread per accepted connection. Two shapes of

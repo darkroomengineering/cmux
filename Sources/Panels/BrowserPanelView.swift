@@ -647,6 +647,9 @@ struct BrowserPanelView: View {
                     isPresented: $isBrowserThemeMenuPresented,
                     onSelectMode: applyBrowserThemeModeSelection
                 )
+                if #available(macOS 15.4, *) {
+                    browserExtensionsButton
+                }
                 developerToolsButton
             }
         }
@@ -689,6 +692,26 @@ struct BrowserPanelView: View {
         .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
         .safeHelp(String(localized: "browser.reactGrab", defaultValue: "Inject React Grab"))
         .accessibilityIdentifier("BrowserReactGrabButton")
+    }
+
+    @available(macOS 15.4, *)
+    private var browserExtensionsButton: some View {
+        let label = String(localized: "browser.extensions.manage", defaultValue: "Manage Browser Extensions")
+        return Button {
+            BrowserExtensionManager.shared.presentManagementUI()
+        } label: {
+            Image(systemName: "puzzlepiece.extension")
+                .symbolRenderingMode(.monochrome)
+                .programaFlatSymbolColorRendering()
+                .font(.system(size: devToolsButtonIconSize, weight: .medium))
+                .foregroundStyle(devToolsColorOption.color)
+                .frame(width: 44, height: 44, alignment: .center)
+        }
+        .buttonStyle(OmnibarAddressButtonStyle())
+        .frame(width: 44, height: 44, alignment: .center)
+        .accessibilityLabel(label)
+        .safeHelp(label)
+        .accessibilityIdentifier("BrowserManageExtensionsButton")
     }
 
     private var developerToolsButton: some View {

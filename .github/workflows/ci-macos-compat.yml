@@ -117,6 +117,8 @@ jobs:
             smoke: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
+    env:
+      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-compat-derived-data
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -167,10 +169,10 @@ jobs:
           path: GhosttyKit.xcframework
           key: ghosttykit-v3-${{ steps.ghostty-revision.outputs.revision }}
 
-      - name: Set up Zig 0.16.0
+      - name: Set up required Zig
         run: |
-          ZIG_REQUIRED="0.16.0"
-          if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
+          ZIG_REQUIRED="$(./scripts/required-zig-version.sh)"
+          if command -v zig >/dev/null 2>&1 && [ "$(zig version 2>/dev/null)" = "$ZIG_REQUIRED" ]; then
             echo "zig ${ZIG_REQUIRED} already installed"
           else
             echo "Installing zig ${ZIG_REQUIRED} from tarball"
@@ -191,7 +193,7 @@ jobs:
       - name: Cache DerivedData
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
-          path: ~/Library/Developer/Xcode/DerivedData/GhosttyTabs-*
+          path: ${{ env.PROGRAMA_DERIVED_DATA_DIR }}
           key: deriveddata-${{ matrix.os }}-${{ env.XCODE_VER }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.pbxproj') }}
           restore-keys: |
             deriveddata-${{ matrix.os }}-${{ env.XCODE_VER }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
@@ -257,6 +259,7 @@ jobs:
           set -euo pipefail
           SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
           xcodebuild -project GhosttyTabs.xcodeproj -scheme programa -configuration Debug \
+            -derivedDataPath "$PROGRAMA_DERIVED_DATA_DIR" \
             -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
             -disableAutomaticPackageResolution \
             -destination "platform=macOS" build
@@ -307,7 +310,7 @@ jobs:
 
       - name: Upload unit-test result bundles
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: unit-test-xcresults-${{ matrix.os }}-${{ github.run_attempt }}
           path: /tmp/programa-unit-xcresults/

@@ -52,16 +52,92 @@ rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR" "$EXPORT_DIR"
 
 # ---------------------------------------------------------------- keychain
-KEYCHAIN="ios-build.keychain"
+KEYCHAIN=""
 KEYCHAIN_PASSWORD="$(uuidgen)"
-security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || true
+PRIOR_KEYCHAINS_FILE="$WORK_DIR/prior-user-keychains"
+PRIOR_KEYCHAINS_CAPTURED=0
+PROFILE_RESTORE_MANIFEST="$WORK_DIR/profile-restore-manifest"
+PROFILE_BACKUP_DIR="$WORK_DIR/profile-backups"
+ASC_KEY_DEST=""
+ASC_KEY_BACKUP="$WORK_DIR/asc-key-backup"
+ASC_KEY_EXISTED=0
+ASC_KEY_INSTALLED=0
+ASC_KEY_DIR_CREATED=0
+: > "$PROFILE_RESTORE_MANIFEST"
+
+cleanup_signing_state() {
+  local original_status="$?"
+  local cleanup_failed=0
+  local disposition destination backup mode
+  local -a prior_keychains=()
+  trap - EXIT
+  set +e
+
+  while IFS=$'\t' read -r disposition destination backup mode; do
+    [[ -n "$destination" ]] || continue
+    if [[ "$disposition" == "restore" ]]; then
+      cp -p "$backup" "$destination" >/dev/null 2>&1 || {
+        echo "warning: could not restore provisioning profile: $destination" >&2
+        cleanup_failed=1
+      }
+      chmod "$mode" "$destination" >/dev/null 2>&1 || cleanup_failed=1
+    else
+      rm -f "$destination" >/dev/null 2>&1 || {
+        echo "warning: could not remove installed provisioning profile: $destination" >&2
+        cleanup_failed=1
+      }
+    fi
+  done < "$PROFILE_RESTORE_MANIFEST"
+
+  if (( ASC_KEY_INSTALLED )); then
+    if (( ASC_KEY_EXISTED )); then
+      cp -p "$ASC_KEY_BACKUP" "$ASC_KEY_DEST" >/dev/null 2>&1 || cleanup_failed=1
+    else
+      rm -f "$ASC_KEY_DEST" >/dev/null 2>&1 || cleanup_failed=1
+      if (( ASC_KEY_DIR_CREATED )); then
+        rmdir "$(dirname "$ASC_KEY_DEST")" >/dev/null 2>&1
+      fi
+    fi
+  fi
+
+  if (( PRIOR_KEYCHAINS_CAPTURED )); then
+    while IFS= read -r keychain; do
+      [[ -n "$keychain" ]] && prior_keychains+=("$keychain")
+    done < "$PRIOR_KEYCHAINS_FILE"
+    security list-keychains -d user -s "${prior_keychains[@]}" >/dev/null 2>&1 || {
+      echo "warning: could not restore the user keychain search list" >&2
+      cleanup_failed=1
+    }
+  fi
+  if [[ -n "$KEYCHAIN" ]]; then
+    security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || {
+      echo "warning: could not delete temporary build keychain: $KEYCHAIN" >&2
+      cleanup_failed=1
+    }
+  fi
+  if (( original_status == 0 && cleanup_failed )); then
+    original_status=1
+  fi
+  exit "$original_status"
+}
+trap cleanup_signing_state EXIT
+
+security list-keychains -d user \
+  | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//' \
+  > "$PRIOR_KEYCHAINS_FILE"
+PRIOR_KEYCHAINS_CAPTURED=1
+KEYCHAIN="$WORK_DIR/ios-build-$$-$(uuidgen).keychain-db"
 security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 security set-keychain-settings -lut 21600 "$KEYCHAIN"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 security import "$PROGRAMA_IOS_DIST_CERT_P12" -k "$KEYCHAIN" \
   -P "$PROGRAMA_IOS_DIST_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
 security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
-security list-keychains -d user -s "$KEYCHAIN"
+prior_keychains=()
+while IFS= read -r keychain; do
+  [[ -n "$keychain" ]] && prior_keychains+=("$keychain")
+done < "$PRIOR_KEYCHAINS_FILE"
+security list-keychains -d user -s "${prior_keychains[@]}" "$KEYCHAIN"
 
 SIGN_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
   | grep -oE '"Apple Distribution: [^"]+"' | head -1 | tr -d '"')"
@@ -97,19 +173,49 @@ profile_field() {
 
 install_profile() {
   local src="$1"
-  local uuid name
+  local output_variable="$2"
+  local uuid name destination backup mode existing_destination
   uuid="$(profile_field "$src" ":UUID")"
   name="$(profile_field "$src" ":Name")"
   if [[ -z "$uuid" || -z "$name" ]]; then
     echo "Could not read UUID/Name from profile: $src" >&2
     exit 1
   fi
-  cp "$src" "$PROFILE_DIR/$uuid.mobileprovision"
-  echo "$name"
+  if [[ ! "$uuid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+    echo "Profile has an invalid UUID: $src" >&2
+    exit 1
+  fi
+  destination="$PROFILE_DIR/$uuid.mobileprovision"
+  existing_destination=0
+  while IFS=$'\t' read -r _ recorded_destination _ _; do
+    if [[ "$recorded_destination" == "$destination" ]]; then
+      existing_destination=1
+      break
+    fi
+  done < "$PROFILE_RESTORE_MANIFEST"
+  if (( ! existing_destination )); then
+    if [[ -e "$destination" || -L "$destination" ]]; then
+      if [[ -L "$destination" ]]; then
+        echo "Refusing to replace symlinked provisioning profile: $destination" >&2
+        exit 1
+      fi
+      backup="$PROFILE_BACKUP_DIR/$uuid.mobileprovision"
+      mkdir -p "$PROFILE_BACKUP_DIR"
+      cp -p "$destination" "$backup"
+      mode="$(stat -f '%Lp' "$destination")"
+      printf 'restore\t%s\t%s\t%s\n' "$destination" "$backup" "$mode" >> "$PROFILE_RESTORE_MANIFEST"
+    else
+      printf 'remove\t%s\t\t\n' "$destination" >> "$PROFILE_RESTORE_MANIFEST"
+    fi
+  fi
+  cp "$src" "$destination"
+  printf -v "$output_variable" '%s' "$name"
 }
 
-APP_PROFILE_NAME="$(install_profile "$PROGRAMA_IOS_APP_PROFILE")"
-WIDGET_PROFILE_NAME="$(install_profile "$PROGRAMA_IOS_WIDGET_PROFILE")"
+APP_PROFILE_NAME=""
+WIDGET_PROFILE_NAME=""
+install_profile "$PROGRAMA_IOS_APP_PROFILE" APP_PROFILE_NAME
+install_profile "$PROGRAMA_IOS_WIDGET_PROFILE" WIDGET_PROFILE_NAME
 echo "App profile:    $APP_PROFILE_NAME"
 echo "Widget profile: $WIDGET_PROFILE_NAME"
 
@@ -309,8 +415,22 @@ require PROGRAMA_ASC_KEY_P8
 # altool finds the key by convention: ./private_keys/AuthKey_<KEYID>.p8 relative
 # to one of a fixed set of search paths.
 KEY_DIR="$HOME/private_keys"
+if [[ ! -d "$KEY_DIR" ]]; then
+  ASC_KEY_DIR_CREATED=1
+fi
 mkdir -p "$KEY_DIR"
-cp "$PROGRAMA_ASC_KEY_P8" "$KEY_DIR/AuthKey_${PROGRAMA_ASC_KEY_ID}.p8"
+ASC_KEY_DEST="$KEY_DIR/AuthKey_${PROGRAMA_ASC_KEY_ID}.p8"
+if [[ -e "$ASC_KEY_DEST" || -L "$ASC_KEY_DEST" ]]; then
+  if [[ -L "$ASC_KEY_DEST" ]]; then
+    echo "Refusing to replace symlinked App Store Connect key: $ASC_KEY_DEST" >&2
+    exit 1
+  fi
+  cp -p "$ASC_KEY_DEST" "$ASC_KEY_BACKUP"
+  ASC_KEY_EXISTED=1
+fi
+cp "$PROGRAMA_ASC_KEY_P8" "$ASC_KEY_DEST"
+chmod 600 "$ASC_KEY_DEST"
+ASC_KEY_INSTALLED=1
 
 xcrun altool --upload-app \
   --type ios \

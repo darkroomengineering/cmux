@@ -2,22 +2,16 @@
 set -euo pipefail
 
 ENSURE_GHOSTTYKIT_COMMAND="${PROGRAMA_ENSURE_GHOSTTYKIT_COMMAND:-$PWD/scripts/ensure-ghosttykit.sh}"
+APP_LOCATOR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/locate-built-app.sh"
 
 "$ENSURE_GHOSTTYKIT_COMMAND"
 xcodebuild -project GhosttyTabs.xcodeproj -scheme programa -configuration Release -destination 'platform=macOS' build
 pkill -x Programa || true
 sleep 0.2
-APP_PATH="$(
-  find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Release/Programa.app" -print0 \
-  | xargs -0 /usr/bin/stat -f "%m %N" 2>/dev/null \
-  | sort -nr \
-  | head -n 1 \
-  | cut -d' ' -f2-
-)"
-if [[ -z "${APP_PATH}" ]]; then
-  echo "Programa.app not found in DerivedData" >&2
-  exit 1
-fi
+APP_PATH="$($APP_LOCATOR \
+  --configuration Release \
+  --primary Programa \
+  --derived-data-root "$HOME/Library/Developer/Xcode/DerivedData")"
 
 echo "Release app:"
 echo "  ${APP_PATH}"

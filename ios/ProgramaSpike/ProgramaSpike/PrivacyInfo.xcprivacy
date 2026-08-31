@@ -18,8 +18,9 @@
 	<array>
 		<dict>
 			<!--
-			  UserDefaults stores the pairing ticket, the paired Mac's name, and
-			  a "subscription created" flag. All of it is this app's own state,
+			  UserDefaults stores the paired Mac's display name. Credentials live
+			  in device-only Keychain items, and CloudKit subscription state is
+			  reconciled with the server. The display name is this app's own state,
 			  read back only by this app: reason CA92.1.
 			-->
 			<key>NSPrivacyAccessedAPIType</key>

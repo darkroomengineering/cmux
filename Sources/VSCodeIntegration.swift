@@ -471,11 +471,20 @@ final class VSCodeServeWebController {
 }
 
 final class ServeWebOutputCollector {
+    static let defaultMaximumBytes = 1024 * 1024
+
     private let lock = NSLock()
     private let semaphore = DispatchSemaphore(value: 0)
+    private let maximumBytes: Int
     private var outputBuffer = ""
     private var resolvedURL: URL?
     private var didSignal = false
+    private var receivedByteCount = 0
+    private(set) var didOverflow = false
+
+    init(maximumBytes: Int = ServeWebOutputCollector.defaultMaximumBytes) {
+        self.maximumBytes = max(0, maximumBytes)
+    }
 
     var webUIURL: URL? {
         lock.lock()
@@ -484,10 +493,17 @@ final class ServeWebOutputCollector {
     }
 
     func append(_ data: Data) {
-        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
         lock.lock()
         defer { lock.unlock() }
-        guard resolvedURL == nil else { return }
+        guard resolvedURL == nil, !didOverflow else { return }
+        guard data.count <= maximumBytes - receivedByteCount else {
+            didOverflow = true
+            outputBuffer.removeAll(keepingCapacity: false)
+            signalWaiterIfNeeded()
+            return
+        }
+        receivedByteCount += data.count
+        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
         outputBuffer.append(text)
         while let newlineIndex = outputBuffer.firstIndex(where: \.isNewline) {
             let line = String(outputBuffer[..<newlineIndex])
@@ -497,10 +513,7 @@ final class ServeWebOutputCollector {
             }
             resolvedURL = parsedURL
             outputBuffer.removeAll(keepingCapacity: false)
-            if !didSignal {
-                didSignal = true
-                semaphore.signal()
-            }
+            signalWaiterIfNeeded()
             return
         }
     }
@@ -513,15 +526,19 @@ final class ServeWebOutputCollector {
             resolvedURL = parsedURL
             outputBuffer.removeAll(keepingCapacity: false)
         }
-        guard !didSignal else { return }
-        didSignal = true
-        semaphore.signal()
+        signalWaiterIfNeeded()
     }
 
     func waitForURL(timeoutSeconds: TimeInterval) -> Bool {
         if webUIURL != nil { return true }
         _ = semaphore.wait(timeout: .now() + timeoutSeconds)
         return webUIURL != nil
+    }
+
+    private func signalWaiterIfNeeded() {
+        guard !didSignal else { return }
+        didSignal = true
+        semaphore.signal()
     }
 }
 

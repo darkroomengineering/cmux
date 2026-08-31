@@ -20,7 +20,7 @@ import Foundation
 /// that changes an already-trusted `programa.json` therefore surfaces `.changed` instead of
 /// silently running the new content. See `trustState(configPath:globalConfigPath:)`. Formerly
 /// tracked in https://github.com/darkroomengineering/programa/issues/188.
-final class ProgramaDirectoryTrust {
+final class ProgramaDirectoryTrust: @unchecked Sendable {
     static let shared = ProgramaDirectoryTrust()
     static let didChangeNotification = Notification.Name("programa.directoryTrustDidChange")
 
@@ -43,6 +43,7 @@ final class ProgramaDirectoryTrust {
     }
 
     private let storePath: String
+    private let stateLock = NSLock()
     private var trustedDirectories: [String: String?]
 
     private convenience init() {
@@ -83,22 +84,28 @@ final class ProgramaDirectoryTrust {
         if configPath == globalConfigPath { return .trusted }
 
         let trustKey = Self.trustKey(for: configPath)
-        guard let storedDigest = trustedDirectories[trustKey] else {
+        guard let currentDigest = Self.executableDigest(forConfigAt: configPath) else {
             return .untrusted
         }
 
-        guard let currentDigest = Self.executableDigest(forConfigAt: configPath) else {
+        stateLock.lock()
+        guard let storedDigest = trustedDirectories[trustKey] else {
+            stateLock.unlock()
             return .untrusted
         }
 
         guard let storedDigest else {
             // Legacy entry with no digest -- adopt silently, no prompt.
             trustedDirectories[trustKey] = currentDigest
-            save()
+            saveLocked()
+            stateLock.unlock()
+            postDidChangeNotification()
             return .trusted
         }
 
-        return storedDigest == currentDigest ? .trusted : .changed
+        let result: TrustState = storedDigest == currentDigest ? .trusted : .changed
+        stateLock.unlock()
+        return result
     }
 
     /// Trust the directory containing a programa.json. If the programa.json is inside a git
@@ -106,26 +113,45 @@ final class ProgramaDirectoryTrust {
     /// executable-content digest so a later edit to the file is detected.
     func trust(configPath: String) {
         let trustKey = Self.trustKey(for: configPath)
-        trustedDirectories[trustKey] = Self.executableDigest(forConfigAt: configPath)
-        save()
+        let digest = Self.executableDigest(forConfigAt: configPath)
+        stateLock.lock()
+        defer {
+            stateLock.unlock()
+            postDidChangeNotification()
+        }
+        // An unreadable config has no digest and must not create a trusted entry.
+        trustedDirectories[trustKey] = digest
+        saveLocked()
     }
 
     /// Remove trust for a directory.
     func revokeTrust(configPath: String) {
         let trustKey = Self.trustKey(for: configPath)
+        stateLock.lock()
+        defer {
+            stateLock.unlock()
+            postDidChangeNotification()
+        }
         trustedDirectories.removeValue(forKey: trustKey)
-        save()
+        saveLocked()
     }
 
     /// Remove trust by the trust key directly (as stored/displayed in settings).
     func revokeTrustByPath(_ path: String) {
+        stateLock.lock()
+        defer {
+            stateLock.unlock()
+            postDidChangeNotification()
+        }
         trustedDirectories.removeValue(forKey: path)
-        save()
+        saveLocked()
     }
 
     /// All currently trusted paths.
     var allTrustedPaths: [String] {
-        Array(trustedDirectories.keys).sorted()
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return Array(trustedDirectories.keys).sorted()
     }
 
     /// Replace all trusted paths (used by Settings textarea save and settings-backup restore).
@@ -139,14 +165,20 @@ final class ProgramaDirectoryTrust {
             // storing a nil value. `updateValue` is the only way to store "present, no digest".
             replacement.updateValue(nil, forKey: path)
         }
+        stateLock.lock()
         trustedDirectories = replacement
-        save()
+        saveLocked()
+        stateLock.unlock()
+        postDidChangeNotification()
     }
 
     /// Clear all trusted directories.
     func clearAll() {
+        stateLock.lock()
         trustedDirectories.removeAll()
-        save()
+        saveLocked()
+        stateLock.unlock()
+        postDidChangeNotification()
     }
 
     // MARK: - Digesting
@@ -220,10 +252,15 @@ final class ProgramaDirectoryTrust {
         return [:]
     }
 
-    private func save() {
+    /// Caller holds `stateLock`; notification is deliberately posted after unlocking so a
+    /// synchronous observer can safely query or replace trust without deadlocking this store.
+    private func saveLocked() {
         let store = TrustStoreV2(version: 2, directories: trustedDirectories)
         guard let data = try? JSONEncoder().encode(store) else { return }
         FileManager.default.createFile(atPath: storePath, contents: data)
+    }
+
+    private func postDidChangeNotification() {
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
     }
 }

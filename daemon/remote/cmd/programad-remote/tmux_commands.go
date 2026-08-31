@@ -506,7 +506,7 @@ func tmuxResizePane(rc *rpcContext, args []string) error {
 	return nil
 }
 
-func tmuxWaitFor(_ *rpcContext, args []string) error {
+func tmuxWaitFor(rc *rpcContext, args []string) error {
 	p := parseTmuxArgs(args, []string{"--timeout"}, []string{"-S"})
 	name := ""
 	for _, pos := range p.positional {
@@ -519,11 +519,19 @@ func tmuxWaitFor(_ *rpcContext, args []string) error {
 		return fmt.Errorf("wait-for requires a name")
 	}
 
-	signalPath := tmuxWaitForSignalPath(name)
+	socketIdentity := ""
+	if rc != nil {
+		socketIdentity = rc.socketPath
+	}
+	signalPath, err := tmuxWaitForSignalPath(name, socketIdentity)
+	if err != nil {
+		return err
+	}
 
 	if p.hasFlag("-S") {
-		// Signal mode: create the file
-		os.WriteFile(signalPath, []byte{}, 0644)
+		if err := writeTmuxWaitForSignal(signalPath); err != nil {
+			return err
+		}
 		fmt.Println("OK")
 		return nil
 	}
@@ -539,9 +547,13 @@ func tmuxWaitFor(_ *rpcContext, args []string) error {
 
 	deadline := time.Now().Add(time.Duration(timeout * float64(time.Second)))
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(signalPath); err == nil {
-			os.Remove(signalPath)
+		if err := validateOwnedPrivateSignal(signalPath); err == nil {
+			if err := os.Remove(signalPath); err != nil {
+				return fmt.Errorf("consume wait-for signal: %w", err)
+			}
 			return nil
+		} else if !os.IsNotExist(err) {
+			return err
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

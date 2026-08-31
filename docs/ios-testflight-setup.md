@@ -203,6 +203,10 @@ secrets fails hard.
 
 ## Notes
 
+- **Signing state is temporary.** `scripts/build-ios-testflight.sh` uses a unique build
+  keychain, appends it to the existing user search list, and restores that list on every
+  exit. Provisioning profiles and an existing App Store Connect key are likewise restored;
+  artifacts created only for the build are removed.
 - **Build numbers are already handled.** The lane injects
   `GITHUB_RUN_ID` + attempt as `CURRENT_PROJECT_VERSION`
   (`.github/workflows/ios-testflight.yml:170-174`), overriding the static `"1"`

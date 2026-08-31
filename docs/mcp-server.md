@@ -44,6 +44,22 @@ instance (a tagged dev build, for example), set `PROGRAMA_SOCKET_PATH`:
 }
 ```
 
+If Settings → Automation uses password-protected socket access, also provide
+`PROGRAMA_SOCKET_PASSWORD` in the MCP server's environment. `programa-mcp` authenticates
+with `auth.login` before sending each tool request and returns an explicit
+`authentication_error` when the password is missing or rejected:
+
+```json
+{
+  "mcpServers": {
+    "programa": {
+      "command": "/Applications/Programa.app/Contents/Resources/bin/programa-mcp",
+      "env": { "PROGRAMA_SOCKET_PASSWORD": "your configured password" }
+    }
+  }
+}
+```
+
 Note that inside a Programa terminal, `PROGRAMA_SOCKET_PATH` is already set and points at
 the app you are running in. That is usually what you want, but it means a dev build's
 server will talk to your production instance unless you override it explicitly.
@@ -138,6 +154,10 @@ so this only affects hand testing.
 
 **`transport_error: Socket not found`.** Programa is not running, or the server resolved a
 different instance's socket than you expected. Check `PROGRAMA_SOCKET_PATH`.
+
+**`authentication_error`.** The running app requires socket authentication. Set
+`PROGRAMA_SOCKET_PASSWORD` to the password configured in Settings → Automation, or verify
+that the existing value matches.
 
 **A tool is missing from `tools/list`.** Confirm the method exists in the running build via
 the `system_capabilities` tool. The server and the app can be different versions if you

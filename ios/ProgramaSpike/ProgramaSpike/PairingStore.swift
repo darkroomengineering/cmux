@@ -1,19 +1,60 @@
 import Foundation
 
-/// Persists the pairing ticket in `UserDefaults` so relaunching the app
+/// Persists the pairing ticket in the device-only Keychain so relaunching the app
 /// reconnects without retyping it. The pairing token is intentionally never
 /// persisted here — it is single-use and only needed the first time a
 /// device pairs; every reconnect after that sends no pair line at all (the
 /// bridge's allowlist already has this device's iroh EndpointID).
 enum PairingStore {
-    private static let ticketKey = "programa.spike.pairingTicket"
+    private static let legacyTicketKey = "programa.spike.pairingTicket"
 
-    static func loadTicket() -> String? {
-        UserDefaults.standard.string(forKey: ticketKey)
+    static func loadTicket(
+        keychain: any KeychainAccess = SystemKeychainAccess(),
+        defaults: UserDefaults = .standard
+    ) throws -> String? {
+        if let stored = try keychain.data(
+            service: ProgramaCredentialKeychain.service,
+            account: ProgramaCredentialKeychain.pairingTicketAccount
+        ) {
+            guard let ticket = String(data: stored, encoding: .utf8),
+                  !ticket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                try keychain.delete(
+                    service: ProgramaCredentialKeychain.service,
+                    account: ProgramaCredentialKeychain.pairingTicketAccount
+                )
+                return nil
+            }
+            return ticket
+        }
+
+        guard let legacy = defaults.string(forKey: legacyTicketKey) else { return nil }
+        guard !legacy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            defaults.removeObject(forKey: legacyTicketKey)
+            return nil
+        }
+        try saveTicket(legacy, keychain: keychain)
+        defaults.removeObject(forKey: legacyTicketKey)
+        return legacy
     }
 
-    static func saveTicket(_ ticket: String) {
-        UserDefaults.standard.set(ticket, forKey: ticketKey)
+    static func saveTicket(
+        _ ticket: String,
+        keychain: any KeychainAccess = SystemKeychainAccess()
+    ) throws {
+        let data = Data(ticket.utf8)
+        guard !data.isEmpty else { throw CredentialStoreError.verificationFailed }
+        try keychain.set(
+            data,
+            service: ProgramaCredentialKeychain.service,
+            account: ProgramaCredentialKeychain.pairingTicketAccount
+        )
+        guard try keychain.data(
+            service: ProgramaCredentialKeychain.service,
+            account: ProgramaCredentialKeychain.pairingTicketAccount
+        ) == data else {
+            throw CredentialStoreError.verificationFailed
+        }
     }
 
     private static let macNameKey = "pairedMacName"
@@ -28,7 +69,14 @@ enum PairingStore {
         UserDefaults.standard.set(name, forKey: macNameKey)
     }
 
-    static func clearTicket() {
-        UserDefaults.standard.removeObject(forKey: ticketKey)
+    static func clearTicket(
+        keychain: any KeychainAccess = SystemKeychainAccess(),
+        defaults: UserDefaults = .standard
+    ) throws {
+        try keychain.delete(
+            service: ProgramaCredentialKeychain.service,
+            account: ProgramaCredentialKeychain.pairingTicketAccount
+        )
+        defaults.removeObject(forKey: legacyTicketKey)
     }
 }

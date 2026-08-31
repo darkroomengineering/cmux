@@ -225,11 +225,13 @@ extension WorkspaceRemoteSessionController {
                 scheduleReverseRelayRestartLocked(remotePath: remotePath, delay: retryDelay)
                 return
             }
-            installReverseRelayStderrHandlerLocked(stderrPipe)
+            reverseRelayGeneration &+= 1
+            let relayGeneration = reverseRelayGeneration
             reverseRelayProcess = process
             cliRelayServer = relayServer
             reverseRelayStderrPipe = stderrPipe
             reverseRelayStderrBuffer = ""
+            installReverseRelayStderrHandlerLocked(stderrPipe, generation: relayGeneration)
             do {
                 try installRemoteRelayMetadataLocked(
                     remotePath: remotePath,
@@ -259,7 +261,7 @@ extension WorkspaceRemoteSessionController {
         }
     }
 
-    func installReverseRelayStderrHandlerLocked(_ stderrPipe: Pipe) {
+    func installReverseRelayStderrHandlerLocked(_ stderrPipe: Pipe, generation: UInt64) {
         stderrPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty else {
@@ -267,21 +269,39 @@ extension WorkspaceRemoteSessionController {
                 return
             }
             self?.queue.async {
-                guard let self else { return }
-                if let chunk = String(data: data, encoding: .utf8), !chunk.isEmpty {
-                    self.reverseRelayStderrBuffer.append(chunk)
-                    if self.reverseRelayStderrBuffer.count > 8192 {
-                        self.reverseRelayStderrBuffer.removeFirst(self.reverseRelayStderrBuffer.count - 8192)
-                    }
-                }
+                self?.appendReverseRelayStderrLocked(
+                    data,
+                    from: stderrPipe,
+                    generation: generation
+                )
             }
         }
+    }
+
+    @discardableResult
+    func appendReverseRelayStderrLocked(
+        _ data: Data,
+        from stderrPipe: Pipe,
+        generation: UInt64
+    ) -> Bool {
+        guard reverseRelayGeneration == generation,
+              reverseRelayStderrPipe === stderrPipe,
+              let chunk = String(data: data, encoding: .utf8),
+              !chunk.isEmpty else {
+            return false
+        }
+        reverseRelayStderrBuffer.append(chunk)
+        if reverseRelayStderrBuffer.count > 8192 {
+            reverseRelayStderrBuffer.removeFirst(reverseRelayStderrBuffer.count - 8192)
+        }
+        return true
     }
 
     func handleReverseRelayTerminationLocked(process: Process) {
         guard reverseRelayProcess === process else { return }
         let stderrDetail = Self.bestErrorLine(stderr: reverseRelayStderrBuffer)
         reverseRelayStderrPipe?.fileHandleForReading.readabilityHandler = nil
+        reverseRelayGeneration &+= 1
         reverseRelayProcess = nil
         reverseRelayStderrPipe = nil
 
@@ -312,6 +332,9 @@ extension WorkspaceRemoteSessionController {
 
     func stopReverseRelayLocked() {
         reverseRelayStderrPipe?.fileHandleForReading.readabilityHandler = nil
+        // Invalidate callbacks that already captured stderr bytes but have not reached this
+        // controller queue. They belong to the stopped process and must never prefix a restart.
+        reverseRelayGeneration &+= 1
         if let reverseRelayProcess, reverseRelayProcess.isRunning {
             reverseRelayProcess.terminate()
         }

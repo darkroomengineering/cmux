@@ -749,6 +749,57 @@
         }
       }
     },
+    "credential.error.keychain": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keychain error %d"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キーチェーンエラー %d"
+          }
+        }
+      }
+    },
+    "credential.error.randomGenerationFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Secure random generation failed (%d)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "安全な乱数の生成に失敗しました（%d）"
+          }
+        }
+      }
+    },
+    "credential.error.verificationFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keychain verification failed"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キーチェーンの検証に失敗しました"
+          }
+        }
+      }
+    },
     "notifications.title": {
       "extractionState": "manual",
       "localizations": {
@@ -789,13 +840,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "That doesn't look like a Programa pairing code. Scan the QR code, or paste the ticket and token below instead."
+            "value": "That doesn't look like a Programa pairing code. Scan the QR code, or paste the full code shown below it on your Mac."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Programaのペア設定コードではないようです。QRコードをスキャンするか、以下にチケットとトークンを貼り付けてください。"
+            "value": "Programaのペア設定コードではないようです。QRコードをスキャンするか、Macでその下に表示されるコード全体を貼り付けてください。"
           }
         }
       }
@@ -949,6 +1000,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "接続"
+          }
+        }
+      }
+    },
+    "pairing.error.credentialLoadFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not load saved pairing credentials: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存済みのペア設定認証情報を読み込めませんでした：%@"
+          }
+        }
+      }
+    },
+    "pairing.error.credentialSaveFailed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not save pairing credentials: %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ペア設定認証情報を保存できませんでした：%@"
           }
         }
       }

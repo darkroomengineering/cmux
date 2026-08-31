@@ -331,27 +331,68 @@ class TerminalController {
     static let v2BrowserSnapshotTextCharacterLimit = 262_144
     static let v2BrowserSnapshotHTMLCharacterLimit = 1_048_576
 
-    var v2BrowserNextElementOrdinal: Int = 1
-    var v2BrowserElementRefs: [String: V2BrowserElementRefEntry] = [:]
-    var v2BrowserElementRefTokensBySurface: [UUID: Set<String>] = [:]
-    var v2BrowserElementRefBySelectorBySurface: [UUID: [String: String]] = [:]
-    var v2BrowserElementRefBytesBySurface: [UUID: Int] = [:]
-    var v2BrowserFrameSelectorBySurface: [UUID: String] = [:]
+    let browserRPCState = BrowserRPCState()
+    private let browserRPCDispatcher = BrowserRPCDispatcher()
+    var v2BrowserNextElementOrdinal: Int {
+        get { browserRPCState.nextElementOrdinal }
+        set { browserRPCState.nextElementOrdinal = newValue }
+    }
+    var v2BrowserElementRefs: [String: V2BrowserElementRefEntry] {
+        get { browserRPCState.elementRefs }
+        set { browserRPCState.elementRefs = newValue }
+    }
+    var v2BrowserElementRefTokensBySurface: [UUID: Set<String>] {
+        get { browserRPCState.elementRefTokensBySurface }
+        set { browserRPCState.elementRefTokensBySurface = newValue }
+    }
+    var v2BrowserElementRefBySelectorBySurface: [UUID: [String: String]] {
+        get { browserRPCState.elementRefBySelectorBySurface }
+        set { browserRPCState.elementRefBySelectorBySurface = newValue }
+    }
+    var v2BrowserElementRefBytesBySurface: [UUID: Int] {
+        get { browserRPCState.elementRefBytesBySurface }
+        set { browserRPCState.elementRefBytesBySurface = newValue }
+    }
+    var v2BrowserFrameSelectorBySurface: [UUID: String] {
+        get { browserRPCState.frameSelectorBySurface }
+        set { browserRPCState.frameSelectorBySurface = newValue }
+    }
     /// Bumped on every committed main-frame navigation of a browser surface. Element refs
     /// (`v2BrowserElementRefs`) capture the generation at allocation time so a ref from a
     /// previous page can be rejected instead of silently re-resolving against the new DOM
     /// (M6a). Main-thread only, same discipline as the other v2Browser state above.
-    var v2BrowserNavigationGenerationBySurface: [UUID: UInt64] = [:]
-    var v2BrowserInitScriptsBySurface: [UUID: [String]] = [:]
-    var v2BrowserInitStylesBySurface: [UUID: [String]] = [:]
-    var v2BrowserDownloadEventsBySurface: [UUID: [[String: Any]]] = [:]
-    var v2BrowserDownloadDroppedEventCountBySurface: [UUID: Int] = [:]
+    var v2BrowserNavigationGenerationBySurface: [UUID: UInt64] {
+        get { browserRPCState.navigationGenerationBySurface }
+        set { browserRPCState.navigationGenerationBySurface = newValue }
+    }
+    var v2BrowserInitScriptsBySurface: [UUID: [String]] {
+        get { browserRPCState.initScriptsBySurface }
+        set { browserRPCState.initScriptsBySurface = newValue }
+    }
+    var v2BrowserInitStylesBySurface: [UUID: [String]] {
+        get { browserRPCState.initStylesBySurface }
+        set { browserRPCState.initStylesBySurface = newValue }
+    }
+    var v2BrowserDownloadEventsBySurface: [UUID: [[String: Any]]] {
+        get { browserRPCState.downloadEventsBySurface }
+        set { browserRPCState.downloadEventsBySurface = newValue }
+    }
+    var v2BrowserDownloadDroppedEventCountBySurface: [UUID: Int] {
+        get { browserRPCState.downloadDroppedEventCountBySurface }
+        set { browserRPCState.downloadDroppedEventCountBySurface = newValue }
+    }
     // SHORTCUT: one process-wide event-mode download waiter avoids nested CFRunLoop waits.
     // ceiling: concurrent browser.download.wait event calls return busy.
     // upgrade: move socket command waiting to async continuations, then use per-surface waiter queues.
-    var v2BrowserPendingDownloadEventWaiter: V2BrowserDownloadEventWaiter?
-    var v2BrowserUnsupportedNetworkRequestsBySurface: [UUID: [[String: Any]]] = [:]
-    var v2BrowserUndefinedSentinel = V2BrowserUndefinedSentinel()
+    var v2BrowserPendingDownloadEventWaiter: V2BrowserDownloadEventWaiter? {
+        get { browserRPCState.pendingDownloadEventWaiter }
+        set { browserRPCState.pendingDownloadEventWaiter = newValue }
+    }
+    var v2BrowserUnsupportedNetworkRequestsBySurface: [UUID: [[String: Any]]] {
+        get { browserRPCState.unsupportedNetworkRequestsBySurface }
+        set { browserRPCState.unsupportedNetworkRequestsBySurface = newValue }
+    }
+    var v2BrowserUndefinedSentinel: V2BrowserUndefinedSentinel { browserRPCState.undefinedSentinel }
     private var browserDownloadObserver: NSObjectProtocol?
     private var socketControlPasswordObserver: NSObjectProtocol?
 
@@ -364,7 +405,7 @@ class TerminalController {
             guard let surfaceId = note.userInfo?["surfaceId"] as? UUID,
                   let event = note.userInfo?["event"] as? [String: Any] else { return }
             MainActor.assumeIsolated {
-                self?.v2BrowserEnqueueDownloadEvent(surfaceId: surfaceId, event: event)
+                self?.browserRPCState.enqueueDownloadEvent(surfaceId: surfaceId, event: event)
             }
         }
 
@@ -1909,6 +1950,9 @@ class TerminalController {
         }
 
         return withSocketCommandPolicy(commandKey: method, isV2: true) {
+            if let result = browserRPCDispatcher.dispatch(method: method, params: params, controller: self) {
+                return v2Result(id: id, result)
+            }
             switch method {
         case "system.ping":
             return v2Ok(id: id, result: ["pong": true])
@@ -2153,178 +2197,6 @@ class TerminalController {
             return v2Result(id: id, self.v2AppReloadConfig(params: params))
         case "app.browsers":
             return v2Result(id: id, self.v2AppBrowsers())
-
-        // Browser
-        case "browser.open_split":
-            return v2Result(id: id, self.v2BrowserOpenSplit(params: params))
-        case "browser.navigate":
-            return v2Result(id: id, self.v2BrowserNavigate(params: params))
-        case "browser.back":
-            return v2Result(id: id, self.v2BrowserBack(params: params))
-        case "browser.forward":
-            return v2Result(id: id, self.v2BrowserForward(params: params))
-        case "browser.reload":
-            return v2Result(id: id, self.v2BrowserReload(params: params))
-        case "browser.url.get":
-            return v2Result(id: id, self.v2BrowserGetURL(params: params))
-        case "browser.focus_webview":
-            return v2Result(id: id, self.v2BrowserFocusWebView(params: params))
-        case "browser.is_webview_focused":
-            return v2Result(id: id, self.v2BrowserIsWebViewFocused(params: params))
-        case "browser.snapshot":
-            return v2Result(id: id, self.v2BrowserSnapshot(params: params))
-        case "browser.eval":
-            return v2Result(id: id, self.v2BrowserEval(params: params))
-        case "browser.wait":
-            return v2Result(id: id, self.v2BrowserWait(params: params))
-        case "browser.click":
-            return v2Result(id: id, self.v2BrowserClick(params: params))
-        case "browser.dblclick":
-            return v2Result(id: id, self.v2BrowserDblClick(params: params))
-        case "browser.hover":
-            return v2Result(id: id, self.v2BrowserHover(params: params))
-        case "browser.focus":
-            return v2Result(id: id, self.v2BrowserFocusElement(params: params))
-        case "browser.type":
-            return v2Result(id: id, self.v2BrowserType(params: params))
-        case "browser.fill":
-            return v2Result(id: id, self.v2BrowserFill(params: params))
-        case "browser.press":
-            return v2Result(id: id, self.v2BrowserPress(params: params))
-        case "browser.keydown":
-            return v2Result(id: id, self.v2BrowserKeyDown(params: params))
-        case "browser.keyup":
-            return v2Result(id: id, self.v2BrowserKeyUp(params: params))
-        case "browser.check":
-            return v2Result(id: id, self.v2BrowserCheck(params: params, checked: true))
-        case "browser.uncheck":
-            return v2Result(id: id, self.v2BrowserCheck(params: params, checked: false))
-        case "browser.select":
-            return v2Result(id: id, self.v2BrowserSelect(params: params))
-        case "browser.scroll":
-            return v2Result(id: id, self.v2BrowserScroll(params: params))
-        case "browser.scroll_into_view":
-            return v2Result(id: id, self.v2BrowserScrollIntoView(params: params))
-        case "browser.screenshot":
-            return v2Result(id: id, self.v2BrowserScreenshot(params: params))
-        case "browser.get.text":
-            return v2Result(id: id, self.v2BrowserGetText(params: params))
-        case "browser.get.html":
-            return v2Result(id: id, self.v2BrowserGetHTML(params: params))
-        case "browser.get.value":
-            return v2Result(id: id, self.v2BrowserGetValue(params: params))
-        case "browser.get.attr":
-            return v2Result(id: id, self.v2BrowserGetAttr(params: params))
-        case "browser.get.title":
-            return v2Result(id: id, self.v2BrowserGetTitle(params: params))
-        case "browser.get.count":
-            return v2Result(id: id, self.v2BrowserGetCount(params: params))
-        case "browser.get.box":
-            return v2Result(id: id, self.v2BrowserGetBox(params: params))
-        case "browser.get.styles":
-            return v2Result(id: id, self.v2BrowserGetStyles(params: params))
-        case "browser.is.visible":
-            return v2Result(id: id, self.v2BrowserIsVisible(params: params))
-        case "browser.is.enabled":
-            return v2Result(id: id, self.v2BrowserIsEnabled(params: params))
-        case "browser.is.checked":
-            return v2Result(id: id, self.v2BrowserIsChecked(params: params))
-        case "browser.find.role":
-            return v2Result(id: id, self.v2BrowserFindRole(params: params))
-        case "browser.find.text":
-            return v2Result(id: id, self.v2BrowserFindText(params: params))
-        case "browser.find.label":
-            return v2Result(id: id, self.v2BrowserFindLabel(params: params))
-        case "browser.find.placeholder":
-            return v2Result(id: id, self.v2BrowserFindPlaceholder(params: params))
-        case "browser.find.alt":
-            return v2Result(id: id, self.v2BrowserFindAlt(params: params))
-        case "browser.find.title":
-            return v2Result(id: id, self.v2BrowserFindTitle(params: params))
-        case "browser.find.testid":
-            return v2Result(id: id, self.v2BrowserFindTestId(params: params))
-        case "browser.find.first":
-            return v2Result(id: id, self.v2BrowserFindFirst(params: params))
-        case "browser.find.last":
-            return v2Result(id: id, self.v2BrowserFindLast(params: params))
-        case "browser.find.nth":
-            return v2Result(id: id, self.v2BrowserFindNth(params: params))
-        case "browser.frame.select":
-            return v2Result(id: id, self.v2BrowserFrameSelect(params: params))
-        case "browser.frame.main":
-            return v2Result(id: id, self.v2BrowserFrameMain(params: params))
-        case "browser.dialog.accept":
-            return v2Result(id: id, self.v2BrowserDialogRespond(params: params, accept: true))
-        case "browser.dialog.dismiss":
-            return v2Result(id: id, self.v2BrowserDialogRespond(params: params, accept: false))
-        case "browser.download.wait":
-            return v2Result(id: id, self.v2BrowserDownloadWait(params: params))
-        case "browser.cookies.get":
-            return v2Result(id: id, self.v2BrowserCookiesGet(params: params))
-        case "browser.cookies.set":
-            return v2Result(id: id, self.v2BrowserCookiesSet(params: params))
-        case "browser.cookies.clear":
-            return v2Result(id: id, self.v2BrowserCookiesClear(params: params))
-        case "browser.storage.get":
-            return v2Result(id: id, self.v2BrowserStorageGet(params: params))
-        case "browser.storage.set":
-            return v2Result(id: id, self.v2BrowserStorageSet(params: params))
-        case "browser.storage.clear":
-            return v2Result(id: id, self.v2BrowserStorageClear(params: params))
-        case "browser.tab.new":
-            return v2Result(id: id, self.v2BrowserTabNew(params: params))
-        case "browser.tab.list":
-            return v2Result(id: id, self.v2BrowserTabList(params: params))
-        case "browser.tab.switch":
-            return v2Result(id: id, self.v2BrowserTabSwitch(params: params))
-        case "browser.tab.close":
-            return v2Result(id: id, self.v2BrowserTabClose(params: params))
-        case "browser.console.list":
-            return v2Result(id: id, self.v2BrowserConsoleList(params: params))
-        case "browser.console.clear":
-            return v2Result(id: id, self.v2BrowserConsoleClear(params: params))
-        case "browser.errors.list":
-            return v2Result(id: id, self.v2BrowserErrorsList(params: params))
-        case "browser.highlight":
-            return v2Result(id: id, self.v2BrowserHighlight(params: params))
-        case "browser.state.save":
-            return v2Result(id: id, self.v2BrowserStateSave(params: params))
-        case "browser.state.load":
-            return v2Result(id: id, self.v2BrowserStateLoad(params: params))
-        case "browser.addinitscript":
-            return v2Result(id: id, self.v2BrowserAddInitScript(params: params))
-        case "browser.addscript":
-            return v2Result(id: id, self.v2BrowserAddScript(params: params))
-        case "browser.addstyle":
-            return v2Result(id: id, self.v2BrowserAddStyle(params: params))
-        case "browser.viewport.set":
-            return v2Result(id: id, self.v2BrowserViewportSet(params: params))
-        case "browser.geolocation.set":
-            return v2Result(id: id, self.v2BrowserGeolocationSet(params: params))
-        case "browser.offline.set":
-            return v2Result(id: id, self.v2BrowserOfflineSet(params: params))
-        case "browser.trace.start":
-            return v2Result(id: id, self.v2BrowserTraceStart(params: params))
-        case "browser.trace.stop":
-            return v2Result(id: id, self.v2BrowserTraceStop(params: params))
-        case "browser.network.route":
-            return v2Result(id: id, self.v2BrowserNetworkRoute(params: params))
-        case "browser.network.unroute":
-            return v2Result(id: id, self.v2BrowserNetworkUnroute(params: params))
-        case "browser.network.requests":
-            return v2Result(id: id, self.v2BrowserNetworkRequests(params: params))
-        case "browser.screencast.start":
-            return v2Result(id: id, self.v2BrowserScreencastStart(params: params))
-        case "browser.screencast.stop":
-            return v2Result(id: id, self.v2BrowserScreencastStop(params: params))
-        case "browser.input_mouse":
-            return v2Result(id: id, self.v2BrowserInputMouse(params: params))
-        case "browser.input_keyboard":
-            return v2Result(id: id, self.v2BrowserInputKeyboard(params: params))
-        case "browser.input_touch":
-            return v2Result(id: id, self.v2BrowserInputTouch(params: params))
-        case "browser.design_mode.toggle":
-            return v2Result(id: id, self.v2BrowserDesignModeToggle(params: params))
 
         // Markdown
         case "markdown.open":

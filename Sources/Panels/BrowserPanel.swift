@@ -1443,15 +1443,23 @@ final class BrowserPanel: Panel, ObservableObject {
 
             if isLiveSessionHistoryAlignedWithRestoredCurrent {
                 return (
-                    back,
-                    restoredForward.isEmpty ? nativeForward : restoredForward
+                    Self.sanitizedBackSessionHistoryURLStrings(back),
+                    Self.sanitizedForwardSessionHistoryURLStrings(
+                        restoredForward.isEmpty ? nativeForward : restoredForward
+                    )
                 )
             }
 
-            return (back + nativeBack, nativeForward)
+            return (
+                Self.sanitizedBackSessionHistoryURLStrings(back + nativeBack),
+                Self.sanitizedForwardSessionHistoryURLStrings(nativeForward)
+            )
         }
 
-        return (nativeBack, nativeForward)
+        return (
+            Self.sanitizedBackSessionHistoryURLStrings(nativeBack),
+            Self.sanitizedForwardSessionHistoryURLStrings(nativeForward)
+        )
     }
 
     private func resolvedLiveSessionHistoryURL() -> URL? {
@@ -1497,8 +1505,10 @@ final class BrowserPanel: Panel, ObservableObject {
             }
             newForward.append(contentsOf: restoredForward)
 
-            restoredBackHistoryStack = Self.sanitizedSessionHistoryURLs(newBack)
-            restoredForwardHistoryStack = Array(Self.sanitizedSessionHistoryURLs(newForward).reversed())
+            restoredBackHistoryStack = Self.sanitizedBackSessionHistoryURLStrings(newBack).compactMap(URL.init(string:))
+            restoredForwardHistoryStack = Array(
+                Self.sanitizedForwardSessionHistoryURLStrings(newForward).compactMap(URL.init(string:)).reversed()
+            )
             restoredHistoryCurrentURL = liveCurrent
             refreshNavigationAvailability()
             return
@@ -1512,8 +1522,10 @@ final class BrowserPanel: Panel, ObservableObject {
             newBack.append(contentsOf: restoredForward[..<forwardIndex])
             let newForward = Array(restoredForward[(forwardIndex + 1)...])
 
-            restoredBackHistoryStack = Self.sanitizedSessionHistoryURLs(newBack)
-            restoredForwardHistoryStack = Array(Self.sanitizedSessionHistoryURLs(newForward).reversed())
+            restoredBackHistoryStack = Self.sanitizedBackSessionHistoryURLStrings(newBack).compactMap(URL.init(string:))
+            restoredForwardHistoryStack = Array(
+                Self.sanitizedForwardSessionHistoryURLStrings(newForward).compactMap(URL.init(string:)).reversed()
+            )
             restoredHistoryCurrentURL = liveCurrent
             refreshNavigationAvailability()
             return
@@ -1542,8 +1554,8 @@ final class BrowserPanel: Panel, ObservableObject {
         forwardHistoryURLStrings: [String],
         currentURLString: String?
     ) {
-        let restoredBack = Self.sanitizedSessionHistoryURLs(backHistoryURLStrings)
-        let restoredForward = Self.sanitizedSessionHistoryURLs(forwardHistoryURLStrings)
+        let restoredBack = Self.sanitizedBackSessionHistoryURLStrings(backHistoryURLStrings).compactMap(URL.init(string:))
+        let restoredForward = Self.sanitizedForwardSessionHistoryURLStrings(forwardHistoryURLStrings).compactMap(URL.init(string:))
         let restoredCurrent = Self.sanitizedSessionHistoryURL(currentURLString)
         guard !restoredBack.isEmpty || !restoredForward.isEmpty || restoredCurrent != nil else { return }
 
@@ -2783,21 +2795,38 @@ final class PasskeyHandoffMessageHandler: NSObject, WKScriptMessageHandler {
 }
 
 extension BrowserPanel {
+    static let maxSessionHistoryURLsPerDirection = 2_048
+    static let maxSessionHistoryURLBytes = 64 * 1_024
+
     static func serializableSessionHistoryURLString(_ url: URL?) -> String? {
         guard let url else { return nil }
         let value = url.absoluteString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty, value != "about:blank" else { return nil }
+        guard
+            !value.isEmpty,
+            value != "about:blank",
+            value.utf8.count <= maxSessionHistoryURLBytes
+        else { return nil }
         return value
     }
 
     private static func sanitizedSessionHistoryURL(_ raw: String?) -> URL? {
         guard let raw else { return nil }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != "about:blank" else { return nil }
+        guard
+            !trimmed.isEmpty,
+            trimmed != "about:blank",
+            trimmed.utf8.count <= maxSessionHistoryURLBytes
+        else { return nil }
         return URL(string: trimmed)
     }
 
-    private static func sanitizedSessionHistoryURLs(_ values: [String]) -> [URL] {
-        values.compactMap { sanitizedSessionHistoryURL($0) }
+    private static func sanitizedBackSessionHistoryURLStrings(_ values: [String]) -> [String] {
+        let sanitized = values.compactMap { sanitizedSessionHistoryURL($0)?.absoluteString }
+        return Array(sanitized.suffix(maxSessionHistoryURLsPerDirection))
+    }
+
+    private static func sanitizedForwardSessionHistoryURLStrings(_ values: [String]) -> [String] {
+        let sanitized = values.compactMap { sanitizedSessionHistoryURL($0)?.absoluteString }
+        return Array(sanitized.prefix(maxSessionHistoryURLsPerDirection))
     }
 }

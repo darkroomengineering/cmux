@@ -1,20 +1,65 @@
 import AppKit
 import Bonsplit
+import CryptoKit
 import Foundation
 import WebKit
 
-/// Loads unpacked Web Extensions (Chrome-style, manifest v2/v3) into the built-in browser
-/// through WebKit's `WKWebExtension` API (macOS 15.4+; the app still runs on 14.0, where
-/// this whole type is unavailable and the browser simply has no extensions).
-///
-/// Proof-of-concept scope, deliberately narrow:
-/// - Extensions are read from `~/.config/programa/extensions/`, one subdirectory (containing
-///   `manifest.json`) or `.zip` archive per extension. No store, no install flow.
-/// - Every permission and host match pattern the manifest requests is granted up front —
-///   there is no consent UI yet, so this directory is trusted input by definition.
-/// - No toolbar button, popup, or options UI, and no `WKWebExtensionTab`/`Window` adapters
-///   yet: content scripts and background service workers run, but extension APIs that
-///   enumerate tabs or windows see none.
+enum BrowserExtensionConsentDecision: String, Codable, Equatable {
+    case approved
+    case denied
+}
+
+/// Persists authority for one exact extension manifest. A decision only applies when both
+/// the stable candidate identity and the complete authority fingerprint still match.
+struct BrowserExtensionConsentStore {
+    struct Record: Codable, Equatable {
+        let fingerprint: String
+        let decision: BrowserExtensionConsentDecision
+    }
+
+    private static let defaultsKey = "browser.webExtensions.consent.v1"
+    private let defaults: UserDefaults
+    private let defaultsKey: String
+
+    init(defaults: UserDefaults = .standard, defaultsKey: String = Self.defaultsKey) {
+        self.defaults = defaults
+        self.defaultsKey = defaultsKey
+    }
+
+    func decision(candidateID: String, fingerprint: String) -> BrowserExtensionConsentDecision? {
+        guard let record = records()[candidateID], record.fingerprint == fingerprint else { return nil }
+        return record.decision
+    }
+
+    func setDecision(_ decision: BrowserExtensionConsentDecision, candidateID: String, fingerprint: String) {
+        var current = records()
+        current[candidateID] = Record(fingerprint: fingerprint, decision: decision)
+        guard let data = try? JSONEncoder().encode(current) else { return }
+        defaults.set(data, forKey: defaultsKey)
+    }
+
+    static func fingerprint(
+        candidateID: String,
+        version: String?,
+        permissions: [String],
+        hostPatterns: [String]
+    ) -> String {
+        let canonical = ([candidateID, version ?? ""] + permissions.sorted() + ["\u{0}"] + hostPatterns.sorted())
+            .joined(separator: "\u{1F}")
+        return SHA256.hash(data: Data(canonical.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func records() -> [String: Record] {
+        guard
+            let data = defaults.data(forKey: defaultsKey),
+            let decoded = try? JSONDecoder().decode([String: Record].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+}
+
+/// Loads explicitly approved unpacked Web Extensions from
+/// `~/.config/programa/extensions/` on macOS 15.4 and later.
 @available(macOS 15.4, *)
 @MainActor
 final class BrowserExtensionManager {
@@ -23,6 +68,20 @@ final class BrowserExtensionManager {
     /// Fixed so extension storage (`chrome.storage`, IndexedDB, service-worker state)
     /// lands in the same WebKit container every launch. Changing it orphans that data.
     private static let controllerIdentifier = UUID(uuidString: "8B1F4F62-3A6C-4E5D-9D5B-2F0C7A9E41D3")!
+
+    @MainActor
+    private struct Candidate {
+        let id: String
+        let sourceURL: URL
+        let extensionObject: WKWebExtension
+        let context: WKWebExtensionContext
+        let fingerprint: String
+
+        var name: String { extensionObject.displayName ?? sourceURL.lastPathComponent }
+        var version: String { extensionObject.displayVersion ?? extensionObject.version ?? "?" }
+        var permissions: [String] { extensionObject.requestedPermissions.map(\.rawValue).sorted() }
+        var hostPatterns: [String] { extensionObject.allRequestedMatchPatterns.map(\.string).sorted() }
+    }
 
     static var extensionsDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -33,9 +92,10 @@ final class BrowserExtensionManager {
 
     private(set) var loadedExtensions: [WKWebExtension] = []
     private(set) var loadErrors: [(candidate: String, error: any Error)] = []
-    private var didStartLoading = false
-
-    // MARK: Tab/window registry (see BrowserExtensionAdapters.swift for the mapping)
+    private var candidates: [Candidate] = []
+    private var loadedContexts: [String: WKWebExtensionContext] = [:]
+    private var loadingTask: Task<Void, Never>?
+    private let consentStore: BrowserExtensionConsentStore
 
     let windowAdapter = BrowserExtensionWindowAdapter()
     private(set) var tabAdapters: [BrowserExtensionTabAdapter] = []
@@ -44,14 +104,11 @@ final class BrowserExtensionManager {
 
     private let controllerDelegate = BrowserExtensionControllerDelegate()
 
-    private init() {
+    private init(consentStore: BrowserExtensionConsentStore = BrowserExtensionConsentStore()) {
+        self.consentStore = consentStore
         controller = WKWebExtensionController(
             configuration: WKWebExtensionController.Configuration(identifier: Self.controllerIdentifier)
         )
-        // Without a delegate, each context's openWindows/openTabs start EMPTY — the
-        // delegate's openWindowsFor answer is the initial population, and the
-        // didOpenTab/didActivateTab notifications only update from that baseline.
-        // tabs.query returns [] forever otherwise.
         controller.delegate = controllerDelegate
     }
 
@@ -75,31 +132,22 @@ final class BrowserExtensionManager {
         let adapter = tabAdapters.remove(at: index)
         if activeTabAdapter === adapter { activeTabAdapter = nil }
         controller.didCloseTab(adapter, windowIsClosing: false)
-        #if DEBUG
-        dlog("browser.extensions.tab.close panel=\(panel.id.uuidString.prefix(5)) total=\(tabAdapters.count)")
-        #endif
     }
 
     func noteTabActivated(_ panel: BrowserPanel) {
         pruneDeadTabs()
-        // Also handles never-registered panels defensively; activation implies existence.
         registerTab(for: panel)
-        guard let adapter = tabAdapter(for: panel) else { return }
-        guard activeTabAdapter !== adapter else { return }
+        guard let adapter = tabAdapter(for: panel), activeTabAdapter !== adapter else { return }
         let previous = activeTabAdapter
         activeTabAdapter = adapter
         controller.didActivateTab(adapter, previousActiveTab: previous)
         controller.didSelectTabs([adapter])
-        #if DEBUG
-        dlog("browser.extensions.tab.activate panel=\(panel.id.uuidString.prefix(5))")
-        #endif
     }
 
     private func tabAdapter(for panel: BrowserPanel) -> BrowserExtensionTabAdapter? {
         tabAdapters.first(where: { $0.panel === panel })
     }
 
-    /// Drops adapters whose panel has been deallocated without an explicit unregister.
     func pruneDeadTabs() {
         for adapter in tabAdapters where adapter.panel == nil {
             tabAdapters.removeAll { $0 === adapter }
@@ -108,67 +156,163 @@ final class BrowserExtensionManager {
         }
     }
 
-    /// Idempotent kickoff; called from `BrowserPanel.configureWebViewConfiguration`, so the
-    /// first browser panel of the session triggers the scan. Loading is async, but contexts
-    /// loaded into the controller inject into already-attached web views, so a panel created
-    /// before loading finishes still gets its content scripts.
     func loadInstalledExtensionsIfNeeded() {
-        guard !didStartLoading else { return }
-        didStartLoading = true
-        Task { await self.loadInstalledExtensions() }
+        _ = beginLoadingIfNeeded()
     }
 
-    private func loadInstalledExtensions() async {
+    func presentManagementUI() {
+        Task {
+            await beginLoadingIfNeeded().value
+            presentCandidatePicker()
+        }
+    }
+
+    private func beginLoadingIfNeeded() -> Task<Void, Never> {
+        if let loadingTask { return loadingTask }
+        let task = Task { await scanAndLoadApprovedExtensions() }
+        loadingTask = task
+        return task
+    }
+
+    private func scanAndLoadApprovedExtensions() async {
         let directory = Self.extensionsDirectoryURL
         let entries = (try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         )) ?? []
-
-        let candidates = entries.filter { url in
+        let sourceURLs = entries.filter { url in
             if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { return true }
             return url.pathExtension.lowercased() == "zip"
-        }
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
 
-        guard !candidates.isEmpty else {
-            #if DEBUG
-            dlog("browser.extensions.scan dir=\(directory.path) none-found")
-            #endif
-            return
-        }
-
-        for candidate in candidates.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+        for sourceURL in sourceURLs {
             do {
-                let webExtension = try await WKWebExtension(resourceBaseURL: candidate)
-                let context = WKWebExtensionContext(for: webExtension)
-                grantAllRequestedPermissions(of: webExtension, to: context)
-                try controller.load(context)
-                loadedExtensions.append(webExtension)
-                #if DEBUG
-                dlog("browser.extensions.loaded name=\(webExtension.displayName ?? candidate.lastPathComponent) version=\(webExtension.displayVersion ?? "?") mv=\(Int(webExtension.manifestVersion)) background=\(webExtension.hasBackgroundContent) injected=\(webExtension.hasInjectedContent)")
-                dlog("browser.extensions.access requestedPatterns=\(webExtension.allRequestedMatchPatterns.count) grantedPatterns=\(context.currentPermissionMatchPatterns.count) allURLs=\(context.hasAccessToAllURLs) example=\(context.hasAccess(to: URL(string: "https://example.com/")!)) errors=\(webExtension.errors.count)")
-                #endif
+                let extensionObject = try await WKWebExtension(resourceBaseURL: sourceURL)
+                let candidate = makeCandidate(sourceURL: sourceURL, extensionObject: extensionObject)
+                candidates.append(candidate)
+                switch consentStore.decision(candidateID: candidate.id, fingerprint: candidate.fingerprint) {
+                case .approved:
+                    try load(candidate)
+                case .denied:
+                    break
+                case nil:
+                    let approved = presentConsent(for: candidate)
+                    consentStore.setDecision(
+                        approved ? .approved : .denied,
+                        candidateID: candidate.id,
+                        fingerprint: candidate.fingerprint
+                    )
+                    if approved { try load(candidate) }
+                }
             } catch {
-                loadErrors.append((candidate: candidate.lastPathComponent, error: error))
-                #if DEBUG
-                dlog("browser.extensions.loadFailed candidate=\(candidate.lastPathComponent) error=\(error.localizedDescription)")
-                #endif
+                loadErrors.append((candidate: sourceURL.lastPathComponent, error: error))
             }
         }
     }
 
-    /// PoC-only trust model: everything the manifest asks for is granted. A consent UI
-    /// replaces this before extensions are exposed to users.
-    private func grantAllRequestedPermissions(of webExtension: WKWebExtension, to context: WKWebExtensionContext) {
-        // The dictionary values are EXPIRATION dates ("now" would expire immediately and
-        // the grant silently vanishes); distantFuture means never expires, per the header.
+    private func makeCandidate(sourceURL: URL, extensionObject: WKWebExtension) -> Candidate {
+        let id = sourceURL.standardizedFileURL.path
+        let permissions = extensionObject.requestedPermissions.map(\.rawValue).sorted()
+        let hosts = extensionObject.allRequestedMatchPatterns.map(\.string).sorted()
+        return Candidate(
+            id: id,
+            sourceURL: sourceURL,
+            extensionObject: extensionObject,
+            context: WKWebExtensionContext(for: extensionObject),
+            fingerprint: BrowserExtensionConsentStore.fingerprint(
+                candidateID: id,
+                version: extensionObject.version,
+                permissions: permissions,
+                hostPatterns: hosts
+            )
+        )
+    }
+
+    private func load(_ candidate: Candidate) throws {
+        guard loadedContexts[candidate.id] == nil else { return }
         let never = Date.distantFuture
-        context.grantedPermissions = Dictionary(
-            uniqueKeysWithValues: webExtension.requestedPermissions.map { ($0, never) }
+        candidate.context.grantedPermissions = Dictionary(
+            uniqueKeysWithValues: candidate.extensionObject.requestedPermissions.map { ($0, never) }
         )
-        context.grantedPermissionMatchPatterns = Dictionary(
-            uniqueKeysWithValues: webExtension.allRequestedMatchPatterns.map { ($0, never) }
+        candidate.context.grantedPermissionMatchPatterns = Dictionary(
+            uniqueKeysWithValues: candidate.extensionObject.allRequestedMatchPatterns.map { ($0, never) }
         )
+        try controller.load(candidate.context)
+        loadedContexts[candidate.id] = candidate.context
+        loadedExtensions.append(candidate.extensionObject)
+    }
+
+    private func revoke(_ candidate: Candidate) {
+        guard let context = loadedContexts.removeValue(forKey: candidate.id) else { return }
+        do {
+            try controller.unload(context)
+        } catch {
+            loadErrors.append((candidate: candidate.sourceURL.lastPathComponent, error: error))
+        }
+        context.grantedPermissions = [:]
+        context.grantedPermissionMatchPatterns = [:]
+        loadedExtensions.removeAll { $0 === candidate.extensionObject }
+        consentStore.setDecision(.denied, candidateID: candidate.id, fingerprint: candidate.fingerprint)
+    }
+
+    private func presentCandidatePicker() {
+        guard !candidates.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = String(localized: "browser.extensions.none.title", defaultValue: "No Browser Extensions")
+            alert.informativeText = String(
+                localized: "browser.extensions.none.message",
+                defaultValue: "Add an unpacked extension or ZIP archive to ~/.config/programa/extensions/."
+            )
+            alert.runModal()
+            return
+        }
+
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
+        for candidate in candidates {
+            let state = loadedContexts[candidate.id] == nil
+                ? String(localized: "browser.extensions.disabled", defaultValue: "Disabled")
+                : String(localized: "browser.extensions.enabled", defaultValue: "Enabled")
+            popup.addItem(withTitle: "\(candidate.name) \(candidate.version) — \(state)")
+        }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "browser.extensions.manage.title", defaultValue: "Manage Browser Extensions")
+        alert.informativeText = String(
+            localized: "browser.extensions.manage.message",
+            defaultValue: "Select an extension to enable it or revoke its access."
+        )
+        alert.accessoryView = popup
+        alert.addButton(withTitle: String(localized: "browser.extensions.change", defaultValue: "Change Access"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let candidate = candidates[popup.indexOfSelectedItem]
+        if loadedContexts[candidate.id] != nil {
+            revoke(candidate)
+        } else if presentConsent(for: candidate) {
+            consentStore.setDecision(.approved, candidateID: candidate.id, fingerprint: candidate.fingerprint)
+            do { try load(candidate) } catch {
+                loadErrors.append((candidate: candidate.sourceURL.lastPathComponent, error: error))
+            }
+        }
+    }
+
+    private func presentConsent(for candidate: Candidate) -> Bool {
+        let none = String(localized: "browser.extensions.noneRequested", defaultValue: "None")
+        let permissions = candidate.permissions.isEmpty ? none : candidate.permissions.joined(separator: "\n• ")
+        let hosts = candidate.hostPatterns.isEmpty ? none : candidate.hostPatterns.joined(separator: "\n• ")
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(
+            localized: "browser.extensions.consent.title",
+            defaultValue: "Enable \(candidate.name)?"
+        )
+        alert.informativeText = String(
+            localized: "browser.extensions.consent.message",
+            defaultValue: "Version: \(candidate.version)\n\nPermissions:\n• \(permissions)\n\nWebsite access:\n• \(hosts)"
+        )
+        alert.addButton(withTitle: String(localized: "browser.extensions.enable", defaultValue: "Enable"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
     }
 }

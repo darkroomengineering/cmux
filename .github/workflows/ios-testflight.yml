@@ -216,5 +216,6 @@ jobs:
       - name: Clean up signing material
         if: always()
         run: |
-          rm -rf "$RUNNER_TEMP/signing" "$HOME/private_keys" || true
-          security delete-keychain ios-build.keychain >/dev/null 2>&1 || true
+          # build-ios-testflight.sh restores the prior keychain/profile/API-key
+          # state on EXIT. This only removes the workflow-owned decoded inputs.
+          rm -rf "$RUNNER_TEMP/signing" || true

@@ -4,6 +4,149 @@ import ObjectiveC
 import UniformTypeIdentifiers
 import WebKit
 
+enum BrowserContextTransferPolicy {
+    /// Context-menu downloads and image copies are convenience transfers, not a general
+    /// download manager. 64 MiB accommodates large images while bounding resident memory.
+    static let maximumBytes = 64 * 1024 * 1024
+
+    enum TransferError: Error, Equatable {
+        case exceedsByteLimit
+        case missingResponse
+    }
+
+    static func boundedFileData(from url: URL, maximumBytes: Int = maximumBytes) throws -> Data {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        if let fileSize = values.fileSize, fileSize > maximumBytes {
+            throw TransferError.exceedsByteLimit
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+        guard data.count <= maximumBytes else { throw TransferError.exceedsByteLimit }
+        return data
+    }
+
+    static func percentDecodedData(
+        _ payload: Substring,
+        maximumBytes: Int = maximumBytes
+    ) -> Data? {
+        var result = Data()
+        result.reserveCapacity(min(payload.utf8.count, maximumBytes))
+        let bytes = payload.utf8
+        var index = bytes.startIndex
+        while index != bytes.endIndex {
+            guard result.count < maximumBytes else { return nil }
+            let byte = bytes[index]
+            if byte == 0x25 {
+                let highIndex = bytes.index(after: index)
+                guard highIndex != bytes.endIndex else { return nil }
+                let lowIndex = bytes.index(after: highIndex)
+                guard lowIndex != bytes.endIndex,
+                      let high = hexValue(bytes[highIndex]),
+                      let low = hexValue(bytes[lowIndex]) else { return nil }
+                result.append((high << 4) | low)
+                index = bytes.index(after: lowIndex)
+            } else {
+                result.append(byte)
+                index = bytes.index(after: index)
+            }
+        }
+        return result
+    }
+
+    private static func hexValue(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case 0x30...0x39: byte - 0x30
+        case 0x41...0x46: byte - 0x41 + 10
+        case 0x61...0x66: byte - 0x61 + 10
+        default: nil
+        }
+    }
+}
+
+final class BrowserBoundedURLLoader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    typealias ResultValue = (data: Data, response: URLResponse)
+
+    private let maximumBytes: Int
+    private let configuration: URLSessionConfiguration
+    private let delegateQueue: OperationQueue
+    private var completion: ((Result<ResultValue, any Error>) -> Void)?
+    private var response: URLResponse?
+    private var data = Data()
+    private var overflowed = false
+    private lazy var session = URLSession(
+        configuration: configuration,
+        delegate: self,
+        delegateQueue: delegateQueue
+    )
+
+    init(
+        maximumBytes: Int = BrowserContextTransferPolicy.maximumBytes,
+        configuration: URLSessionConfiguration = .default
+    ) {
+        self.maximumBytes = max(0, maximumBytes)
+        self.configuration = configuration
+        delegateQueue = OperationQueue()
+        delegateQueue.maxConcurrentOperationCount = 1
+        super.init()
+    }
+
+    func load(
+        _ request: URLRequest,
+        completion: @escaping (Result<ResultValue, any Error>) -> Void
+    ) {
+        self.completion = completion
+        session.dataTask(with: request).resume()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        self.response = response
+        if response.expectedContentLength > Int64(maximumBytes) {
+            overflowed = true
+            completionHandler(.cancel)
+        } else {
+            completionHandler(.allow)
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+        guard !overflowed else { return }
+        guard chunk.count <= maximumBytes - data.count else {
+            overflowed = true
+            data.removeAll(keepingCapacity: false)
+            dataTask.cancel()
+            return
+        }
+        data.append(chunk)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: (any Error)?
+    ) {
+        let result: Result<ResultValue, any Error>
+        if overflowed {
+            result = .failure(BrowserContextTransferPolicy.TransferError.exceedsByteLimit)
+        } else if let error {
+            result = .failure(error)
+        } else if let response {
+            result = .success((data, response))
+        } else {
+            result = .failure(BrowserContextTransferPolicy.TransferError.missingResponse)
+        }
+        let callback = completion
+        completion = nil
+        session.finishTasksAndInvalidate()
+        callback?(result)
+    }
+}
+
 extension WKWebView {
     var programaIsElementFullscreenActiveOrTransitioning: Bool {
         switch fullscreenState {
@@ -496,21 +639,24 @@ final class ProgramaWebView: WKWebView {
         let headerStart = absolute.index(absolute.startIndex, offsetBy: 5)
         let header = String(absolute[headerStart..<commaIndex])
         let payloadStart = absolute.index(after: commaIndex)
-        let payload = String(absolute[payloadStart...])
+        let payload = absolute[payloadStart...]
 
         let segments = header.split(separator: ";", omittingEmptySubsequences: false).map(String.init)
         let mimeType = segments.first.flatMap { $0.isEmpty ? nil : $0 }
         let isBase64 = segments.dropFirst().contains { $0.caseInsensitiveCompare("base64") == .orderedSame }
 
         if isBase64 {
-            guard let data = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters]) else {
+            let maximumEncodedBytes = ((BrowserContextTransferPolicy.maximumBytes + 2) / 3) * 4
+            guard payload.utf8.count <= maximumEncodedBytes,
+                  let data = Data(base64Encoded: String(payload), options: [.ignoreUnknownCharacters]),
+                  data.count <= BrowserContextTransferPolicy.maximumBytes else {
                 return nil
             }
             return ParsedDataURL(data: data, mimeType: mimeType)
         }
 
-        guard let decoded = payload.removingPercentEncoding else { return nil }
-        return ParsedDataURL(data: Data(decoded.utf8), mimeType: mimeType)
+        guard let data = BrowserContextTransferPolicy.percentDecodedData(payload) else { return nil }
+        return ParsedDataURL(data: data, mimeType: mimeType)
     }
 
     private static func filenameExtension(forMIMEType mimeType: String?) -> String? {
@@ -1156,9 +1302,11 @@ final class ProgramaWebView: WKWebView {
         }
 
         if scheme == "file" {
-            DispatchQueue.main.async {
-                do {
-                    let data = try Data(contentsOf: url)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let readResult = Result { try BrowserContextTransferPolicy.boundedFileData(from: url) }
+                DispatchQueue.main.async {
+                    do {
+                        let data = try readResult.get()
                     self.debugContextDownload(
                         "browser.ctxdl.file trace=\(traceID) stage=readSuccess bytes=\(data.count) path=\(url.path)"
                     )
@@ -1191,18 +1339,19 @@ final class ProgramaWebView: WKWebView {
                             )
                         }
                     }
-                } catch {
-                    self.notifyContextMenuDownloadState(false)
-                    self.debugContextDownload(
-                        "browser.ctxdl.file trace=\(traceID) stage=readFailure error=\(error.localizedDescription)"
-                    )
-                    self.runContextMenuFallback(
-                        action: fallbackAction,
-                        target: fallbackTarget,
-                        sender: sender,
-                        traceID: traceID,
-                        reason: "file_read_error"
-                    )
+                    } catch {
+                        self.notifyContextMenuDownloadState(false)
+                        self.debugContextDownload(
+                            "browser.ctxdl.file trace=\(traceID) stage=readFailure error=\(error.localizedDescription)"
+                        )
+                        self.runContextMenuFallback(
+                            action: fallbackAction,
+                            target: fallbackTarget,
+                            sender: sender,
+                            traceID: traceID,
+                            reason: "file_read_error"
+                        )
+                    }
                 }
             }
             return
@@ -1226,14 +1375,12 @@ final class ProgramaWebView: WKWebView {
                 "browser.ctxdl.request trace=\(traceID) stage=dispatch method=\(request.httpMethod ?? "GET") cookies=\(cookies.count) referer=\(request.value(forHTTPHeaderField: "Referer") ?? "nil") uaSet=\(request.value(forHTTPHeaderField: "User-Agent") == nil ? 0 : 1)"
             )
 
-            URLSession.shared.dataTask(with: request) { data, response, error in
+            let loader = BrowserBoundedURLLoader()
+            loader.load(request) { result in
                 DispatchQueue.main.async {
-                    guard let data, error == nil else {
-                        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-                        let mime = response?.mimeType ?? "nil"
-                        let hasResponse = response == nil ? 0 : 1
+                    guard case .success(let value) = result else {
                         self.debugContextDownload(
-                            "browser.ctxdl.response trace=\(traceID) stage=failure hasResponse=\(hasResponse) status=\(statusCode) mime=\(mime) error=\(error?.localizedDescription ?? "unknown")"
+                            "browser.ctxdl.response trace=\(traceID) stage=failure error=\(String(describing: result))"
                         )
                         self.notifyContextMenuDownloadState(false)
                         self.runContextMenuFallback(
@@ -1245,14 +1392,16 @@ final class ProgramaWebView: WKWebView {
                         )
                         return
                     }
+                    let data = value.data
+                    let response = value.response
                     let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
-                    let mime = response?.mimeType ?? "nil"
-                    let expectedLength = response?.expectedContentLength ?? -1
+                    let mime = response.mimeType ?? "nil"
+                    let expectedLength = response.expectedContentLength
                     self.debugContextDownload(
                         "browser.ctxdl.response trace=\(traceID) stage=success hasResponse=1 status=\(statusCode) mime=\(mime) bytes=\(data.count) expected=\(expectedLength)"
                     )
                     let filenameCandidate = suggestedFilename
-                        ?? response?.suggestedFilename
+                        ?? response.suggestedFilename
                         ?? url.lastPathComponent
                     let saveName = filenameCandidate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "download" : filenameCandidate
 
@@ -1291,7 +1440,7 @@ final class ProgramaWebView: WKWebView {
                         }
                     }
                 }
-            }.resume()
+            }
         }
     }
 
@@ -1388,7 +1537,7 @@ final class ProgramaWebView: WKWebView {
 
         if scheme == "file" {
             DispatchQueue.global(qos: .userInitiated).async {
-                let data = try? Data(contentsOf: sourceURL)
+                let data = try? BrowserContextTransferPolicy.boundedFileData(from: sourceURL)
                 DispatchQueue.main.async {
                     guard let data, !data.isEmpty else {
                         self.debugContextDownload(
@@ -1440,21 +1589,24 @@ final class ProgramaWebView: WKWebView {
                 "browser.ctxcopy.fetch trace=\(traceID) stage=dispatch cookies=\(cookies.count) referer=\(request.value(forHTTPHeaderField: "Referer") ?? "nil") uaSet=\(request.value(forHTTPHeaderField: "User-Agent") == nil ? 0 : 1)"
             )
 
-            URLSession.shared.dataTask(with: request) { data, response, error in
+            let loader = BrowserBoundedURLLoader()
+            loader.load(request) { result in
                 DispatchQueue.main.async {
-                    guard let data, !data.isEmpty, error == nil else {
+                    guard case .success(let value) = result, !value.data.isEmpty else {
                         self.debugContextDownload(
-                            "browser.ctxcopy.fetch trace=\(traceID) stage=networkFailure status=\((response as? HTTPURLResponse)?.statusCode ?? -1) mime=\(response?.mimeType ?? "nil") error=\(error?.localizedDescription ?? "unknown")"
+                            "browser.ctxcopy.fetch trace=\(traceID) stage=networkFailure result=\(String(describing: result))"
                         )
                         completion(nil)
                         return
                     }
+                    let data = value.data
+                    let response = value.response
 
-                    let resolvedURL = response?.url.flatMap {
+                    let resolvedURL = response.url.flatMap {
                         let scheme = $0.scheme?.lowercased() ?? ""
                         return (scheme == "http" || scheme == "https") ? $0 : nil
                     } ?? sourceURL
-                    let mimeType = response?.mimeType ?? self.inferredImageMIMEType(from: resolvedURL)
+                    let mimeType = response.mimeType ?? self.inferredImageMIMEType(from: resolvedURL)
                     self.debugContextDownload(
                         "browser.ctxcopy.fetch trace=\(traceID) stage=networkSuccess status=\((response as? HTTPURLResponse)?.statusCode ?? -1) mime=\(mimeType ?? "nil") bytes=\(data.count)"
                     )
@@ -1466,7 +1618,7 @@ final class ProgramaWebView: WKWebView {
                         )
                     )
                 }
-            }.resume()
+            }
         }
     }
 

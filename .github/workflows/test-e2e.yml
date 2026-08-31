@@ -94,8 +94,8 @@ jobs:
 
       - name: Install zig
         run: |
-          ZIG_REQUIRED="0.16.0"
-          if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
+          ZIG_REQUIRED="$(./scripts/required-zig-version.sh)"
+          if command -v zig >/dev/null 2>&1 && [ "$(zig version 2>/dev/null)" = "$ZIG_REQUIRED" ]; then
             echo "zig ${ZIG_REQUIRED} already installed"
           else
             echo "Installing zig ${ZIG_REQUIRED} from tarball"

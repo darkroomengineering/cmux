@@ -7,6 +7,13 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 ## [Unreleased]
 
 ### Fixed
+- Remote and local CLI clients now share the v2 JSON-RPC and `programa-relay-auth` contracts, password-protected sockets work through MCP, and remote bootstrap files, tmux wait signals, relay diagnostics, and downloaded daemon artifacts have bounded ownership and lifetime.
+- Session recovery now rejects oversized or structurally invalid snapshots before reconstruction, quarantines corrupt primaries, caps history scanning, elects escrow holders without unlinking live or indeterminate sockets, and terminates timed-out subprocess trees without leaving descendants or pipe readers behind.
+- The iOS client now uses device-only Keychain credentials, bounded newline framing, cancellation-safe request and pairing deadlines, settled path selection, server-reconciled CloudKit subscriptions, and a generation-owned reconnect loop. The completed duplicate macOS transport spike has been removed.
+- Browser extensions now require explicit permission consent and support revocation; browser downloads, history, review diffs, VS Code discovery output, and automation state enforce bounds while data is read.
+- Port settings are validated within the TCP range without trapping arithmetic, managed settings and directory trust mutations are serialized, notification routing explicitly enters the main actor, and TestFlight signing restores the developer state it temporarily changes.
+- CI now pins every external action by commit, builds and locates artifacts through job-specific DerivedData paths, enforces the repository's Zig 0.16.0 source of truth, and builds the remote daemon with Go 1.26.7.
+- Sparkle is updated to 2.9.6, which hardens delta-update destinations against symlinks, rejects package installation after signing validation fails, and safely moves installer archives.
 - Provider usage now completes the Codex app-server handshake before reading limits, verifies Claude's current login before trusting its bounded fresh cache, hides signed-out providers, refreshes whenever its compact sidebar control opens, and sizes the popover to its visible content.
 - The provider usage popover no longer reports that Claude and Codex usage could not be read: reading the Codex app server's silent stderr through `FileHandle.bytes` blocked Foundation's shared pipe reader, so both probes timed out together. A signed-out Claude CLI now hides the provider instead of showing an error, and the sidebar help and usage icons sit on a slightly wider pitch.
 - Browser context-menu actions no longer crash when a Google redirect contains repeated query parameters.
@@ -39,6 +46,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - A restart after an update no longer kills every terminal when the new app comes up faster than the background session-holder notices the old one is gone. The app now waits out that window instead of giving up, escrow sockets no longer leak into shell processes (which silently delayed that detection), and a session that falls back anyway keeps its reattach records on disk while its process is still alive instead of deleting them.
 
 ### Changed
+- Application lifecycle, command-palette state, CLI and hook dispatch, and browser RPC session state now have dedicated owners, with CI line budgets preventing those entrypoints from growing back into cross-feature coordinators.
 - The local diagnostics logger now keeps one file handle open between records and reopens it only after rotation, removing repeated directory checks and open/seek/close work from socket and session activity.
 - Ghostty is updated to the current upstream implementation with complete Kitty graphics animation and placement support. Programa now builds the fork and helper tools with Zig 0.16.
 - Background work is lighter: unchanged config reloads are ignored, idle output polling stops, duplicate update checks are gone, and update logs rotate at 1 MiB.

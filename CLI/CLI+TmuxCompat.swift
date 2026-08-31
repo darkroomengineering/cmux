@@ -1554,10 +1554,128 @@ extension ProgramaCLI {
         return (result.status, result.stdout, result.stderr)
     }
 
-    private func tmuxWaitForSignalURL(name: String) -> URL {
+    private func tmuxWaitForSignalURL(name: String, socketIdentity: String) throws -> URL {
+        let runtimeDirectory = try tmuxWaitForRuntimeDirectory()
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
         let sanitized = name.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
-        return URL(fileURLWithPath: "/tmp/programa-wait-for-\(String(sanitized)).sig")
+        let sessionHash = SHA256.hash(data: Data(socketIdentity.utf8)).prefix(8)
+            .map { String(format: "%02x", $0) }.joined()
+        let nameHash = SHA256.hash(data: Data(name.utf8)).prefix(8)
+            .map { String(format: "%02x", $0) }.joined()
+        return runtimeDirectory.appendingPathComponent(
+            "\(sessionHash)-\(String(sanitized))-\(nameHash).sig",
+            isDirectory: false
+        )
+    }
+
+    private func tmuxWaitForRuntimeDirectory() throws -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        if let rawXDG = environment["XDG_RUNTIME_DIR"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawXDG.isEmpty,
+           tmuxIsOwnedPrivateDirectory(rawXDG) {
+            let programa = URL(fileURLWithPath: rawXDG, isDirectory: true)
+                .appendingPathComponent("programa", isDirectory: true)
+            let waitFor = programa.appendingPathComponent("wait-for", isDirectory: true)
+            try tmuxEnsureOwnedPrivateDirectory(programa)
+            try tmuxEnsureOwnedPrivateDirectory(waitFor)
+            return waitFor
+        }
+
+        let rawHomePath = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let homePath = rawHomePath.isEmpty ? NSHomeDirectory() : rawHomePath
+        let programa = URL(fileURLWithPath: homePath, isDirectory: true)
+            .appendingPathComponent(".programa", isDirectory: true)
+        let run = programa.appendingPathComponent("run", isDirectory: true)
+        let waitFor = run.appendingPathComponent("wait-for", isDirectory: true)
+        for directory in [programa, run, waitFor] {
+            try tmuxEnsureOwnedPrivateDirectory(directory)
+        }
+        return waitFor
+    }
+
+    private func tmuxIsOwnedPrivateDirectory(_ path: String) -> Bool {
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+              info.st_uid == getuid(),
+              (info.st_mode & 0o777) == 0o700 else {
+            return false
+        }
+        return true
+    }
+
+    private func tmuxEnsureOwnedPrivateDirectory(_ url: URL) throws {
+        var info = stat()
+        if lstat(url.path, &info) != 0 {
+            guard errno == ENOENT else {
+                throw CLIError(message: "Failed to inspect wait-for runtime directory")
+            }
+            guard mkdir(url.path, 0o700) == 0 || errno == EEXIST else {
+                throw CLIError(message: "Failed to create wait-for runtime directory")
+            }
+        }
+
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_DIRECTORY)
+        guard fd >= 0 else {
+            throw CLIError(message: "Wait-for runtime path is not a real directory")
+        }
+        defer { Darwin.close(fd) }
+        guard fstat(fd, &info) == 0,
+              (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+              info.st_uid == getuid() else {
+            throw CLIError(message: "Wait-for runtime directory is not owned by the current user")
+        }
+        guard fchmod(fd, 0o700) == 0,
+              fstat(fd, &info) == 0,
+              (info.st_mode & 0o777) == 0o700 else {
+            throw CLIError(message: "Failed to secure wait-for runtime directory")
+        }
+    }
+
+    private func tmuxValidateWaitForSignal(_ url: URL) throws {
+        var info = stat()
+        guard lstat(url.path, &info) == 0,
+              (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              info.st_uid == getuid(),
+              (info.st_mode & 0o777) == 0o600 else {
+            throw CLIError(message: "Wait-for signal is not a private file owned by the current user")
+        }
+    }
+
+    private func tmuxWriteWaitForSignal(_ url: URL) throws {
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        if fd < 0, errno == EEXIST {
+            try tmuxValidateWaitForSignal(url)
+            return
+        }
+        guard fd >= 0 else {
+            throw CLIError(message: "Failed to create wait-for signal")
+        }
+        let payload = Data("signal\n".utf8)
+        do {
+            try payload.withUnsafeBytes { bytes in
+                guard let base = bytes.baseAddress else { return }
+                var offset = 0
+                while offset < bytes.count {
+                    let count = Darwin.write(fd, base.advanced(by: offset), bytes.count - offset)
+                    if count < 0, errno == EINTR { continue }
+                    guard count > 0 else {
+                        throw CLIError(message: "Failed to write wait-for signal")
+                    }
+                    offset += count
+                }
+            }
+            guard fsync(fd) == 0 else {
+                throw CLIError(message: "Failed to sync wait-for signal")
+            }
+        } catch {
+            Darwin.close(fd)
+            throw error
+        }
+        guard Darwin.close(fd) == 0 else {
+            throw CLIError(message: "Failed to close wait-for signal")
+        }
+        try tmuxValidateWaitForSignal(url)
     }
 
     func runTmuxCompatCommand(
@@ -1672,24 +1790,27 @@ extension ProgramaCLI {
             guard !name.isEmpty else {
                 throw CLIError(message: "wait-for requires a name")
             }
-            let signalURL = tmuxWaitForSignalURL(name: name)
+            let signalURL = try tmuxWaitForSignalURL(name: name, socketIdentity: client.socketPath)
             if signal {
-                FileManager.default.createFile(atPath: signalURL.path, contents: Data())
+                try tmuxWriteWaitForSignal(signalURL)
                 print("OK")
                 return
             }
             let deadline = Date().addingTimeInterval(timeout)
-            do {
-                try SocketClient.waitForFilesystemPath(signalURL.path, timeout: max(0, deadline.timeIntervalSinceNow))
-                try? FileManager.default.removeItem(at: signalURL)
-                print("OK")
-                return
-            } catch {
-                if FileManager.default.fileExists(atPath: signalURL.path) {
-                    try? FileManager.default.removeItem(at: signalURL)
+            while Date() < deadline {
+                var info = stat()
+                if lstat(signalURL.path, &info) == 0 {
+                    try tmuxValidateWaitForSignal(signalURL)
+                    guard unlink(signalURL.path) == 0 else {
+                        throw CLIError(message: "Failed to consume wait-for signal")
+                    }
                     print("OK")
                     return
                 }
+                guard errno == ENOENT else {
+                    throw CLIError(message: "Failed to inspect wait-for signal")
+                }
+                Thread.sleep(forTimeInterval: 0.05)
             }
             throw CLIError(message: "wait-for timed out waiting for '\(name)'")
 

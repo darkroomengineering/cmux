@@ -271,8 +271,8 @@ jobs:
       - name: Install build deps
         if: steps.milestone_artifact.outputs.reuse != 'true'
         run: |
-          ZIG_REQUIRED="0.16.0"
-          if command -v zig >/dev/null 2>&1 && zig version 2>/dev/null | grep -q "^${ZIG_REQUIRED}"; then
+          ZIG_REQUIRED="$(./scripts/required-zig-version.sh)"
+          if command -v zig >/dev/null 2>&1 && [ "$(zig version 2>/dev/null)" = "$ZIG_REQUIRED" ]; then
             echo "zig ${ZIG_REQUIRED} already installed"
           else
             echo "Installing zig ${ZIG_REQUIRED} from tarball"
@@ -500,7 +500,7 @@ jobs:
         run: |
           ./scripts/verify_sparkle_artifact.sh \
             "build-universal/Build/Products/Release/Programa.app" \
-            "2.9.4"
+            "2.9.6"
 
       - name: Notarize app
         if: steps.milestone_artifact.outputs.reuse != 'true'

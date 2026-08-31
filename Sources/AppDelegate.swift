@@ -374,36 +374,6 @@ enum BrowserZoomShortcutAction: Equatable {
     case reset
 }
 
-struct CommandPaletteDebugResultRow {
-    let commandId: String
-    let title: String
-    let shortcutHint: String?
-    let trailingLabel: String?
-    let score: Int
-}
-
-struct CommandPaletteDebugSnapshot {
-    let query: String
-    let mode: String
-    let results: [CommandPaletteDebugResultRow]
-
-    static let empty = CommandPaletteDebugSnapshot(query: "", mode: "commands", results: [])
-}
-
-/// Per-window command-palette state. Consolidates what used to be 7 parallel
-/// `[UUID: _]` dictionaries (one dictionary keyed by main-window UUID instead),
-/// so window teardown is a single `removeValue(forKey:)` instead of 7 duplicated
-/// call sites. Refs #95.
-struct CommandPaletteWindowState {
-    var isVisible = false
-    var pendingOpen = false
-    var recentRequestAt: TimeInterval?
-    var escapeSuppressed = false
-    var escapeSuppressionStartedAt: TimeInterval?
-    var selectionIndex = 0
-    var snapshot: CommandPaletteDebugSnapshot = .empty
-}
-
 func browserZoomShortcutAction(
     flags: NSEvent.ModifierFlags,
     chars: String,
@@ -1054,15 +1024,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         launchServicesRegistrationQueue.async(execute: work)
     }
     private var didHandleExplicitOpenIntentAtStartup = false
-    private var isTerminatingApp = false
-    private var isAwaitingPowerOffTermination = false
-    // Set to true when the user has already confirmed quit via the warning dialog,
-    // so applicationShouldTerminate does not show a second alert.
-    private var isQuitWarningConfirmed = false
-    private var isSingleInstanceLoserTerminationConfirmed = false
-    private var didInstallLifecycleSnapshotObservers = false
-    private var didDisableSuddenTermination = false
-    private var commandPaletteStateByWindowId: [UUID: CommandPaletteWindowState] = [:]
+    private let appLifecycleCoordinator = AppLifecycleCoordinator()
+    private var isTerminatingApp: Bool { appLifecycleCoordinator.isTerminating }
     private static let commandPaletteRequestGraceInterval: TimeInterval = 1.25
     private static let commandPalettePendingOpenMaxAge: TimeInterval = 8.0
 
@@ -1512,9 +1475,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         // `willPowerOffNotification` has no matching cancellation notification. If macOS
         // becomes active again before termination, the shutdown was cancelled: resume
         // autosave/session machinery and replace the provisional snapshot with a normal one.
-        if isAwaitingPowerOffTermination {
-            isAwaitingPowerOffTermination = false
-            isTerminatingApp = false
+        if appLifecycleCoordinator.resumeAfterCancelledPowerOff() {
             SessionMachineryGate.isApplicationTerminating = false
             _ = saveSessionSnapshot(includeScrollback: false)
         }
@@ -1537,10 +1498,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         // synchronous persistence begins. Requesters treat that acknowledgment as proof that
         // this process is responsive and cannot prompt or force-close us during teardown.
         let hasValidatedDuplicateShutdownRequest = acknowledgeValidatedDuplicateShutdownRequest()
-        isTerminatingApp = true
+        let lifecycleDecision = appLifecycleCoordinator.beginTermination(
+            hasValidatedDuplicateShutdownRequest: hasValidatedDuplicateShutdownRequest,
+            isTaggedDevBuild: SocketControlSettings.isTaggedDevBuild(),
+            isQuitWarningEnabled: QuitWarningSettings.isEnabled()
+        )
         SessionMachineryGate.isApplicationTerminating = true
         let terminationPolicy = Self.singleInstanceTerminationPersistencePolicy(
-            isDiscardedDuplicate: isSingleInstanceLoserTerminationConfirmed
+            isDiscardedDuplicate: appLifecycleCoordinator.isSingleInstanceLoser
         )
         // A warning dialog can still cancel this termination request. The final
         // `applicationWillTerminate` callback is the only point that records a clean exit.
@@ -1548,18 +1513,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
         }
 
-        let shouldWarn = Self.shouldWarnBeforeTermination(
-            isTaggedDevBuild: SocketControlSettings.isTaggedDevBuild(),
-            isQuitWarningConfirmed: isQuitWarningConfirmed,
-            isInternalSingleInstanceLoserExit: isSingleInstanceLoserTerminationConfirmed,
-            hasValidatedDuplicateShutdownRequest: hasValidatedDuplicateShutdownRequest,
-            isQuitWarningEnabled: QuitWarningSettings.isEnabled()
-        )
-        guard shouldWarn else {
-            let reason = hasValidatedDuplicateShutdownRequest
-                ? "duplicate_request"
-                : (isSingleInstanceLoserTerminationConfirmed ? "discarded_duplicate" : "warning_bypassed")
-            dilog("single_instance", "pid=\(getpid()) outcome=terminate_now reason=\(reason)")
+        guard lifecycleDecision.shouldWarn else {
+            dilog("single_instance", "pid=\(getpid()) outcome=terminate_now reason=\(lifecycleDecision.logReason)")
             return .terminateNow
         }
         dilog("single_instance", "pid=\(getpid()) outcome=warning reason=ordinary_quit")
@@ -1583,10 +1538,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
             let shouldQuit = response == .alertFirstButtonReturn
             if shouldQuit {
-                self.isQuitWarningConfirmed = true
+                self.appLifecycleCoordinator.confirmQuit()
             } else {
                 // Reset so that the next quit attempt can show the dialog again.
-                self.isTerminatingApp = false
+                self.appLifecycleCoordinator.cancelTermination()
                 // Must be reset in lockstep, or a cancelled quit would leave
                 // the session machinery treating every later close as
                 // termination and never releasing escrowed sessions.
@@ -1598,11 +1553,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        isAwaitingPowerOffTermination = false
-        isTerminatingApp = true
+        appLifecycleCoordinator.willTerminate()
         SessionMachineryGate.isApplicationTerminating = true
         let terminationPolicy = Self.singleInstanceTerminationPersistencePolicy(
-            isDiscardedDuplicate: isSingleInstanceLoserTerminationConfirmed
+            isDiscardedDuplicate: appLifecycleCoordinator.isSingleInstanceLoser
         )
         if terminationPolicy.persistCleanShutdownSnapshot {
             _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false, cleanShutdown: true)
@@ -1629,14 +1583,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
     func persistSessionForUpdateRelaunch() {
-        isTerminatingApp = true
+        appLifecycleCoordinator.beginUpdateRelaunch()
         // The user already consented to this termination by choosing to install
         // the update — without this, applicationShouldTerminate shows the modal
         // "Quit Programa?" warning in the middle of the update relaunch for
         // default-config users, and if Sparkle force-kills past its timeout the
         // stale cleanShutdown=false snapshot fires the crash-recovery notice as
         // a false positive on the next launch (audit 2026-08-20, H4).
-        isQuitWarningConfirmed = true
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
     }
 
@@ -2435,8 +2388,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
     private func installLifecycleSnapshotObserversIfNeeded() {
-        guard !didInstallLifecycleSnapshotObservers else { return }
-        didInstallLifecycleSnapshotObservers = true
+        guard appLifecycleCoordinator.claimSnapshotObserverInstallation() else { return }
 
         let workspaceCenter = NSWorkspace.shared.notificationCenter
         let powerOffObserver = workspaceCenter.addObserver(
@@ -2446,8 +2398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.isAwaitingPowerOffTermination = true
-                self.isTerminatingApp = true
+                self.appLifecycleCoordinator.beginPowerOff()
                 SessionMachineryGate.isApplicationTerminating = true
                 // `willPowerOff` can still be cancelled. Only applicationWillTerminate may
                 // label a snapshot as a clean shutdown.
@@ -2502,15 +2453,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
     private func disableSuddenTerminationIfNeeded() {
-        guard !didDisableSuddenTermination else { return }
+        guard appLifecycleCoordinator.claimSuddenTerminationDisable() else { return }
         ProcessInfo.processInfo.disableSuddenTermination()
-        didDisableSuddenTermination = true
     }
 
     private func enableSuddenTerminationIfNeeded() {
-        guard didDisableSuddenTermination else { return }
+        guard appLifecycleCoordinator.claimSuddenTerminationEnable() else { return }
         ProcessInfo.processInfo.enableSuddenTermination()
-        didDisableSuddenTermination = false
     }
 
     @discardableResult
@@ -2811,11 +2760,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             context = newContext
         }
         installMainWindowCloseObserver(for: context, window: window)
-        updateCommandPaletteState(for: windowId) { state in
-            state.isVisible = false
-            state.selectionIndex = 0
-            state.snapshot = .empty
-        }
+        CommandPaletteController.windowLifecycle.reset(windowId: windowId)
 
 #if DEBUG
         dlog(
@@ -3385,27 +3330,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         return workspace.id
     }
 
-    private func commandPaletteState(for windowId: UUID) -> CommandPaletteWindowState {
-        commandPaletteStateByWindowId[windowId] ?? CommandPaletteWindowState()
-    }
-
-    private func updateCommandPaletteState(for windowId: UUID, _ mutate: (inout CommandPaletteWindowState) -> Void) {
-        var state = commandPaletteState(for: windowId)
-        mutate(&state)
-        commandPaletteStateByWindowId[windowId] = state
-    }
-
     private func teardownCommandPaletteState(for windowId: UUID) {
-        commandPaletteStateByWindowId.removeValue(forKey: windowId)
+        CommandPaletteController.windowLifecycle.teardown(windowId: windowId)
     }
 
     private func markCommandPaletteOpenRequested(for window: NSWindow?) {
         guard let window,
               let windowId = mainWindowId(for: window) else { return }
-        updateCommandPaletteState(for: windowId) { state in
-            state.pendingOpen = true
-            state.recentRequestAt = ProcessInfo.processInfo.systemUptime
-        }
+        CommandPaletteController.windowLifecycle.markOpenRequested(
+            windowId: windowId,
+            now: ProcessInfo.processInfo.systemUptime
+        )
     }
 
     private func postCommandPaletteRequest(
@@ -3482,74 +3417,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     private func clearCommandPalettePendingOpen(for window: NSWindow?) {
         guard let window,
               let windowId = mainWindowId(for: window) else { return }
-        updateCommandPaletteState(for: windowId) { state in
-            state.pendingOpen = false
-            state.recentRequestAt = nil
-        }
+        CommandPaletteController.windowLifecycle.clearPendingOpen(windowId: windowId)
     }
 
     private func pruneExpiredCommandPalettePendingOpenStates(
         now: TimeInterval = ProcessInfo.processInfo.systemUptime
     ) {
-        for windowId in Array(commandPaletteStateByWindowId.keys) {
-            guard commandPaletteStateByWindowId[windowId]?.pendingOpen == true else { continue }
-            guard let requestedAt = commandPaletteStateByWindowId[windowId]?.recentRequestAt else {
-                commandPaletteStateByWindowId[windowId]?.pendingOpen = false
-#if DEBUG
-                dlog("shortcut.palette.pendingPrune windowId=\(windowId.uuidString.prefix(8)) reason=missingTimestamp")
-#endif
-                continue
-            }
-            let age = now - requestedAt
-            guard age > Self.commandPalettePendingOpenMaxAge else { continue }
-            commandPaletteStateByWindowId[windowId]?.pendingOpen = false
-            commandPaletteStateByWindowId[windowId]?.recentRequestAt = nil
-#if DEBUG
-            dlog(
-                "shortcut.palette.pendingPrune windowId=\(windowId.uuidString.prefix(8)) " +
-                "reason=stale ageMs=\(Int(age * 1000))"
-            )
-#endif
-        }
+        CommandPaletteController.windowLifecycle.pruneExpiredPendingOpen(
+            now: now,
+            maximumAge: Self.commandPalettePendingOpenMaxAge
+        )
     }
 
     private func isCommandPalettePendingOpen(for window: NSWindow) -> Bool {
         guard let windowId = mainWindowId(for: window) else { return false }
-        pruneExpiredCommandPalettePendingOpenStates()
-        return commandPaletteStateByWindowId[windowId]?.pendingOpen == true
+        return CommandPaletteController.windowLifecycle.isPendingOpen(
+            windowId: windowId,
+            now: ProcessInfo.processInfo.systemUptime,
+            maximumAge: Self.commandPalettePendingOpenMaxAge
+        )
     }
 
     private func beginCommandPaletteEscapeSuppression(for window: NSWindow?) {
         guard let window,
               let windowId = mainWindowId(for: window) else { return }
-        updateCommandPaletteState(for: windowId) { state in
-            state.escapeSuppressed = true
-            state.escapeSuppressionStartedAt = ProcessInfo.processInfo.systemUptime
-        }
+        CommandPaletteController.windowLifecycle.beginEscapeSuppression(
+            windowId: windowId,
+            now: ProcessInfo.processInfo.systemUptime
+        )
     }
 
     private func endCommandPaletteEscapeSuppression(for window: NSWindow?) {
         guard let window,
               let windowId = mainWindowId(for: window) else { return }
-        updateCommandPaletteState(for: windowId) { state in
-            state.escapeSuppressed = false
-            state.escapeSuppressionStartedAt = nil
-        }
+        CommandPaletteController.windowLifecycle.endEscapeSuppression(windowId: windowId)
     }
 
     private func shouldConsumeSuppressedEscape(event: NSEvent, window: NSWindow?) -> Bool {
-        guard let window,
-              let windowId = mainWindowId(for: window),
-              commandPaletteStateByWindowId[windowId]?.escapeSuppressed == true else {
-            return false
-        }
-        let startedAt = commandPaletteStateByWindowId[windowId]?.escapeSuppressionStartedAt ?? 0
-        if ProcessInfo.processInfo.systemUptime - startedAt <= 0.35 {
-            return true
-        }
-        // Fallback cleanup when keyUp is lost for any reason.
-        endCommandPaletteEscapeSuppression(for: window)
-        return false
+        guard let window, let windowId = mainWindowId(for: window) else { return false }
+        return CommandPaletteController.windowLifecycle.shouldConsumeSuppressedEscape(
+            windowId: windowId,
+            now: ProcessInfo.processInfo.systemUptime
+        )
     }
 
     private func recentCommandPaletteRequestAge(for window: NSWindow?) -> TimeInterval? {
@@ -3557,21 +3466,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
               let windowId = mainWindowId(for: window) else {
             return nil
         }
-        let now = ProcessInfo.processInfo.systemUptime
-        pruneExpiredCommandPalettePendingOpenStates(now: now)
-        guard commandPaletteStateByWindowId[windowId]?.pendingOpen == true else {
-            commandPaletteStateByWindowId[windowId]?.recentRequestAt = nil
-            return nil
-        }
-        guard let startedAt = commandPaletteStateByWindowId[windowId]?.recentRequestAt else {
-            commandPaletteStateByWindowId[windowId]?.pendingOpen = false
-            return nil
-        }
-        let age = now - startedAt
-        if age <= Self.commandPaletteRequestGraceInterval {
-            return age
-        }
-        return nil
+        return CommandPaletteController.windowLifecycle.recentRequestAge(
+            windowId: windowId,
+            now: ProcessInfo.processInfo.systemUptime,
+            maximumAge: Self.commandPalettePendingOpenMaxAge,
+            graceInterval: Self.commandPaletteRequestGraceInterval
+        )
     }
 
     private func escapeSuppressionWindow(for event: NSEvent) -> NSWindow? {
@@ -3593,10 +3493,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 #endif
             return didConsume
         }
-        for windowId in commandPaletteStateByWindowId.keys {
-            commandPaletteStateByWindowId[windowId]?.escapeSuppressed = false
-            commandPaletteStateByWindowId[windowId]?.escapeSuppressionStartedAt = nil
-        }
+        CommandPaletteController.windowLifecycle.clearAllEscapeSuppression()
 #if DEBUG
         dlog("shortcut.escape suppressionClear target={nil} clearedAll=1 keyUpConsumed=\(didConsume ? 1 : 0)")
 #endif
@@ -3605,19 +3502,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
     func setCommandPaletteVisible(_ visible: Bool, for window: NSWindow) {
         guard let windowId = mainWindowId(for: window) else { return }
-        let wasVisible = commandPaletteState(for: windowId).isVisible
-        updateCommandPaletteState(for: windowId) { $0.isVisible = visible }
-        // Opening (false -> true) always resolves pending-open.
-        // Closing (true -> false) also clears stale pending state.
-        // Ignore repeated false updates so a stale sync cannot erase an in-flight open request.
-        if visible || wasVisible {
-            commandPaletteStateByWindowId[windowId]?.pendingOpen = false
-            commandPaletteStateByWindowId[windowId]?.recentRequestAt = nil
-        }
+        let wasVisible = CommandPaletteController.windowLifecycle.setVisible(visible, windowId: windowId)
 #if DEBUG
         if !visible,
            !wasVisible,
-           commandPaletteStateByWindowId[windowId]?.pendingOpen == true {
+           CommandPaletteController.windowLifecycle.isPendingOpen(
+               windowId: windowId,
+               now: ProcessInfo.processInfo.systemUptime,
+               maximumAge: Self.commandPalettePendingOpenMaxAge
+           ) {
             dlog(
                 "palette.visibility.retainPending " +
                 "window={\(debugWindowToken(window))} visible=0 wasVisible=0 pending=1"
@@ -3627,30 +3520,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     }
 
     func isCommandPaletteVisible(windowId: UUID) -> Bool {
-        commandPaletteStateByWindowId[windowId]?.isVisible ?? false
+        CommandPaletteController.windowLifecycle.isVisible(windowId: windowId)
     }
 
     func setCommandPaletteSelectionIndex(_ index: Int, for window: NSWindow) {
         guard let windowId = mainWindowId(for: window) else { return }
-        updateCommandPaletteState(for: windowId) { $0.selectionIndex = max(0, index) }
+        CommandPaletteController.windowLifecycle.setSelectionIndex(index, windowId: windowId)
     }
 
     func commandPaletteSelectionIndex(windowId: UUID) -> Int {
-        commandPaletteStateByWindowId[windowId]?.selectionIndex ?? 0
+        CommandPaletteController.windowLifecycle.selectionIndex(windowId: windowId)
     }
 
     func setCommandPaletteSnapshot(_ snapshot: CommandPaletteDebugSnapshot, for window: NSWindow) {
         guard let windowId = mainWindowId(for: window) else { return }
-        updateCommandPaletteState(for: windowId) { $0.snapshot = snapshot }
+        CommandPaletteController.windowLifecycle.setSnapshot(snapshot, windowId: windowId)
     }
 
     func commandPaletteSnapshot(windowId: UUID) -> CommandPaletteDebugSnapshot {
-        commandPaletteStateByWindowId[windowId]?.snapshot ?? .empty
+        CommandPaletteController.windowLifecycle.snapshot(windowId: windowId)
     }
 
     func isCommandPaletteVisible(for window: NSWindow) -> Bool {
         guard let windowId = mainWindowId(for: window) else { return false }
-        return commandPaletteStateByWindowId[windowId]?.isVisible ?? false
+        return CommandPaletteController.windowLifecycle.isVisible(windowId: windowId)
     }
 
     func isCommandPaletteEffectivelyVisible(for window: NSWindow) -> Bool {
@@ -4292,10 +4185,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         }) {
             return orderedWindow
         }
-        if let visibleWindowId = commandPaletteStateByWindowId.first(where: { $0.value.isVisible })?.key {
+        if let visibleWindowId = CommandPaletteController.windowLifecycle.firstVisibleWindowId() {
             return windowForMainWindowId(visibleWindowId)
         }
-        if let pendingWindowId = commandPaletteStateByWindowId.first(where: { $0.value.pendingOpen })?.key {
+        if let pendingWindowId = CommandPaletteController.windowLifecycle.firstPendingWindowId() {
             return windowForMainWindowId(pendingWindowId)
         }
         return nil
@@ -6415,7 +6308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         if response == .alertFirstButtonReturn {
             // Mark as confirmed so applicationShouldTerminate does not show a
             // second alert when NSApp.terminate re-enters the delegate callback.
-            isQuitWarningConfirmed = true
+            appLifecycleCoordinator.confirmQuit()
             NSApp.terminate(nil)
         }
         return true
@@ -8480,10 +8373,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     @discardableResult
     func debugSetCommandPalettePendingOpenAge(window: NSWindow, age: TimeInterval) -> Bool {
         guard let windowId = mainWindowId(for: window) else { return false }
-        updateCommandPaletteState(for: windowId) { state in
-            state.pendingOpen = true
-            state.recentRequestAt = ProcessInfo.processInfo.systemUptime - max(age, 0)
-        }
+        CommandPaletteController.windowLifecycle.markOpenRequested(
+            windowId: windowId,
+            now: ProcessInfo.processInfo.systemUptime - max(age, 0)
+        )
         return true
     }
 
@@ -10159,7 +10052,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         case .exitNewer:
             removeExactShutdownState(pending)
             resolvedApplication?.activate(options: [.activateAllWindows])
-            AppDelegate.shared?.isSingleInstanceLoserTerminationConfirmed = true
+            AppDelegate.shared?.appLifecycleCoordinator.confirmSingleInstanceLoser()
             dilog("single_instance", "pid=\(processIdentifier) outcome=exiting_newer reason=user_cancel")
             NSApp.terminate(nil)
         case .skip:
@@ -10303,8 +10196,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        handleNotificationResponse(response)
-        completionHandler()
+        DispatchQueue.main.async { [weak self] in
+            self?.handleNotificationResponse(response)
+            completionHandler()
+        }
     }
 
     func userNotificationCenter(
@@ -10312,56 +10207,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        var options: UNNotificationPresentationOptions = [.banner, .list]
-        if notification.request.content.sound != nil {
-            options.insert(.sound)
-        }
-        completionHandler(options)
+        completionHandler(AppNotificationRouter.presentationOptions(hasSound: notification.request.content.sound != nil))
     }
 
     private func handleNotificationResponse(_ response: UNNotificationResponse) {
-        guard let tabIdString = response.notification.request.content.userInfo["tabId"] as? String,
-              let tabId = UUID(uuidString: tabIdString) else {
-            // App-level notification (crash-recovery notice, no tab routing):
-            // bring the app forward explicitly. macOS activates on a default
-            // click, but a bare return here left action-button clicks and
-            // already-active-but-windowless states doing nothing (audit
-            // 2026-08-20, M1).
+        let request = response.notification.request
+        switch AppNotificationRouter.route(
+            actionIdentifier: response.actionIdentifier,
+            requestIdentifier: request.identifier,
+            userInfo: request.content.userInfo
+        ) {
+        case .activateApplication:
             NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let surfaceId: UUID? = {
-            guard let surfaceIdString = response.notification.request.content.userInfo["surfaceId"] as? String else {
-                return nil
-            }
-            return UUID(uuidString: surfaceIdString)
-        }()
-
-        switch response.actionIdentifier {
-        case UNNotificationDefaultActionIdentifier, TerminalNotificationStore.actionShowIdentifier:
-            let notificationId: UUID? = {
-                if let id = UUID(uuidString: response.notification.request.identifier) {
-                    return id
-                }
-                if let idString = response.notification.request.content.userInfo["notificationId"] as? String,
-                   let id = UUID(uuidString: idString) {
-                    return id
-                }
-                return nil
-            }()
-            DispatchQueue.main.async {
-                _ = self.openNotification(tabId: tabId, surfaceId: surfaceId, notificationId: notificationId)
-            }
-        case UNNotificationDismissActionIdentifier:
-            DispatchQueue.main.async {
-                if let notificationId = UUID(uuidString: response.notification.request.identifier) {
-                    self.notificationStore?.markRead(id: notificationId)
-                } else if let notificationIdString = response.notification.request.content.userInfo["notificationId"] as? String,
-                          let notificationId = UUID(uuidString: notificationIdString) {
-                    self.notificationStore?.markRead(id: notificationId)
-                }
-            }
-        default:
+        case .open(let tabId, let surfaceId, let notificationId):
+            _ = openNotification(tabId: tabId, surfaceId: surfaceId, notificationId: notificationId)
+        case .markRead(let notificationId):
+            notificationStore?.markRead(id: notificationId)
+        case .ignore:
             break
         }
     }

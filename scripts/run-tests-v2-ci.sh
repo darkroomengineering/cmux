@@ -16,6 +16,13 @@ RUN_TAG="ci-v2"
 SUBSET_FILE="tests_v2/ci_subset.txt"
 APP_PID=""
 APP_LOG="/tmp/programa-v2-ci-stdout.log"
+APP_LOCATOR="$PWD/scripts/locate-built-app.sh"
+DERIVED_DATA_ROOT="${PROGRAMA_DERIVED_DATA_DIR:-}"
+
+if [[ -z "$DERIVED_DATA_ROOT" || "$DERIVED_DATA_ROOT" != /* ]]; then
+  echo "ERROR: PROGRAMA_DERIVED_DATA_DIR must be the absolute DerivedData path built by this CI job" >&2
+  exit 1
+fi
 
 report_failure() {
   local status="$?"
@@ -40,11 +47,10 @@ report_failure() {
 
 trap report_failure ERR
 
-APP="$(find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Debug/Programa DEV.app" -print -quit 2>/dev/null || true)"
-if [ -z "$APP" ] || [ ! -d "$APP" ]; then
-  echo "ERROR: Programa DEV.app not found in DerivedData" >&2
-  exit 1
-fi
+APP="$($APP_LOCATOR \
+  --configuration Debug \
+  --primary "Programa DEV" \
+  --derived-data-root "$DERIVED_DATA_ROOT")"
 
 # Tests locate the programa CLI via CMUXTERM_CLI; the fallback search paths are
 # VM-shaped and never match on a CI runner. The CLI ships inside the app bundle.

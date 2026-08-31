@@ -15,6 +15,13 @@ func normalizedBrowserHistoryNamespace(bundleIdentifier: String) -> String {
 @MainActor
 final class BrowserHistoryStore: ObservableObject {
     static let shared = BrowserHistoryStore()
+    /// History is capped at 5,000 entries; 16 MiB leaves ample room for titles and URLs
+    /// while preventing a corrupt or replaced file from being read without a bound.
+    nonisolated static let maxPersistenceBytes = 16 * 1024 * 1024
+
+    enum PersistenceLoadError: Error, Equatable {
+        case exceedsByteLimit
+    }
 
     struct Entry: Codable, Identifiable, Hashable, Sendable {
         let id: UUID
@@ -72,7 +79,7 @@ final class BrowserHistoryStore: ObservableObject {
 
         nonisolated static let live = Persistence(
             load: { fileURL in
-                try Data(contentsOf: fileURL)
+                try BrowserHistoryStore.readPersistedData(from: fileURL)
             },
             persist: { snapshot, fileURL in
                 try BrowserHistoryStore.persistSnapshot(snapshot, to: fileURL)
@@ -162,7 +169,7 @@ final class BrowserHistoryStore: ObservableObject {
         // persisted history immediately (important for deterministic UI behavior).
         let data: Data
         do {
-            data = try persistence.load(fileURL)
+            data = try Self.boundedPersistenceData(persistence.load(fileURL))
         } catch {
             loadState = .failed
             return false
@@ -177,7 +184,7 @@ final class BrowserHistoryStore: ObservableObject {
         }
 
         // Most-recent first.
-        entries = decoded.sorted(by: { $0.lastVisited > $1.lastVisited })
+        entries = Array(decoded.sorted(by: { $0.lastVisited > $1.lastVisited }).prefix(maxEntries))
         loadState = .loaded
 
         // Remove entries with invalid hosts (no TLD), e.g. "https://news."
@@ -769,6 +776,22 @@ final class BrowserHistoryStore: ObservableObject {
         encoder.outputFormatting = [.withoutEscapingSlashes]
         let data = try encoder.encode(snapshot)
         try data.write(to: fileURL, options: [.atomic])
+    }
+
+    nonisolated static func boundedPersistenceData(_ data: Data) throws -> Data {
+        guard data.count <= maxPersistenceBytes else { throw PersistenceLoadError.exceedsByteLimit }
+        return data
+    }
+
+    nonisolated private static func readPersistedData(from fileURL: URL) throws -> Data {
+        let resourceValues = try fileURL.resourceValues(forKeys: [.fileSizeKey])
+        if let fileSize = resourceValues.fileSize, fileSize > maxPersistenceBytes {
+            throw PersistenceLoadError.exceedsByteLimit
+        }
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maxPersistenceBytes + 1) ?? Data()
+        return try boundedPersistenceData(data)
     }
 
     nonisolated static func defaultHistoryFileURLForCurrentBundle() -> URL? {

@@ -16,11 +16,6 @@ enum CloudKitPush {
     static let recordName = "agent-status-summary"
     static let subscriptionID = "agent-status-subscription"
 
-    /// A `CKQuerySubscription` persists server-side once saved, so re-creating it on every
-    /// launch would be a wasted round trip. Tracked in `UserDefaults` per Apple's documented
-    /// "save once" pattern for query subscriptions.
-    private static let subscriptionSavedDefaultsKey = "cloudKitSubscriptionSaved"
-
     struct Summary: Sendable, Equatable {
         var blockedCount: Int
         var workingCount: Int
@@ -38,16 +33,40 @@ enum CloudKitPush {
         (try? await container.accountStatus()) ?? .couldNotDetermine
     }
 
-    /// Idempotent: no-ops once a subscription has been saved (tracked locally). Safe to call
-    /// on every successful connect/pairing.
+    /// Reconciles the desired subscription against the private database. A local flag cannot
+    /// represent server truth: the user may switch iCloud accounts or delete subscriptions
+    /// remotely while the app remains installed.
     static func ensureSubscription() async {
-        guard !UserDefaults.standard.bool(forKey: subscriptionSavedDefaultsKey) else { return }
+        let database = container.privateCloudDatabase
+        do {
+            let existing = try await database.subscription(for: subscriptionID)
+            if subscriptionMatchesDesiredState(existing) { return }
+            try await deleteSubscription(from: database)
+        } catch let error as CKError where error.code == .unknownItem {
+            // Missing is the normal first-run/server-deletion path; create below.
+        } catch {
+            NSLog("CloudKitPush: subscription reconciliation failed: %@", "\(error)")
+            return
+        }
 
+        do {
+            try await saveSubscription(to: database)
+        } catch {
+            // No local success bit is recorded. Every foreground/connect retries.
+            NSLog("CloudKitPush: subscription save failed: %@", "\(error)")
+        }
+    }
+
+    private static var desiredOptions: CKQuerySubscription.Options {
+        [.firesOnRecordCreation, .firesOnRecordUpdate]
+    }
+
+    private static func makeDesiredSubscription() -> CKQuerySubscription {
         let subscription = CKQuerySubscription(
             recordType: recordType,
             predicate: NSPredicate(value: true),
             subscriptionID: subscriptionID,
-            options: [.firesOnRecordCreation, .firesOnRecordUpdate]
+            options: desiredOptions
         )
 
         let info = CKSubscription.NotificationInfo()
@@ -61,25 +80,45 @@ enum CloudKitPush {
         // Activity locally -- see `AppDelegate.didReceiveRemoteNotification`.
         info.shouldSendContentAvailable = true
         subscription.notificationInfo = info
+        return subscription
+    }
 
-        let operation = CKModifySubscriptionsOperation(
-            subscriptionsToSave: [subscription],
-            subscriptionIDsToDelete: nil
-        )
-        operation.qualityOfService = .utility
-
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            operation.modifySubscriptionsResultBlock = { result in
-                switch result {
-                case .success:
-                    UserDefaults.standard.set(true, forKey: subscriptionSavedDefaultsKey)
-                case let .failure(error):
-                    NSLog("CloudKitPush: subscription save failed: %@", "\(error)")
-                }
-                continuation.resume()
-            }
-            container.privateCloudDatabase.add(operation)
+    private static func subscriptionMatchesDesiredState(_ subscription: CKSubscription) -> Bool {
+        guard let query = subscription as? CKQuerySubscription,
+              query.recordType == recordType,
+              query.querySubscriptionOptions == desiredOptions,
+              let info = query.notificationInfo
+        else {
+            return false
         }
+        return info.alertBody == String(
+            localized: "cloudKit.push.alertBody",
+            defaultValue: "An agent needs you"
+        )
+            && info.soundName == nil
+            && info.shouldSendContentAvailable
+    }
+
+    private static func deleteSubscription(from database: CKDatabase) async throws {
+        let result = try await database.modifySubscriptions(
+            saving: [],
+            deleting: [subscriptionID]
+        )
+        guard let deletion = result.deleteResults[subscriptionID] else {
+            throw CloudKitPushError.missingModificationResult
+        }
+        try deletion.get()
+    }
+
+    private static func saveSubscription(to database: CKDatabase) async throws {
+        let result = try await database.modifySubscriptions(
+            saving: [makeDesiredSubscription()],
+            deleting: []
+        )
+        guard let save = result.saveResults[subscriptionID] else {
+            throw CloudKitPushError.missingModificationResult
+        }
+        _ = try save.get()
     }
 
     /// Fetches the current summary record. Returns `nil` if the record doesn't exist yet (the
@@ -99,4 +138,8 @@ enum CloudKitPush {
             return nil
         }
     }
+}
+
+private enum CloudKitPushError: Error {
+    case missingModificationResult
 }

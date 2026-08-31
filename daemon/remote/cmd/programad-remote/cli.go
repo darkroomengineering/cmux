@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,20 +21,10 @@ type relayAuthState struct {
 	RelayToken string `json:"relay_token"`
 }
 
-// protocolVersion indicates whether a command uses the v1 text or v2 JSON-RPC protocol.
-type protocolVersion int
-
-const (
-	protoV1 protocolVersion = iota
-	protoV2
-)
-
 // commandSpec describes a single CLI command and how to relay it.
 type commandSpec struct {
-	name     string          // CLI command name (e.g. "ping", "new-window")
-	proto    protocolVersion // v1 text or v2 JSON-RPC
-	v1Cmd    string          // v1: literal command string sent over the socket
-	v2Method string          // v2: JSON-RPC method name
+	name     string // CLI command name (e.g. "ping", "new-window")
+	v2Method string // v2 JSON-RPC method name
 	// flagKeys lists parameter keys this command accepts.
 	// They are extracted from --key flags and added to params.
 	flagKeys []string
@@ -48,33 +37,30 @@ type commandSpec struct {
 }
 
 var commands = []commandSpec{
-	// V1 text protocol commands
-	{name: "ping", proto: protoV1, v1Cmd: "ping", noParams: true},
-	{name: "new-window", proto: protoV1, v1Cmd: "new_window", noParams: true},
-	{name: "current-window", proto: protoV1, v1Cmd: "current_window", noParams: true},
-	{name: "close-window", proto: protoV1, v1Cmd: "close_window", flagKeys: []string{"window"}},
-	{name: "focus-window", proto: protoV1, v1Cmd: "focus_window", flagKeys: []string{"window"}},
-	{name: "list-windows", proto: protoV1, v1Cmd: "list_windows", noParams: true},
-
-	// V2 JSON-RPC commands
-	{name: "capabilities", proto: protoV2, v2Method: "system.capabilities", noParams: true},
-	{name: "list-workspaces", proto: protoV2, v2Method: "workspace.list", noParams: true},
-	{name: "new-workspace", proto: protoV2, v2Method: "workspace.create", flagKeys: []string{"command", "working-directory", "name"}},
-	{name: "close-workspace", proto: protoV2, v2Method: "workspace.close", flagKeys: []string{"workspace"}},
-	{name: "select-workspace", proto: protoV2, v2Method: "workspace.select", flagKeys: []string{"workspace"}},
-	{name: "current-workspace", proto: protoV2, v2Method: "workspace.current", noParams: true},
-	{name: "list-panels", proto: protoV2, v2Method: "surface.list", flagKeys: []string{"workspace"}},
-	{name: "focus-panel", proto: protoV2, v2Method: "surface.focus", flagKeys: []string{"panel", "workspace"}, paramKeyOverrides: map[string]string{"panel": "surface_id"}},
-	{name: "list-panes", proto: protoV2, v2Method: "pane.list", flagKeys: []string{"workspace"}},
-	{name: "list-pane-surfaces", proto: protoV2, v2Method: "pane.surfaces", flagKeys: []string{"pane"}},
-	{name: "new-pane", proto: protoV2, v2Method: "pane.create", flagKeys: []string{"workspace", "direction", "type", "url"}, defaultParams: map[string]any{"direction": "right"}},
-	{name: "new-surface", proto: protoV2, v2Method: "surface.create", flagKeys: []string{"workspace", "pane", "type", "url"}},
-	{name: "new-split", proto: protoV2, v2Method: "surface.split", flagKeys: []string{"surface", "direction"}},
-	{name: "close-surface", proto: protoV2, v2Method: "surface.close", flagKeys: []string{"surface"}},
-	{name: "send", proto: protoV2, v2Method: "surface.send_text", flagKeys: []string{"surface", "text"}},
-	{name: "send-key", proto: protoV2, v2Method: "surface.send_key", flagKeys: []string{"surface", "key"}},
-	{name: "notify", proto: protoV2, v2Method: "notification.create", flagKeys: []string{"title", "body", "workspace"}},
-	{name: "refresh-surfaces", proto: protoV2, v2Method: "surface.refresh", noParams: true},
+	{name: "ping", v2Method: "system.ping", noParams: true},
+	{name: "new-window", v2Method: "window.create", noParams: true},
+	{name: "current-window", v2Method: "window.current", noParams: true},
+	{name: "close-window", v2Method: "window.close", flagKeys: []string{"window"}},
+	{name: "focus-window", v2Method: "window.focus", flagKeys: []string{"window"}},
+	{name: "list-windows", v2Method: "window.list", noParams: true},
+	{name: "capabilities", v2Method: "system.capabilities", noParams: true},
+	{name: "list-workspaces", v2Method: "workspace.list", noParams: true},
+	{name: "new-workspace", v2Method: "workspace.create", flagKeys: []string{"command", "working-directory", "name"}},
+	{name: "close-workspace", v2Method: "workspace.close", flagKeys: []string{"workspace"}},
+	{name: "select-workspace", v2Method: "workspace.select", flagKeys: []string{"workspace"}},
+	{name: "current-workspace", v2Method: "workspace.current", noParams: true},
+	{name: "list-panels", v2Method: "surface.list", flagKeys: []string{"workspace"}},
+	{name: "focus-panel", v2Method: "surface.focus", flagKeys: []string{"panel", "workspace"}, paramKeyOverrides: map[string]string{"panel": "surface_id"}},
+	{name: "list-panes", v2Method: "pane.list", flagKeys: []string{"workspace"}},
+	{name: "list-pane-surfaces", v2Method: "pane.surfaces", flagKeys: []string{"pane"}},
+	{name: "new-pane", v2Method: "pane.create", flagKeys: []string{"workspace", "direction", "type", "url"}, defaultParams: map[string]any{"direction": "right"}},
+	{name: "new-surface", v2Method: "surface.create", flagKeys: []string{"workspace", "pane", "type", "url"}},
+	{name: "new-split", v2Method: "surface.split", flagKeys: []string{"surface", "direction"}},
+	{name: "close-surface", v2Method: "surface.close", flagKeys: []string{"surface"}},
+	{name: "send", v2Method: "surface.send_text", flagKeys: []string{"surface", "text"}},
+	{name: "send-key", v2Method: "surface.send_key", flagKeys: []string{"surface", "key"}},
+	{name: "notify", v2Method: "notification.create", flagKeys: []string{"title", "body", "workspace"}},
+	{name: "refresh-surfaces", v2Method: "surface.refresh", noParams: true},
 }
 
 var commandIndex map[string]*commandSpec
@@ -172,44 +158,7 @@ doneFlags:
 		return 2
 	}
 
-	switch spec.proto {
-	case protoV1:
-		return execV1(socketPath, spec, cmdArgs, refreshAddr)
-	case protoV2:
-		return execV2(socketPath, spec, cmdArgs, jsonOutput, refreshAddr)
-	default:
-		fmt.Fprintf(os.Stderr, "programa: internal error: unknown protocol for %q\n", cmdName)
-		return 1
-	}
-}
-
-// execV1 sends a v1 text command over the socket.
-func execV1(socketPath string, spec *commandSpec, args []string, refreshAddr func() string) int {
-	cmd := spec.v1Cmd
-
-	if !spec.noParams {
-		parsed, err := parseFlags(args, spec.flagKeys)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "programa: %v\n", err)
-			return 2
-		}
-		for _, key := range spec.flagKeys {
-			if val, ok := parsed.flags[key]; ok {
-				cmd += " " + val
-			}
-		}
-	}
-
-	resp, err := socketRoundTrip(socketPath, cmd, refreshAddr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "programa: %v\n", err)
-		return 1
-	}
-	fmt.Print(resp)
-	if !strings.HasSuffix(resp, "\n") {
-		fmt.Println()
-	}
-	return 0
+	return execV2(socketPath, spec, cmdArgs, jsonOutput, refreshAddr)
 }
 
 // execV2 sends a v2 JSON-RPC request over the socket.
@@ -254,9 +203,64 @@ func execV2(socketPath string, spec *commandSpec, args []string, jsonOutput bool
 	if jsonOutput {
 		fmt.Println(resp)
 	} else {
-		fmt.Println(defaultRelayOutput(resp))
+		fmt.Println(commandRelayOutput(spec.name, resp))
 	}
 	return 0
+}
+
+func commandRelayOutput(commandName, resp string) string {
+	var result map[string]any
+	if err := json.Unmarshal([]byte(resp), &result); err != nil {
+		return defaultRelayOutput(resp)
+	}
+
+	switch commandName {
+	case "ping":
+		return "PONG"
+	case "new-window":
+		if windowID, _ := result["window_id"].(string); windowID != "" {
+			return "OK " + windowID
+		}
+		return "OK"
+	case "current-window":
+		if windowID, _ := result["window_id"].(string); windowID != "" {
+			return windowID
+		}
+		return "OK"
+	case "close-window", "focus-window":
+		return "OK"
+	case "list-windows":
+		windows, _ := result["windows"].([]any)
+		if len(windows) == 0 {
+			return "No windows"
+		}
+		lines := make([]string, 0, len(windows))
+		for _, rawWindow := range windows {
+			window, _ := rawWindow.(map[string]any)
+			selected := " "
+			if isKey, _ := window["key"].(bool); isKey {
+				selected = "*"
+			}
+			lines = append(lines, fmt.Sprintf(
+				"%s %v: %v selected_workspace=%v workspaces=%v",
+				selected,
+				window["index"],
+				window["id"],
+				valueOr(window["selected_workspace_id"], "none"),
+				window["workspace_count"],
+			))
+		}
+		return strings.Join(lines, "\n")
+	default:
+		return defaultRelayOutput(resp)
+	}
+}
+
+func valueOr(value any, fallback any) any {
+	if value == nil {
+		return fallback
+	}
+	return value
 }
 
 // runRPC sends an arbitrary JSON-RPC method with optional JSON params.
@@ -636,56 +640,6 @@ func computeRelayMAC(token []byte, relayID, nonce string, version int) []byte {
 	mac := hmac.New(sha256.New, token)
 	_, _ = io.WriteString(mac, fmt.Sprintf("relay_id=%s\nnonce=%s\nversion=%d", relayID, nonce, version))
 	return mac.Sum(nil)
-}
-
-// socketRoundTrip sends a raw text line and reads a raw text response (v1).
-func socketRoundTrip(socketPath, command string, refreshAddr func() string) (string, error) {
-	conn, err := dialSocket(socketPath, refreshAddr)
-	if err != nil {
-		return "", fmt.Errorf("failed to connect to %s: %w", socketPath, err)
-	}
-	defer conn.Close()
-
-	if _, err := fmt.Fprintf(conn, "%s\n", command); err != nil {
-		return "", fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// V1 handlers may return multiple lines (e.g. list_windows). Read until
-	// the stream goes idle briefly after seeing at least one newline.
-	reader := bufio.NewReader(conn)
-	var response strings.Builder
-	sawNewline := false
-
-	for {
-		readTimeout := 15 * time.Second
-		if sawNewline {
-			readTimeout = 120 * time.Millisecond
-		}
-		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-
-		chunk, err := reader.ReadString('\n')
-		if chunk != "" {
-			response.WriteString(chunk)
-			if strings.Contains(chunk, "\n") {
-				sawNewline = true
-			}
-		}
-
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				if sawNewline {
-					break
-				}
-				return "", fmt.Errorf("failed to read response: timeout waiting for response")
-			}
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return "", fmt.Errorf("failed to read response: %w", err)
-		}
-	}
-
-	return strings.TrimRight(response.String(), "\n"), nil
 }
 
 // socketRoundTripV2 sends a JSON-RPC request and returns the result JSON.

@@ -36,14 +36,21 @@ if required not in text:
 PY
 }
 
-if [[ ! -d "$PROJECT_DIR/ghostty" ]]; then
+if [[ ! -f "$PROJECT_DIR/ghostty/build.zig.zon" ]]; then
   echo "error: ghostty submodule is missing. Run ./scripts/setup.sh first." >&2
   exit 1
 fi
 
+ZIG_REQUIRED="$($SCRIPT_DIR/required-zig-version.sh)"
 if ! command -v zig >/dev/null 2>&1; then
-  echo "Error: zig is not installed." >&2
-  echo "Install via: brew install zig" >&2
+  echo "Error: zig is not installed (required: $ZIG_REQUIRED)." >&2
+  echo "Download: https://ziglang.org/download/${ZIG_REQUIRED}/" >&2
+  exit 1
+fi
+ZIG_FOUND="$(zig version)"
+if [[ "$ZIG_FOUND" != "$ZIG_REQUIRED" ]]; then
+  echo "Error: exact Zig version required: $ZIG_REQUIRED; found: $ZIG_FOUND" >&2
+  echo "Download: https://ziglang.org/download/${ZIG_REQUIRED}/" >&2
   exit 1
 fi
 

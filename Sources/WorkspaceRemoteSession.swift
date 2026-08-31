@@ -126,6 +126,7 @@ final class WorkspaceRemoteSessionController {
     var reverseRelayStderrPipe: Pipe?
     var reverseRelayRestartWorkItem: DispatchWorkItem?
     var reverseRelayStderrBuffer = ""
+    var reverseRelayGeneration: UInt64 = 0
     var reconnectRetryCount = 0
     var reconnectWorkItem: DispatchWorkItem?
     var heartbeatCount: Int = 0

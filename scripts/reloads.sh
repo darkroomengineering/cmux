@@ -12,6 +12,7 @@ TAG=""
 LAST_SOCKET_PATH_DIR="$HOME/Library/Application Support/programa"
 LAST_SOCKET_PATH_FILE="${LAST_SOCKET_PATH_DIR}/last-socket-path"
 ENSURE_GHOSTTYKIT_COMMAND="${PROGRAMA_ENSURE_GHOSTTYKIT_COMMAND:-$PWD/scripts/ensure-ghosttykit.sh}"
+APP_LOCATOR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/locate-built-app.sh"
 
 write_last_socket_path() {
   local socket_path="$1"
@@ -147,39 +148,12 @@ SEARCH_APP_NAME="$APP_NAME"
 if [[ -n "$TAG" ]]; then
   SEARCH_APP_NAME="$BASE_APP_NAME"
 fi
-if [[ -n "$DERIVED_DATA" ]]; then
-  APP_PATH="${DERIVED_DATA}/Build/Products/Release/${SEARCH_APP_NAME}.app"
-  if [[ ! -d "${APP_PATH}" && "$SEARCH_APP_NAME" != "$FALLBACK_APP_NAME" ]]; then
-    APP_PATH="${DERIVED_DATA}/Build/Products/Release/${FALLBACK_APP_NAME}.app"
-  fi
-else
-  APP_BINARY="$(
-    find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Release/${SEARCH_APP_NAME}.app/Contents/MacOS/${SEARCH_APP_NAME}" -print0 \
-    | xargs -0 /usr/bin/stat -f "%m %N" 2>/dev/null \
-    | sort -nr \
-    | head -n 1 \
-    | cut -d' ' -f2-
-  )"
-  if [[ -n "${APP_BINARY}" ]]; then
-    APP_PATH="$(dirname "$(dirname "$(dirname "$APP_BINARY")")")"
-  fi
-  if [[ -z "${APP_PATH:-}" && "$SEARCH_APP_NAME" != "$FALLBACK_APP_NAME" ]]; then
-    APP_BINARY="$(
-      find "$HOME/Library/Developer/Xcode/DerivedData" -path "*/Build/Products/Release/${FALLBACK_APP_NAME}.app/Contents/MacOS/${FALLBACK_APP_NAME}" -print0 \
-      | xargs -0 /usr/bin/stat -f "%m %N" 2>/dev/null \
-      | sort -nr \
-      | head -n 1 \
-      | cut -d' ' -f2-
-    )"
-    if [[ -n "${APP_BINARY}" ]]; then
-      APP_PATH="$(dirname "$(dirname "$(dirname "$APP_BINARY")")")"
-    fi
-  fi
-fi
-if [[ -z "${APP_PATH:-}" || ! -d "${APP_PATH}" ]]; then
-  echo "${APP_NAME}.app not found in DerivedData" >&2
-  exit 1
-fi
+APP_SEARCH_ROOT="${DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData}"
+APP_PATH="$($APP_LOCATOR \
+  --configuration Release \
+  --primary "$SEARCH_APP_NAME" \
+  --fallback "$FALLBACK_APP_NAME" \
+  --derived-data-root "$APP_SEARCH_ROOT")"
 
 # Staging always copies the built app and patches the plist to set an isolated
 # socket path, bundle id, and display name. This prevents conflicts with the
