@@ -341,6 +341,19 @@ class CodexHookTrustTests(unittest.TestCase):
                     original_config,
                 )
 
+    def test_uninstall_from_empty_codex_home_is_a_non_creating_noop(self) -> None:
+        """Removing an absent integration must not materialize Codex configuration."""
+        hooks_path = self.codex_home / "hooks.json"
+        config_path = self.codex_home / "config.toml"
+        self.assertFalse(hooks_path.exists())
+        self.assertFalse(config_path.exists())
+
+        uninstall = self.run_cli("uninstall-hooks")
+
+        self.assert_succeeded(uninstall)
+        self.assertFalse(hooks_path.exists())
+        self.assertFalse(config_path.exists())
+
     def test_symlinked_config_updates_its_target_without_replacing_the_link(self) -> None:
         """Dotfile-managed Codex configuration must remain connected after lifecycle changes."""
         target = self.root / "managed-config.toml"
