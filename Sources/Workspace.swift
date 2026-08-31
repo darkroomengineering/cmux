@@ -992,7 +992,47 @@ final class Workspace: Identifiable, ObservableObject {
            !custom.isEmpty {
             return custom
         }
+        if let pullRequest = panelPullRequests[panelId] {
+            let panelBranch = normalizedSidebarBranchName(panelGitBranches[panelId]?.branch)
+            let pullRequestBranch = normalizedSidebarBranchName(pullRequest.branch)
+            if pullRequestBranch == nil || panelBranch == pullRequestBranch {
+                return String(
+                    localized: "tabBar.autoTitle.pullRequest",
+                    defaultValue: "PR #\(pullRequest.number)"
+                )
+            }
+        }
+        if let branch = normalizedSidebarBranchName(panelGitBranches[panelId]?.branch) {
+            return Self.ticketIdentifier(in: branch) ?? branch
+        }
         return fallbackTitle
+    }
+
+    private static let ticketIdentifierPattern = try? NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9])([A-Z][A-Z0-9]+-[0-9]+)(?![A-Za-z0-9])"#
+    )
+
+    private static func ticketIdentifier(in branch: String) -> String? {
+        guard let ticketIdentifierPattern,
+              let match = ticketIdentifierPattern.firstMatch(
+                  in: branch,
+                  range: NSRange(branch.startIndex..., in: branch)
+              ),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: branch) else {
+            return nil
+        }
+        return String(branch[range])
+    }
+
+    func syncResolvedPanelTitle(panelId: UUID) {
+        guard let panel = panels[panelId], let tabId = surfaceIdFromPanelId(panelId) else { return }
+        let baseTitle = panelTitles[panelId] ?? panel.displayTitle
+        bonsplitController.updateTab(
+            tabId,
+            title: resolvedPanelTitle(panelId: panelId, fallback: baseTitle),
+            hasCustomTitle: panelCustomTitles[panelId] != nil
+        )
     }
 
     func syncPinnedStateForTab(_ tabId: TabID, panelId: UUID) {
@@ -1097,13 +1137,7 @@ final class Workspace: Identifiable, ObservableObject {
             panelCustomTitles[panelId] = trimmed
         }
 
-        guard let panel = panels[panelId], let tabId = surfaceIdFromPanelId(panelId) else { return }
-        let baseTitle = panelTitles[panelId] ?? panel.displayTitle
-        bonsplitController.updateTab(
-            tabId,
-            title: resolvedPanelTitle(panelId: panelId, fallback: baseTitle),
-            hasCustomTitle: panelCustomTitles[panelId] != nil
-        )
+        syncResolvedPanelTitle(panelId: panelId)
     }
 
     func isPanelPinned(_ panelId: UUID) -> Bool {

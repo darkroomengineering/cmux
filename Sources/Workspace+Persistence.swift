@@ -285,7 +285,7 @@ extension Workspace {
     private func sessionPanelSnapshot(panelId: UUID, includeScrollback: Bool) -> SessionPanelSnapshot? {
         guard let panel = panels[panelId] else { return nil }
 
-        let panelTitle = panelTitle(panelId: panelId)
+        let panelTitle = panelTitles[panelId] ?? panel.displayTitle
         let customTitle = panelCustomTitles[panelId]
         let directory = panelDirectories[panelId]
         let isPinned = pinnedPanelIds.contains(panelId)

@@ -598,7 +598,7 @@ extension Workspace: @preconcurrency BonsplitDelegate {
             pendingDetachedSurfaces[tabId] = DetachedSurfaceTransfer(
                 panelId: panelId,
                 panel: panel,
-                title: resolvedPanelTitle(panelId: panelId, fallback: transferFallbackTitle),
+                title: panelCustomTitles[panelId] ?? transferFallbackTitle,
                 icon: panel.displayIcon,
                 iconImageData: browserPanel?.faviconPNGData,
                 kind: surfaceKind(for: panel),
