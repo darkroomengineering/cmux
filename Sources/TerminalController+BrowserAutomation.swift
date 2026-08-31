@@ -1500,6 +1500,13 @@ extension TerminalController {
         browserRPCState.permanentlyRemoveSurface(surfaceId)
     }
 
+    func v2BrowserAllocateElementRefs(
+        surfaceId: UUID,
+        selectors: [String]
+    ) -> V2BrowserElementRefAllocation {
+        browserRPCState.allocateElementRefs(surfaceId: surfaceId, selectors: selectors)
+    }
+
     func v2BrowserElementRefResourceExhaustedResult(
         surfaceId: UUID,
         capacity: V2BrowserElementRefCapacity
