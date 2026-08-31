@@ -96,6 +96,8 @@ jobs:
           # destination selection, which can choose a different runtime/device
           # as the hosted image changes. `-only-testing` also fails loudly if
           # the generated app scheme ever stops including ProgramaSpikeTests.
+          # Keep the simulator's normal ad-hoc signing enabled: the hosted app
+          # exercises CloudKit during launch and needs its declared entitlements.
           xcodebuild \
             -project ios/ProgramaSpike/ProgramaSpike.xcodeproj \
             -scheme ProgramaSpike \
@@ -104,9 +106,6 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/programa-ios-tests-derived-data" \
             -clonedSourcePackagesDirPath .ios-build/source-packages \
             -only-testing:ProgramaSpikeTests \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
             test
 
       - name: Test shared mobile framing

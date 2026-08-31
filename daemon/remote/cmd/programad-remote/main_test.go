@@ -104,7 +104,7 @@ func TestWrapperBinaryDispatchesIntoCLI(t *testing.T) {
 		return
 	}
 
-	sockPath := startMockSocket(t, "PONG")
+	sockPath := startMockV2Socket(t)
 	wrapperPath := filepath.Join(t.TempDir(), "programad-remote-current")
 	if err := os.Symlink(os.Args[0], wrapperPath); err != nil {
 		t.Fatalf("symlink wrapper path: %v", err)
@@ -122,8 +122,8 @@ func TestWrapperBinaryDispatchesIntoCLI(t *testing.T) {
 		t.Fatalf("wrapper invocation failed: %v\n%s", err, output)
 	}
 
-	if got := strings.TrimSpace(string(output)); got != "PONG" {
-		t.Fatalf("wrapper invocation output = %q, want %q", got, "PONG")
+	if got := string(output); !strings.Contains(got, `"method": "system.ping"`) {
+		t.Fatalf("wrapper invocation output = %q, want a v2 system.ping result", got)
 	}
 }
 

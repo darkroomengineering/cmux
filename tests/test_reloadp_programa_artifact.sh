@@ -14,6 +14,8 @@ APP_EXECUTABLE="$APP_PATH/Contents/MacOS/Programa"
 mkdir -p "$(dirname "$APP_EXECUTABLE")" "$STUB_BIN"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$APP_EXECUTABLE"
 chmod +x "$APP_EXECUTABLE"
+APP_PATH="$(cd "$APP_PATH" && pwd -P)"
+APP_EXECUTABLE="$APP_PATH/Contents/MacOS/Programa"
 : > "$COMMAND_LOG"
 
 write_logging_stub() {
