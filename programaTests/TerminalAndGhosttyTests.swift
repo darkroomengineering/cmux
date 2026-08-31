@@ -5255,7 +5255,7 @@ final class TerminalControllerV2BrowserDownloadEventTests: XCTestCase {
         XCTAssertEqual(limit, 256)
         let overflowCount = 3
         for index in 0 ..< (limit + overflowCount) {
-            controller.v2BrowserEnqueueDownloadEvent(
+            controller.browserRPCState.enqueueDownloadEvent(
                 surfaceId: surfaceId,
                 event: event(sequence: index)
             )
@@ -5264,7 +5264,7 @@ final class TerminalControllerV2BrowserDownloadEventTests: XCTestCase {
         var retainedSequences: [Int] = []
         var reportedDrops: [Int] = []
         for _ in 0 ..< limit {
-            guard let consumed = controller.v2BrowserConsumeDownloadEvent(surfaceId: surfaceId) else {
+            guard let consumed = controller.browserRPCState.consumeDownloadEvent(surfaceId: surfaceId) else {
                 return XCTFail("The bounded queue must retain exactly its newest \(limit) events")
             }
             retainedSequences.append(sequence(in: consumed.event))
@@ -5277,7 +5277,7 @@ final class TerminalControllerV2BrowserDownloadEventTests: XCTestCase {
             reportedDrops.dropFirst().allSatisfy { $0 == 0 },
             "Dropped-event metadata must be reported exactly once, not repeated for later downloads"
         )
-        XCTAssertNil(controller.v2BrowserConsumeDownloadEvent(surfaceId: surfaceId))
+        XCTAssertNil(controller.browserRPCState.consumeDownloadEvent(surfaceId: surfaceId))
     }
 
     func testOneNotificationSatisfiesExactlyOneEventModeWait() {
@@ -5344,7 +5344,7 @@ final class TerminalControllerV2BrowserDownloadEventTests: XCTestCase {
                 XCTFail("The live nested surface must report busy rather than cancellation")
             }
 
-            controller.v2BrowserEnqueueDownloadEvent(
+            controller.browserRPCState.enqueueDownloadEvent(
                 surfaceId: outerSurfaceId,
                 event: ["sequence": 77]
             )
@@ -5363,7 +5363,7 @@ final class TerminalControllerV2BrowserDownloadEventTests: XCTestCase {
         }
 
         XCTAssertNil(
-            controller.v2BrowserConsumeDownloadEvent(surfaceId: outerSurfaceId),
+            controller.browserRPCState.consumeDownloadEvent(surfaceId: outerSurfaceId),
             "The event delivered to the original waiter must not also remain queued"
         )
     }
@@ -5374,7 +5374,7 @@ final class TerminalControllerV2BrowserDownloadEventTests: XCTestCase {
         defer { controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId) }
 
         for index in 0 ... TerminalController.v2BrowserDownloadEventQueueLimit {
-            controller.v2BrowserEnqueueDownloadEvent(
+            controller.browserRPCState.enqueueDownloadEvent(
                 surfaceId: surfaceId,
                 event: event(sequence: index)
             )
@@ -5382,15 +5382,15 @@ final class TerminalControllerV2BrowserDownloadEventTests: XCTestCase {
 
         controller.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId)
         XCTAssertNil(
-            controller.v2BrowserConsumeDownloadEvent(surfaceId: surfaceId),
+            controller.browserRPCState.consumeDownloadEvent(surfaceId: surfaceId),
             "Closing a surface must make every queued download unreachable"
         )
 
-        controller.v2BrowserEnqueueDownloadEvent(
+        controller.browserRPCState.enqueueDownloadEvent(
             surfaceId: surfaceId,
             event: event(sequence: 999)
         )
-        guard let fresh = controller.v2BrowserConsumeDownloadEvent(surfaceId: surfaceId) else {
+        guard let fresh = controller.browserRPCState.consumeDownloadEvent(surfaceId: surfaceId) else {
             return XCTFail("A reused surface identifier must accept new download events after cleanup")
         }
         XCTAssertEqual(sequence(in: fresh.event), 999)
@@ -5705,7 +5705,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
 
         TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: surfaceId)
 
-        XCTAssertEqual(TerminalController.shared.v2BrowserNavigationGeneration(forSurface: surfaceId), 0)
+        XCTAssertEqual(TerminalController.shared.browserRPCState.navigationGeneration(for: surfaceId), 0)
         for removedRef in [generationNRefs[0], currentRef] {
             switch TerminalController.shared.v2BrowserSelectorResolutionError(removedRef, surfaceId: surfaceId) {
             case .err(let code, _, _):
