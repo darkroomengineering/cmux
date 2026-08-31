@@ -5437,7 +5437,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) -> [String] {
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(
             surfaceId: surfaceId,
             selectors: selectors
         ) {
@@ -5568,7 +5568,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
         let duplicate = allocateElementRef(surfaceId: surfaceId, selector: selectors[0])
         XCTAssertEqual(duplicate, refs[0], "A duplicate must not consume another quota slot")
 
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(
             surfaceId: surfaceId,
             selectors: ["#quota-overflow"]
         ) {
@@ -5614,7 +5614,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
         let generationNPlusOneOrdinal = try XCTUnwrap(elementRefOrdinal(generationNPlusOneRef))
         let unwrappedGenerationNLastOrdinal = try XCTUnwrap(generationNLastOrdinal)
         XCTAssertGreaterThan(generationNPlusOneOrdinal, unwrappedGenerationNLastOrdinal)
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(
             surfaceId: surfaceId,
             selectors: ["#generation-n-plus-one-overflow"]
         ) {
@@ -5654,7 +5654,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
         let existingSelectors = (0 ..< (limit - 1)).map { "#atomic-existing-\($0)" }
         let existingRefs = allocateElementRefs(surfaceId: surfaceId, selectors: existingSelectors)
 
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(
             surfaceId: surfaceId,
             selectors: ["#atomic-new-a", "#atomic-new-b"]
         ) {
@@ -5678,7 +5678,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
             "The failed batch must not have allocated either unseen selector"
         )
 
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(
             surfaceId: surfaceId,
             selectors: ["#atomic-new-b"]
         ) {
@@ -5722,7 +5722,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
             TerminalController.shared.v2BrowserResolveSelector(replacementRefs[0], surfaceId: surfaceId),
             currentSelectors[0]
         )
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(
             surfaceId: surfaceId,
             selectors: ["#cleanup-overflow"]
         ) {
@@ -5770,7 +5770,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
         XCTAssertEqual(byteLimit, 4_194_304)
 
         let oversized = selector(byteCount: selectorByteLimit + 1, suffix: "oversized")
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: surfaceId, selectors: [oversized]) {
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(surfaceId: surfaceId, selectors: [oversized]) {
         case .allocated:
             XCTFail("One selector must not exceed the per-selector UTF-8 byte limit")
         case .resourceExhausted(let capacity):
@@ -5783,7 +5783,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
         let existingRefs = allocateElementRefs(surfaceId: surfaceId, selectors: existingSelectors)
         let unseenA = selector(byteCount: 8_193, suffix: "unseen-a")
         let unseenB = selector(byteCount: 8_193, suffix: "unseen-b")
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(
             surfaceId: surfaceId,
             selectors: [existingSelectors[0], unseenA, unseenB, existingSelectors[0]]
         ) {
@@ -5834,7 +5834,7 @@ final class TerminalControllerV2RefInvariantTests: XCTestCase {
         )
         XCTAssertEqual(TerminalController.shared.v2BrowserResolveSelector(committedA, surfaceId: surfaceId), unseenA)
         XCTAssertEqual(allocateElementRef(surfaceId: surfaceId, selector: unseenA), committedA, "An exact duplicate consumes no additional bytes")
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: surfaceId, selectors: [unseenB]) {
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(surfaceId: surfaceId, selectors: [unseenB]) {
         case .allocated:
             XCTFail("The failed aggregate batch must not pre-allocate its second unseen selector")
         case .resourceExhausted(let capacity):

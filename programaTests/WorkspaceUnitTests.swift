@@ -3847,7 +3847,7 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         )
         transferredSurfaceId = browserPanel.id
         let ref: String
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(
             surfaceId: browserPanel.id,
             selectors: ["#survives-workspace-transfer"]
         ) {
@@ -3903,7 +3903,7 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         let sourceRollbackPane = try XCTUnwrap(source.bonsplitController.allPaneIds.first)
         let transfer = try XCTUnwrap(source.detachSurface(panelId: browserPanel.id))
         let ref: String
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: browserPanel.id, selectors: ["#rollback-ref"]) {
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(surfaceId: browserPanel.id, selectors: ["#rollback-ref"]) {
         case .allocated(let refs): ref = try XCTUnwrap(refs.first)
         case .resourceExhausted: return XCTFail("Expected a fresh browser ref")
         }
@@ -3943,7 +3943,7 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         let browserPanel = try XCTUnwrap(source.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, focus: false))
         let transfer = try XCTUnwrap(source.detachSurface(panelId: browserPanel.id))
         let ref: String
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: browserPanel.id, selectors: ["#finalized-ref"]) {
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(surfaceId: browserPanel.id, selectors: ["#finalized-ref"]) {
         case .allocated(let refs): ref = try XCTUnwrap(refs.first)
         case .resourceExhausted: return XCTFail("Expected a fresh browser ref")
         }
@@ -3979,7 +3979,7 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         let transfer = try XCTUnwrap(source.detachSurface(panelId: browserPanel.id))
         let destinationPane = try XCTUnwrap(destination.bonsplitController.allPaneIds.first)
         let ref: String
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(surfaceId: browserPanel.id, selectors: ["#attached-ref"]) {
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(surfaceId: browserPanel.id, selectors: ["#attached-ref"]) {
         case .allocated(let refs): ref = try XCTUnwrap(refs.first)
         case .resourceExhausted: return XCTFail("Expected a fresh browser ref")
         }

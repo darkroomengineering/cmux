@@ -1355,7 +1355,7 @@ final class BrowserSnapshotJavaScriptPolicyTests: XCTestCase {
             """
         )
         let elementRef: String
-        switch TerminalController.shared.v2BrowserAllocateElementRefs(
+        switch TerminalController.shared.browserRPCState.allocateElementRefs(
             surfaceId: panel.id,
             selectors: ["#trusted-action"]
         ) {

@@ -2651,7 +2651,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         for (index, workspace) in workspaces.enumerated() {
             let surfaceId = try XCTUnwrap(workspace.panels.keys.first)
             surfaceIds.append(surfaceId)
-            switch TerminalController.shared.v2BrowserAllocateElementRefs(
+            switch TerminalController.shared.browserRPCState.allocateElementRefs(
                 surfaceId: surfaceId,
                 selectors: ["#window-owned-workspace-\(index)"]
             ) {
