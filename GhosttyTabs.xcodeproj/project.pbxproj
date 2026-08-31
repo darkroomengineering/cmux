@@ -7,6 +7,7 @@
 	objects = {
 
 		/* Begin PBXBuildFile section */
+			TOML0003 /* TOML in Frameworks */ = {isa = PBXBuildFile; productRef = TOML0002 /* TOML */; };
 			A5001001 /* ProgramaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001011 /* ProgramaApp.swift */; };
 		NRPA00003 /* DebugWindows.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRPA00004 /* DebugWindows.swift */; };
 		NRPA00005 /* SettingsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRPA00006 /* SettingsModels.swift */; };
@@ -809,6 +810,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				TOML0003 /* TOML in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1375,6 +1377,9 @@
 			dependencies = (
 			);
 			name = "programa-cli";
+			packageProductDependencies = (
+				TOML0002 /* TOML */,
+			);
 			productName = programa;
 			productReference = B9000004A1B2C3D4E5F60719 /* programa */;
 			productType = "com.apple.product-type.tool";
@@ -1459,6 +1464,7 @@
 				A5001260 /* XCLocalSwiftPackageReference "bonsplit" */,
 				MOBB1001 /* XCRemoteSwiftPackageReference "iroh-ffi" */,
 				05A57C4D24BA3C92ED8757AB /* XCRemoteSwiftPackageReference "swift-sdk" */,
+				TOML0001 /* XCRemoteSwiftPackageReference "swift-toml" */,
 			);
 			productRefGroup = A5001042 /* Products */;
 			projectDirPath = "";
@@ -2259,6 +2265,14 @@
 				version = 0.12.1;
 			};
 		};
+		TOML0001 /* XCRemoteSwiftPackageReference "swift-toml" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mattt/swift-toml";
+			requirement = {
+				kind = exactVersion;
+				version = 2.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -2286,6 +2300,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 05A57C4D24BA3C92ED8757AB /* XCRemoteSwiftPackageReference "swift-sdk" */;
 			productName = MCP;
+		};
+		TOML0002 /* TOML */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = TOML0001 /* XCRemoteSwiftPackageReference "swift-toml" */;
+			productName = TOML;
 		};
 /* End XCSwiftPackageProductDependency section */
 

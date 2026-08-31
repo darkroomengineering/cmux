@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import Darwin
+import TOML
 #if canImport(LocalAuthentication)
 import LocalAuthentication
 #endif
@@ -1365,282 +1366,1283 @@ extension ProgramaCLI {
 
     // MARK: - Codex hooks
 
-    /// The hooks.json content that programa installs into ~/.codex/.
-    /// Each hook calls `programa codex-hook <event>` which gracefully no-ops
-    /// when not running inside programa. The command checks for programa on PATH
-    /// first so it silently succeeds even when programa is not installed
-    /// (e.g. user opened codex in a non-programa terminal).
+    private static let codexMaximumFileBytes = 16 * 1024 * 1024
+    private static let codexTrustBlockStart = "# >>> programa managed codex hook trust v1 >>>"
+    private static let codexTrustBlockEnd = "# <<< programa managed codex hook trust v1 <<<"
+    private static let codexLegacyTrustBlockStart = "# >>> programa codex hook trust >>>"
+    private static let codexLegacyTrustBlockEnd = "# <<< programa codex hook trust <<<"
+
+    private struct CodexHookSpec {
+        let event: String
+        let label: String
+        let commandEvent: String
+        let timeout: Int
+    }
+
+    private static let codexHookSpecs = [
+        CodexHookSpec(event: "SessionStart", label: "session_start", commandEvent: "session-start", timeout: 10),
+        CodexHookSpec(event: "UserPromptSubmit", label: "user_prompt_submit", commandEvent: "prompt-submit", timeout: 10),
+        CodexHookSpec(event: "Stop", label: "stop", commandEvent: "stop", timeout: 10),
+        CodexHookSpec(event: "PermissionRequest", label: "permission_request", commandEvent: "notification", timeout: 10),
+        CodexHookSpec(event: "SessionEnd", label: "session_end", commandEvent: "session-end", timeout: 1),
+    ]
+    private static let codexOwnedCommandEventByHookEvent: [String: String] = {
+        var result = Dictionary(uniqueKeysWithValues: codexHookSpecs.map { ($0.event, $0.commandEvent) })
+        result["Notification"] = "notification"
+        return result
+    }()
+
+    private struct CodexFileSnapshot: Equatable {
+        let data: Data
+        let mode: mode_t
+    }
+
+    private struct CodexPaths {
+        let home: String
+        let lockHome: String
+        let hooks: String
+        let configLink: String
+        let configTarget: String
+    }
+
+    private struct CodexTrustEdit {
+        let configPath: String
+        let configLinkPath: String
+        let hooksKeyPrefix: String
+        let desired: [String: String]
+        let removalKeys: Set<String>
+        let ownedHashes: Set<String>
+    }
+
+    private struct CodexPreparedConfig {
+        let edit: CodexTrustEdit
+        let snapshot: CodexFileSnapshot?
+        let rendered: Data
+    }
+
+    private struct CodexTOMLAssignment {
+        let path: [String]
+        let lineRange: Range<String.Index>
+        let valueRange: Range<String.Index>?
+        let hasInlineComment: Bool
+    }
+
+    private struct CodexTOMLSection {
+        let path: [String]
+        let headerRange: Range<String.Index>
+        let bodyRange: Range<String.Index>
+        let fullRange: Range<String.Index>
+        let hasInlineComment: Bool
+    }
+
+    private struct CodexTOMLSourceMap {
+        let assignments: [CodexTOMLAssignment]
+        let sections: [CodexTOMLSection]
+    }
+
+    private struct CodexSourceSplice {
+        let range: Range<String.Index>
+        let replacement: String
+    }
+
+    private enum CodexTOMLStringMode {
+        case none
+        case basic
+        case literal
+        case multilineBasic
+        case multilineLiteral
+    }
+
+    private struct CodexTOMLLine {
+        let range: Range<String.Index>
+        let contentRange: Range<String.Index>
+        let text: String
+        let startsInString: Bool
+    }
+
+    private indirect enum CodexTOMLValue: Decodable, Equatable {
+        case string(String)
+        case integer(Int64)
+        case float(Double)
+        case boolean(Bool)
+        case offsetDateTime(Date)
+        case localDateTime(LocalDateTime)
+        case localDate(LocalDate)
+        case localTime(LocalTime)
+        case array([CodexTOMLValue])
+        case table([String: CodexTOMLValue])
+        case null
+
+        private struct Key: CodingKey {
+            let stringValue: String
+            let intValue: Int? = nil
+            init?(stringValue: String) { self.stringValue = stringValue }
+            init?(intValue: Int) { return nil }
+        }
+
+        init(from decoder: Decoder) throws {
+            if let container = try? decoder.container(keyedBy: Key.self) {
+                var result: [String: CodexTOMLValue] = [:]
+                for key in container.allKeys {
+                    result[key.stringValue] = try container.decode(CodexTOMLValue.self, forKey: key)
+                }
+                self = .table(result)
+                return
+            }
+            if var container = try? decoder.unkeyedContainer() {
+                var result: [CodexTOMLValue] = []
+                while !container.isAtEnd {
+                    result.append(try container.decode(CodexTOMLValue.self))
+                }
+                self = .array(result)
+                return
+            }
+            let container = try decoder.singleValueContainer()
+            if container.decodeNil() { self = .null; return }
+            if let value = try? container.decode(Bool.self) { self = .boolean(value); return }
+            if let value = try? container.decode(Int64.self) { self = .integer(value); return }
+            if let value = try? container.decode(Double.self) { self = .float(value); return }
+            if let value = try? container.decode(String.self) { self = .string(value); return }
+            if let value = try? container.decode(Date.self) { self = .offsetDateTime(value); return }
+            if let value = try? container.decode(LocalDateTime.self) { self = .localDateTime(value); return }
+            if let value = try? container.decode(LocalDate.self) { self = .localDate(value); return }
+            if let value = try? container.decode(LocalTime.self) { self = .localTime(value); return }
+            throw DecodingError.typeMismatch(
+                CodexTOMLValue.self,
+                .init(codingPath: decoder.codingPath, debugDescription: "Unsupported TOML value")
+            )
+        }
+
+        var tableValue: [String: CodexTOMLValue]? {
+            guard case .table(let value) = self else { return nil }
+            return value
+        }
+
+        var stringValue: String? {
+            guard case .string(let value) = self else { return nil }
+            return value
+        }
+    }
+
+    private struct CodexHooksError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Each installed hook gracefully no-ops outside a programa surface.
     private static func codexHookCommand(_ event: String) -> String {
         "[ -n \"$PROGRAMA_SURFACE_ID\" ] && command -v programa >/dev/null 2>&1 && programa codex-hook \(event) || echo '{}'"
     }
 
-    private static let codexHooksJSON: [String: Any] = [
-        "hooks": [
-            "SessionStart": [[
-                "hooks": [[
-                    "type": "command",
-                    "command": codexHookCommand("session-start"),
-                    "timeout": 10
-                ] as [String: Any]]
-            ] as [String: Any]],
-            "UserPromptSubmit": [[
-                "hooks": [[
-                    "type": "command",
-                    "command": codexHookCommand("prompt-submit"),
-                    "timeout": 10
-                ] as [String: Any]]
-            ] as [String: Any]],
-            "Stop": [[
-                "hooks": [[
-                    "type": "command",
-                    "command": codexHookCommand("stop"),
-                    "timeout": 10
-                ] as [String: Any]]
-            ] as [String: Any]],
-            "Notification": [[
-                "hooks": [[
-                    "type": "command",
-                    "command": codexHookCommand("notification"),
-                    "timeout": 10
-                ] as [String: Any]]
-            ] as [String: Any]],
-            "SessionEnd": [[
-                "hooks": [[
-                    "type": "command",
-                    "command": codexHookCommand("session-end"),
-                    "timeout": 1
-                ] as [String: Any]]
-            ] as [String: Any]]
-        ] as [String: Any]
-    ]
-
-    /// Identifier used to detect programa-owned hooks during uninstall.
-    private static let codexHookCommandMarker = "programa codex-hook"
-
     func runCodexInstallHooks() throws {
-        let skipConfirm = ProcessInfo.processInfo.arguments.contains("--yes")
-            || ProcessInfo.processInfo.arguments.contains("-y")
-        let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"]
-            ?? NSString(string: "~/.codex").expandingTildeInPath
-        let hooksPath = (codexHome as NSString).appendingPathComponent("hooks.json")
-        let configPath = (codexHome as NSString).appendingPathComponent("config.toml")
-        let fm = FileManager.default
-
-        // Ensure ~/.codex/ exists
-        try fm.createDirectory(atPath: codexHome, withIntermediateDirectories: true, attributes: nil)
-
-        // Read existing state
-        let existingHooksContent: String? = fm.fileExists(atPath: hooksPath)
-            ? (try? String(contentsOfFile: hooksPath, encoding: .utf8))
-            : nil
-
-        // Build merged hooks
-        var existing: [String: Any] = [:]
-        if let existingHooksContent,
-           let data = existingHooksContent.data(using: .utf8),
-           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            existing = parsed
-        }
-
-        var hooks = existing["hooks"] as? [String: Any] ?? [:]
-        let programaHooks = Self.codexHooksJSON["hooks"] as! [String: Any]
-        for (eventName, programaGroups) in programaHooks {
-            guard let programaGroupArray = programaGroups as? [[String: Any]] else { continue }
-            var eventGroups = hooks[eventName] as? [[String: Any]] ?? []
-            eventGroups.removeAll { group in
-                guard let groupHooks = group["hooks"] as? [[String: Any]] else { return false }
-                return groupHooks.allSatisfy { hook in
-                    (hook["command"] as? String)?.contains(Self.codexHookCommandMarker) == true
-                }
-            }
-            eventGroups.append(contentsOf: programaGroupArray)
-            hooks[eventName] = eventGroups
-        }
-        existing["hooks"] = hooks
-        let newJsonData = try JSONSerialization.data(withJSONObject: existing, options: [.prettyPrinted, .sortedKeys])
-        let newHooksContent = String(data: newJsonData, encoding: .utf8) ?? ""
-
-        // Build new config.toml content
-        let existingConfigContent: String = fm.fileExists(atPath: configPath)
-            ? ((try? String(contentsOfFile: configPath, encoding: .utf8)) ?? "")
-            : ""
-        let newConfigContent = buildConfigWithCodexHooks(existingConfigContent)
-
-        // Check if anything would change
-        let hooksChanged = existingHooksContent != newHooksContent
-        let configChanged = existingConfigContent != newConfigContent
-
-        // Also install the `programa` agent skill into $HOME/.agents/skills —
-        // the user-level location Codex (and OpenCode) scan for skills — so a
-        // fresh Codex session inside programa knows it can drive the app.
-        // This is $HOME-relative, not $CODEX_HOME-relative: it's the shared
-        // cross-tool ".agents/skills" convention, not a Codex-specific path.
-        // Refs #165.
-        let skillPath = Self.agentSkillFilePath(
-            skillsRoot: NSString(string: "~/.agents/skills").expandingTildeInPath
-        )
-        let skillState = agentSkillInstallState(path: skillPath)
-
-        if !hooksChanged && !configChanged && !skillState.changed {
-            print("programa hooks are already installed. Nothing to change.")
-            return
-        }
-
-        // Show diff and ask for confirmation
-        if hooksChanged {
-            print("  \(hooksPath):")
-            if let existingHooksContent {
-                printSimpleDiff(old: existingHooksContent, new: newHooksContent)
-            } else {
-                print("    (new file)")
-                let lines = newHooksContent.components(separatedBy: "\n")
-                for (i, line) in lines.enumerated() {
-                    let lineLabel = String(format: "%3d", i + 1)
-                    print("    \u{001B}[32m\(lineLabel) +\(line)\u{001B}[0m")
-                }
-            }
-            print("")
-        }
-
-        if configChanged {
-            print("  \(configPath):")
-            if existingConfigContent.isEmpty {
-                print("    (new file)")
-                let lines = newConfigContent.components(separatedBy: "\n")
-                for (i, line) in lines.enumerated() where !line.isEmpty {
-                    let lineLabel = String(format: "%3d", i + 1)
-                    print("    \u{001B}[32m\(lineLabel) +\(line)\u{001B}[0m")
-                }
-            } else {
-                printSimpleDiff(old: existingConfigContent, new: newConfigContent)
-            }
-            print("")
-        }
-
-        if skillState.changed {
-            printAgentSkillDiff(path: skillPath, existing: skillState.existing)
-        }
-
-        if !skipConfirm {
-            print("Apply these changes? [Y/n] ", terminator: "")
-            if let response = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-               !response.isEmpty && response != "y" && response != "yes" {
-                print("Aborted.")
-                return
-            }
-        }
-
-        // Apply changes
-        if hooksChanged {
-            try newJsonData.write(to: URL(fileURLWithPath: hooksPath), options: .atomic)
-        }
-        if configChanged {
-            try newConfigContent.write(toFile: configPath, atomically: true, encoding: .utf8)
-        }
-        if skillState.changed {
-            try writeAgentSkillFile(path: skillPath)
-        }
-
-        print("")
-        print("Installed. Hooks activate inside programa and silently no-op elsewhere.")
-        print("To remove: programa codex uninstall-hooks")
+        try runCodexHooksMutation(install: true)
     }
 
     func runCodexUninstallHooks() throws {
-        let skipConfirm = ProcessInfo.processInfo.arguments.contains("--yes")
-            || ProcessInfo.processInfo.arguments.contains("-y")
-        let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"]
-            ?? NSString(string: "~/.codex").expandingTildeInPath
-        let hooksPath = (codexHome as NSString).appendingPathComponent("hooks.json")
-        let configPath = (codexHome as NSString).appendingPathComponent("config.toml")
-        let fm = FileManager.default
+        try runCodexHooksMutation(install: false)
+    }
 
-        // Hooks removal, computed as an optional so a missing/malformed
-        // hooks.json doesn't short-circuit the skill-file cleanup below.
-        var hooksRemoval: (newJsonData: Data, newHooksContent: String, oldHooksContent: String)?
-        if fm.fileExists(atPath: hooksPath),
-           let data = try? Data(contentsOf: URL(fileURLWithPath: hooksPath)),
-           var parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           var hooks = parsed["hooks"] as? [String: Any] {
-            var removedCount = 0
-            for eventName in hooks.keys {
-                guard var eventGroups = hooks[eventName] as? [[String: Any]] else { continue }
-                let before = eventGroups.count
-                eventGroups.removeAll { group in
-                    guard let groupHooks = group["hooks"] as? [[String: Any]] else { return false }
-                    return groupHooks.allSatisfy { hook in
-                        (hook["command"] as? String)?.contains(Self.codexHookCommandMarker) == true
-                    }
-                }
-                removedCount += before - eventGroups.count
-                if eventGroups.isEmpty {
-                    hooks.removeValue(forKey: eventName)
-                } else {
-                    hooks[eventName] = eventGroups
-                }
+    private func runCodexHooksMutation(install: Bool) throws {
+        let paths = try codexPaths()
+        try withCodexHooksLock(at: paths.lockHome) {
+            let hooksSnapshot = try codexReadRegularFile(paths.hooks, limit: Self.codexMaximumFileBytes, refuseSymlink: true)
+            let previousRoot = try codexHooksRoot(from: hooksSnapshot?.data, path: paths.hooks)
+            let nextRoot = try codexRewriteHooks(previousRoot, install: install)
+            let nextHooksData: Data? = install || hooksSnapshot != nil ? try codexEncodeHooks(nextRoot) : nil
+            let hooksChanged: Bool
+            if install {
+                hooksChanged = hooksSnapshot?.data != nextHooksData
+            } else if hooksSnapshot != nil {
+                hooksChanged = try codexEncodeHooks(previousRoot) != nextHooksData
+            } else {
+                hooksChanged = false
             }
-            if removedCount > 0 {
-                parsed["hooks"] = hooks
-                let newJsonData = try JSONSerialization.data(withJSONObject: parsed, options: [.prettyPrinted, .sortedKeys])
-                let newHooksContent = String(data: newJsonData, encoding: .utf8) ?? ""
-                let oldHooksContent = String(data: data, encoding: .utf8) ?? ""
-                hooksRemoval = (newJsonData, newHooksContent, oldHooksContent)
-            }
-        }
 
-        // Build config.toml without codex_hooks
-        let existingConfigContent: String = fm.fileExists(atPath: configPath)
-            ? ((try? String(contentsOfFile: configPath, encoding: .utf8)) ?? "")
-            : ""
-        let newConfigContent = buildConfigWithoutCodexHooks(existingConfigContent)
-        let configChanged = existingConfigContent != newConfigContent
+            let hooksKeyPath = paths.hooks
+            let desired = install ? try codexExpectedTrustEntries(hooksPath: hooksKeyPath, root: nextRoot) : [:]
+            let edit = CodexTrustEdit(
+                configPath: paths.configTarget,
+                configLinkPath: paths.configLink,
+                hooksKeyPrefix: hooksKeyPath + ":",
+                desired: desired,
+                removalKeys: codexOwnedEntryKeys(hooksPath: hooksKeyPath, root: previousRoot),
+                ownedHashes: try codexOwnedTrustHashes()
+            )
+            let preparedConfig = try codexPrepareConfig(edit)
+            let existingConfig = preparedConfig.snapshot.flatMap { String(data: $0.data, encoding: .utf8) } ?? ""
+            let renderedConfig = String(data: preparedConfig.rendered, encoding: .utf8) ?? ""
+            let configChanged = (preparedConfig.snapshot?.data ?? Data()) != preparedConfig.rendered
 
-        let skillPath = Self.agentSkillFilePath(
-            skillsRoot: NSString(string: "~/.agents/skills").expandingTildeInPath
-        )
-        let skillContent = agentSkillUninstallState(path: skillPath)
+            let skillPath = Self.agentSkillFilePath(
+                skillsRoot: NSString(string: "~/.agents/skills").expandingTildeInPath
+            )
+            let skillInstall = install ? agentSkillInstallState(path: skillPath) : nil
+            let skillUninstall = install ? nil : agentSkillUninstallState(path: skillPath)
+            let skillChanged = skillInstall?.changed == true || skillUninstall != nil
 
-        if hooksRemoval == nil && !configChanged && skillContent == nil {
-            print("No programa hooks found.")
-            return
-        }
-
-        // Show diff and ask for confirmation
-        if let hooksRemoval {
-            print("  \(hooksPath):")
-            printSimpleDiff(old: hooksRemoval.oldHooksContent, new: hooksRemoval.newHooksContent)
-            print("")
-        }
-
-        if configChanged {
-            print("  \(configPath):")
-            printSimpleDiff(old: existingConfigContent, new: newConfigContent)
-            print("")
-        }
-
-        if let skillContent {
-            printAgentSkillRemovalDiff(path: skillPath, content: skillContent)
-        }
-
-        if !skipConfirm {
-            print("Apply these changes? [Y/n] ", terminator: "")
-            if let response = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-               !response.isEmpty && response != "y" && response != "yes" {
-                print("Aborted.")
+            if !hooksChanged && !configChanged && !skillChanged {
+                print(install ? "programa hooks are already installed. Nothing to change." : "No programa hooks found.")
                 return
             }
+
+            if hooksChanged {
+                print("  \(paths.hooks):")
+                if let old = hooksSnapshot.flatMap({ String(data: $0.data, encoding: .utf8) }), let nextHooksData {
+                    printSimpleDiff(old: old, new: String(data: nextHooksData, encoding: .utf8) ?? "")
+                } else {
+                    print("    (new file)")
+                }
+                print("")
+            }
+            if configChanged {
+                print("  \(paths.configLink):")
+                if existingConfig.isEmpty { print("    (new file)") }
+                printSimpleDiff(old: existingConfig, new: renderedConfig)
+                print("")
+            }
+            if let skillInstall, skillInstall.changed {
+                printAgentSkillDiff(path: skillPath, existing: skillInstall.existing)
+            } else if let skillUninstall {
+                printAgentSkillRemovalDiff(path: skillPath, content: skillUninstall)
+            }
+
+            let skipConfirm = ProcessInfo.processInfo.arguments.contains("--yes")
+                || ProcessInfo.processInfo.arguments.contains("-y")
+            if !skipConfirm {
+                print("Apply these changes? [Y/n] ", terminator: "")
+                if let response = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                   !response.isEmpty && response != "y" && response != "yes" {
+                    print("Aborted.")
+                    return
+                }
+            }
+
+            let freshHooks = try codexReadRegularFile(paths.hooks, limit: Self.codexMaximumFileBytes, refuseSymlink: true)
+            guard freshHooks == hooksSnapshot else {
+                throw CodexHooksError(message: "\(paths.hooks) changed while awaiting confirmation; retry the command")
+            }
+            if hooksChanged {
+                if let nextHooksData {
+                    try codexAtomicWrite(nextHooksData, to: paths.hooks, mode: hooksSnapshot?.mode ?? 0o600)
+                } else {
+                    try codexRestoreFile(nil, at: paths.hooks)
+                }
+            }
+            do {
+                try codexCommitConfig(preparedConfig)
+            } catch {
+                guard hooksChanged else { throw error }
+                do {
+                    try codexRestoreFile(hooksSnapshot, at: paths.hooks)
+                } catch let rollbackError {
+                    throw CodexHooksError(message: "Codex config update failed: \(error.localizedDescription); restoring hooks.json also failed: \(rollbackError.localizedDescription)")
+                }
+                throw error
+            }
+
+            // The shared skill is deliberately last: hooks.json and trust state
+            // must commit together before any adjacent integration is changed.
+            if install, skillInstall?.changed == true {
+                try writeAgentSkillFile(path: skillPath)
+            } else if !install, skillUninstall != nil {
+                try removeAgentSkillFileIfManaged(path: skillPath)
+            }
+
+            print("")
+            if install {
+                print("Installed. Codex trusts programa hooks inside programa; they silently no-op elsewhere.")
+                print("To remove: programa codex uninstall-hooks")
+            } else {
+                print("Removed programa Codex hooks and their trust entries.")
+            }
+        }
+    }
+
+    private func codexPaths() throws -> CodexPaths {
+        let environment = ProcessInfo.processInfo.environment
+        let override = environment["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicit = override?.isEmpty == false
+        let rawHome = explicit ? override! : NSString(string: "~/.codex").expandingTildeInPath
+        let expanded = NSString(string: rawHome).expandingTildeInPath
+        let absolute = expanded.hasPrefix("/")
+            ? URL(fileURLWithPath: expanded).standardizedFileURL.path
+            : URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(expanded).standardizedFileURL.path
+        try FileManager.default.createDirectory(atPath: absolute, withIntermediateDirectories: true, attributes: nil)
+        let canonicalHome = URL(fileURLWithPath: absolute).resolvingSymlinksInPath().path
+        let home = explicit ? canonicalHome : absolute
+        let hooks = (home as NSString).appendingPathComponent("hooks.json")
+        let configLink = (home as NSString).appendingPathComponent("config.toml")
+        let configTarget = try codexResolveConfigTarget(configLink)
+        return CodexPaths(home: home, lockHome: canonicalHome, hooks: hooks, configLink: configLink, configTarget: configTarget)
+    }
+
+    private func codexResolveConfigTarget(_ path: String) throws -> String {
+        var info = stat()
+        let result = path.withCString { Darwin.lstat($0, &info) }
+        if result != 0 {
+            if errno == ENOENT { return path }
+            throw codexPOSIXError("inspect", path: path)
+        }
+        guard (info.st_mode & S_IFMT) == S_IFLNK else { return path }
+        guard let resolved = path.withCString({ realpath($0, nil) }) else {
+            throw CodexHooksError(message: "\(path) is a dangling symlink; refusing to replace it")
+        }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    private func withCodexHooksLock<T>(at home: String, _ body: () throws -> T) throws -> T {
+        let path = (home as NSString).appendingPathComponent(".programa-hooks.lock")
+        let descriptor = path.withCString { Darwin.open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600) }
+        guard descriptor >= 0 else { throw codexPOSIXError("open lock", path: path) }
+        defer { Darwin.close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw CodexHooksError(message: "\(path) is not a regular lock file")
+        }
+        guard flock(descriptor, LOCK_EX) == 0 else { throw codexPOSIXError("lock", path: path) }
+        defer { flock(descriptor, LOCK_UN) }
+        return try body()
+    }
+
+    private func codexReadRegularFile(_ path: String, limit: Int, refuseSymlink: Bool) throws -> CodexFileSnapshot? {
+        if refuseSymlink {
+            var linkInfo = stat()
+            let result = path.withCString { Darwin.lstat($0, &linkInfo) }
+            if result == 0 {
+                if (linkInfo.st_mode & S_IFMT) == S_IFLNK {
+                    throw CodexHooksError(message: "refusing to read symlink \(path)")
+                }
+            } else if errno != ENOENT {
+                throw codexPOSIXError("inspect", path: path)
+            }
+        }
+        let descriptor = path.withCString { Darwin.open($0, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW) }
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return nil }
+            throw codexPOSIXError("open", path: path)
+        }
+        defer { Darwin.close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else { throw codexPOSIXError("inspect", path: path) }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw CodexHooksError(message: "\(path) is not a regular file; refusing to read it")
+        }
+        guard info.st_size >= 0, info.st_size <= Int64(limit) else {
+            throw CodexHooksError(message: "\(path) exceeds 16 MiB")
+        }
+        var data = Data()
+        data.reserveCapacity(Int(info.st_size))
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        while true {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw codexPOSIXError("read", path: path)
+            }
+            data.append(buffer, count: count)
+            guard data.count <= limit else { throw CodexHooksError(message: "\(path) exceeds 16 MiB") }
+        }
+        return CodexFileSnapshot(data: data, mode: info.st_mode & 0o777)
+    }
+
+    private func codexHooksRoot(from data: Data?, path: String) throws -> [String: Any] {
+        guard let data else { return [:] }
+        let value: Any
+        do { value = try JSONSerialization.jsonObject(with: data) }
+        catch { throw CodexHooksError(message: "\(path) is not valid JSON: \(error.localizedDescription)") }
+        guard let root = value as? [String: Any] else {
+            throw CodexHooksError(message: "\(path) must contain a JSON object")
+        }
+        return root
+    }
+
+    private func codexRewriteHooks(_ source: [String: Any], install: Bool) throws -> [String: Any] {
+        var root = source
+        let rawHooks = root["hooks"]
+        guard rawHooks == nil || rawHooks is [String: Any] else {
+            throw CodexHooksError(message: "hooks.json hooks must be an object")
+        }
+        if rawHooks == nil, !install { return root }
+        var hooks = rawHooks as? [String: Any] ?? [:]
+        for event in Array(hooks.keys) {
+            guard let rawGroups = hooks[event] as? [Any] else {
+                throw CodexHooksError(message: "hooks.json event \(event) must be an array")
+            }
+            var rewritten: [[String: Any]] = []
+            for (groupIndex, rawGroup) in rawGroups.enumerated() {
+                guard var group = rawGroup as? [String: Any] else {
+                    throw CodexHooksError(message: "hooks.json \(event) group \(groupIndex) must be an object")
+                }
+                guard let rawHandlers = group["hooks"] as? [Any] else {
+                    throw CodexHooksError(message: "hooks.json \(event) group \(groupIndex).hooks must be an array")
+                }
+                var handlers: [[String: Any]] = []
+                for (handlerIndex, rawHandler) in rawHandlers.enumerated() {
+                    guard let handler = rawHandler as? [String: Any] else {
+                        throw CodexHooksError(message: "hooks.json \(event) handler \(handlerIndex) must be an object")
+                    }
+                    if let command = handler["command"], !(command is String) {
+                        throw CodexHooksError(message: "hooks.json \(event) handler \(handlerIndex).command must be a string")
+                    }
+                    if !codexIsOwnedHandler(handler, event: event) { handlers.append(handler) }
+                }
+                if !handlers.isEmpty {
+                    group["hooks"] = handlers
+                    rewritten.append(group)
+                }
+            }
+            if rewritten.isEmpty { hooks.removeValue(forKey: event) }
+            else { hooks[event] = rewritten }
+        }
+        if install {
+            for spec in Self.codexHookSpecs {
+                var groups = hooks[spec.event] as? [[String: Any]] ?? []
+                groups.append(["hooks": [[
+                    "type": "command",
+                    "command": Self.codexHookCommand(spec.commandEvent),
+                    "timeout": spec.timeout,
+                ] as [String: Any]]])
+                hooks[spec.event] = groups
+            }
+        }
+        root["hooks"] = hooks
+        try codexValidateForeignHandlerPositions(before: source, after: root)
+        return root
+    }
+
+    private func codexValidateForeignHandlerPositions(
+        before: [String: Any],
+        after: [String: Any]
+    ) throws {
+        for spec in Self.codexHookSpecs {
+            let oldPositions = codexForeignHandlerPositions(root: before, event: spec.event)
+            let newPositions = codexForeignHandlerPositions(root: after, event: spec.event)
+            guard oldPositions.count == newPositions.count else {
+                throw CodexHooksError(message: "rewriting \(spec.event) would change the foreign handler set; refusing to reuse Codex trust positions")
+            }
+            for (index, pair) in zip(oldPositions, newPositions).enumerated() where pair.0 != pair.1 {
+                throw CodexHooksError(
+                    message: "rewriting \(spec.event) would move foreign handler \(index) from \(pair.0.0):\(pair.0.1) to \(pair.1.0):\(pair.1.1); refusing to reuse Codex trust positions"
+                )
+            }
+        }
+    }
+
+    private func codexForeignHandlerPositions(root: [String: Any], event: String) -> [(Int, Int)] {
+        guard let hooks = root["hooks"] as? [String: Any],
+              let groups = hooks[event] as? [[String: Any]] else { return [] }
+        var positions: [(Int, Int)] = []
+        for (groupIndex, group) in groups.enumerated() {
+            guard let handlers = group["hooks"] as? [[String: Any]] else { continue }
+            for (handlerIndex, handler) in handlers.enumerated() where !codexIsOwnedHandler(handler, event: event) {
+                positions.append((groupIndex, handlerIndex))
+            }
+        }
+        return positions
+    }
+
+    private func codexIsOwnedHandler(_ handler: [String: Any], event: String) -> Bool {
+        guard let commandEvent = Self.codexOwnedCommandEventByHookEvent[event],
+              let command = handler["command"] as? String else { return false }
+        return command == Self.codexHookCommand(commandEvent)
+            || command == "programa codex-hook \(commandEvent)"
+    }
+
+    private func codexEncodeHooks(_ root: [String: Any]) throws -> Data {
+        guard JSONSerialization.isValidJSONObject(root) else {
+            throw CodexHooksError(message: "merged hooks.json is not serializable")
+        }
+        var data = try JSONSerialization.data(
+            withJSONObject: root,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        )
+        data.append(0x0A)
+        return data
+    }
+
+    private func codexExpectedTrustEntries(hooksPath: String, root: [String: Any]) throws -> [String: String] {
+        var result: [String: String] = [:]
+        for spec in Self.codexHookSpecs {
+            let entry = try codexOwnedHookEntry(root: root, spec: spec)
+            let key = "\(hooksPath):\(spec.label):\(entry.groupIndex):\(entry.handlerIndex)"
+            result[key] = try codexTrustHash(label: spec.label, group: entry.group, handler: entry.handler)
+        }
+        return result
+    }
+
+    private func codexOwnedHookEntry(
+        root: [String: Any],
+        spec: CodexHookSpec
+    ) throws -> (groupIndex: Int, handlerIndex: Int, group: [String: Any], handler: [String: Any]) {
+        guard let hooks = root["hooks"] as? [String: Any],
+              let groups = hooks[spec.event] as? [[String: Any]] else {
+            throw CodexHooksError(message: "installed Codex hook for \(spec.event) is missing")
+        }
+        for (groupIndex, group) in groups.enumerated() {
+            guard let handlers = group["hooks"] as? [[String: Any]] else { continue }
+            for (handlerIndex, handler) in handlers.enumerated() where codexIsOwnedHandler(handler, event: spec.event) {
+                return (groupIndex, handlerIndex, group, handler)
+            }
+        }
+        throw CodexHooksError(message: "installed Codex hook for \(spec.event) is missing")
+    }
+
+    private func codexOwnedEntryKeys(hooksPath: String, root: [String: Any]) -> Set<String> {
+        guard let hooks = root["hooks"] as? [String: Any] else { return [] }
+        let labels = Dictionary(uniqueKeysWithValues: Self.codexHookSpecs.map { ($0.event, $0.label) })
+        var keys: Set<String> = []
+        for (event, rawGroups) in hooks {
+            guard let label = labels[event], let groups = rawGroups as? [[String: Any]] else { continue }
+            for (groupIndex, group) in groups.enumerated() {
+                guard let handlers = group["hooks"] as? [[String: Any]] else { continue }
+                for (handlerIndex, handler) in handlers.enumerated() where codexIsOwnedHandler(handler, event: event) {
+                    keys.insert("\(hooksPath):\(label):\(groupIndex):\(handlerIndex)")
+                }
+            }
+        }
+        return keys
+    }
+
+    private func codexOwnedTrustHashes() throws -> Set<String> {
+        var hashes: Set<String> = []
+        for spec in Self.codexHookSpecs {
+            let group: [String: Any] = [:]
+            let handler: [String: Any] = [
+                "type": "command",
+                "command": Self.codexHookCommand(spec.commandEvent),
+                "timeout": spec.timeout,
+            ]
+            hashes.insert(try codexTrustHash(label: spec.label, group: group, handler: handler))
+        }
+        return hashes
+    }
+
+    private func codexTrustHash(label: String, group: [String: Any], handler: [String: Any]) throws -> String {
+        guard (handler["type"] as? String) == "command",
+              let command = handler["command"] as? String else {
+            throw CodexHooksError(message: "Codex hook \(label) must be a command handler")
+        }
+        let asynchronous: Bool
+        if let value = handler["async"] {
+            guard let value = value as? Bool else { throw CodexHooksError(message: "Codex hook async must be a boolean") }
+            asynchronous = value
+        } else {
+            asynchronous = false
+        }
+        var normalized: [String: Any] = [
+            "async": asynchronous,
+            "command": command,
+            "timeout": try codexNormalizedTimeout(label: label, value: handler["timeout"]),
+            "type": "command",
+        ]
+        if let status = handler["statusMessage"] {
+            guard let status = status as? String else { throw CodexHooksError(message: "Codex hook statusMessage must be a string") }
+            normalized["statusMessage"] = status
+        }
+        if let rawLimit = handler["additionalContextLimit"] {
+            let limit = try codexInteger(rawLimit, field: "additionalContextLimit")
+            if ["pre_tool_use", "post_tool_use", "session_start", "user_prompt_submit", "subagent_start"].contains(label),
+               limit != 2_500 {
+                normalized["additionalContextLimit"] = limit
+            }
+        }
+        var identity: [String: Any] = ["event_name": label, "hooks": [normalized]]
+        if label != "user_prompt_submit", label != "stop", let matcher = group["matcher"] {
+            guard let matcher = matcher as? String else { throw CodexHooksError(message: "Codex hook matcher must be a string") }
+            identity["matcher"] = matcher
+        }
+        let data = try JSONSerialization.data(withJSONObject: identity, options: [.sortedKeys, .withoutEscapingSlashes])
+        return "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func codexNormalizedTimeout(label: String, value: Any?) throws -> Int {
+        let fallback = label == "session_end" ? 1 : 600
+        let timeout = value == nil ? fallback : try codexInteger(value!, field: "timeout")
+        return label == "session_end" ? min(max(timeout, 1), 3) : max(timeout, 1)
+    }
+
+    private func codexInteger(_ value: Any, field: String) throws -> Int {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else {
+            throw CodexHooksError(message: "Codex hook \(field) must be an integer")
+        }
+        let double = number.doubleValue
+        guard double.rounded() == double, double >= Double(Int.min), double <= Double(Int.max) else {
+            throw CodexHooksError(message: "Codex hook \(field) must be an integer")
+        }
+        return number.intValue
+    }
+
+    private func codexPrepareConfig(_ edit: CodexTrustEdit) throws -> CodexPreparedConfig {
+        let snapshot = try codexReadRegularFile(edit.configPath, limit: Self.codexMaximumFileBytes, refuseSymlink: true)
+        let original = try codexUTF8(snapshot?.data ?? Data(), path: edit.configPath)
+        let rendered = try codexRenderConfig(original, edit: edit)
+        try codexProbeWritableDirectory((edit.configPath as NSString).deletingLastPathComponent)
+        return CodexPreparedConfig(edit: edit, snapshot: snapshot, rendered: Data(rendered.utf8))
+    }
+
+    private func codexCommitConfig(_ prepared: CodexPreparedConfig) throws {
+        let resolvedTarget = try codexResolveConfigTarget(prepared.edit.configLinkPath)
+        guard resolvedTarget == prepared.edit.configPath else {
+            throw CodexHooksError(message: "\(prepared.edit.configLinkPath) changed targets during installation; retry the command")
+        }
+        let current = try codexReadRegularFile(prepared.edit.configPath, limit: Self.codexMaximumFileBytes, refuseSymlink: true)
+        let rendered: Data
+        if current == prepared.snapshot {
+            rendered = prepared.rendered
+        } else {
+            let fresh = try codexUTF8(current?.data ?? Data(), path: prepared.edit.configPath)
+            rendered = Data(try codexRenderConfig(fresh, edit: prepared.edit).utf8)
+        }
+        guard (current?.data ?? Data()) != rendered else { return }
+        try codexAtomicWrite(rendered, to: prepared.edit.configPath, mode: current?.mode ?? 0o600)
+    }
+
+    private func codexRenderConfig(_ source: String, edit: CodexTrustEdit) throws -> String {
+        let originalTree = try codexParseTOML(source, path: edit.configPath)
+        let newline = codexNewline(in: source)
+        var working = try codexRemovingManagedBlocks(source, edit: edit)
+        let baseTree = try codexParseTOML(working, path: edit.configPath)
+        try codexValidateTrustShape(baseTree, path: edit.configPath)
+        let map = try codexTOMLSourceMap(working)
+        var splices: [CodexSourceSplice] = []
+
+        if baseTree.tableValue?["features"]?.tableValue?["codex_hooks"] != nil {
+            let matches = map.assignments.filter { $0.path == ["features", "codex_hooks"] }
+            guard matches.count == 1, matches[0].valueRange != nil, !matches[0].hasInlineComment else {
+                throw CodexHooksError(message: "codex_hooks in \(edit.configPath) uses an inline or multiline form that cannot be edited safely")
+            }
+            splices.append(.init(range: matches[0].lineRange, replacement: ""))
         }
 
-        if let hooksRemoval {
-            try hooksRemoval.newJsonData.write(to: URL(fileURLWithPath: hooksPath), options: .atomic)
+        let state = baseTree.tableValue?["hooks"]?.tableValue?["state"]?.tableValue ?? [:]
+        let ownedFromHashes = Set(state.compactMap { key, value -> String? in
+            guard key.hasPrefix(edit.hooksKeyPrefix),
+                  let hash = value.tableValue?["trusted_hash"]?.stringValue,
+                  edit.ownedHashes.contains(hash) else { return nil }
+            return key
+        })
+        let removable = edit.removalKeys.union(ownedFromHashes).subtracting(edit.desired.keys)
+        let statePrefix = ["hooks", "state"]
+        for key in removable {
+            guard state[key] != nil else { continue }
+            let path = statePrefix + [key]
+            let sections = map.sections.filter { $0.path == path }
+            if sections.count == 1 {
+                try codexValidateRemovableTrustSection(sections[0], key: key, map: map, source: working)
+                splices.append(.init(range: sections[0].fullRange, replacement: ""))
+                continue
+            }
+            let assignments = map.assignments.filter { $0.path.starts(with: path) }
+            guard assignments.count == 1,
+                  assignments[0].path == path + ["trusted_hash"],
+                  assignments[0].valueRange != nil,
+                  !assignments[0].hasInlineComment else {
+                throw CodexHooksError(message: "trust entry \(key) in \(edit.configPath) is inline and cannot be removed safely")
+            }
+            splices.append(.init(range: assignments[0].lineRange, replacement: ""))
         }
-        if configChanged {
-            try newConfigContent.write(toFile: configPath, atomically: true, encoding: .utf8)
+
+        var appendDesired = edit.desired
+        for (key, hash) in edit.desired where state[key] != nil {
+            let path = statePrefix + [key]
+            let sections = map.sections.filter { $0.path == path }
+            if sections.count == 1 {
+                let hashAssignments = map.assignments.filter { $0.path == path + ["trusted_hash"] }
+                if hashAssignments.count == 1, let valueRange = hashAssignments[0].valueRange {
+                    splices.append(.init(range: valueRange, replacement: try codexTOMLQuoted(hash)))
+                } else if hashAssignments.isEmpty {
+                    splices.append(.init(
+                        range: sections[0].bodyRange.lowerBound..<sections[0].bodyRange.lowerBound,
+                        replacement: "trusted_hash = \(try codexTOMLQuoted(hash))\(newline)"
+                    ))
+                } else {
+                    throw CodexHooksError(message: "trusted_hash for \(key) in \(edit.configPath) cannot be edited safely")
+                }
+                appendDesired.removeValue(forKey: key)
+                continue
+            }
+            let dotted = map.assignments.filter { $0.path == path + ["trusted_hash"] }
+            guard dotted.count == 1, let valueRange = dotted[0].valueRange else {
+                throw CodexHooksError(message: "trust entry \(key) in \(edit.configPath) is inline and cannot be edited safely")
+            }
+            splices.append(.init(range: valueRange, replacement: try codexTOMLQuoted(hash)))
+            appendDesired.removeValue(forKey: key)
         }
-        if skillContent != nil {
-            try removeAgentSkillFileIfManaged(path: skillPath)
+
+        working = try codexApplySplices(splices, to: working)
+        if !appendDesired.isEmpty {
+            if let hooks = baseTree.tableValue?["hooks"], hooks.tableValue == nil {
+                throw CodexHooksError(message: "hooks in \(edit.configPath) is not a table")
+            }
+            if map.assignments.contains(where: { $0.path == ["hooks"] || $0.path == ["hooks", "state"] }) {
+                throw CodexHooksError(message: "inline hooks/state in \(edit.configPath) cannot be extended safely")
+            }
+            if !working.isEmpty && !working.hasSuffix("\n") { working += newline }
+            if !working.isEmpty && !working.hasSuffix(newline + newline) { working += newline }
+            working += Self.codexTrustBlockStart + newline
+            for (key, hash) in appendDesired.sorted(by: { $0.key < $1.key }) {
+                working += "[hooks.state.\(try codexTOMLQuoted(key))]\(newline)"
+                working += "trusted_hash = \(try codexTOMLQuoted(hash))\(newline)\(newline)"
+            }
+            working += Self.codexTrustBlockEnd + newline
         }
-        print("Removed programa Codex hooks.")
+
+        let renderedTree = try codexParseTOML(working, path: edit.configPath)
+        try codexVerifyRenderedConfig(original: originalTree, rendered: renderedTree, edit: edit)
+        return working
+    }
+
+    private func codexValidateTrustShape(_ root: CodexTOMLValue, path: String) throws {
+        guard let table = root.tableValue else { throw CodexHooksError(message: "\(path) must contain a TOML table") }
+        if let hooks = table["hooks"] {
+            guard let hooksTable = hooks.tableValue else {
+                throw CodexHooksError(message: "hooks in \(path) is not a table, so Codex cannot read trust state")
+            }
+            if let state = hooksTable["state"], state.tableValue == nil {
+                throw CodexHooksError(message: "hooks.state in \(path) is not a table")
+            }
+        }
+    }
+
+    private func codexVerifyRenderedConfig(
+        original: CodexTOMLValue,
+        rendered: CodexTOMLValue,
+        edit: CodexTrustEdit
+    ) throws {
+        guard var originalRoot = original.tableValue, var renderedRoot = rendered.tableValue else {
+            throw CodexHooksError(message: "Codex config must be a TOML table")
+        }
+        var originalFeatures = originalRoot["features"]?.tableValue ?? [:]
+        var renderedFeatures = renderedRoot["features"]?.tableValue ?? [:]
+        originalFeatures.removeValue(forKey: "codex_hooks")
+        renderedFeatures.removeValue(forKey: "codex_hooks")
+        guard originalFeatures == renderedFeatures else {
+            throw CodexHooksError(message: "Codex config feature verification failed; refusing to write")
+        }
+        originalRoot.removeValue(forKey: "features")
+        renderedRoot.removeValue(forKey: "features")
+
+        var originalHooks = originalRoot["hooks"]?.tableValue ?? [:]
+        var renderedHooks = renderedRoot["hooks"]?.tableValue ?? [:]
+        let originalState = originalHooks.removeValue(forKey: "state")?.tableValue ?? [:]
+        let renderedState = renderedHooks.removeValue(forKey: "state")?.tableValue ?? [:]
+        guard originalHooks == renderedHooks else {
+            throw CodexHooksError(message: "Codex config hooks verification failed; refusing to write")
+        }
+        originalRoot.removeValue(forKey: "hooks")
+        renderedRoot.removeValue(forKey: "hooks")
+        guard originalRoot == renderedRoot else {
+            throw CodexHooksError(message: "Codex config changed outside Programa-owned state; refusing to write")
+        }
+
+        let ignored = edit.removalKeys.union(edit.desired.keys)
+        let foreignOriginal = originalState.filter { key, value in
+            guard key.hasPrefix(edit.hooksKeyPrefix) else { return true }
+            if ignored.contains(key) { return false }
+            let hash = value.tableValue?["trusted_hash"]?.stringValue
+            return hash == nil || !edit.ownedHashes.contains(hash!)
+        }
+        let foreignRendered = renderedState.filter { key, _ in foreignOriginal[key] != nil }
+        guard foreignOriginal == foreignRendered else {
+            throw CodexHooksError(message: "foreign Codex trust state changed; refusing to write")
+        }
+        for (key, hash) in edit.desired {
+            guard renderedState[key]?.tableValue?["trusted_hash"]?.stringValue == hash else {
+                throw CodexHooksError(message: "Codex trust entry \(key) did not render correctly")
+            }
+        }
+        for key in edit.removalKeys where edit.desired[key] == nil {
+            guard renderedState[key] == nil else {
+                throw CodexHooksError(message: "stale Codex trust entry \(key) was not removed")
+            }
+        }
+    }
+
+    private func codexParseTOML(_ source: String, path: String) throws -> CodexTOMLValue {
+        let decoder = TOMLDecoder()
+        decoder.limits = .init(
+            maxInputSize: Self.codexMaximumFileBytes,
+            maxDepth: 128,
+            maxTableKeys: 100_000,
+            maxArrayLength: 100_000,
+            maxStringLength: Self.codexMaximumFileBytes
+        )
+        do { return .table(try decoder.decode([String: CodexTOMLValue].self, from: source)) }
+        catch { throw CodexHooksError(message: "\(path) is not valid TOML: \(error.localizedDescription)") }
+    }
+
+    private func codexRemovingManagedBlocks(_ source: String, edit: CodexTrustEdit) throws -> String {
+        let lines = codexTOMLLines(source)
+        let starts = lines.filter { line in
+            !line.startsInString && [Self.codexTrustBlockStart, Self.codexLegacyTrustBlockStart].contains(line.text)
+        }
+        let ends = lines.filter { line in
+            !line.startsInString && [Self.codexTrustBlockEnd, Self.codexLegacyTrustBlockEnd].contains(line.text)
+        }
+        guard starts.count <= 1, ends.count <= 1 else {
+            throw CodexHooksError(message: "Codex config contains duplicate Programa trust blocks")
+        }
+        guard starts.count == ends.count else {
+            throw CodexHooksError(message: "Codex config contains an unmatched Programa trust marker")
+        }
+        guard let start = starts.first, let end = ends.first else { return source }
+        let expectedEnd = start.text == Self.codexTrustBlockStart
+            ? Self.codexTrustBlockEnd
+            : Self.codexLegacyTrustBlockEnd
+        guard end.text == expectedEnd, start.range.lowerBound < end.range.lowerBound else {
+            throw CodexHooksError(message: "Codex config contains mismatched Programa trust markers")
+        }
+        let interior = String(source[start.range.upperBound..<end.range.lowerBound])
+        try codexValidateManagedTrustBlock(interior, edit: edit)
+        var result = source
+        result.removeSubrange(start.range.lowerBound..<end.range.upperBound)
+        return result
+    }
+
+    private func codexValidateManagedTrustBlock(_ source: String, edit: CodexTrustEdit) throws {
+        let tree = try codexParseTOML(source, path: edit.configPath)
+        let state = tree.tableValue?["hooks"]?.tableValue?["state"]?.tableValue ?? [:]
+        let map = try codexTOMLSourceMap(source)
+        guard !state.isEmpty, map.sections.count == state.count else {
+            throw CodexHooksError(message: "Programa trust block contains unrecognized content")
+        }
+        for line in codexTOMLLines(source) {
+            let recognized = map.sections.contains { $0.headerRange == line.range }
+                || map.assignments.contains { $0.lineRange == line.range }
+            guard recognized || line.text.trimmingCharacters(in: .whitespaces).isEmpty else {
+                throw CodexHooksError(message: "Programa trust block contains comments or unrecognized content")
+            }
+        }
+        for section in map.sections {
+            guard section.path.count == 3,
+                  section.path[0] == "hooks",
+                  section.path[1] == "state" else {
+                throw CodexHooksError(message: "Programa trust block contains an unrecognized table")
+            }
+            let key = section.path[2]
+            try codexValidateRemovableTrustSection(section, key: key, map: map, source: source)
+            guard key.hasPrefix(edit.hooksKeyPrefix),
+                  let hash = state[key]?.tableValue?["trusted_hash"]?.stringValue,
+                  edit.removalKeys.contains(key)
+                    || edit.desired[key] == hash
+                    || edit.ownedHashes.contains(hash) else {
+                throw CodexHooksError(message: "Programa trust block contains an unrecognized trust entry")
+            }
+        }
+    }
+
+    private func codexValidateRemovableTrustSection(
+        _ section: CodexTOMLSection,
+        key: String,
+        map: CodexTOMLSourceMap,
+        source: String
+    ) throws {
+        guard !section.hasInlineComment else {
+            throw CodexHooksError(message: "trust entry \(key) has a comment that Programa cannot remove safely")
+        }
+        let expectedPath = section.path + ["trusted_hash"]
+        let assignments = map.assignments.filter {
+            $0.lineRange.lowerBound >= section.bodyRange.lowerBound
+                && $0.lineRange.upperBound <= section.bodyRange.upperBound
+        }
+        guard assignments.count == 1,
+              assignments[0].path == expectedPath,
+              assignments[0].valueRange != nil,
+              !assignments[0].hasInlineComment else {
+            throw CodexHooksError(message: "trust entry \(key) contains fields or comments that Programa cannot remove safely")
+        }
+        for line in codexTOMLLines(source) {
+            guard line.range.lowerBound >= section.bodyRange.lowerBound,
+                  line.range.upperBound <= section.bodyRange.upperBound else { continue }
+            if line.range == assignments[0].lineRange { continue }
+            guard line.text.trimmingCharacters(in: .whitespaces).isEmpty else {
+                throw CodexHooksError(message: "trust entry \(key) contains unrecognized content that Programa cannot remove safely")
+            }
+        }
+    }
+
+    private func codexTOMLLines(_ source: String) -> [CodexTOMLLine] {
+        var result: [CodexTOMLLine] = []
+        var mode = CodexTOMLStringMode.none
+        var cursor = source.startIndex
+        while cursor < source.endIndex {
+            let newline = source[cursor...].firstIndex(of: "\n")
+            let contentEndWithCR = newline ?? source.endIndex
+            let lineEnd = newline.map { source.index(after: $0) } ?? source.endIndex
+            let contentEnd: String.Index
+            if contentEndWithCR > cursor,
+               source[source.index(before: contentEndWithCR)] == "\r" {
+                contentEnd = source.index(before: contentEndWithCR)
+            } else {
+                contentEnd = contentEndWithCR
+            }
+            let startsInString = mode != .none
+            let text = String(source[cursor..<contentEnd])
+            result.append(.init(
+                range: cursor..<lineEnd,
+                contentRange: cursor..<contentEnd,
+                text: text,
+                startsInString: startsInString
+            ))
+            mode = codexAdvanceStringMode(in: text, from: mode)
+            cursor = lineEnd
+        }
+        return result
+    }
+
+    private func codexAdvanceStringMode(
+        in line: String,
+        from initial: CodexTOMLStringMode
+    ) -> CodexTOMLStringMode {
+        var mode = initial
+        var cursor = line.startIndex
+        while cursor < line.endIndex {
+            let suffix = line[cursor...]
+            switch mode {
+            case .none:
+                if line[cursor] == "#" { return .none }
+                if suffix.hasPrefix("\"\"\"") {
+                    mode = .multilineBasic
+                    cursor = line.index(cursor, offsetBy: 3)
+                } else if suffix.hasPrefix("'''") {
+                    mode = .multilineLiteral
+                    cursor = line.index(cursor, offsetBy: 3)
+                } else if line[cursor] == "\"" {
+                    mode = .basic
+                    cursor = line.index(after: cursor)
+                } else if line[cursor] == "'" {
+                    mode = .literal
+                    cursor = line.index(after: cursor)
+                } else {
+                    cursor = line.index(after: cursor)
+                }
+            case .basic:
+                if line[cursor] == "\\" {
+                    cursor = line.index(after: cursor)
+                    if cursor < line.endIndex { cursor = line.index(after: cursor) }
+                } else {
+                    if line[cursor] == "\"" { mode = .none }
+                    cursor = line.index(after: cursor)
+                }
+            case .literal:
+                if line[cursor] == "'" { mode = .none }
+                cursor = line.index(after: cursor)
+            case .multilineBasic:
+                if suffix.hasPrefix("\"\"\"") {
+                    mode = .none
+                    cursor = line.index(cursor, offsetBy: 3)
+                } else if line[cursor] == "\\" {
+                    cursor = line.index(after: cursor)
+                    if cursor < line.endIndex { cursor = line.index(after: cursor) }
+                } else {
+                    cursor = line.index(after: cursor)
+                }
+            case .multilineLiteral:
+                if suffix.hasPrefix("'''") {
+                    mode = .none
+                    cursor = line.index(cursor, offsetBy: 3)
+                } else {
+                    cursor = line.index(after: cursor)
+                }
+            }
+        }
+        return mode
+    }
+
+    private func codexNewline(in source: String) -> String {
+        guard let newline = source.firstIndex(of: "\n") else { return "\n" }
+        return newline > source.startIndex && source[source.index(before: newline)] == "\r" ? "\r\n" : "\n"
+    }
+
+    private func codexTOMLSourceMap(_ source: String) throws -> CodexTOMLSourceMap {
+        struct Header {
+            let path: [String]
+            let range: Range<String.Index>
+            let bodyStart: String.Index
+            let hasInlineComment: Bool
+        }
+        var headers: [Header] = []
+        var assignments: [CodexTOMLAssignment] = []
+        var currentTable: [String] = []
+        for line in codexTOMLLines(source) where !line.startsInString {
+            let trimmed = line.text.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") {
+                if let header = try codexParseTableHeader(trimmed) {
+                    currentTable = header.path
+                    headers.append(.init(
+                        path: header.path,
+                        range: line.range,
+                        bodyStart: line.range.upperBound,
+                        hasInlineComment: header.hasInlineComment
+                    ))
+                }
+            } else if !trimmed.isEmpty, !trimmed.hasPrefix("#"),
+                      let assignment = try codexParseAssignment(source, line: line) {
+                assignments.append(.init(
+                    path: currentTable + assignment.path,
+                    lineRange: line.range,
+                    valueRange: assignment.valueRange,
+                    hasInlineComment: assignment.hasInlineComment
+                ))
+            }
+        }
+        let sections = headers.enumerated().map { index, header in
+            let end = index + 1 < headers.count ? headers[index + 1].range.lowerBound : source.endIndex
+            return CodexTOMLSection(
+                path: header.path,
+                headerRange: header.range,
+                bodyRange: header.bodyStart..<end,
+                fullRange: header.range.lowerBound..<end,
+                hasInlineComment: header.hasInlineComment
+            )
+        }
+        return CodexTOMLSourceMap(assignments: assignments, sections: sections)
+    }
+
+    private func codexParseTableHeader(_ line: String) throws -> (path: [String], hasInlineComment: Bool)? {
+        let arrayTable = line.hasPrefix("[[")
+        let opening = arrayTable ? 2 : 1
+        let start = line.index(line.startIndex, offsetBy: opening)
+        var quote: Character?
+        var escaped = false
+        var cursor = start
+        while cursor < line.endIndex {
+            let character = line[cursor]
+            if escaped { escaped = false; cursor = line.index(after: cursor); continue }
+            if quote == "\"", character == "\\" { escaped = true; cursor = line.index(after: cursor); continue }
+            if character == "\"" || character == "'" {
+                if quote == character { quote = nil } else if quote == nil { quote = character }
+                cursor = line.index(after: cursor)
+                continue
+            }
+            if character == "]", quote == nil {
+                let closeEnd = line.index(after: cursor)
+                if arrayTable {
+                    guard closeEnd < line.endIndex, line[closeEnd] == "]" else { return nil }
+                }
+                let suffixStart = arrayTable ? line.index(after: closeEnd) : closeEnd
+                let suffix = line[suffixStart...].trimmingCharacters(in: .whitespaces)
+                guard suffix.isEmpty || suffix.hasPrefix("#") else { return nil }
+                return (try codexParseKeyPath(String(line[start..<cursor])), suffix.hasPrefix("#"))
+            }
+            cursor = line.index(after: cursor)
+        }
+        return nil
+    }
+
+    private func codexParseAssignment(
+        _ source: String,
+        line: CodexTOMLLine
+    ) throws -> (path: [String], valueRange: Range<String.Index>?, hasInlineComment: Bool)? {
+        let content = source[line.contentRange]
+        var quote: Character?
+        var escaped = false
+        for index in content.indices {
+            let character = source[index]
+            if escaped { escaped = false; continue }
+            if quote == "\"", character == "\\" { escaped = true; continue }
+            if character == "\"" || character == "'" {
+                if quote == character { quote = nil } else if quote == nil { quote = character }
+                continue
+            }
+            if character == "=", quote == nil {
+                let path = try codexParseKeyPath(String(source[line.contentRange.lowerBound..<index]))
+                var valueStart = source.index(after: index)
+                while valueStart < line.contentRange.upperBound, source[valueStart].isWhitespace {
+                    valueStart = source.index(after: valueStart)
+                }
+                let scalar = codexScalarRange(in: source, from: valueStart, to: line.contentRange.upperBound)
+                guard let scalar else { return (path, nil, false) }
+                var suffix = scalar.upperBound
+                while suffix < line.contentRange.upperBound, source[suffix].isWhitespace {
+                    suffix = source.index(after: suffix)
+                }
+                let hasComment = suffix < line.contentRange.upperBound && source[suffix] == "#"
+                guard suffix == line.contentRange.upperBound || hasComment else { return (path, nil, false) }
+                return (path, scalar, hasComment)
+            }
+        }
+        return nil
+    }
+
+    private func codexScalarRange(
+        in source: String,
+        from start: String.Index,
+        to end: String.Index
+    ) -> Range<String.Index>? {
+        guard start < end else { return nil }
+        if source[start...].hasPrefix("\"\"\"") || source[start...].hasPrefix("'''")
+            || source[start] == "[" || source[start] == "{" {
+            return nil
+        }
+        if source[start] == "\"" || source[start] == "'" {
+            let quote = source[start]
+            var escaped = false
+            var cursor = source.index(after: start)
+            while cursor < end {
+                let character = source[cursor]
+                if escaped { escaped = false; cursor = source.index(after: cursor); continue }
+                if quote == "\"", character == "\\" { escaped = true; cursor = source.index(after: cursor); continue }
+                cursor = source.index(after: cursor)
+                if character == quote { return start..<cursor }
+            }
+            return nil
+        }
+        var cursor = start
+        while cursor < end, !source[cursor].isWhitespace, source[cursor] != "#" {
+            cursor = source.index(after: cursor)
+        }
+        return cursor > start ? start..<cursor : nil
+    }
+
+    private func codexParseKeyPath(_ source: String) throws -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var quote: Character?
+        var escaped = false
+        func finish() throws {
+            let token = current.trimmingCharacters(in: .whitespaces)
+            guard !token.isEmpty else { throw CodexHooksError(message: "invalid empty TOML key") }
+            let decoder = TOMLDecoder()
+            let decoded = try decoder.decode([String: Int].self, from: "\(token) = 1")
+            guard let key = decoded.keys.first else { throw CodexHooksError(message: "invalid TOML key \(token)") }
+            tokens.append(key)
+            current = ""
+        }
+        for character in source {
+            if escaped { current.append(character); escaped = false; continue }
+            if quote == "\"", character == "\\" { current.append(character); escaped = true; continue }
+            if character == "\"" || character == "'" {
+                current.append(character)
+                if quote == character { quote = nil } else if quote == nil { quote = character }
+                continue
+            }
+            if character == ".", quote == nil { try finish() }
+            else { current.append(character) }
+        }
+        try finish()
+        return tokens
+    }
+
+    private func codexApplySplices(_ splices: [CodexSourceSplice], to source: String) throws -> String {
+        let sorted = splices.sorted {
+            source.distance(from: source.startIndex, to: $0.range.lowerBound)
+                > source.distance(from: source.startIndex, to: $1.range.lowerBound)
+        }
+        var result = source
+        var previousLower = source.endIndex
+        for splice in sorted {
+            guard splice.range.upperBound <= previousLower else {
+                throw CodexHooksError(message: "overlapping Codex config edits; refusing to write")
+            }
+            result.replaceSubrange(splice.range, with: splice.replacement)
+            previousLower = splice.range.lowerBound
+        }
+        return result
+    }
+
+    private func codexTOMLQuoted(_ value: String) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: [value], options: [.withoutEscapingSlashes])
+        let encoded = String(decoding: data, as: UTF8.self)
+        return String(encoded.dropFirst().dropLast())
+    }
+
+    private func codexUTF8(_ data: Data, path: String) throws -> String {
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw CodexHooksError(message: "\(path) is not valid UTF-8")
+        }
+        return value
+    }
+
+    private func codexProbeWritableDirectory(_ path: String) throws {
+        try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true, attributes: nil)
+        let probe = (path as NSString).appendingPathComponent(".programa-preflight-\(UUID().uuidString)")
+        let descriptor = probe.withCString { Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600) }
+        guard descriptor >= 0 else { throw codexPOSIXError("preflight write access to", path: path) }
+        Darwin.close(descriptor)
+        guard unlink(probe) == 0 else { throw codexPOSIXError("remove preflight", path: probe) }
+    }
+
+    private func codexAtomicWrite(_ data: Data, to path: String, mode: mode_t) throws {
+        var targetInfo = stat()
+        if path.withCString({ Darwin.lstat($0, &targetInfo) }) == 0 {
+            guard (targetInfo.st_mode & S_IFMT) == S_IFREG else {
+                throw CodexHooksError(message: "refusing to replace non-regular file \(path)")
+            }
+        } else if errno != ENOENT {
+            throw codexPOSIXError("inspect", path: path)
+        }
+        let parent = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true, attributes: nil)
+        let directoryDescriptor = try codexOpenDirectory(parent)
+        defer { Darwin.close(directoryDescriptor) }
+        let name = (path as NSString).lastPathComponent
+        let temporary = (parent as NSString).appendingPathComponent(".\(name).programa-\(UUID().uuidString)")
+        let descriptor = temporary.withCString { Darwin.open($0, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, mode) }
+        guard descriptor >= 0 else { throw codexPOSIXError("create", path: temporary) }
+        var shouldRemove = true
+        var descriptorIsOpen = true
+        defer {
+            if descriptorIsOpen { Darwin.close(descriptor) }
+            if shouldRemove { unlink(temporary) }
+        }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    throw codexPOSIXError("write", path: temporary)
+                }
+                offset += count
+            }
+        }
+        guard fchmod(descriptor, mode) == 0 else { throw codexPOSIXError("set mode", path: temporary) }
+        guard fsync(descriptor) == 0 else { throw codexPOSIXError("sync", path: temporary) }
+        guard Darwin.close(descriptor) == 0 else { throw codexPOSIXError("close", path: temporary) }
+        descriptorIsOpen = false
+        var replacementInfo = stat()
+        if path.withCString({ Darwin.lstat($0, &replacementInfo) }) == 0,
+           (replacementInfo.st_mode & S_IFMT) != S_IFREG {
+            throw CodexHooksError(message: "refusing to replace non-regular file \(path)")
+        }
+        guard rename(temporary, path) == 0 else { throw codexPOSIXError("replace", path: path) }
+        shouldRemove = false
+        codexSyncDirectoryAfterCommit(directoryDescriptor, path: parent)
+    }
+
+    private func codexRestoreFile(_ snapshot: CodexFileSnapshot?, at path: String) throws {
+        if let snapshot {
+            try codexAtomicWrite(snapshot.data, to: path, mode: snapshot.mode)
+            return
+        }
+        let parent = (path as NSString).deletingLastPathComponent
+        let directoryDescriptor = try codexOpenDirectory(parent)
+        defer { Darwin.close(directoryDescriptor) }
+        if unlink(path) != 0 {
+            if errno == ENOENT { return }
+            throw codexPOSIXError("remove", path: path)
+        }
+        codexSyncDirectoryAfterCommit(directoryDescriptor, path: parent)
+    }
+
+    private func codexOpenDirectory(_ path: String) throws -> Int32 {
+        let descriptor = path.withCString { Darwin.open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC) }
+        guard descriptor >= 0 else { throw codexPOSIXError("open directory", path: path) }
+        return descriptor
+    }
+
+    private func codexSyncDirectoryAfterCommit(_ descriptor: Int32, path: String) {
+        guard fsync(descriptor) != 0 else { return }
+        let message = "warning: committed Codex hook change, but syncing directory \(path) failed: \(String(cString: strerror(errno)))\n"
+        FileHandle.standardError.write(Data(message.utf8))
+    }
+
+    private func codexPOSIXError(_ action: String, path: String) -> Error {
+        let code = errno
+        return CodexHooksError(message: "\(action) \(path): \(String(cString: strerror(code)))")
     }
 
     // MARK: - Agent skill (SKILL.md)
@@ -2261,62 +3263,6 @@ extension ProgramaCLI {
             }
         }
         return result.reversed()
-    }
-
-    /// Returns config.toml content with codex_hooks = true under [features].
-    private func buildConfigWithCodexHooks(_ content: String) -> String {
-        var lines = content.components(separatedBy: "\n")
-
-        // Check if codex_hooks key already exists (exact key match at line start)
-        if let idx = lines.firstIndex(where: { isTomlKey($0, key: "codex_hooks") }) {
-            lines[idx] = "codex_hooks = true"
-            return lines.joined(separator: "\n")
-        }
-
-        // Find [features] section and insert after it (first occurrence only)
-        if let idx = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "[features]" }) {
-            lines.insert("codex_hooks = true", at: idx + 1)
-            return lines.joined(separator: "\n")
-        }
-
-        // No [features] section, append one
-        var result = content
-        if !result.isEmpty && !result.hasSuffix("\n") {
-            result += "\n"
-        }
-        result += "\n[features]\ncodex_hooks = true\n"
-        return result
-    }
-
-    /// Returns config.toml content with codex_hooks removed from [features].
-    private func buildConfigWithoutCodexHooks(_ content: String) -> String {
-        var lines = content.components(separatedBy: "\n")
-
-        // Remove the codex_hooks line
-        lines.removeAll { isTomlKey($0, key: "codex_hooks") }
-
-        // If [features] section is now empty (only has the header, nothing before next section or EOF),
-        // remove the header too
-        if let idx = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "[features]" }) {
-            let nextNonEmpty = lines[(idx + 1)...].firstIndex(where: {
-                !$0.trimmingCharacters(in: .whitespaces).isEmpty
-            })
-            let sectionEmpty = nextNonEmpty == nil || lines[nextNonEmpty!].trimmingCharacters(in: .whitespaces).hasPrefix("[")
-            if sectionEmpty {
-                lines.remove(at: idx)
-            }
-        }
-
-        return lines.joined(separator: "\n")
-    }
-
-    /// Check if a TOML line sets a specific key (ignoring comments and whitespace).
-    private func isTomlKey(_ line: String, key: String) -> Bool {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.hasPrefix("#") else { return false }
-        guard trimmed.hasPrefix(key) else { return false }
-        let rest = trimmed.dropFirst(key.count).trimmingCharacters(in: .whitespaces)
-        return rest.hasPrefix("=")
     }
 
     /// Codex hook handler. Gracefully no-ops when not running inside programa.
