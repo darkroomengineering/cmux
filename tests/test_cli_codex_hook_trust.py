@@ -20,6 +20,7 @@ EVENT_LABELS = {
     "SessionStart": "session_start",
     "UserPromptSubmit": "user_prompt_submit",
     "Stop": "stop",
+    "PermissionRequest": "permission_request",
     "SessionEnd": "session_end",
 }
 
@@ -58,6 +59,9 @@ def initial_hooks() -> dict[str, Any]:
             "Stop": [
                 {"hooks": [foreign_handler("stop")]},
                 {"hooks": [owned_handler("stop")]},
+            ],
+            "PermissionRequest": [
+                {"hooks": [foreign_handler("permission-request")]},
             ],
             "SessionEnd": [
                 {"hooks": [foreign_handler("end-a"), foreign_handler("end-b")]},
@@ -226,6 +230,12 @@ class CodexHookTrustTests(unittest.TestCase):
                         found.append((group_index, handler_index, handler))
             self.assertEqual(len(found), 1, f"{event} must have one Programa handler: {found!r}")
             group_index, handler_index, handler = found[0]
+            if event == "PermissionRequest":
+                self.assertIn(
+                    "programa codex-hook notification",
+                    handler["command"],
+                    "Codex permission requests reuse Programa's notification handler",
+                )
             key = f"{canonical_hooks_path}:{label}:{group_index}:{handler_index}"
             owned_keys.add(key)
             self.assertIn(
@@ -248,6 +258,11 @@ class CodexHookTrustTests(unittest.TestCase):
         self.assertEqual(foreign_commands(uninstalled_hooks), expected_foreign)
         self.assertNotIn(OWNED_MARKER, json.dumps(uninstalled_hooks))
         self.assertEqual(uninstalled_hooks.get("owner"), "user")
+        self.assertIn(
+            "foreign-permission-request",
+            foreign_commands(uninstalled_hooks),
+            "uninstall must preserve the user's PermissionRequest automation",
+        )
 
         uninstalled_config = self.read_config()
         uninstalled_state = uninstalled_config["hooks"]["state"]
