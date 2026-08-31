@@ -122,8 +122,8 @@ func TestWrapperBinaryDispatchesIntoCLI(t *testing.T) {
 		t.Fatalf("wrapper invocation failed: %v\n%s", err, output)
 	}
 
-	if got := string(output); !strings.Contains(got, `"method": "system.ping"`) {
-		t.Fatalf("wrapper invocation output = %q, want a v2 system.ping result", got)
+	if got := strings.TrimSpace(string(output)); got != "PONG" {
+		t.Fatalf("wrapper invocation output = %q, want %q", got, "PONG")
 	}
 }
 
