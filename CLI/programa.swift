@@ -6763,21 +6763,8 @@ struct ProgramaCLI {
         // acquire the app socket through the generic dispatcher.
         case "shortcuts", "feedback", "themes", "claude-teams", "omo", "omx", "omc":
             return
-        case "codex":
-            let parsed = try parse(booleans: ["yes", "y"], minPositionals: 1, maxPositionals: 1)
-            guard ["install-hooks", "uninstall-hooks", "install-integration", "uninstall-integration"].contains(parsed.positional[0].lowercased()) else {
-                throw CLIError(message: "codex: expected install-integration or uninstall-integration")
-            }
-        case "claude":
-            let parsed = try parse(booleans: ["yes", "y"], minPositionals: 1, maxPositionals: 1)
-            guard ["install-integration", "uninstall-integration"].contains(parsed.positional[0].lowercased()) else {
-                throw CLIError(message: "claude: expected install-integration or uninstall-integration")
-            }
-        case "opencode":
-            let parsed = try parse(booleans: ["yes", "y"], minPositionals: 1, maxPositionals: 1)
-            guard ["install-integration", "uninstall-integration"].contains(parsed.positional[0].lowercased()) else {
-                throw CLIError(message: "opencode: expected install-integration or uninstall-integration")
-            }
+        case "codex", "claude", "opencode":
+            _ = try parse(booleans: ["yes", "y"], minPositionals: 1, maxPositionals: 1)
         case "remote-daemon-status":
             let parsed = try parse(values: ["os", "arch"])
             if let os = parsed.options["os"], !["darwin", "linux"].contains(os.lowercased()) {
