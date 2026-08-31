@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""Behavioral contracts for installing Codex hooks and their trust state."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import tempfile
+import tomllib
+import unittest
+from pathlib import Path
+from typing import Any
+
+
+CLI_PATH = os.environ.get("PROGRAMA_CLI_BIN", "")
+OWNED_MARKER = "programa codex-hook"
+EVENT_LABELS = {
+    "SessionStart": "session_start",
+    "UserPromptSubmit": "user_prompt_submit",
+    "Stop": "stop",
+    "SessionEnd": "session_end",
+}
+
+
+def foreign_handler(name: str) -> dict[str, Any]:
+    return {"type": "command", "command": f"foreign-{name}", "timeout": 7}
+
+
+def owned_handler(event: str) -> dict[str, Any]:
+    return {
+        "type": "command",
+        "command": f"programa codex-hook {event}",
+        "timeout": 9,
+    }
+
+
+def initial_hooks() -> dict[str, Any]:
+    """Represent user hooks plus stale Programa entries from an older install."""
+    return {
+        "owner": "user",
+        "hooks": {
+            "SessionStart": [
+                {"matcher": "startup", "hooks": [foreign_handler("start-a")]},
+                {
+                    "hooks": [
+                        foreign_handler("start-b"),
+                        owned_handler("session-start"),
+                    ]
+                },
+            ],
+            "UserPromptSubmit": [
+                {"hooks": [foreign_handler("prompt-a")]},
+                {"hooks": [foreign_handler("prompt-b")]},
+                {"hooks": [owned_handler("prompt-submit")]},
+            ],
+            "Stop": [
+                {"hooks": [foreign_handler("stop")]},
+                {"hooks": [owned_handler("stop")]},
+            ],
+            "SessionEnd": [
+                {"hooks": [foreign_handler("end-a"), foreign_handler("end-b")]},
+                {"hooks": [owned_handler("session-end")]},
+            ],
+            "Notification": [
+                {"hooks": [foreign_handler("notification")]},
+                {"hooks": [owned_handler("notification")]},
+            ],
+            "CustomEvent": [{"hooks": [foreign_handler("custom")]}],
+        },
+    }
+
+
+def foreign_commands(root: dict[str, Any]) -> set[str]:
+    commands: set[str] = set()
+    for groups in root.get("hooks", {}).values():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            for handler in group.get("hooks", []):
+                command = handler.get("command") if isinstance(handler, dict) else None
+                if isinstance(command, str) and OWNED_MARKER not in command:
+                    commands.add(command)
+    return commands
+
+
+def expected_trust_hash(event_label: str, handler: dict[str, Any]) -> str:
+    timeout = handler.get("timeout", 600)
+    if event_label == "session_end":
+        timeout = min(max(timeout, 1), 3)
+    else:
+        timeout = max(timeout, 1)
+    identity = {
+        "event_name": event_label,
+        "hooks": [
+            {
+                "async": handler.get("async", False),
+                "command": handler["command"],
+                "timeout": timeout,
+                "type": "command",
+            }
+        ],
+    }
+    canonical = json.dumps(
+        identity,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+class CodexHookTrustTests(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory(
+            prefix="programa-codex-hooks-",
+            dir="/tmp",
+        )
+        self.root = Path(self.temporary_directory.name)
+        self.codex_home = self.root / "codex-home"
+        self.user_home = self.root / "user-home"
+        self.codex_home.mkdir()
+        self.user_home.mkdir()
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def run_cli(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        env = dict(os.environ)
+        env.update(
+            {
+                "CODEX_HOME": str(self.codex_home),
+                "HOME": str(self.user_home),
+                "CFFIXED_USER_HOME": str(self.user_home),
+            }
+        )
+        for name in (
+            "PROGRAMA_SOCKET",
+            "PROGRAMA_SOCKET_PATH",
+            "PROGRAMA_SOCKET_PASSWORD",
+            "PROGRAMA_WORKSPACE_ID",
+            "PROGRAMA_SURFACE_ID",
+        ):
+            env.pop(name, None)
+        return subprocess.run(
+            [CLI_PATH, "codex", *arguments, "--yes"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=8,
+            env=env,
+        )
+
+    def write_hooks(self, value: dict[str, Any]) -> bytes:
+        data = json.dumps(value, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        (self.codex_home / "hooks.json").write_bytes(data)
+        return data
+
+    def read_hooks(self) -> dict[str, Any]:
+        return json.loads((self.codex_home / "hooks.json").read_text(encoding="utf-8"))
+
+    def read_config(self) -> dict[str, Any]:
+        return tomllib.loads((self.codex_home / "config.toml").read_text(encoding="utf-8"))
+
+    def assert_succeeded(self, process: subprocess.CompletedProcess[str]) -> None:
+        self.assertEqual(
+            process.returncode,
+            0,
+            f"stdout={process.stdout!r}\nstderr={process.stderr!r}",
+        )
+
+    def test_install_trusts_the_real_merged_hook_positions_and_is_idempotent(self) -> None:
+        """Codex must execute Programa hooks without displacing user automation."""
+        original = initial_hooks()
+        expected_foreign = foreign_commands(original)
+        self.write_hooks(original)
+        foreign_key = "manual/hooks.json:stop:4:2"
+        (self.codex_home / "config.toml").write_text(
+            "# user config\n"
+            'model = "gpt-5.6"\n\n'
+            "[features]\n"
+            "codex_hooks = true\n"
+            "foreign_feature = true\n\n"
+            f'[hooks.state.{json.dumps(foreign_key)}]\n'
+            'trusted_hash = "sha256:foreign"\n'
+            "enabled = false\n",
+            encoding="utf-8",
+        )
+
+        install = self.run_cli("install-hooks")
+        self.assert_succeeded(install)
+
+        hooks = self.read_hooks()
+        self.assertEqual(hooks.get("owner"), "user")
+        self.assertEqual(foreign_commands(hooks), expected_foreign)
+        self.assertNotIn(
+            OWNED_MARKER,
+            json.dumps(hooks.get("hooks", {}).get("Notification", [])),
+            "Codex has no Notification trust-state label, so the obsolete Programa hook cannot execute",
+        )
+
+        config = self.read_config()
+        self.assertEqual(config.get("model"), "gpt-5.6")
+        self.assertTrue(config["features"]["foreign_feature"])
+        self.assertNotIn(
+            "codex_hooks",
+            config["features"],
+            "Codex 0.151 treats hooks as stable and no longer recognizes this feature flag",
+        )
+        state = config["hooks"]["state"]
+        self.assertEqual(state[foreign_key]["trusted_hash"], "sha256:foreign")
+        self.assertFalse(state[foreign_key]["enabled"])
+
+        canonical_hooks_path = self.codex_home.resolve() / "hooks.json"
+        owned_keys: set[str] = set()
+        for event, label in EVENT_LABELS.items():
+            found: list[tuple[int, int, dict[str, Any]]] = []
+            for group_index, group in enumerate(hooks["hooks"].get(event, [])):
+                for handler_index, handler in enumerate(group.get("hooks", [])):
+                    if OWNED_MARKER in handler.get("command", ""):
+                        found.append((group_index, handler_index, handler))
+            self.assertEqual(len(found), 1, f"{event} must have one Programa handler: {found!r}")
+            group_index, handler_index, handler = found[0]
+            key = f"{canonical_hooks_path}:{label}:{group_index}:{handler_index}"
+            owned_keys.add(key)
+            self.assertIn(
+                key,
+                state,
+                "Codex looks up trust by the installed handler's real position",
+            )
+            self.assertEqual(state[key]["trusted_hash"], expected_trust_hash(label, handler))
+
+        hooks_once = (self.codex_home / "hooks.json").read_bytes()
+        config_once = (self.codex_home / "config.toml").read_bytes()
+        reinstall = self.run_cli("install-hooks")
+        self.assert_succeeded(reinstall)
+        self.assertEqual((self.codex_home / "hooks.json").read_bytes(), hooks_once)
+        self.assertEqual((self.codex_home / "config.toml").read_bytes(), config_once)
+
+        uninstall = self.run_cli("uninstall-hooks")
+        self.assert_succeeded(uninstall)
+        uninstalled_hooks = self.read_hooks()
+        self.assertEqual(foreign_commands(uninstalled_hooks), expected_foreign)
+        self.assertNotIn(OWNED_MARKER, json.dumps(uninstalled_hooks))
+        self.assertEqual(uninstalled_hooks.get("owner"), "user")
+
+        uninstalled_config = self.read_config()
+        uninstalled_state = uninstalled_config["hooks"]["state"]
+        self.assertEqual(uninstalled_state[foreign_key]["trusted_hash"], "sha256:foreign")
+        self.assertTrue(uninstalled_config["features"]["foreign_feature"])
+        self.assertNotIn("codex_hooks", uninstalled_config["features"])
+        for key in owned_keys:
+            self.assertNotIn(key, uninstalled_state)
+
+    def test_invalid_config_fails_before_hooks_are_mutated(self) -> None:
+        """A failed trust preflight must not leave newly installed hooks disabled."""
+        for config_content in ("not = valid = toml\n", "hooks = true\n"):
+            with self.subTest(config=config_content):
+                original_hooks = self.write_hooks(initial_hooks())
+                original_config = config_content.encode("utf-8")
+                (self.codex_home / "config.toml").write_bytes(original_config)
+
+                install = self.run_cli("install-hooks")
+
+                self.assertNotEqual(
+                    install.returncode,
+                    0,
+                    "invalid syntax or a scalar hooks key must fail trust setup: "
+                    f"stdout={install.stdout!r} stderr={install.stderr!r}",
+                )
+                self.assertEqual(
+                    (self.codex_home / "hooks.json").read_bytes(),
+                    original_hooks,
+                )
+                self.assertEqual(
+                    (self.codex_home / "config.toml").read_bytes(),
+                    original_config,
+                )
+
+    def test_symlinked_config_updates_its_target_without_replacing_the_link(self) -> None:
+        """Dotfile-managed Codex configuration must remain connected after lifecycle changes."""
+        target = self.root / "managed-config.toml"
+        foreign_key = "managed/hooks.json:session_start:0:0"
+        target.write_text(
+            'model = "gpt-5.6"\n\n'
+            f'[hooks.state.{json.dumps(foreign_key)}]\n'
+            'trusted_hash = "sha256:managed"\n',
+            encoding="utf-8",
+        )
+        config_link = self.codex_home / "config.toml"
+        config_link.symlink_to(target)
+
+        install = self.run_cli("install-hooks")
+        self.assert_succeeded(install)
+        self.assertTrue(config_link.is_symlink())
+        installed_target = target.read_bytes()
+        installed_config = tomllib.loads(installed_target.decode("utf-8"))
+        self.assertEqual(installed_config["model"], "gpt-5.6")
+        self.assertEqual(
+            installed_config["hooks"]["state"][foreign_key]["trusted_hash"],
+            "sha256:managed",
+        )
+        self.assertGreater(len(installed_config["hooks"]["state"]), 1)
+
+        reinstall = self.run_cli("install-hooks")
+        self.assert_succeeded(reinstall)
+        self.assertTrue(config_link.is_symlink())
+        self.assertEqual(target.read_bytes(), installed_target)
+
+        uninstall = self.run_cli("uninstall-hooks")
+        self.assert_succeeded(uninstall)
+        self.assertTrue(config_link.is_symlink())
+        final_config = tomllib.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(final_config["model"], "gpt-5.6")
+        self.assertEqual(
+            final_config["hooks"]["state"][foreign_key]["trusted_hash"],
+            "sha256:managed",
+        )
+        self.assertEqual(len(final_config["hooks"]["state"]), 1)
+
+
+if __name__ == "__main__":
+    if not CLI_PATH or not Path(CLI_PATH).is_file() or not os.access(CLI_PATH, os.X_OK):
+        print("FAIL: PROGRAMA_CLI_BIN must point to an executable programa CLI")
+        raise SystemExit(1)
+    unittest.main(verbosity=2)
