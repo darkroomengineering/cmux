@@ -51,6 +51,11 @@ final class PortScanner: @unchecked Sendable {
     /// Whether a burst sequence is currently running.
     private var burstActive = false
 
+    /// Invalidates burst callbacks and panel results queued before the final
+    /// registered panel was removed. This state is owned by `queue`.
+    private var burstGeneration: UInt64 = 0
+    private var scheduledBurstTimers: [UUID: DispatchSourceTimer] = [:]
+
     /// Coalesce timer (200ms after first kick).
     private var coalesceTimer: DispatchSourceTimer?
 
@@ -116,6 +121,16 @@ final class PortScanner: @unchecked Sendable {
             let key = PanelKey(workspaceId: workspaceId, panelId: panelId)
             ttyNames.removeValue(forKey: key)
             pendingKicks.remove(key)
+            if ttyNames.isEmpty {
+                burstGeneration &+= 1
+                scheduledBurstTimers.values.forEach { $0.cancel() }
+                scheduledBurstTimers.removeAll()
+                burstActive = false
+                coalesceTimer?.cancel()
+                coalesceTimer = nil
+            } else if !pendingKicks.isEmpty, !burstActive {
+                startCoalesce()
+            }
         }
     }
 
@@ -165,11 +180,12 @@ final class PortScanner: @unchecked Sendable {
 
         guard !pendingKicks.isEmpty else { return }
         burstActive = true
-        runBurst(index: 0)
+        runBurst(index: 0, generation: burstGeneration)
     }
 
-    private func runBurst(index: Int, burstStart: DispatchTime? = nil) {
+    private func runBurst(index: Int, burstStart: DispatchTime? = nil, generation: UInt64) {
         // Already on `queue`.
+        guard generation == burstGeneration else { return }
         guard index < Self.burstOffsets.count else {
             burstActive = false
             // If new kicks arrived during the burst, start a new coalesce cycle.
@@ -181,17 +197,26 @@ final class PortScanner: @unchecked Sendable {
 
         let start = burstStart ?? .now()
         let deadline = start + Self.burstOffsets[index]
-        queue.asyncAfter(deadline: deadline) { [weak self] in
+        let timerID = UUID()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: deadline)
+        timer.setEventHandler { [weak self, weak timer] in
             guard let self else { return }
-            self.runScan()
-            self.runBurst(index: index + 1, burstStart: start)
+            guard generation == self.burstGeneration else { return }
+            self.scheduledBurstTimers.removeValue(forKey: timerID)
+            timer?.cancel()
+            self.runScan(generation: generation)
+            self.runBurst(index: index + 1, burstStart: start, generation: generation)
         }
+        scheduledBurstTimers[timerID] = timer
+        timer.resume()
     }
 
     // MARK: - Scan
 
-    private func runScan() {
+    private func runScan(generation requestedGeneration: UInt64? = nil) {
         // Already on `queue`. Snapshot which panels to scan and their TTYs.
+        let generation = requestedGeneration ?? burstGeneration
         // We scan all registered panels, not just pending ones, since ports can
         // appear/disappear on any panel.
         let panelSnapshot = ttyNames
@@ -208,6 +233,7 @@ final class PortScanner: @unchecked Sendable {
         let agentRevisions = agentRevisionSnapshot(for: workspaceIds)
         guard let agentPIDsProvider, !workspaceIds.isEmpty else {
             finishScan(
+                generation: generation,
                 panelSnapshot: panelSnapshot,
                 agentPIDsByWorkspace: [:],
                 agentRevisions: agentRevisions
@@ -222,6 +248,7 @@ final class PortScanner: @unchecked Sendable {
             }
             self.queue.async { [weak self] in
                 self?.finishScan(
+                    generation: generation,
                     panelSnapshot: panelSnapshot,
                     agentPIDsByWorkspace: agentPIDsByWorkspace,
                     agentRevisions: agentRevisions
@@ -231,6 +258,7 @@ final class PortScanner: @unchecked Sendable {
     }
 
     private func finishScan(
+        generation: UInt64,
         panelSnapshot: [PanelKey: String],
         agentPIDsByWorkspace: [UUID: Set<Int>],
         agentRevisions: [UUID: UInt64]
@@ -253,7 +281,8 @@ final class PortScanner: @unchecked Sendable {
                 panelResults,
                 workspaceIds: workspaceIds,
                 agentPortsByWorkspace: [:],
-                agentRevisions: agentRevisions
+                agentRevisions: agentRevisions,
+                applyPanelResults: generation == burstGeneration
             )
             return
         }
@@ -288,7 +317,8 @@ final class PortScanner: @unchecked Sendable {
             results,
             workspaceIds: workspaceIds,
             agentPortsByWorkspace: agentPortsByWorkspace,
-            agentRevisions: agentRevisions
+            agentRevisions: agentRevisions,
+            applyPanelResults: generation == burstGeneration
         )
     }
 
@@ -479,9 +509,10 @@ final class PortScanner: @unchecked Sendable {
         _ panelResults: [(PanelKey, [Int])],
         workspaceIds: Set<UUID>,
         agentPortsByWorkspace: [UUID: Set<Int>],
-        agentRevisions: [UUID: UInt64]
+        agentRevisions: [UUID: UInt64],
+        applyPanelResults: Bool
     ) {
-        let panelCallback = onPortsUpdated
+        let panelCallback = applyPanelResults ? onPortsUpdated : nil
         if let panelCallback {
             Task { @MainActor in
                 for (key, ports) in panelResults {
@@ -674,7 +705,46 @@ final class PortScanner: @unchecked Sendable {
     }
 
     private func runLsof(pidsCsv: String) -> [Int: Set<Int>] {
-        runLsofChunk(pidsCsv: pidsCsv)
+        let pids = pidsCsv.split(separator: ",").compactMap { Int($0) }
+        guard pids.count > Self.lsofMaximumPIDsPerInvocation else {
+            return runLsofChunk(pidsCsv: pidsCsv)
+        }
+
+        var result: [Int: Set<Int>] = [:]
+        for chunk in Self.lsofPIDChunks(pids) {
+            let csv = chunk.map(String.init).joined(separator: ",")
+            for (pid, ports) in runLsofChunk(pidsCsv: csv) {
+                result[pid, default: []].formUnion(ports)
+            }
+        }
+        return result
+    }
+
+    private static let lsofMaximumPIDsPerInvocation = 256
+    private static let lsofArgumentByteBudget = 32 * 1024
+    private static let lsofArgumentOverhead = 256
+
+    private static func lsofPIDChunks(_ pids: [Int]) -> [[Int]] {
+        var chunks: [[Int]] = []
+        var chunk: [Int] = []
+        var chunkBytes = 0
+
+        for pid in pids {
+            let pidBytes = String(pid).utf8.count
+            let additionalBytes = pidBytes + (chunk.isEmpty ? 0 : 1)
+            if !chunk.isEmpty,
+               chunk.count >= lsofMaximumPIDsPerInvocation
+                || chunkBytes + additionalBytes + lsofArgumentOverhead > lsofArgumentByteBudget
+            {
+                chunks.append(chunk)
+                chunk = []
+                chunkBytes = 0
+            }
+            chunkBytes += pidBytes + (chunk.isEmpty ? 0 : 1)
+            chunk.append(pid)
+        }
+        if !chunk.isEmpty { chunks.append(chunk) }
+        return chunks
     }
 
     private func runLsofChunk(pidsCsv: String) -> [Int: Set<Int>] {
