@@ -1668,7 +1668,11 @@ extension ProgramaCLI {
             ? URL(fileURLWithPath: expanded).standardizedFileURL.path
             : URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(expanded).standardizedFileURL.path
         try FileManager.default.createDirectory(atPath: absolute, withIntermediateDirectories: true, attributes: nil)
-        let canonicalHome = URL(fileURLWithPath: absolute).resolvingSymlinksInPath().path
+        guard let resolvedHome = absolute.withCString({ realpath($0, nil) }) else {
+            throw codexPOSIXError("resolve", path: absolute)
+        }
+        defer { free(resolvedHome) }
+        let canonicalHome = String(cString: resolvedHome)
         let home = explicit ? canonicalHome : absolute
         let hooks = (home as NSString).appendingPathComponent("hooks.json")
         let configLink = (home as NSString).appendingPathComponent("config.toml")
