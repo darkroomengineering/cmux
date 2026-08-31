@@ -1,19 +1,22 @@
 # TODO
 
-Roadmap tracking: #141 (Phase 1 P0s #131-#134, Phase 2 upstream port round #135, Phase 3 differentiators #136-#140).
+Reviewed against `main` on 2026-08-31. The roadmap issues below are closed as completed; previously unchecked entries were implemented or superseded but never reconciled here.
 
-## Issue 151: Remote SSH (Living Execution)
+Archived roadmap tracking: #141 (Phase 1 P0s #131-#134, Phase 2 upstream port round #135, Phase 3 differentiators #136-#140).
+
+## Remote SSH (Living Execution)
 - [x] `programa ssh` creates remote workspace metadata and does not require `--name`
 - [x] Remote daemon bootstrap/upload/start path with `programad-remote serve --stdio`
 - [x] Reconnect/disconnect controls (CLI/API/context menu) + improved error surfacing
 - [x] Retry count/time surfaced in remote daemon/probe error details
-- [ ] Remove automatic remote service port mirroring (`ssh -L` from detected remote listening ports)
-- [ ] Add transport-scoped proxy broker (SOCKS5 + HTTP CONNECT) for remote traffic
-- [ ] Extend `programad-remote` RPC beyond `hello/ping` with proxy stream methods (`proxy.open|close`)
-- [ ] Auto-wire WKWebView in remote workspaces to proxy via `WKWebsiteDataStore.proxyConfigurations`
-- [ ] Add browser proxy e2e tests (remote egress IP, websocket, reconnect continuity)
-- [ ] Implement PTY resize coordinator with tmux semantics (`smallest screen wins`)
-- [ ] Add resize tests for multi-attachment sessions (attach/detach/reconnect transitions)
+- [x] Remove automatic remote service port mirroring (`ssh -L` from detected remote listening ports)
+- [x] Add transport-scoped proxy broker (SOCKS5 + HTTP CONNECT) for remote traffic
+- [x] Extend `programad-remote` RPC beyond `hello/ping` with proxy stream methods (`proxy.open|close`)
+- [x] Auto-wire WKWebView in remote workspaces to proxy via `WKWebsiteDataStore.proxyConfigurations`
+- [x] Add browser proxy E2E tests (remote-only HTTP identity, WebSocket, reconnect continuity)
+- [x] Implement daemon-side PTY resize coordination with tmux semantics (`smallest screen wins`)
+  - App-side attachment wiring requires persistent remote PTY ownership and is tracked as part of `docs/plans/detached-sessions.md`, not as a standalone TODO.
+- [x] Add resize tests for multi-attachment sessions (attach/detach/reconnect transitions)
 
 ## Socket API / Agent
 - [x] Add window handles + `window.list/current/focus/create/close` for multi-window socket control (v2) + v1 equivalents (`list_windows`, etc) + CLI support.
@@ -42,28 +45,30 @@ Roadmap tracking: #141 (Phase 1 P0s #131-#134, Phase 2 upstream port round #135,
 - [x] Add cmd+shift+p palette with all commands (#136)
 
 ## Feature Requests
-- [ ] Warm pool of Claude Code instances mapped to a keyboard shortcut (#137)
+- [x] Supersede the proposed warm pool with boot-in-place Claude Code workspaces on cmd+shift+c (#137)
+  - The shipped design deliberately avoids hidden workspaces, pool settings, and idle Claude processes.
 
 ## Claude Code Integration
-- [ ] Add "Install Claude Code integration" menu item in menubar (#138)
+- [x] Add "Install Claude Code integration" menu item in menubar (#138)
   - Opens a new terminal
   - Shows user the diff to their config file (claude.json, opencode config, codex config, etc.)
   - Prompts user to type 'y' to confirm
   - Implement as part of `programa` CLI, menubar just triggers the CLI command
 
 ## Additional Integrations
-- [ ] Codex integration (#139)
-- [ ] OpenCode integration (#139)
+- [x] Codex integration (#139)
+- [x] OpenCode integration (#139)
 
 ## Browser
-- [ ] Per-WKWebView proxy observability/inspection once remote proxy path is shipped (URL, method, headers, body, status, timing)
+- [x] Provide interactive per-WKWebView proxy inspection (URL, method, headers, body, status, timing) through Developer Tools
+  - The Network tab observes the same proxied WKWebView. Programmatic CDP-style interception remains explicitly unsupported and is tracked separately as optional parity in `docs/agent-browser-port-spec.md`.
 
 ## Bugs
-- [ ] **P0** Terminal title updates are suppressed when workspace is not focused (e.g. Claude Code loading indicator doesn't update in sidebar until you switch to that tab) (#131)
+- [x] **P0** Terminal title updates are suppressed when workspace is not focused (e.g. Claude Code loading indicator doesn't update in sidebar until you switch to that tab) (#131)
 - [x] Sidebar tab reorder can get stuck in dragging state (dimmed tab + blue drop indicator line visible) after drag ends (defensive mouseDown catch-all added; existing failsafes covered Escape/mouseUp/deactivate)
 - [x] Drag-and-drop files/images into terminal shows URL instead of file path (already fixed: TerminalImageTransferPlanner inserts shell-escaped paths; covered by TerminalAndGhosttyTests)
 - [x] After opening a browser tab, up/down arrow keys (and possibly other keyboard shortcuts) stop working in the terminal (not reproducible as of 2026-07-20: verified via socket AND the real app event path after browser open + refocus; the keyboard-routing repair machinery in AppDelegate/WindowSwizzles appears to cover it. If it recurs, watch focus.keyRepair events in the debug log to discriminate focus-model desync vs stale first responder)
-- [ ] Notification marked unread doesn't get pushed to the top of the list
+- [x] Notification marked unread doesn't get pushed to the top of the list
 - [x] Browser cmd+shift+H ring flashes only once (should flash twice like other shortcuts) (fixed: browser/markdown focus flash now a single PhaseAnimator transaction instead of 4 chained asyncAfter calls SwiftUI could coalesce)
 
 ## Refactoring
@@ -74,14 +79,14 @@ Roadmap tracking: #141 (Phase 1 P0s #131-#134, Phase 2 upstream port round #135,
 ## UI/UX Improvements
 - [x] Show loading indicator in terminal while it's loading (added: TerminalSurface.isSurfaceReady one-shot flag drives a ProgressView overlay in TerminalPanelView)
 - [x] Add question mark icon to learn shortcuts (added: questionmark.circle button in the titlebar accessory opens Settings > Keyboard Shortcuts)
-- [ ] Notification popover: each button item should show outline outside when focused/hovered
-- [ ] Notification popover: add right-click context menu to mark as read/unread
+- [x] Notification popover: each button item should show outline outside when focused/hovered
+- [x] Notification popover: add right-click context menu to mark as read/unread
 - [x] Right-click tab should allow renaming that workspace (already implemented: TabItemView contextMenu → Rename Workspace…)
 - [x] Cmd+click should open links in Programa (browser panel) instead of external browser (already the default: BrowserLinkOpenSettings.openTerminalLinksInProgramaBrowser = true)
-- [ ] "Waiting for input" notification should include custom terminal title if set
+- [x] "Waiting for input" notification should include custom terminal title if set
 - [x] Close button for current/active tab should always be visible (not just on hover)
 - [x] Add browser icon to the left of the plus button in the tab bar
-- [ ] Welcome screen: match logo art and colors to the programa brand (#142)
+- [x] Welcome screen: match logo art and colors to the programa brand (#142)
 
 ## Analytics
 - [x] Add PostHog tracking (set `PostHogAnalytics.apiKey` in `Sources/PostHogAnalytics.swift`)
