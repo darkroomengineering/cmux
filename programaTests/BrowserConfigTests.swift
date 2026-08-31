@@ -15,6 +15,58 @@ import os
 @testable import Programa
 #endif
 
+final class BrowserExtensionConsentStoreTests: XCTestCase {
+    func testAuthorityFingerprintIsOrderIndependentButChangesWithManifestAuthority() {
+        let baseline = BrowserExtensionConsentStore.fingerprint(
+            candidateID: "/extensions/password-manager",
+            version: "1.0",
+            permissions: ["tabs", "storage"],
+            hostPatterns: ["https://example.com/*", "https://login.example/*"]
+        )
+        XCTAssertEqual(
+            baseline,
+            BrowserExtensionConsentStore.fingerprint(
+                candidateID: "/extensions/password-manager",
+                version: "1.0",
+                permissions: ["storage", "tabs"],
+                hostPatterns: ["https://login.example/*", "https://example.com/*"]
+            )
+        )
+        XCTAssertNotEqual(
+            baseline,
+            BrowserExtensionConsentStore.fingerprint(
+                candidateID: "/extensions/password-manager",
+                version: "1.1",
+                permissions: ["storage", "tabs"],
+                hostPatterns: ["https://login.example/*", "https://example.com/*"]
+            )
+        )
+        XCTAssertNotEqual(
+            baseline,
+            BrowserExtensionConsentStore.fingerprint(
+                candidateID: "/extensions/password-manager",
+                version: "1.0",
+                permissions: ["storage", "tabs"],
+                hostPatterns: ["<all_urls>"]
+            )
+        )
+    }
+
+    func testChangedManifestDoesNotInheritApprovalAndRevocationPersistsDenial() throws {
+        let suiteName = "BrowserExtensionConsentStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BrowserExtensionConsentStore(defaults: defaults, defaultsKey: "decisions")
+
+        store.setDecision(.approved, candidateID: "candidate", fingerprint: "manifest-a")
+        XCTAssertEqual(store.decision(candidateID: "candidate", fingerprint: "manifest-a"), .approved)
+        XCTAssertNil(store.decision(candidateID: "candidate", fingerprint: "manifest-b"))
+
+        store.setDecision(.denied, candidateID: "candidate", fingerprint: "manifest-a")
+        XCTAssertEqual(store.decision(candidateID: "candidate", fingerprint: "manifest-a"), .denied)
+    }
+}
+
 private actor BrowserSuggestionRequestRecorder {
     private(set) var requestedHosts: [String] = []
 
@@ -980,6 +1032,93 @@ final class ProgramaWebViewKeyEquivalentTests: XCTestCase {
 }
 
 
+private final class BrowserBoundedTransferURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "bounded.test" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        let bodySize = url.path == "/exact" ? 64 : 65
+        let headers = url.path == "/exact" ? ["Content-Length": String(bodySize)] : [:]
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: headers
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(repeating: 0x61, count: 32))
+        client?.urlProtocol(self, didLoad: Data(repeating: 0x62, count: bodySize - 32))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+final class BrowserContextTransferPolicyTests: XCTestCase {
+    func testPercentDecoderAndFileReaderEnforceExactBoundary() throws {
+        XCTAssertEqual(
+            BrowserContextTransferPolicy.percentDecodedData("12345678"[...], maximumBytes: 8),
+            Data("12345678".utf8)
+        )
+        XCTAssertNil(BrowserContextTransferPolicy.percentDecodedData("123456789"[...], maximumBytes: 8))
+        XCTAssertEqual(
+            BrowserContextTransferPolicy.percentDecodedData("%31%32%33"[...], maximumBytes: 3),
+            Data("123".utf8)
+        )
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrowserContextTransferPolicyTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let boundary = directory.appendingPathComponent("boundary")
+        let oversized = directory.appendingPathComponent("oversized")
+        try Data(repeating: 0x61, count: 32).write(to: boundary)
+        try Data(repeating: 0x61, count: 33).write(to: oversized)
+
+        XCTAssertEqual(
+            try BrowserContextTransferPolicy.boundedFileData(from: boundary, maximumBytes: 32).count,
+            32
+        )
+        XCTAssertThrowsError(
+            try BrowserContextTransferPolicy.boundedFileData(from: oversized, maximumBytes: 32)
+        ) { error in
+            XCTAssertEqual(error as? BrowserContextTransferPolicy.TransferError, .exceedsByteLimit)
+        }
+    }
+
+    func testNetworkLoaderAcceptsBoundaryAndRejectsIncrementalOverflow() {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BrowserBoundedTransferURLProtocol.self]
+        let exactExpectation = expectation(description: "exact boundary")
+        let overflowExpectation = expectation(description: "incremental overflow")
+
+        let exactLoader = BrowserBoundedURLLoader(maximumBytes: 64, configuration: configuration)
+        exactLoader.load(URLRequest(url: URL(string: "https://bounded.test/exact")!)) { result in
+            guard case .success(let value) = result else {
+                XCTFail("Expected exact-boundary transfer to succeed: \(result)")
+                exactExpectation.fulfill()
+                return
+            }
+            XCTAssertEqual(value.data.count, 64)
+            exactExpectation.fulfill()
+        }
+
+        let overflowLoader = BrowserBoundedURLLoader(maximumBytes: 64, configuration: configuration)
+        overflowLoader.load(URLRequest(url: URL(string: "https://bounded.test/overflow")!)) { result in
+            guard case .failure(let error) = result else {
+                XCTFail("Expected max+1 transfer to fail")
+                overflowExpectation.fulfill()
+                return
+            }
+            XCTAssertEqual(error as? BrowserContextTransferPolicy.TransferError, .exceedsByteLimit)
+            overflowExpectation.fulfill()
+        }
+
+        wait(for: [exactExpectation, overflowExpectation], timeout: 2)
+    }
+}
+
 @MainActor
 final class ProgramaWebViewContextMenuTests: XCTestCase {
     private func makeRightMouseDownEvent() -> NSEvent {
@@ -1932,6 +2071,32 @@ final class BrowserSessionHistoryRestoreTests: XCTestCase {
             snapshot.forwardHistoryURLStrings,
             ["https://example.com/d"]
         )
+    }
+
+    func testSessionNavigationHistoryBoundsDirectionsAndURLBytes() {
+        let panel = BrowserPanel(workspaceId: UUID())
+        let back = (0..<2_050).map { "https://example.com/back/\($0)" }
+        let forward = (0..<2_050).map { "https://example.com/forward/\($0)" }
+        let oversized = "https://example.com/" + String(
+            repeating: "x",
+            count: BrowserPanel.maxSessionHistoryURLBytes
+        )
+
+        panel.restoreSessionNavigationHistory(
+            backHistoryURLStrings: [oversized] + back,
+            forwardHistoryURLStrings: forward + [oversized],
+            currentURLString: oversized
+        )
+
+        let snapshot = panel.sessionNavigationHistorySnapshot()
+        XCTAssertEqual(snapshot.backHistoryURLStrings.count, BrowserPanel.maxSessionHistoryURLsPerDirection)
+        XCTAssertEqual(snapshot.backHistoryURLStrings.first, "https://example.com/back/2")
+        XCTAssertEqual(snapshot.backHistoryURLStrings.last, "https://example.com/back/2049")
+        XCTAssertEqual(snapshot.forwardHistoryURLStrings.count, BrowserPanel.maxSessionHistoryURLsPerDirection)
+        XCTAssertEqual(snapshot.forwardHistoryURLStrings.first, "https://example.com/forward/0")
+        XCTAssertEqual(snapshot.forwardHistoryURLStrings.last, "https://example.com/forward/2047")
+        XCTAssertFalse(snapshot.backHistoryURLStrings.contains(oversized))
+        XCTAssertFalse(snapshot.forwardHistoryURLStrings.contains(oversized))
     }
 
     func testSessionNavigationHistoryBackAndForwardUpdateStacks() {
@@ -3403,6 +3568,47 @@ final class BrowserHistoryStoreTests: XCTestCase {
                 continuation.resume(returning: semaphore.wait(timeout: .now() + timeout))
             }
         }
+    }
+
+    func testPersistenceByteLimitAcceptsBoundaryAndRejectsOneByteOver() throws {
+        let boundary = Data(repeating: 0x20, count: BrowserHistoryStore.maxPersistenceBytes)
+        XCTAssertEqual(try BrowserHistoryStore.boundedPersistenceData(boundary).count, boundary.count)
+        XCTAssertThrowsError(
+            try BrowserHistoryStore.boundedPersistenceData(boundary + Data([0x20]))
+        ) { error in
+            XCTAssertEqual(error as? BrowserHistoryStore.PersistenceLoadError, .exceedsByteLimit)
+        }
+    }
+
+    func testLoadCapsDecodedEntriesToMostRecentFiveThousand() async throws {
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let fileURL = tempDir.appendingPathComponent("browser_history.json")
+        try Data().write(to: fileURL)
+        let entries = (0..<5_002).map { index in
+            BrowserHistoryStore.Entry(
+                id: UUID(),
+                url: "https://example.com/\(index)",
+                title: nil,
+                lastVisited: Date(timeIntervalSince1970: TimeInterval(index)),
+                visitCount: 1
+            )
+        }
+        let encoded = try JSONEncoder().encode(entries)
+        let persistence = BrowserHistoryStore.Persistence(
+            load: { _ in encoded },
+            persist: { _, _ in },
+            remove: { _ in }
+        )
+        let store = await MainActor.run { BrowserHistoryStore(fileURL: fileURL, persistence: persistence) }
+
+        let loaded = await MainActor.run { () -> [BrowserHistoryStore.Entry] in
+            XCTAssertTrue(store.loadIfNeeded())
+            return store.entries
+        }
+        XCTAssertEqual(loaded.count, 5_000)
+        XCTAssertEqual(loaded.first?.url, "https://example.com/5001")
+        XCTAssertEqual(loaded.last?.url, "https://example.com/2")
     }
 
     func testRecordVisitDedupesAndSuggests() async throws {

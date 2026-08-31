@@ -6531,3 +6531,55 @@ private final class CommandPaletteMarkedTextFieldEditor: NSTextView {
         hasMarkedTextForTesting
     }
 }
+
+@MainActor
+final class AppLifecycleCoordinatorTests: XCTestCase {
+    func testTerminationDecisionAndCancellationOwnLifecycleState() {
+        let coordinator = AppLifecycleCoordinator()
+
+        let decision = coordinator.beginTermination(
+            hasValidatedDuplicateShutdownRequest: false,
+            isTaggedDevBuild: false,
+            isQuitWarningEnabled: true
+        )
+
+        XCTAssertTrue(decision.shouldWarn)
+        XCTAssertEqual(decision.logReason, "warning_bypassed")
+        XCTAssertTrue(coordinator.isTerminating)
+        coordinator.cancelTermination()
+        XCTAssertFalse(coordinator.isTerminating)
+    }
+
+    func testPowerOffAndOneShotLifecycleClaimsAreStateful() {
+        let coordinator = AppLifecycleCoordinator()
+
+        coordinator.beginPowerOff()
+        XCTAssertTrue(coordinator.isAwaitingPowerOff)
+        XCTAssertTrue(coordinator.resumeAfterCancelledPowerOff())
+        XCTAssertFalse(coordinator.resumeAfterCancelledPowerOff())
+        XCTAssertTrue(coordinator.claimSnapshotObserverInstallation())
+        XCTAssertFalse(coordinator.claimSnapshotObserverInstallation())
+        XCTAssertTrue(coordinator.claimSuddenTerminationDisable())
+        XCTAssertFalse(coordinator.claimSuddenTerminationDisable())
+        XCTAssertTrue(coordinator.claimSuddenTerminationEnable())
+        XCTAssertFalse(coordinator.claimSuddenTerminationEnable())
+    }
+
+    func testDuplicateLoserAndConfirmedQuitBypassWarning() {
+        let duplicate = AppLifecycleCoordinator()
+        duplicate.confirmSingleInstanceLoser()
+        XCTAssertFalse(duplicate.beginTermination(
+            hasValidatedDuplicateShutdownRequest: false,
+            isTaggedDevBuild: false,
+            isQuitWarningEnabled: true
+        ).shouldWarn)
+
+        let confirmed = AppLifecycleCoordinator()
+        confirmed.confirmQuit()
+        XCTAssertFalse(confirmed.beginTermination(
+            hasValidatedDuplicateShutdownRequest: false,
+            isTaggedDevBuild: false,
+            isQuitWarningEnabled: true
+        ).shouldWarn)
+    }
+}

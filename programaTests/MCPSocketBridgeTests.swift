@@ -132,6 +132,48 @@ final class MCPSocketBridgeTests: XCTestCase {
         return handled
     }
 
+    @discardableResult
+    private func serveAuthenticatedSession(
+        listenerFD: Int32,
+        capture: ReceivedRequestSequenceBox
+    ) -> XCTestExpectation {
+        let handled = expectation(description: "mock password-authenticated v2 session handled two requests")
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { handled.fulfill() }
+            let clientFD = Darwin.accept(listenerFD, nil, nil)
+            guard clientFD >= 0 else { return }
+            defer { Darwin.close(clientFD) }
+
+            func readLine() -> Data? {
+                var data = Data()
+                while true {
+                    var byte: UInt8 = 0
+                    let count = Darwin.read(clientFD, &byte, 1)
+                    if count < 0 {
+                        if errno == EINTR { continue }
+                        return nil
+                    }
+                    if count == 0 { return nil }
+                    data.append(byte)
+                    if byte == 0x0A { return data }
+                }
+            }
+
+            guard let authRequest = readLine() else { return }
+            capture.append(authRequest)
+            _ = "{\"id\":\"auth\",\"ok\":true,\"result\":{\"authenticated\":true}}\n".withCString {
+                Darwin.write(clientFD, $0, strlen($0))
+            }
+
+            guard let toolRequest = readLine() else { return }
+            capture.append(toolRequest)
+            _ = "{\"id\":\"tool\",\"ok\":true,\"result\":{\"pong\":true}}\n".withCString {
+                Darwin.write(clientFD, $0, strlen($0))
+            }
+        }
+        return handled
+    }
+
     // MARK: - `send(method:params:)` canned-response cases
 
     func testSendDecodesV2SuccessEnvelopeIntoResultDictionary() throws {
@@ -152,6 +194,54 @@ final class MCPSocketBridgeTests: XCTestCase {
 
         wait(for: [handled], timeout: 5)
         XCTAssertEqual(result["pong"] as? Bool, true)
+    }
+
+    func testSendAuthenticatesOnSameConnectionBeforeToolRequest() throws {
+        let socketPath = makeSocketPath("password")
+        let listenerFD = try bindUnixSocket(at: socketPath)
+        defer {
+            Darwin.close(listenerFD)
+            unlink(socketPath)
+        }
+
+        let received = ReceivedRequestSequenceBox()
+        let handled = serveAuthenticatedSession(listenerFD: listenerFD, capture: received)
+        let bridge = MCPSocketBridge(socketPath: socketPath, socketPassword: "s3cr3t")
+        let result = try bridge.send(method: "system.ping")
+
+        wait(for: [handled], timeout: 5)
+        XCTAssertEqual(result["pong"] as? Bool, true)
+        let requests = try received.values.map { data in
+            try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[0]["method"] as? String, "auth.login")
+        XCTAssertEqual((requests[0]["params"] as? [String: Any])?["password"] as? String, "s3cr3t")
+        XCTAssertEqual(requests[1]["method"] as? String, "system.ping")
+    }
+
+    func testSendWithoutPasswordReportsActionableAuthenticationError() throws {
+        let socketPath = makeSocketPath("authrequired")
+        let listenerFD = try bindUnixSocket(at: socketPath)
+        defer {
+            Darwin.close(listenerFD)
+            unlink(socketPath)
+        }
+
+        let handled = serveOneCannedResponse(
+            listenerFD: listenerFD,
+            responseLine: #"{"id":"1","ok":false,"error":{"code":"auth_required","message":"Authentication required"}}"#
+        )
+        let bridge = MCPSocketBridge(socketPath: socketPath, socketPassword: nil)
+
+        XCTAssertThrowsError(try bridge.send(method: "system.ping")) { error in
+            guard case .authentication(let message) = error as? MCPSocketBridgeError else {
+                XCTFail("Expected explicit authentication error, got \(error)")
+                return
+            }
+            XCTAssertTrue(message.contains("PROGRAMA_SOCKET_PASSWORD"))
+        }
+        wait(for: [handled], timeout: 5)
     }
 
     func testSendThrowsV2ErrorCarryingSameCodeAndMessageOnV2ErrorEnvelope() throws {
@@ -365,6 +455,23 @@ private final class ReceivedRequestBox: @unchecked Sendable {
     func set(_ data: Data) {
         lock.lock()
         storage = data
+        lock.unlock()
+    }
+}
+
+private final class ReceivedRequestSequenceBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Data] = []
+
+    var values: [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ data: Data) {
+        lock.lock()
+        storage.append(data)
         lock.unlock()
     }
 }

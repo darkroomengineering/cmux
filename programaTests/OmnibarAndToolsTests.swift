@@ -6,6 +6,7 @@ import WebKit
 import ObjectiveC.runtime
 import Bonsplit
 import UserNotifications
+import Darwin
 
 #if canImport(Programa_DEV)
 @testable import Programa_DEV
@@ -254,7 +255,128 @@ final class VSCodeCLILaunchConfigurationBuilderTests: XCTestCase {
 }
 
 
+final class CanonicalSubprocessRunnerTests: XCTestCase {
+    func testSeparatelyCapturesBoundedStandardOutputAndError() {
+        let result = CanonicalSubprocessRunner.run(
+            executable: "/bin/sh",
+            arguments: ["-c", "printf output; printf error >&2"],
+            currentDirectory: FileManager.default.temporaryDirectory.path,
+            timeout: 1,
+            stdoutLimit: 64,
+            stderrLimit: 64
+        )
+
+        XCTAssertEqual(result.outcome, .exited)
+        XCTAssertEqual(result.exitStatus, 0)
+        XCTAssertEqual(result.stdout, "output")
+        XCTAssertEqual(result.stderr, "error")
+    }
+
+    func testLargeChildOutputFailsClosedWithoutPipeDeadlock() {
+        let result = CanonicalSubprocessRunner.run(
+            executable: "/bin/sh",
+            arguments: ["-c", "head -c 131072 /dev/zero"],
+            currentDirectory: FileManager.default.temporaryDirectory.path,
+            timeout: 2,
+            stdoutLimit: 1_024,
+            stderrLimit: 1_024
+        )
+
+        XCTAssertEqual(result.outcome, .stdoutLimitExceeded)
+        XCTAssertEqual(result.exitStatus, 0)
+        XCTAssertNil(result.stdout, "Truncated child output must never be returned as successful output")
+    }
+
+    func testTimeoutIsDistinctFromExitAndOutputLimitFailures() {
+        let result = CanonicalSubprocessRunner.run(
+            executable: "/bin/sh",
+            arguments: ["-c", "sleep 2"],
+            currentDirectory: FileManager.default.temporaryDirectory.path,
+            timeout: 0.01,
+            stdoutLimit: 64,
+            stderrLimit: 64
+        )
+
+        XCTAssertEqual(result.outcome, .timedOut)
+        XCTAssertTrue(result.timedOut)
+        XCTAssertNil(result.exitStatus)
+    }
+
+    func testTimeoutDoesNotWaitForDescendantHoldingOutputPipes() {
+        let descendantPIDFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-runner-descendant-\(UUID().uuidString).pid")
+        defer { try? FileManager.default.removeItem(at: descendantPIDFile) }
+        let startedAt = ContinuousClock.now
+        let result = CanonicalSubprocessRunner.run(
+            executable: "/bin/sh",
+            arguments: [
+                "-c",
+                "(sleep 5; printf descendant; printf descendant-error >&2) & child=$!; printf %d \"$child\" > \"$1\"; wait",
+                "programa-runner-test",
+                descendantPIDFile.path,
+            ],
+            currentDirectory: FileManager.default.temporaryDirectory.path,
+            timeout: 0.05,
+            stdoutLimit: 64,
+            stderrLimit: 64
+        )
+        let elapsed = ContinuousClock.now - startedAt
+
+        XCTAssertEqual(result.outcome, .timedOut)
+        XCTAssertLessThan(
+            elapsed,
+            .seconds(2),
+            "timeout cleanup must terminate the owned process group and bound pipe-reader shutdown"
+        )
+        let pidText = try? String(contentsOf: descendantPIDFile, encoding: .utf8)
+        let descendantPID = pidText.flatMap { pid_t($0) }
+        XCTAssertNotNil(descendantPID)
+        if let descendantPID {
+            let goneDeadline = Date().addingTimeInterval(1)
+            var descendantExists = true
+            repeat {
+                errno = 0
+                descendantExists = kill(descendantPID, 0) == 0 || errno != ESRCH
+                if descendantExists { usleep(10_000) }
+            } while descendantExists && Date() < goneDeadline
+            XCTAssertFalse(descendantExists, "the timed-out descendant must not survive process-group cleanup")
+        }
+    }
+}
+
 final class ServeWebOutputCollectorTests: XCTestCase {
+    func testAcceptsURLWhenOutputEndsAtExactByteBoundary() {
+        let urlLine = "Web UI available at http://127.0.0.1:7777\n"
+        let maximumBytes = 96
+        let collector = ServeWebOutputCollector(maximumBytes: maximumBytes)
+        let output = String(repeating: "x", count: maximumBytes - urlLine.utf8.count) + urlLine
+
+        collector.append(Data(output.utf8))
+
+        XCTAssertTrue(collector.waitForURL(timeoutSeconds: 0.1))
+        XCTAssertEqual(collector.webUIURL?.absoluteString, "http://127.0.0.1:7777")
+        XCTAssertFalse(collector.didOverflow)
+    }
+
+    func testOverflowSignalsWaiterAndNeverReturnsPartialURL() {
+        let collector = ServeWebOutputCollector(maximumBytes: 32)
+        collector.append(Data(String(repeating: "x", count: 32).utf8))
+        collector.append(Data("Web UI available at http://127.0.0.1:7777\n".utf8))
+
+        XCTAssertFalse(collector.waitForURL(timeoutSeconds: 0.1))
+        XCTAssertNil(collector.webUIURL)
+        XCTAssertTrue(collector.didOverflow)
+    }
+
+    func testRecognizesURLSplitAcrossChunks() {
+        let collector = ServeWebOutputCollector(maximumBytes: 128)
+        collector.append(Data("Web UI available at http://127.0.".utf8))
+        collector.append(Data("0.1:8123?tkn=split\n".utf8))
+
+        XCTAssertTrue(collector.waitForURL(timeoutSeconds: 0.1))
+        XCTAssertEqual(collector.webUIURL?.absoluteString, "http://127.0.0.1:8123?tkn=split")
+    }
+
     func testWaitForURLReturnsFalseAfterProcessExitSignal() {
         let collector = ServeWebOutputCollector()
 

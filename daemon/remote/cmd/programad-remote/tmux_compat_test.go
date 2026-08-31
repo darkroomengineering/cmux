@@ -141,8 +141,14 @@ func TestTmuxShellCommandText(t *testing.T) {
 }
 
 func TestTmuxWaitForSignalPath(t *testing.T) {
-	path := tmuxWaitForSignalPath("test-signal")
-	if !strings.HasPrefix(path, "/tmp/programa-wait-for-") {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	path, err := tmuxWaitForSignalPath("test-signal", "/tmp/programa-a.sock")
+	if err != nil {
+		t.Fatalf("tmuxWaitForSignalPath: %v", err)
+	}
+	if !strings.HasPrefix(path, filepath.Join(home, ".programa", "run", "wait-for")+string(os.PathSeparator)) {
 		t.Errorf("unexpected path prefix: %s", path)
 	}
 	if !strings.HasSuffix(path, ".sig") {
@@ -883,23 +889,75 @@ func TestMergeNodeOptions(t *testing.T) {
 }
 
 func TestTmuxWaitForSignalRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
 	name := "test-roundtrip-" + randomHex(4)
-	path := tmuxWaitForSignalPath(name)
+	rc := &rpcContext{socketPath: "/tmp/programa-session-a.sock"}
+	path, pathErr := tmuxWaitForSignalPath(name, rc.socketPath)
+	if pathErr != nil {
+		t.Fatalf("tmuxWaitForSignalPath: %v", pathErr)
+	}
 	defer os.Remove(path)
 
 	// Signal creates the file
-	dispatchTmuxCommand(nil, "wait-for", []string{"-S", name})
+	if err := dispatchTmuxCommand(rc, "wait-for", []string{"-S", name}); err != nil {
+		t.Fatalf("signal wait-for: %v", err)
+	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("signal file not created: %v", err)
 	}
 
 	// Wait consumes the file
-	err := dispatchTmuxCommand(nil, "wait-for", []string{name})
+	err := dispatchTmuxCommand(rc, "wait-for", []string{name})
 	if err != nil {
 		t.Fatalf("wait-for should succeed: %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("signal file should be removed after wait")
+	}
+}
+
+func TestTmuxWaitForSignalsAreScopedBySocket(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	name := "shared-name"
+	first, err := tmuxWaitForSignalPath(name, "/tmp/programa-session-a.sock")
+	if err != nil {
+		t.Fatalf("first signal path: %v", err)
+	}
+	second, err := tmuxWaitForSignalPath(name, "/tmp/programa-session-b.sock")
+	if err != nil {
+		t.Fatalf("second signal path: %v", err)
+	}
+	if first == second {
+		t.Fatalf("different socket sessions share wait-for signal path %q", first)
+	}
+}
+
+func TestTmuxWaitForRejectsSymlinkSignal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	rc := &rpcContext{socketPath: "/tmp/programa-session.sock"}
+	path, err := tmuxWaitForSignalPath("malicious", rc.socketPath)
+	if err != nil {
+		t.Fatalf("signal path: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("do not touch"), 0600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("create signal symlink: %v", err)
+	}
+	if err := dispatchTmuxCommand(rc, "wait-for", []string{"-S", "malicious"}); err == nil {
+		t.Fatal("expected symlinked wait-for signal to be rejected")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "do not touch" {
+		t.Fatalf("symlink target changed: data=%q err=%v", data, err)
 	}
 }
 

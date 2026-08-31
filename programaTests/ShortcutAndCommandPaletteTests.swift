@@ -1284,3 +1284,47 @@ final class CommandPaletteOverlayPromotionPolicyTests: XCTestCase {
         )
     }
 }
+
+@MainActor
+final class CommandPaletteLifecycleOwnerTests: XCTestCase {
+    func testWindowLifecycleExpiresPendingRequestsAndEscapeSuppression() {
+        let lifecycle = CommandPaletteWindowLifecycle()
+        let windowId = UUID()
+
+        lifecycle.markOpenRequested(windowId: windowId, now: 10)
+        XCTAssertTrue(lifecycle.isPendingOpen(windowId: windowId, now: 11, maximumAge: 2))
+        XCTAssertFalse(lifecycle.isPendingOpen(windowId: windowId, now: 13, maximumAge: 2))
+
+        lifecycle.beginEscapeSuppression(windowId: windowId, now: 20)
+        XCTAssertTrue(lifecycle.shouldConsumeSuppressedEscape(windowId: windowId, now: 20.2))
+        XCTAssertFalse(lifecycle.shouldConsumeSuppressedEscape(windowId: windowId, now: 20.5))
+    }
+
+    func testWindowLifecycleTracksVisibilitySelectionAndTeardown() {
+        let lifecycle = CommandPaletteWindowLifecycle()
+        let windowId = UUID()
+
+        XCTAssertFalse(lifecycle.setVisible(true, windowId: windowId))
+        XCTAssertTrue(lifecycle.isVisible(windowId: windowId))
+        lifecycle.setSelectionIndex(-4, windowId: windowId)
+        XCTAssertEqual(lifecycle.selectionIndex(windowId: windowId), 0)
+        XCTAssertTrue(lifecycle.setVisible(false, windowId: windowId))
+        lifecycle.teardown(windowId: windowId)
+        XCTAssertFalse(lifecycle.isVisible(windowId: windowId))
+    }
+
+    func testControllerOwnsSelectionAndUsageTransitions() {
+        let controller = CommandPaletteController()
+
+        XCTAssertTrue(controller.moveSelection(by: 1, resultIDs: ["one", "two", "three"]))
+        XCTAssertEqual(controller.commandPaletteSelectedResultIndex, 1)
+        XCTAssertEqual(controller.commandPaletteSelectionAnchorCommandID, "two")
+        XCTAssertFalse(controller.moveSelection(by: 1, resultIDs: []))
+
+        let first = controller.recordUsage(commandId: "open", usedAt: 10)
+        let second = controller.recordUsage(commandId: "open", usedAt: 20)
+        XCTAssertEqual(first["open"]?.useCount, 1)
+        XCTAssertEqual(second["open"]?.useCount, 2)
+        XCTAssertEqual(second["open"]?.lastUsedAt, 20)
+    }
+}

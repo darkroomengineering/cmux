@@ -53,35 +53,6 @@ func makeShortUnixSocketPath(t *testing.T) string {
 	return filepath.Join(dir, "programa.sock")
 }
 
-// startMockSocket creates a Unix socket that accepts one connection,
-// reads a line, and responds with the given canned response.
-func startMockSocket(t *testing.T, response string) string {
-	t.Helper()
-	sockPath := makeShortUnixSocketPath(t)
-
-	ln, err := net.Listen("unix", sockPath)
-	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			buf := make([]byte, 4096)
-			n, _ := conn.Read(buf)
-			_ = n // consume request
-			conn.Write([]byte(response + "\n"))
-			conn.Close()
-		}
-	}()
-
-	return sockPath
-}
-
 // startMockV2Socket creates a Unix socket that echoes the received request's method
 // back as a successful JSON-RPC response with the method name in the result.
 func startMockV2Socket(t *testing.T) string {
@@ -207,33 +178,7 @@ func startMockV2TCPSocketWithResult(t *testing.T, result any) string {
 	return ln.Addr().String()
 }
 
-// startMockTCPSocket creates a TCP listener that responds with a canned response.
-func startMockTCPSocket(t *testing.T, response string) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen on TCP: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			buf := make([]byte, 4096)
-			n, _ := conn.Read(buf)
-			_ = n
-			conn.Write([]byte(response + "\n"))
-			conn.Close()
-		}
-	}()
-
-	return ln.Addr().String()
-}
-
-func startMockAuthenticatedTCPSocket(t *testing.T, relayID, relayToken, response string) string {
+func startMockAuthenticatedV2TCPSocket(t *testing.T, relayID, relayToken string, result any) string {
 	t.Helper()
 	relayTokenBytes := mustHex(t, relayToken)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -285,12 +230,20 @@ func startMockAuthenticatedTCPSocket(t *testing.T, relayID, relayToken, response
 				}
 
 				_, _ = conn.Write([]byte(`{"ok":true}` + "\n"))
-				buf := make([]byte, 4096)
-				n, _ := conn.Read(buf)
-				_, _ = conn.Write([]byte(response))
-				if n > 0 && !strings.HasSuffix(response, "\n") {
-					_, _ = conn.Write([]byte("\n"))
+				requestLine, err := reader.ReadString('\n')
+				if err != nil {
+					return
 				}
+				var request map[string]any
+				if err := json.Unmarshal([]byte(requestLine), &request); err != nil {
+					return
+				}
+				response, _ := json.Marshal(map[string]any{
+					"id":     request["id"],
+					"ok":     true,
+					"result": result,
+				})
+				_, _ = conn.Write(append(response, '\n'))
 			}(conn)
 		}
 	}()
@@ -377,26 +330,34 @@ func TestDialSocketFailsFastWhenTCPAddressStaysStale(t *testing.T) {
 	}
 }
 
-func TestCLIPingV1(t *testing.T) {
-	sockPath := startMockSocket(t, "pong")
+func TestCLIPingUsesSystemPingV2(t *testing.T) {
+	sockPath, requests := startMockV2SocketWithRequestCapture(t)
 	code := runCLI([]string{"--socket", sockPath, "ping"})
 	if code != 0 {
 		t.Fatalf("ping should return 0, got %d", code)
 	}
+	select {
+	case request := <-requests:
+		if request["method"] != "system.ping" {
+			t.Fatalf("ping sent method %v, want system.ping", request["method"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ping request")
+	}
 }
 
-func TestCLIPingV1OverTCP(t *testing.T) {
-	addr := startMockTCPSocket(t, "pong")
+func TestCLIPingV2OverTCP(t *testing.T) {
+	addr := startMockV2TCPSocketWithResult(t, map[string]any{"pong": true})
 	code := runCLI([]string{"--socket", addr, "ping"})
 	if code != 0 {
 		t.Fatalf("ping over TCP should return 0, got %d", code)
 	}
 }
 
-func TestCLIPingV1OverAuthenticatedTCPWithEnv(t *testing.T) {
+func TestCLIPingV2OverAuthenticatedTCPWithEnv(t *testing.T) {
 	relayID := "relay-1"
 	relayToken := strings.Repeat("a1", 32)
-	addr := startMockAuthenticatedTCPSocket(t, relayID, relayToken, "pong")
+	addr := startMockAuthenticatedV2TCPSocket(t, relayID, relayToken, map[string]any{"pong": true})
 	t.Setenv("PROGRAMA_RELAY_ID", relayID)
 	t.Setenv("PROGRAMA_RELAY_TOKEN", relayToken)
 
@@ -406,10 +367,10 @@ func TestCLIPingV1OverAuthenticatedTCPWithEnv(t *testing.T) {
 	}
 }
 
-func TestCLIPingV1OverAuthenticatedTCPWithRelayFile(t *testing.T) {
+func TestCLIPingV2OverAuthenticatedTCPWithRelayFile(t *testing.T) {
 	relayID := "relay-2"
 	relayToken := strings.Repeat("b2", 32)
-	addr := startMockAuthenticatedTCPSocket(t, relayID, relayToken, "pong")
+	addr := startMockAuthenticatedV2TCPSocket(t, relayID, relayToken, map[string]any{"pong": true})
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("split host port: %v", err)
@@ -468,61 +429,116 @@ func TestDialSocketDetection(t *testing.T) {
 	conn.Close()
 }
 
-func TestCLINewWindowV1(t *testing.T) {
-	sockPath := startMockSocket(t, "OK window_id=abc123")
+func TestCLINewWindowUsesWindowCreateV2(t *testing.T) {
+	sockPath, requests := startMockV2SocketWithRequestCapture(t)
 	code := runCLI([]string{"--socket", sockPath, "new-window"})
 	if code != 0 {
 		t.Fatalf("new-window should return 0, got %d", code)
 	}
-}
-
-func TestSocketRoundTripReadsFullMultilineV1Response(t *testing.T) {
-	addr := startMockTCPSocket(t, "window:alpha\nwindow:beta\nwindow:gamma")
-	resp, err := socketRoundTrip(addr, "list_windows", nil)
-	if err != nil {
-		t.Fatalf("socketRoundTrip should succeed, got error: %v", err)
-	}
-	want := "window:alpha\nwindow:beta\nwindow:gamma"
-	if resp != want {
-		t.Fatalf("socketRoundTrip truncated v1 response: got %q want %q", resp, want)
-	}
-}
-
-func TestCLICloseWindowV1(t *testing.T) {
-	// Verify that the flag value is appended to the v1 command
-	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "programa.sock")
-
-	receivedCh := make(chan string, 1)
-	ln, err := net.Listen("unix", sockPath)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() })
-
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+	select {
+	case request := <-requests:
+		if request["method"] != "window.create" {
+			t.Fatalf("new-window sent method %v, want window.create", request["method"])
 		}
-		buf := make([]byte, 4096)
-		n, _ := conn.Read(buf)
-		receivedCh <- strings.TrimSpace(string(buf[:n]))
-		conn.Write([]byte("OK\n"))
-		conn.Close()
-	}()
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for new-window request")
+	}
+}
 
+func TestCLICloseWindowUsesWindowCloseV2WithWindowID(t *testing.T) {
+	sockPath, requests := startMockV2SocketWithRequestCapture(t)
 	code := runCLI([]string{"--socket", sockPath, "close-window", "--window", "win-42"})
 	if code != 0 {
 		t.Fatalf("close-window should return 0, got %d", code)
 	}
 	select {
-	case received := <-receivedCh:
-		if received != "close_window win-42" {
-			t.Fatalf("expected 'close_window win-42', got %q", received)
+	case request := <-requests:
+		if request["method"] != "window.close" {
+			t.Fatalf("close-window sent method %v, want window.close", request["method"])
+		}
+		params, _ := request["params"].(map[string]any)
+		if params["window_id"] != "win-42" {
+			t.Fatalf("close-window sent params %v, want window_id=win-42", params)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for close-window payload")
+	}
+}
+
+func TestRemainingWindowCommandsUseV2Methods(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantMethod string
+		wantWindow string
+	}{
+		{name: "current-window", args: []string{"current-window"}, wantMethod: "window.current"},
+		{name: "focus-window", args: []string{"focus-window", "--window", "win-42"}, wantMethod: "window.focus", wantWindow: "win-42"},
+		{name: "list-windows", args: []string{"list-windows"}, wantMethod: "window.list"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sockPath, requests := startMockV2SocketWithRequestCapture(t)
+			if code := runCLI(append([]string{"--socket", sockPath, "--json"}, test.args...)); code != 0 {
+				t.Fatalf("%s returned %d", test.name, code)
+			}
+			select {
+			case request := <-requests:
+				if request["method"] != test.wantMethod {
+					t.Fatalf("%s sent method %v, want %s", test.name, request["method"], test.wantMethod)
+				}
+				params, _ := request["params"].(map[string]any)
+				if test.wantWindow != "" && params["window_id"] != test.wantWindow {
+					t.Fatalf("%s sent params %v, want window_id=%s", test.name, params, test.wantWindow)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("timed out waiting for %s request", test.name)
+			}
+		})
+	}
+}
+
+func TestCLIWindowV2ServerErrorReturnsNonzero(t *testing.T) {
+	sockPath := makeShortUnixSocketPath(t)
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	requestCh := make(chan map[string]any, 1)
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		line, readErr := bufio.NewReader(conn).ReadBytes('\n')
+		if readErr != nil {
+			return
+		}
+		var request map[string]any
+		if json.Unmarshal(line, &request) != nil {
+			return
+		}
+		requestCh <- request
+		response, _ := json.Marshal(map[string]any{
+			"id":    request["id"],
+			"ok":    false,
+			"error": map[string]any{"code": "not_found", "message": "Window not found"},
+		})
+		_, _ = conn.Write(append(response, '\n'))
+	}()
+
+	if code := runCLI([]string{"--socket", sockPath, "focus-window", "--window", "missing"}); code == 0 {
+		t.Fatal("focus-window must return nonzero for a v2 server error")
+	}
+	select {
+	case request := <-requestCh:
+		if request["method"] != "window.focus" {
+			t.Fatalf("focus-window sent method %v, want window.focus", request["method"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for focus-window request")
 	}
 }
 
@@ -593,7 +609,7 @@ func TestCLINoSocket(t *testing.T) {
 }
 
 func TestCLISocketEnvVar(t *testing.T) {
-	sockPath := startMockSocket(t, "pong")
+	sockPath := startMockV2Socket(t)
 	os.Setenv("PROGRAMA_SOCKET_PATH", sockPath)
 	defer os.Unsetenv("PROGRAMA_SOCKET_PATH")
 

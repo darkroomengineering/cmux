@@ -879,6 +879,149 @@ final class KeyboardShortcutSettingsFileStoreTests: XCTestCase {
         )
     }
 
+    func testSettingsFileRejectsInvalidCombinedAutomationPortInterval() throws {
+        let defaults = UserDefaults.standard
+        let backupsKey = "programa.settingsFile.backups.v1"
+        let baseKey = ProgramaPortRangePolicy.baseDefaultsKey
+        let rangeKey = ProgramaPortRangePolicy.rangeDefaultsKey
+        let previousBase = defaults.object(forKey: baseKey)
+        let previousRange = defaults.object(forKey: rangeKey)
+        let previousBackups = defaults.data(forKey: backupsKey)
+        defer {
+            restoreDefaultsValue(previousBase, key: baseKey, defaults: defaults)
+            restoreDefaultsValue(previousRange, key: rangeKey, defaults: defaults)
+            if let previousBackups {
+                defaults.set(previousBackups, forKey: backupsKey)
+            } else {
+                defaults.removeObject(forKey: backupsKey)
+            }
+        }
+
+        defaults.set(12_000, forKey: baseKey)
+        defaults.set(20, forKey: rangeKey)
+        defaults.removeObject(forKey: backupsKey)
+
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let settingsFileURL = directoryURL.appendingPathComponent("settings.json")
+        try writeSettingsFile(
+            """
+            {
+              "automation": {
+                "portBase": 65530,
+                "portRange": 10
+              }
+            }
+            """,
+            to: settingsFileURL
+        )
+
+        _ = KeyboardShortcutSettingsFileStore(
+            primaryPath: settingsFileURL.path,
+            fallbackPath: nil,
+            startWatching: false
+        )
+
+        XCTAssertEqual(defaults.integer(forKey: baseKey), 12_000)
+        XCTAssertEqual(defaults.integer(forKey: rangeKey), 20)
+        XCTAssertNil(defaults.data(forKey: backupsKey))
+    }
+
+    func testSettingsFileAppliesValidAutomationPortIntervalAtomically() throws {
+        let defaults = UserDefaults.standard
+        let backupsKey = "programa.settingsFile.backups.v1"
+        let baseKey = ProgramaPortRangePolicy.baseDefaultsKey
+        let rangeKey = ProgramaPortRangePolicy.rangeDefaultsKey
+        let previousBase = defaults.object(forKey: baseKey)
+        let previousRange = defaults.object(forKey: rangeKey)
+        let previousBackups = defaults.data(forKey: backupsKey)
+        defer {
+            restoreDefaultsValue(previousBase, key: baseKey, defaults: defaults)
+            restoreDefaultsValue(previousRange, key: rangeKey, defaults: defaults)
+            if let previousBackups {
+                defaults.set(previousBackups, forKey: backupsKey)
+            } else {
+                defaults.removeObject(forKey: backupsKey)
+            }
+        }
+
+        defaults.set(12_000, forKey: baseKey)
+        defaults.set(20, forKey: rangeKey)
+        defaults.removeObject(forKey: backupsKey)
+
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let settingsFileURL = directoryURL.appendingPathComponent("settings.json")
+        try writeSettingsFile(
+            """
+            {
+              "automation": {
+                "portBase": 64000,
+                "portRange": 100
+              }
+            }
+            """,
+            to: settingsFileURL
+        )
+
+        _ = KeyboardShortcutSettingsFileStore(
+            primaryPath: settingsFileURL.path,
+            fallbackPath: nil,
+            startWatching: false
+        )
+
+        XCTAssertEqual(defaults.integer(forKey: baseKey), 64_000)
+        XCTAssertEqual(defaults.integer(forKey: rangeKey), 100)
+        XCTAssertNotNil(defaults.data(forKey: backupsKey))
+    }
+
+    func testSettingsFileRejectsSingleAutomationPortKeyThatOverflowsWithDefaultCounterpart() throws {
+        let defaults = UserDefaults.standard
+        let backupsKey = "programa.settingsFile.backups.v1"
+        let baseKey = ProgramaPortRangePolicy.baseDefaultsKey
+        let rangeKey = ProgramaPortRangePolicy.rangeDefaultsKey
+        let previousBase = defaults.object(forKey: baseKey)
+        let previousRange = defaults.object(forKey: rangeKey)
+        let previousBackups = defaults.data(forKey: backupsKey)
+        defer {
+            restoreDefaultsValue(previousBase, key: baseKey, defaults: defaults)
+            restoreDefaultsValue(previousRange, key: rangeKey, defaults: defaults)
+            if let previousBackups {
+                defaults.set(previousBackups, forKey: backupsKey)
+            } else {
+                defaults.removeObject(forKey: backupsKey)
+            }
+        }
+
+        defaults.set(12_000, forKey: baseKey)
+        defaults.set(20, forKey: rangeKey)
+        defaults.removeObject(forKey: backupsKey)
+
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let settingsFileURL = directoryURL.appendingPathComponent("settings.json")
+        try writeSettingsFile(
+            """
+            {
+              "automation": {
+                "portBase": 65530
+              }
+            }
+            """,
+            to: settingsFileURL
+        )
+
+        _ = KeyboardShortcutSettingsFileStore(
+            primaryPath: settingsFileURL.path,
+            fallbackPath: nil,
+            startWatching: false
+        )
+
+        XCTAssertEqual(defaults.integer(forKey: baseKey), 12_000)
+        XCTAssertEqual(defaults.integer(forKey: rangeKey), 20)
+        XCTAssertNil(defaults.data(forKey: backupsKey))
+    }
+
     func testManagedUserDefaultSettingRestoresBackedUpValueWhenFileSettingIsRemoved() throws {
         let defaults = UserDefaults.standard
         let managedKey = WorkspaceAutoReorderSettings.key

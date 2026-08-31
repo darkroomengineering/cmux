@@ -130,6 +130,108 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         return histfile ?? ""
     }
 
+    func testRemoteDaemonDownloadIsMovedIntoOwnedStorageBeforeCallbackReturns() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent("remote-daemon-download-\(UUID().uuidString)", isDirectory: true)
+        let callbackTemporaryURL = directory.appendingPathComponent("urlsession.tmp")
+        let ownedURL = directory.appendingPathComponent("owned.download")
+        defer { try? fileManager.removeItem(at: directory) }
+
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("verified daemon".utf8).write(to: callbackTemporaryURL)
+
+        let result = WorkspaceRemoteSessionController.preserveRemoteDaemonDownload(
+            temporaryURL: callbackTemporaryURL,
+            response: nil,
+            error: nil,
+            destinationURL: ownedURL,
+            fileManager: fileManager
+        )
+
+        XCTAssertEqual(try result.get(), ownedURL)
+        XCTAssertFalse(fileManager.fileExists(atPath: callbackTemporaryURL.path))
+        XCTAssertEqual(try Data(contentsOf: ownedURL), Data("verified daemon".utf8))
+    }
+
+    func testRemoteDaemonDownloadRejectsHTTPFailureWithoutMovingTemporaryFile() throws {
+        let fileManager = FileManager.default
+        let directory = fileManager.temporaryDirectory
+            .appendingPathComponent("remote-daemon-http-\(UUID().uuidString)", isDirectory: true)
+        let callbackTemporaryURL = directory.appendingPathComponent("urlsession.tmp")
+        let ownedURL = directory.appendingPathComponent("owned.download")
+        defer { try? fileManager.removeItem(at: directory) }
+
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("error page".utf8).write(to: callbackTemporaryURL)
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: URL(string: "https://example.invalid/programad-remote")!,
+            statusCode: 503,
+            httpVersion: nil,
+            headerFields: nil
+        ))
+
+        let result = WorkspaceRemoteSessionController.preserveRemoteDaemonDownload(
+            temporaryURL: callbackTemporaryURL,
+            response: response,
+            error: nil,
+            destinationURL: ownedURL,
+            fileManager: fileManager
+        )
+
+        XCTAssertThrowsError(try result.get())
+        XCTAssertTrue(fileManager.fileExists(atPath: callbackTemporaryURL.path))
+        XCTAssertFalse(fileManager.fileExists(atPath: ownedURL.path))
+    }
+
+    @MainActor
+    func testStoppedRelayCannotAppendStderrIntoReplacementGeneration() {
+        let workspace = Workspace()
+        let configuration = WorkspaceRemoteConfiguration(
+            destination: "example.invalid",
+            port: nil,
+            identityFile: nil,
+            sshOptions: [],
+            localProxyPort: nil,
+            relayPort: 64_007,
+            relayID: String(repeating: "a", count: 16),
+            relayToken: String(repeating: "b", count: 64),
+            localSocketPath: "/tmp/programa-relay-stderr-test.sock",
+            terminalStartupCommand: "ssh example.invalid"
+        )
+        let controller = WorkspaceRemoteSessionController(
+            workspace: workspace,
+            configuration: configuration,
+            controllerID: UUID()
+        )
+        let oldPipe = Pipe()
+        let replacementPipe = Pipe()
+
+        controller.reverseRelayGeneration = 10
+        controller.reverseRelayStderrPipe = replacementPipe
+        controller.reverseRelayStderrBuffer = "replacement:"
+
+        XCTAssertFalse(
+            controller.appendReverseRelayStderrLocked(
+                Data("old process failure".utf8),
+                from: oldPipe,
+                generation: 9
+            )
+        )
+        XCTAssertEqual(controller.reverseRelayStderrBuffer, "replacement:")
+        XCTAssertTrue(
+            controller.appendReverseRelayStderrLocked(
+                Data(" current process failure".utf8),
+                from: replacementPipe,
+                generation: 10
+            )
+        )
+        XCTAssertEqual(
+            controller.reverseRelayStderrBuffer,
+            "replacement: current process failure"
+        )
+    }
+
     func testRemoteRelayMetadataCleanupScriptRemovesMatchingSocketAddr() {
         let fileManager = FileManager.default
         let home = fileManager.temporaryDirectory.appendingPathComponent("cmux-relay-cleanup-\(UUID().uuidString)")

@@ -238,4 +238,29 @@ final class ProgramaDirectoryTrustTests: XCTestCase {
             .changed
         )
     }
+
+    func testConcurrentTrustMutationsRemainDecodableAndLinearizable() throws {
+        try writeConfig(#"{ "commands": [{ "name": "Build", "command": "make build" }] }"#)
+        let store = makeStore()
+        let configPath = configURL.path
+        let trustedPath = configDir.path
+
+        DispatchQueue.concurrentPerform(iterations: 100) { index in
+            if index.isMultiple(of: 3) {
+                store.trust(configPath: configPath)
+            } else if index.isMultiple(of: 2) {
+                store.revokeTrust(configPath: configPath)
+            } else {
+                _ = store.allTrustedPaths
+            }
+        }
+
+        store.replaceAll(with: [trustedPath])
+        let reloaded = makeStore()
+        XCTAssertEqual(reloaded.allTrustedPaths, [trustedPath])
+        XCTAssertEqual(
+            reloaded.trustState(configPath: configPath, globalConfigPath: Self.globalConfigPath),
+            .trusted
+        )
+    }
 }

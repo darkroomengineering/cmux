@@ -1291,3 +1291,47 @@ final class TerminalControllerNotificationTitleTests: XCTestCase {
         XCTAssertEqual(store.notifications.first?.title, "Waiting for input")
     }
 }
+
+final class AppNotificationRouterTests: XCTestCase {
+    func testDefaultActionRoutesToExactTabSurfaceAndNotification() {
+        let tabId = UUID()
+        let surfaceId = UUID()
+        let notificationId = UUID()
+
+        XCTAssertEqual(
+            AppNotificationRouter.route(
+                actionIdentifier: UNNotificationDefaultActionIdentifier,
+                requestIdentifier: notificationId.uuidString,
+                userInfo: ["tabId": tabId.uuidString, "surfaceId": surfaceId.uuidString]
+            ),
+            .open(tabId: tabId, surfaceId: surfaceId, notificationId: notificationId)
+        )
+    }
+
+    func testDismissMarksReadAndMalformedTargetActivatesApplication() {
+        let tabId = UUID()
+        let notificationId = UUID()
+
+        XCTAssertEqual(
+            AppNotificationRouter.route(
+                actionIdentifier: UNNotificationDismissActionIdentifier,
+                requestIdentifier: notificationId.uuidString,
+                userInfo: ["tabId": tabId.uuidString]
+            ),
+            .markRead(notificationId: notificationId)
+        )
+        XCTAssertEqual(
+            AppNotificationRouter.route(
+                actionIdentifier: UNNotificationDefaultActionIdentifier,
+                requestIdentifier: notificationId.uuidString,
+                userInfo: [:]
+            ),
+            .activateApplication
+        )
+    }
+
+    func testPresentationOptionsOnlyRequestSoundWhenNotificationHasSound() {
+        XCTAssertEqual(AppNotificationRouter.presentationOptions(hasSound: false), [.banner, .list])
+        XCTAssertEqual(AppNotificationRouter.presentationOptions(hasSound: true), [.banner, .list, .sound])
+    }
+}

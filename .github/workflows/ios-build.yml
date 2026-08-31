@@ -16,12 +16,14 @@ on:
       - main
     paths:
       - "ios/**"
+      - "tools/mobile-spike/**"
       - "vendor/CmuxIrohTransport/**"
       - "scripts/build-ios-testflight.sh"
       - ".github/workflows/ios-build.yml"
   pull_request:
     paths:
       - "ios/**"
+      - "tools/mobile-spike/**"
       - "vendor/CmuxIrohTransport/**"
       - "scripts/build-ios-testflight.sh"
       - ".github/workflows/ios-build.yml"
@@ -86,3 +88,26 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             build
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          # Pin the simulator model instead of relying on xcodebuild's generic
+          # destination selection, which can choose a different runtime/device
+          # as the hosted image changes. `-only-testing` also fails loudly if
+          # the generated app scheme ever stops including ProgramaSpikeTests.
+          xcodebuild \
+            -project ios/ProgramaSpike/ProgramaSpike.xcodeproj \
+            -scheme ProgramaSpike \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -derivedDataPath "$RUNNER_TEMP/programa-ios-tests-derived-data" \
+            -clonedSourcePackagesDirPath .ios-build/source-packages \
+            -only-testing:ProgramaSpikeTests \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            test
+
+      - name: Test shared mobile framing
+        run: swift test --package-path tools/mobile-spike

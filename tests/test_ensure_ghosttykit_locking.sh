@@ -47,22 +47,28 @@ make_fixture() {
 
   mkdir -p "$repo/scripts" "$repo/ghostty/include" "$bin"
   cp "$ROOT_DIR/scripts/ensure-ghosttykit.sh" "$repo/scripts/ensure-ghosttykit.sh"
-  chmod +x "$repo/scripts/ensure-ghosttykit.sh"
+  cp "$ROOT_DIR/scripts/required-zig-version.sh" "$repo/scripts/required-zig-version.sh"
+  chmod +x "$repo/scripts/ensure-ghosttykit.sh" "$repo/scripts/required-zig-version.sh"
   printf '#include "ghostty/include/ghostty.h"\n' > "$repo/ghostty.h"
   printf 'fixture\n' > "$repo/ghostty/include/ghostty.h"
+  printf '.{\n    .minimum_zig_version = "0.16.0",\n}\n' > "$repo/ghostty/build.zig.zon"
 
   (
     cd "$repo/ghostty"
     git init -q
     git config user.email test@example.com
     git config user.name "Programa Tests"
-    git add include/ghostty.h
+    git add include/ghostty.h build.zig.zon
     git commit -qm fixture
   )
 
-  cat > "$bin/zig" <<'EOF'
+cat > "$bin/zig" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "version" ]]; then
+  echo "0.16.0"
+  exit 0
+fi
 printf '%s\n' "$$" >> "${TEST_ZIG_CALL_LOG:?}"
 touch "${TEST_ZIG_STARTED:?}"
 if [[ "${TEST_BLOCK_ZIG:-0}" == "1" ]]; then

@@ -238,6 +238,81 @@ final class SessionPersistenceTests: XCTestCase {
         )
     }
 
+    func testHistoryScanCapsDirectoryEnumerationBeforeSorting() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-session-history-cap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        let historyDirectory = try XCTUnwrap(SessionPersistenceStore.historyDirectoryURL(fileURL: snapshotURL))
+        try FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+        for index in 0..<40 {
+            let name = "20260101-\(String(format: "%06d", index)).json"
+            try Data("{}".utf8).write(to: historyDirectory.appendingPathComponent(name))
+        }
+
+        let result = SessionPersistenceStore.historyScan(fileURL: snapshotURL, scanLimit: 8)
+        let returnedNames = result.entries.map(\.lastPathComponent)
+
+        XCTAssertEqual(result.inspectedEntryCount, 8)
+        XCTAssertEqual(result.entries.count, 8)
+        XCTAssertEqual(returnedNames, returnedNames.sorted(by: >))
+        XCTAssertTrue(result.entries.allSatisfy { $0.deletingLastPathComponent() == historyDirectory })
+    }
+
+    func testRotateIntoHistoryCapsDuplicateAndPruningScansInHostileDirectory() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-session-history-rotation-cap-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        let historyDirectory = try XCTUnwrap(SessionPersistenceStore.historyDirectoryURL(fileURL: snapshotURL))
+        try FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+
+        let hostileEntryCount = SessionPersistenceStore.historyDirectoryScanLimit + 44
+        for index in 0..<hostileEntryCount {
+            let name = "20260101-\(String(format: "%06d", index)).json"
+            try Data("{\"seed\":\(index)}".utf8).write(to: historyDirectory.appendingPathComponent(name))
+        }
+
+        XCTAssertTrue(
+            SessionPersistenceStore.save(
+                makeSnapshot(version: SessionSnapshotSchema.currentVersion),
+                fileURL: snapshotURL
+            )
+        )
+
+        var inspectedEntryCounts: [Int] = []
+        XCTAssertTrue(
+            SessionPersistenceStore.rotateIntoHistory(
+                fileURL: snapshotURL,
+                maxHistoryEntries: 0,
+                historyScanObserver: { inspectedEntryCounts.append($0.inspectedEntryCount) }
+            )
+        )
+
+        XCTAssertEqual(
+            inspectedEntryCounts,
+            [
+                SessionPersistenceStore.historyDirectoryScanLimit,
+                SessionPersistenceStore.historyDirectoryScanLimit,
+            ],
+            "Duplicate suppression and pruning must each stop at the shared directory scan cap"
+        )
+
+        let remainingJSONEntries = try FileManager.default.contentsOfDirectory(
+            at: historyDirectory,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "json" }
+        XCTAssertEqual(
+            remainingJSONEntries.count,
+            hostileEntryCount + 1 - SessionPersistenceStore.historyDirectoryScanLimit,
+            "One rotation may prune only the entries returned by its bounded maintenance scan"
+        )
+    }
+
     func testRotateIntoHistoryReplacesAnArchiveThatLandsOnTheSameFilename() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-session-history-tests-\(UUID().uuidString)", isDirectory: true)
@@ -310,6 +385,86 @@ final class SessionPersistenceTests: XCTestCase {
 
     func testDecodeSnapshotReturnsNilForCorruptData() {
         XCTAssertNil(SessionPersistenceStore.decodeSnapshot(from: Data("not json".utf8)))
+    }
+
+    func testSnapshotReaderRejectsBytesBeyondLimitBeforeFullAllocation() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-session-bounds-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json")
+        try Data(repeating: 0x41, count: 33).write(to: snapshotURL)
+
+        XCTAssertNil(
+            SessionPersistenceStore.boundedSnapshotData(at: snapshotURL, maximumBytes: 32)
+        )
+    }
+
+    func testDecodeSnapshotRejectsExcessiveJSONNestingBeforeRecursiveDecode() throws {
+        let snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        let encoded = try JSONEncoder().encode(snapshot)
+        var json = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+        let depth = SessionPersistencePolicy.maxJSONNestingDepth + 1
+        let nestedValue = String(repeating: "[", count: depth)
+            + "0"
+            + String(repeating: "]", count: depth)
+        json.insert(contentsOf: ",\"unexpectedDeepValue\":\(nestedValue)", at: json.index(before: json.endIndex))
+
+        XCTAssertNil(SessionPersistenceStore.decodeSnapshot(from: Data(json.utf8)))
+    }
+
+    func testDecodeSnapshotRejectsWindowCountBeyondReconstructionPolicy() throws {
+        let base = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        let window = try XCTUnwrap(base.windows.first)
+        let oversized = AppSessionSnapshot(
+            version: base.version,
+            createdAt: base.createdAt,
+            windows: Array(
+                repeating: window,
+                count: SessionPersistencePolicy.maxWindowsPerSnapshot + 1
+            ),
+            cleanShutdown: base.cleanShutdown
+        )
+
+        XCTAssertNil(
+            SessionPersistenceStore.decodeSnapshot(from: try JSONEncoder().encode(oversized))
+        )
+    }
+
+    func testSaveRejectsSnapshotBeyondReconstructionPolicy() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-session-save-bounds-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let base = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        let window = try XCTUnwrap(base.windows.first)
+        let oversized = AppSessionSnapshot(
+            version: base.version,
+            createdAt: base.createdAt,
+            windows: Array(
+                repeating: window,
+                count: SessionPersistencePolicy.maxWindowsPerSnapshot + 1
+            ),
+            cleanShutdown: base.cleanShutdown
+        )
+        let snapshotURL = tempDir.appendingPathComponent("session.json")
+
+        XCTAssertFalse(SessionPersistenceStore.save(oversized, fileURL: snapshotURL))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: snapshotURL.path))
+    }
+
+    func testDecodeSnapshotRejectsOversizedNestedMetadataBeforeRestore() throws {
+        var snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        snapshot.windows[0].tabManager.workspaces[0].processTitle = String(
+            repeating: "x",
+            count: SessionPersistencePolicy.maxMetadataStringBytes + 1
+        )
+
+        XCTAssertNil(
+            SessionPersistenceStore.decodeSnapshot(from: try JSONEncoder().encode(snapshot))
+        )
     }
 
     func testAppSessionSnapshotDecodesLegacyJSONWithoutCleanShutdownField() throws {
@@ -452,6 +607,10 @@ final class SessionPersistenceTests: XCTestCase {
             "Intact History Copy",
             "A corrupt primary snapshot should fall back to the archived history copy"
         )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: snapshotURL.path))
+        let quarantined = try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+            .filter { $0.hasSuffix(".json-quarantine") }
+        XCTAssertEqual(quarantined.count, 1, "The corrupt primary should not poison the next launch")
     }
 
     func testLoadWithHistoryFallbackReturnsHistoryCopyWhenPrimaryVersionMismatches() throws {
@@ -1769,6 +1928,101 @@ final class SessionEscrowReattachRegressionTests: XCTestCase {
             fcntl(listenFD, F_GETFD) & FD_CLOEXEC, 0,
             "escrow listening fd must be close-on-exec"
         )
+    }
+
+    func testSecondEscrowListenerCannotReplaceLiveSocket() throws {
+        let socketPath = makeShortSocketPath()
+        let firstFD = try XCTUnwrap(UnixDomainFDPassing.bindListening(socketPath: socketPath))
+        defer {
+            close(firstFD)
+            unlink(socketPath)
+            unlink(socketPath + ".election")
+        }
+
+        XCTAssertNil(
+            UnixDomainFDPassing.bindListening(socketPath: socketPath),
+            "A losing holder must not unlink and replace the live winner's socket"
+        )
+        let clientFD = try XCTUnwrap(UnixDomainFDPassing.connect(to: socketPath))
+        close(clientFD)
+    }
+
+    func testEscrowListenerProbeOnlyUnlinksDefinitelyStaleSocket() throws {
+        func makeStaleSocket() throws -> String {
+            let socketPath = makeShortSocketPath()
+            let listener = try XCTUnwrap(UnixDomainFDPassing.bindListening(socketPath: socketPath))
+            close(listener)
+            return socketPath
+        }
+
+        let livePath = try makeStaleSocket()
+        defer {
+            unlink(livePath)
+            unlink(livePath + ".election")
+        }
+        let probeFD = dup(STDIN_FILENO)
+        XCTAssertGreaterThanOrEqual(probeFD, 0)
+        XCTAssertNil(
+            UnixDomainFDPassing.bindListening(
+                socketPath: livePath,
+                connectionProbe: { _ in .live(probeFD) }
+            )
+        )
+        XCTAssertEqual(access(livePath, F_OK), 0, "a live probe must preserve the incumbent socket")
+
+        let indeterminatePath = try makeStaleSocket()
+        defer {
+            unlink(indeterminatePath)
+            unlink(indeterminatePath + ".election")
+        }
+        XCTAssertNil(
+            UnixDomainFDPassing.bindListening(
+                socketPath: indeterminatePath,
+                connectionProbe: { _ in .indeterminate(EMFILE) }
+            )
+        )
+        XCTAssertEqual(
+            access(indeterminatePath, F_OK),
+            0,
+            "an indeterminate connect or setup failure must preserve the incumbent socket"
+        )
+        XCTAssertNil(
+            UnixDomainFDPassing.bindListening(
+                socketPath: indeterminatePath,
+                connectionProbe: { _ in .indeterminate(EBADF) }
+            )
+        )
+        XCTAssertEqual(access(indeterminatePath, F_OK), 0, "an indeterminate fcntl failure must preserve the socket")
+
+        let stalePath = try makeStaleSocket()
+        let replacementFD = try XCTUnwrap(
+            UnixDomainFDPassing.bindListening(
+                socketPath: stalePath,
+                connectionProbe: { _ in .stale }
+            )
+        )
+        defer {
+            close(replacementFD)
+            unlink(stalePath)
+            unlink(stalePath + ".election")
+        }
+        XCTAssertEqual(access(stalePath, F_OK), 0, "a definitely stale socket should be replaced")
+    }
+
+    func testEscrowListenerReclaimsVerifiedStaleOwnedSocket() throws {
+        let socketPath = makeShortSocketPath()
+        let staleFD = try XCTUnwrap(UnixDomainFDPassing.bindListening(socketPath: socketPath))
+        close(staleFD)
+
+        let replacementFD = try XCTUnwrap(
+            UnixDomainFDPassing.bindListening(socketPath: socketPath),
+            "A closed, user-owned socket inode should be reclaimed under the election lock"
+        )
+        defer {
+            close(replacementFD)
+            unlink(socketPath)
+            unlink(socketPath + ".election")
+        }
     }
 
     // Fix 2: a valid-token retrieve that arrives before the holder has

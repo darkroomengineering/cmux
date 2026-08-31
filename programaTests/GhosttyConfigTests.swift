@@ -1151,6 +1151,55 @@ final class RemoteLoopbackHTTPRequestRewriterTests: XCTestCase {
 }
 
 final class GhosttyTerminalStartupEnvironmentTests: XCTestCase {
+    func testPortRangeAssignmentFallsBackWithoutOverflowForMalformedSettings() {
+        let assignment = ProgramaPortRangePolicy.assignment(
+            base: Int.max,
+            range: Int.max,
+            ordinal: Int.max
+        )
+
+        XCTAssertEqual(
+            assignment,
+            ProgramaPortRangeAssignment(start: 9_100, end: 9_109, size: 10)
+        )
+    }
+
+    func testPortRangeAssignmentWrapsOrdinalWithinValidTCPPorts() {
+        let first = ProgramaPortRangePolicy.assignment(base: 65_526, range: 10, ordinal: 0)
+        let wrapped = ProgramaPortRangePolicy.assignment(base: 65_526, range: 10, ordinal: Int.max)
+
+        XCTAssertEqual(first, ProgramaPortRangeAssignment(start: 65_526, end: 65_535, size: 10))
+        XCTAssertEqual(wrapped, first)
+    }
+
+    func testPortRangeAssignmentReadsDefaultsForEveryNewAssignment() throws {
+        let suiteName = "GhosttyTerminalStartupEnvironmentTests.ports.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        defaults.set(9_100, forKey: ProgramaPortRangePolicy.baseDefaultsKey)
+        defaults.set(10, forKey: ProgramaPortRangePolicy.rangeDefaultsKey)
+        XCTAssertEqual(
+            ProgramaPortRangePolicy.assignment(defaults: defaults, ordinal: 0),
+            ProgramaPortRangeAssignment(start: 9_100, end: 9_109, size: 10)
+        )
+
+        defaults.set(12_000, forKey: ProgramaPortRangePolicy.baseDefaultsKey)
+        defaults.set(25, forKey: ProgramaPortRangePolicy.rangeDefaultsKey)
+        XCTAssertEqual(
+            ProgramaPortRangePolicy.assignment(defaults: defaults, ordinal: 1),
+            ProgramaPortRangeAssignment(start: 12_025, end: 12_049, size: 25)
+        )
+    }
+
+    func testPortRangeClampingKeepsCompleteRangeInsideTCPPortSpace() {
+        let clamped = ProgramaPortRangePolicy.clamped(base: 70_000, range: 10)
+        XCTAssertEqual(clamped.base, 65_535)
+        XCTAssertEqual(clamped.range, 1)
+        XCTAssertTrue(ProgramaPortRangePolicy.isValid(base: 65_535, range: 1))
+        XCTAssertFalse(ProgramaPortRangePolicy.isValid(base: 65_535, range: 2))
+    }
+
     func testApplyManagedTerminalIdentityEnvironmentOverridesInheritedValues() {
         var environment = [
             "TERM": "xterm-ghostty",

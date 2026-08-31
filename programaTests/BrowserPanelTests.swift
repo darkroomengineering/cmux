@@ -22,6 +22,50 @@ private func drainBrowserPanelMainQueue() {
 }
 
 @MainActor
+final class BrowserRPCLifecycleOwnerTests: XCTestCase {
+    func testDispatcherRecognizesBrowserMethodsWithoutClaimingOtherRPCs() {
+        XCTAssertTrue(BrowserRPCDispatcher.recognizes("browser.navigate"))
+        XCTAssertTrue(BrowserRPCDispatcher.recognizes("browser.download.wait"))
+        XCTAssertFalse(BrowserRPCDispatcher.recognizes("workspace.list"))
+        XCTAssertFalse(BrowserRPCDispatcher.recognizes("browser.unknown"))
+    }
+
+    func testNavigationGenerationInvalidatesOwnedElementReferences() {
+        let state = BrowserRPCState()
+        let surfaceId = UUID()
+
+        guard case .allocated(let refs) = state.allocateElementRefs(
+            surfaceId: surfaceId,
+            selectors: ["#submit"]
+        ) else {
+            XCTFail("Expected element reference allocation")
+            return
+        }
+        XCTAssertEqual(refs.count, 1)
+        XCTAssertNotNil(state.elementRefs[refs[0]])
+
+        state.advanceNavigationGeneration(for: surfaceId)
+
+        XCTAssertEqual(state.navigationGeneration(for: surfaceId), 1)
+        XCTAssertNil(state.elementRefs[refs[0]])
+        XCTAssertNil(state.elementRefBySelectorBySurface[surfaceId])
+    }
+
+    func testDownloadQueueIsBoundedAndReportsDroppedEvents() {
+        let state = BrowserRPCState()
+        let surfaceId = UUID()
+        for index in 0...TerminalController.v2BrowserDownloadEventQueueLimit {
+            state.enqueueDownloadEvent(surfaceId: surfaceId, event: ["index": index])
+        }
+
+        let consumed = state.consumeDownloadEvent(surfaceId: surfaceId)
+
+        XCTAssertEqual(consumed?.event["index"] as? Int, 1)
+        XCTAssertEqual(consumed?.droppedEvents, 1)
+    }
+}
+
+@MainActor
 private func makeTemporaryBrowserPanelProfile(named prefix: String) throws -> BrowserProfileDefinition {
     try XCTUnwrap(
         BrowserProfileStore.shared.createProfile(
