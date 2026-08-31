@@ -17,13 +17,15 @@ from typing import Any
 CLI_PATH = os.environ.get("PROGRAMA_CLI_BIN", "")
 OWNED_MARKER = "programa codex-hook"
 FOREIGN_MARKER_COMMAND = "echo 'programa codex-hook'"
-OWNED_HOOK_EVENTS = (
-    "session-start",
-    "prompt-submit",
-    "stop",
-    "notification",
-    "session-end",
-)
+MISMATCHED_EVENT_COMMAND = "programa codex-hook stop"
+OWNED_COMMAND_EVENT_BY_HOOK_EVENT = {
+    "SessionStart": "session-start",
+    "UserPromptSubmit": "prompt-submit",
+    "Stop": "stop",
+    "PermissionRequest": "notification",
+    "Notification": "notification",
+    "SessionEnd": "session-end",
+}
 EVENT_LABELS = {
     "SessionStart": "session_start",
     "UserPromptSubmit": "user_prompt_submit",
@@ -45,8 +47,16 @@ def owned_handler(event: str) -> dict[str, Any]:
     }
 
 
-def is_programa_handler(command: str) -> bool:
-    return any(f"{OWNED_MARKER} {event}" in command for event in OWNED_HOOK_EVENTS)
+def is_programa_handler(hook_event: str, command: str) -> bool:
+    command_event = OWNED_COMMAND_EVENT_BY_HOOK_EVENT.get(hook_event)
+    if command_event is None:
+        return False
+    bare = f"programa codex-hook {command_event}"
+    wrapped = (
+        '[ -n "$PROGRAMA_SURFACE_ID" ] && command -v programa >/dev/null 2>&1 && '
+        f"{bare} || echo '{{}}'"
+    )
+    return command in (bare, wrapped)
 
 
 def initial_hooks() -> dict[str, Any]:
@@ -84,14 +94,19 @@ def initial_hooks() -> dict[str, Any]:
                 {"hooks": [foreign_handler("notification")]},
                 {"hooks": [owned_handler("notification")]},
             ],
-            "CustomEvent": [{"hooks": [foreign_handler("custom")]}],
+            "CustomEvent": [{
+                "hooks": [
+                    foreign_handler("custom"),
+                    {"type": "command", "command": MISMATCHED_EVENT_COMMAND},
+                ]
+            }],
         },
     }
 
 
 def foreign_commands(root: dict[str, Any]) -> set[str]:
     commands: set[str] = set()
-    for groups in root.get("hooks", {}).values():
+    for event, groups in root.get("hooks", {}).items():
         if not isinstance(groups, list):
             continue
         for group in groups:
@@ -99,7 +114,7 @@ def foreign_commands(root: dict[str, Any]) -> set[str]:
                 continue
             for handler in group.get("hooks", []):
                 command = handler.get("command") if isinstance(handler, dict) else None
-                if isinstance(command, str) and not is_programa_handler(command):
+                if isinstance(command, str) and not is_programa_handler(event, command):
                     commands.add(command)
     return commands
 
@@ -220,9 +235,17 @@ class CodexHookTrustTests(unittest.TestCase):
             foreign_commands(hooks),
             "ownership requires a known Programa command, not a marker substring",
         )
-        self.assertNotIn(
-            f"{OWNED_MARKER} notification",
-            json.dumps(hooks.get("hooks", {}).get("Notification", [])),
+        self.assertIn(
+            MISMATCHED_EVENT_COMMAND,
+            foreign_commands(hooks),
+            "ownership requires the command to match the hook event where it is installed",
+        )
+        self.assertFalse(
+            any(
+                is_programa_handler(event, command)
+                for event, command in self._all_hook_commands(hooks)
+                if event == "Notification"
+            ),
             "Codex has no Notification trust-state label, so the obsolete Programa hook cannot execute",
         )
 
@@ -244,7 +267,7 @@ class CodexHookTrustTests(unittest.TestCase):
             found: list[tuple[int, int, dict[str, Any]]] = []
             for group_index, group in enumerate(hooks["hooks"].get(event, [])):
                 for handler_index, handler in enumerate(group.get("hooks", [])):
-                    if is_programa_handler(handler.get("command", "")):
+                    if is_programa_handler(event, handler.get("command", "")):
                         found.append((group_index, handler_index, handler))
             self.assertEqual(len(found), 1, f"{event} must have one Programa handler: {found!r}")
             group_index, handler_index, handler = found[0]
@@ -276,8 +299,8 @@ class CodexHookTrustTests(unittest.TestCase):
         self.assertEqual(foreign_commands(uninstalled_hooks), expected_foreign)
         self.assertFalse(
             any(
-                is_programa_handler(command)
-                for command in self._all_hook_commands(uninstalled_hooks)
+                is_programa_handler(event, command)
+                for event, command in self._all_hook_commands(uninstalled_hooks)
             )
         )
         self.assertEqual(uninstalled_hooks.get("owner"), "user")
@@ -285,6 +308,11 @@ class CodexHookTrustTests(unittest.TestCase):
             FOREIGN_MARKER_COMMAND,
             foreign_commands(uninstalled_hooks),
             "uninstall must not delete a foreign command that only quotes Programa's marker",
+        )
+        self.assertIn(
+            MISMATCHED_EVENT_COMMAND,
+            foreign_commands(uninstalled_hooks),
+            "uninstall must preserve a Programa command installed under a foreign event",
         )
         self.assertIn(
             "foreign-permission-request",
@@ -301,16 +329,16 @@ class CodexHookTrustTests(unittest.TestCase):
             self.assertNotIn(key, uninstalled_state)
 
     @staticmethod
-    def _all_hook_commands(root: dict[str, Any]) -> list[str]:
-        commands: list[str] = []
-        for groups in root.get("hooks", {}).values():
+    def _all_hook_commands(root: dict[str, Any]) -> list[tuple[str, str]]:
+        commands: list[tuple[str, str]] = []
+        for event, groups in root.get("hooks", {}).items():
             if not isinstance(groups, list):
                 continue
             for group in groups:
                 if not isinstance(group, dict):
                     continue
                 commands.extend(
-                    handler["command"]
+                    (event, handler["command"])
                     for handler in group.get("hooks", [])
                     if isinstance(handler, dict) and isinstance(handler.get("command"), str)
                 )
