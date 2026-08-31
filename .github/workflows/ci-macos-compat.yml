@@ -118,7 +118,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout }}
     env:
-      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-compat-derived-data
+      PROGRAMA_DERIVED_DATA_DIR: ${{ github.workspace }}/.ci-derived-data-compat
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

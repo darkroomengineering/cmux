@@ -213,7 +213,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     env:
-      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-unit-derived-data
+      PROGRAMA_DERIVED_DATA_DIR: ${{ github.workspace }}/.ci-derived-data-unit
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -448,7 +448,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 40
     env:
-      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-socket-integration-derived-data
+      PROGRAMA_DERIVED_DATA_DIR: ${{ github.workspace }}/.ci-derived-data-socket-integration
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -600,7 +600,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 90
     env:
-      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-lag-derived-data
+      PROGRAMA_DERIVED_DATA_DIR: ${{ github.workspace }}/.ci-derived-data-lag
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -858,7 +858,7 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     env:
-      PROGRAMA_DERIVED_DATA_DIR: ${{ runner.temp }}/programa-ui-regressions-derived-data
+      PROGRAMA_DERIVED_DATA_DIR: ${{ github.workspace }}/.ci-derived-data-ui-regressions
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
