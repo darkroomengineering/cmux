@@ -194,10 +194,10 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ${{ env.PROGRAMA_DERIVED_DATA_DIR }}
-          key: deriveddata-${{ matrix.os }}-${{ env.XCODE_VER }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.pbxproj') }}
+          key: deriveddata-v2-${{ matrix.os }}-${{ env.XCODE_VER }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.pbxproj') }}
           restore-keys: |
-            deriveddata-${{ matrix.os }}-${{ env.XCODE_VER }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
-            deriveddata-${{ matrix.os }}-${{ env.XCODE_VER }}-
+            deriveddata-v2-${{ matrix.os }}-${{ env.XCODE_VER }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
+            deriveddata-v2-${{ matrix.os }}-${{ env.XCODE_VER }}-
 
       - name: Cache Swift packages
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -295,6 +295,9 @@ jobs:
         id: compat_unit_tests
         continue-on-error: true
         env:
+          # Keep hosted test bundles out of the app-build cache. Otherwise a
+          # restored unsigned programaTests.xctest invalidates app code signing.
+          PROGRAMA_DERIVED_DATA_DIR: ${{ github.workspace }}/.ci-derived-data-compat-tests
           PROGRAMA_UNIT_TEST_SCOPE: serial
           PROGRAMA_UNIT_TEST_QUARANTINE: ${{ matrix.quarantine && '1' || '' }}
         run: |
