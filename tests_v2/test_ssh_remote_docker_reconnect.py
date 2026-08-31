@@ -433,6 +433,116 @@ def _wait_remote_degraded(client: cmux, workspace_id: str, timeout: float) -> di
     raise cmuxError(f"Remote did not enter reconnecting/degraded state: {last_status}")
 
 
+def _browser_eval(client: cmux, surface_id: str, script: str) -> object:
+    payload = client._call("browser.eval", {"surface_id": surface_id, "script": script}) or {}
+    return payload.get("value")
+
+
+def _wait_browser_contains(client: cmux, surface_id: str, token: str, timeout: float) -> None:
+    deadline = time.time() + timeout
+    last_text = ""
+    while time.time() < deadline:
+        try:
+            value = _browser_eval(
+                client,
+                surface_id,
+                "document.body ? (document.body.innerText || '') : ''",
+            )
+            last_text = str(value or "")
+        except cmuxError:
+            time.sleep(0.2)
+            continue
+        if token in last_text:
+            return
+        time.sleep(0.2)
+    raise cmuxError(f"Timed out waiting for browser content token {token!r}; last body sample={last_text[:240]!r}")
+
+
+def _reload_remote_page_in_browser(client: cmux, surface_id: str, url: str, token: str) -> None:
+    client._call("browser.navigate", {"surface_id": surface_id, "url": "about:blank"})
+    deadline = time.time() + 10.0
+    last_url = ""
+    while time.time() < deadline:
+        try:
+            payload = client._call("browser.url.get", {"surface_id": surface_id}) or {}
+            last_url = str(payload.get("url") or "")
+        except cmuxError:
+            time.sleep(0.2)
+            continue
+        if last_url == "about:blank":
+            break
+        time.sleep(0.2)
+    _must(last_url == "about:blank", f"Browser did not clear its previous remote page before reconnect probe: {last_url!r}")
+
+    client._call("browser.navigate", {"surface_id": surface_id, "url": url})
+    _wait_browser_contains(client, surface_id, token, timeout=20.0)
+
+
+def _websocket_echo_in_browser(
+    client: cmux,
+    surface_id: str,
+    ws_url: str,
+    message: str,
+    timeout: float = 15.0,
+) -> str:
+    message_literal = json.dumps(message)
+    url_literal = json.dumps(ws_url)
+    initialized = _browser_eval(
+        client,
+        surface_id,
+        f"""
+        (() => {{
+          if (window.__programaSSHReconnectSocket) {{
+            window.__programaSSHReconnectSocket.close();
+          }}
+          window.__programaSSHReconnectProbe = {{state: "connecting", echo: "", error: ""}};
+          const socket = new WebSocket({url_literal});
+          window.__programaSSHReconnectSocket = socket;
+          socket.onopen = () => socket.send({message_literal});
+          socket.onmessage = (event) => {{
+            window.__programaSSHReconnectProbe = {{state: "echoed", echo: String(event.data), error: ""}};
+            socket.close();
+          }};
+          socket.onerror = () => {{
+            window.__programaSSHReconnectProbe = {{state: "error", echo: "", error: "websocket error"}};
+          }};
+          socket.onclose = (event) => {{
+            if (window.__programaSSHReconnectProbe.state === "connecting") {{
+              window.__programaSSHReconnectProbe = {{
+                state: "error",
+                echo: "",
+                error: `closed before echo (code=${{event.code}})`,
+              }};
+            }}
+          }};
+          return true;
+        }})()
+        """,
+    )
+    _must(initialized is True, f"Failed to initialize WKWebView WebSocket probe: {initialized!r}")
+
+    deadline = time.time() + timeout
+    last_probe: dict = {}
+    while time.time() < deadline:
+        try:
+            serialized = _browser_eval(
+                client,
+                surface_id,
+                "JSON.stringify(window.__programaSSHReconnectProbe || {})",
+            )
+            decoded = json.loads(str(serialized or "{}"))
+            last_probe = decoded if isinstance(decoded, dict) else {}
+        except (cmuxError, json.JSONDecodeError):
+            time.sleep(0.2)
+            continue
+        if str(last_probe.get("state") or "") == "echoed":
+            return str(last_probe.get("echo") or "")
+        if str(last_probe.get("state") or "") == "error":
+            raise cmuxError(f"WKWebView WebSocket probe failed: {last_probe}")
+        time.sleep(0.2)
+    raise cmuxError(f"Timed out waiting for WKWebView WebSocket echo: {last_probe}")
+
+
 def main() -> int:
     if not _docker_available():
         print("SKIP: docker is not available")
@@ -448,6 +558,7 @@ def main() -> int:
     container_name = f"cmux-ssh-reconnect-{secrets.token_hex(4)}"
     host_ssh_port = _find_free_loopback_port()
     workspace_id = ""
+    browser_surface_id = ""
     container_running = False
 
     try:
@@ -533,6 +644,27 @@ def main() -> int:
                 f"WebSocket echo over CONNECT proxy failed before reconnect: {echoed_before_connect!r} != {first_ws_connect_message!r}",
             )
 
+            remote_browser_url = f"http://127.0.0.1:{REMOTE_HTTP_PORT}/"
+            browser_payload = client._call(
+                "browser.open_split",
+                {"workspace_id": workspace_id, "url": remote_browser_url},
+            ) or {}
+            browser_surface_id = str(browser_payload.get("surface_id") or "")
+            _must(bool(browser_surface_id), f"browser.open_split returned no surface_id: {browser_payload}")
+            _wait_browser_contains(client, browser_surface_id, "cmux-ssh-forward-ok", timeout=20.0)
+
+            first_ws_browser_message = "cmux-reconnect-before-in-wkwebview"
+            echoed_before_browser = _websocket_echo_in_browser(
+                client,
+                browser_surface_id,
+                f"ws://127.0.0.1:{REMOTE_WS_PORT}/echo",
+                first_ws_browser_message,
+            )
+            _must(
+                echoed_before_browser == first_ws_browser_message,
+                f"WKWebView WebSocket echo failed before reconnect: {echoed_before_browser!r} != {first_ws_browser_message!r}",
+            )
+
             _run(["docker", "rm", "-f", container_name], check=False)
             container_running = False
             _wait_remote_degraded(client, workspace_id, timeout=20.0)
@@ -585,13 +717,31 @@ def main() -> int:
                 f"WebSocket echo over CONNECT proxy failed after reconnect: {echoed_after_connect!r} != {second_ws_connect_message!r}",
             )
 
+            _reload_remote_page_in_browser(
+                client,
+                browser_surface_id,
+                remote_browser_url,
+                "cmux-ssh-forward-ok",
+            )
+            second_ws_browser_message = "cmux-reconnect-after-in-wkwebview"
+            echoed_after_browser = _websocket_echo_in_browser(
+                client,
+                browser_surface_id,
+                f"ws://127.0.0.1:{REMOTE_WS_PORT}/echo",
+                second_ws_browser_message,
+            )
+            _must(
+                echoed_after_browser == second_ws_browser_message,
+                f"WKWebView WebSocket echo failed after reconnect: {echoed_after_browser!r} != {second_ws_browser_message!r}",
+            )
+
             try:
                 client.close_workspace(workspace_id)
             except Exception:
                 pass
             workspace_id = ""
 
-        print("PASS: docker SSH remote reconnects and re-establishes HTTP + WebSocket egress over SOCKS and CONNECT")
+        print("PASS: docker SSH remote reconnects and re-establishes HTTP + WebSocket egress through broker and WKWebView")
         return 0
 
     finally:
