@@ -334,7 +334,7 @@ jobs:
           xcodebuild -project GhosttyTabs.xcodeproj \
             -target programa-cli \
             -configuration Debug \
-            CONFIGURATION_BUILD_DIR="$CLI_REGRESSION_DIR" \
+            SYMROOT="$CLI_REGRESSION_DIR" \
             CODE_SIGNING_ALLOWED=NO \
             build
 
@@ -342,7 +342,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          CLI_BIN="$RUNNER_TEMP/programa-cli-regression/programa"
+          CLI_BIN="$RUNNER_TEMP/programa-cli-regression/Debug/programa"
           if [ -z "${CLI_BIN:-}" ] || [ ! -x "$CLI_BIN" ]; then
             echo "programa CLI binary not found in DerivedData" >&2
             exit 1
@@ -354,7 +354,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          CLI_BIN="$RUNNER_TEMP/programa-cli-regression/programa"
+          CLI_BIN="$RUNNER_TEMP/programa-cli-regression/Debug/programa"
           if [ -z "${CLI_BIN:-}" ] || [ ! -x "$CLI_BIN" ]; then
             echo "programa CLI binary not found in DerivedData" >&2
             exit 1
@@ -366,7 +366,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          CLI_BIN="$RUNNER_TEMP/programa-cli-regression/programa"
+          CLI_BIN="$RUNNER_TEMP/programa-cli-regression/Debug/programa"
           if [ -z "${CLI_BIN:-}" ] || [ ! -x "$CLI_BIN" ]; then
             echo "programa CLI binary not found in DerivedData" >&2
             exit 1
