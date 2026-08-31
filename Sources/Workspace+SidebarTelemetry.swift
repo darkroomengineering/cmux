@@ -110,12 +110,15 @@ extension Workspace {
         let state = SidebarGitBranchState(branch: normalizedBranch, isDirty: isDirty)
         let existing = panelGitBranches[panelId]
         let branchChanged = existing?.branch != nil && existing?.branch != normalizedBranch
+        var titleMetadataChanged = false
         if existing?.branch != normalizedBranch || existing?.isDirty != isDirty {
             panelGitBranches[panelId] = state
+            titleMetadataChanged = true
         }
         if branchChanged {
             if panelPullRequests[panelId] != nil {
                 panelPullRequests.removeValue(forKey: panelId)
+                titleMetadataChanged = true
             }
             if panelId == focusedPanelId, pullRequest != nil {
                 pullRequest = nil
@@ -124,14 +127,20 @@ extension Workspace {
         if panelId == focusedPanelId, gitBranch != state {
             gitBranch = state
         }
+        if titleMetadataChanged {
+            syncResolvedPanelTitle(panelId: panelId)
+        }
     }
 
     func clearPanelGitBranch(panelId: UUID) {
+        var titleMetadataChanged = false
         if panelGitBranches[panelId] != nil {
             panelGitBranches.removeValue(forKey: panelId)
+            titleMetadataChanged = true
         }
         if panelPullRequests[panelId] != nil {
             panelPullRequests.removeValue(forKey: panelId)
+            titleMetadataChanged = true
         }
         if panelId == focusedPanelId {
             if gitBranch != nil {
@@ -140,6 +149,9 @@ extension Workspace {
             if pullRequest != nil {
                 pullRequest = nil
             }
+        }
+        if titleMetadataChanged {
+            syncResolvedPanelTitle(panelId: panelId)
         }
     }
 
@@ -208,6 +220,7 @@ extension Workspace {
         )
         if existing != state {
             panelPullRequests[panelId] = state
+            syncResolvedPanelTitle(panelId: panelId)
         }
         if panelId == focusedPanelId, pullRequest != state {
             pullRequest = state
@@ -217,6 +230,7 @@ extension Workspace {
     func clearPanelPullRequest(panelId: UUID) {
         if panelPullRequests[panelId] != nil {
             panelPullRequests.removeValue(forKey: panelId)
+            syncResolvedPanelTitle(panelId: panelId)
         }
         if panelId == focusedPanelId, pullRequest != nil {
             pullRequest = nil
@@ -287,9 +301,13 @@ extension Workspace {
         logEntries.removeAll()
         progress = nil
         gitBranch = nil
+        let panelIdsWithAutomaticTitles = Set(panelGitBranches.keys).union(panelPullRequests.keys)
         panelGitBranches.removeAll()
         pullRequest = nil
         panelPullRequests.removeAll()
+        for panelId in panelIdsWithAutomaticTitles {
+            syncResolvedPanelTitle(panelId: panelId)
+        }
         // Clears bypass updatePanelAgentState/clearPanelAgentState's per-surface notify, so fan
         // it out here too -- otherwise a surface.wait `agent_state` (or a subscribed client)
         // watching a surface whose state got wiped by a sidebar reset would hang until timeout
@@ -360,16 +378,8 @@ extension Workspace {
         panelsWithLiveTitle.insert(panelId)
 
         // Update bonsplit tab title only when this panel's title changed.
-        if didMutate,
-           let tabId = surfaceIdFromPanelId(panelId),
-           let panel = panels[panelId] {
-            let baseTitle = panelTitles[panelId] ?? panel.displayTitle
-            let resolvedTitle = resolvedPanelTitle(panelId: panelId, fallback: baseTitle)
-            bonsplitController.updateTab(
-                tabId,
-                title: resolvedTitle,
-                hasCustomTitle: panelCustomTitles[panelId] != nil
-            )
+        if didMutate {
+            syncResolvedPanelTitle(panelId: panelId)
         }
 
         // The focused pane titles the workspace (tmux-style). Single-panel
