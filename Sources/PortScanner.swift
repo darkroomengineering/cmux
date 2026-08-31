@@ -23,6 +23,7 @@ final class PortScanner: @unchecked Sendable {
     ) -> [UUID: Set<Int>]
     typealias AgentResultsValidatedHook = @Sendable (_ results: [(UUID, [Int])]) async -> Void
     typealias AgentResultsApplyCompletedHook = @Sendable (_ results: [(UUID, [Int])]) -> Void
+    typealias LsofChunkOverride = @Sendable (_ pidsCsv: String) -> [Int: Set<Int>]
 
     /// Callback delivers `(workspaceId, panelId, ports)` on the main actor.
     var onPortsUpdated: (@MainActor (_ workspaceId: UUID, _ panelId: UUID, _ ports: [Int]) -> Void)?
@@ -67,6 +68,7 @@ final class PortScanner: @unchecked Sendable {
     private let agentScanOverride: AgentScanOverride?
     private let agentResultsValidatedHook: AgentResultsValidatedHook?
     private let agentResultsApplyCompletedHook: AgentResultsApplyCompletedHook?
+    private let lsofChunkOverride: LsofChunkOverride?
 
     /// Burst scan offsets in seconds from the start of the burst.
     /// Each scan fires at this absolute offset; the recursive scheduler
@@ -82,11 +84,13 @@ final class PortScanner: @unchecked Sendable {
         observesAppVisibility: Bool = true,
         agentScanOverride: AgentScanOverride? = nil,
         agentResultsValidatedHook: AgentResultsValidatedHook? = nil,
-        agentResultsApplyCompletedHook: AgentResultsApplyCompletedHook? = nil
+        agentResultsApplyCompletedHook: AgentResultsApplyCompletedHook? = nil,
+        lsofChunkOverride: LsofChunkOverride? = nil
     ) {
         self.agentScanOverride = agentScanOverride
         self.agentResultsValidatedHook = agentResultsValidatedHook
         self.agentResultsApplyCompletedHook = agentResultsApplyCompletedHook
+        self.lsofChunkOverride = lsofChunkOverride
         if observesAppVisibility {
             registerOcclusionObserver()
         }
@@ -670,6 +674,11 @@ final class PortScanner: @unchecked Sendable {
     }
 
     private func runLsof(pidsCsv: String) -> [Int: Set<Int>] {
+        runLsofChunk(pidsCsv: pidsCsv)
+    }
+
+    private func runLsofChunk(pidsCsv: String) -> [Int: Set<Int>] {
+        if let lsofChunkOverride { return lsofChunkOverride(pidsCsv) }
         // `lsof -nP -a -p <pids> -iTCP -sTCP:LISTEN -F pn`
         let process = Process()
         let pipe = Pipe()

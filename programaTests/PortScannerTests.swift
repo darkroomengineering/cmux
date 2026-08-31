@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import os
 
 #if canImport(Programa_DEV)
 @testable import Programa_DEV
@@ -9,6 +10,48 @@ import XCTest
 
 @MainActor
 final class PortScannerBurstLifecycleTests: XCTestCase {
+    func testLargeAgentPIDScanBatchesAndUnionsEveryChunkResult() async {
+        let workspaceID = UUID()
+        let inputPIDs = Array(1_000_000..<1_020_000)
+        let expectedPorts = Array(10_000..<30_000)
+        let recordedChunks = OSAllocatedUnfairLock(initialState: [[Int]]())
+        let scanner = PortScanner(
+            observesAppVisibility: false,
+            lsofChunkOverride: { pidsCSV in
+                let pids = pidsCSV.split(separator: ",").compactMap { Int($0) }
+                recordedChunks.withLock { $0.append(pids) }
+                return Dictionary(uniqueKeysWithValues: pids.map { pid in
+                    (pid, Set([pid - 990_000]))
+                })
+            }
+        )
+        let publication = expectation(description: "all batched lsof results publish together")
+        var publishedPorts: [Int]?
+        scanner.onAgentPortsUpdated = { callbackWorkspaceID, ports in
+            guard callbackWorkspaceID == workspaceID, publishedPorts == nil else { return }
+            publishedPorts = ports
+            publication.fulfill()
+        }
+        defer { scanner.onAgentPortsUpdated = nil }
+
+        scanner.refreshAgentPorts(workspaceId: workspaceID, agentPIDs: Set(inputPIDs))
+        await fulfillment(of: [publication], timeout: 10)
+
+        let chunks = recordedChunks.withLock { $0 }
+        XCTAssertGreaterThan(
+            chunks.count,
+            1,
+            "a single lsof argv cannot safely carry a 20,000-process agent tree"
+        )
+        for chunk in chunks {
+            XCTAssertLessThanOrEqual(chunk.count, 256)
+            let csvBytes = chunk.map(String.init).joined(separator: ",").utf8.count
+            XCTAssertLessThanOrEqual(csvBytes + 256, 32 * 1024)
+        }
+        XCTAssertEqual(chunks.flatMap { $0 }, inputPIDs)
+        XCTAssertEqual(publishedPorts, expectedPorts)
+    }
+
     func testUnregisteringFinalPanelCancelsQueuedBurstBeforeReplacementPanelAppears() async {
         let scanner = PortScanner(observesAppVisibility: false)
         let workspaceID = UUID()
