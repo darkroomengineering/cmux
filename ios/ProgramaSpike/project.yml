@@ -200,5 +200,6 @@ targets:
       - target: ProgramaSpike
     settings:
       base:
+        GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.darkroom.programa.spike.tests
         SWIFT_VERSION: "6.0"
