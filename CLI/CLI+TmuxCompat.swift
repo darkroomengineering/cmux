@@ -212,7 +212,7 @@ extension ProgramaCLI {
             tmuxIsClaudeTeamWorkspace(item) ? item["id"] as? String : nil
         })
         let orderById = Dictionary(uniqueKeysWithValues: orderedIds.enumerated().map { ($0.element, $0.offset) })
-        let parentById = Dictionary(uniqueKeysWithValues: workspaceItems.compactMap { item in
+        let parentById: [String: String] = Dictionary(uniqueKeysWithValues: workspaceItems.compactMap { item in
             guard let id = item["id"] as? String,
                   teamWorkspaceIds.contains(id),
                   let parentId = item["agent_parent_workspace_id"] as? String,
@@ -258,7 +258,7 @@ extension ProgramaCLI {
         let teamWorkspaceIds = Set(workspaceItems.compactMap { item in
             tmuxIsClaudeTeamWorkspace(item) ? item["id"] as? String : nil
         })
-        let parentById = Dictionary(uniqueKeysWithValues: workspaceItems.compactMap { item in
+        let parentById: [String: String] = Dictionary(uniqueKeysWithValues: workspaceItems.compactMap { item in
             guard let id = item["id"] as? String,
                   teamWorkspaceIds.contains(id),
                   let parentId = item["agent_parent_workspace_id"] as? String else {
@@ -999,8 +999,12 @@ extension ProgramaCLI {
             if parsed.value("-t") != nil {
                 throw CLIError(message: "new-window -t is not supported in programa claude-teams mode")
             }
-            let parentWorkspaceId = tmuxResolvedCallerWorkspaceId(client: client)
-                ?? (try tmuxResolveWorkspaceTarget(nil, client: client))
+            let parentWorkspaceId: String
+            if let callerWorkspaceId = tmuxResolvedCallerWorkspaceId(client: client) {
+                parentWorkspaceId = callerWorkspaceId
+            } else {
+                parentWorkspaceId = try tmuxResolveWorkspaceTarget(nil, client: client)
+            }
             let requestedTitle = parsed.value("-n")?.trimmingCharacters(in: .whitespacesAndNewlines)
             let task = requestedTitle.flatMap { $0.isEmpty ? nil : $0 }
                 ?? String(localized: "agentOverview.helper", defaultValue: "Helper")
@@ -1165,7 +1169,7 @@ extension ProgramaCLI {
             if parsed.hasFlag("-p") {
                 print(text)
             } else {
-                try updateTmuxCompatStore { store in
+                _ = try updateTmuxCompatStore { store in
                     store.buffers["default"] = text
                 }
             }
@@ -1871,7 +1875,7 @@ extension ProgramaCLI {
                 guard let event = commandArgs.last else {
                     throw CLIError(message: "set-hook --unset requires an event name")
                 }
-                try updateTmuxCompatStore { store in
+                _ = try updateTmuxCompatStore { store in
                     store.hooks.removeValue(forKey: event)
                 }
                 print("OK")
