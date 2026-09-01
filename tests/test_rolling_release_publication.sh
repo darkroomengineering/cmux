@@ -383,15 +383,23 @@ release_list() {
 }
 
 release_view() {
-  local tag="$1"; shift; local query=""
-  while (($#)); do case "$1" in --jq) query="$2"; shift 2 ;; --json|--repo) shift 2 ;; *) shift ;; esac; done
+  local tag="$1"; shift; local query="" template=""
+  while (($#)); do case "$1" in
+    --jq) query="$2"; shift 2 ;; --template) template="$2"; shift 2 ;;
+    --json|--repo) shift 2 ;; *) shift ;;
+  esac; done
   local dir="$(release_dir "${tag}")"; [[ -d "${dir}" ]] || { echo "release not found" >&2; exit 1; }
   log "view-release ${tag}"
+  if [[ -n "${template}" ]]; then
+    [[ "${template}" == '{{.body}}' ]] || { echo "unsupported release view template: ${template}" >&2; exit 2; }
+    cat "${dir}/body"
+    return
+  fi
   case "${query}" in
     .databaseId|.id) cat "${dir}/id" ;; .tagName) cat "${dir}/tag" ;; .isDraft) cat "${dir}/draft" ;; .isImmutable) cat "${dir}/immutable" ;;
     .isPrerelease) cat "${dir}/prerelease" ;;
     .isLatest) echo "unknown JSON field: isLatest" >&2; exit 2 ;; .targetCommitish) cat "${dir}/target_sha" ;;
-    .name) cat "${dir}/title" ;; .body) cat "${dir}/body" ;;
+    .name) cat "${dir}/title" ;; .body) cat "${dir}/body"; printf '\n' ;;
     *assets*'@tsv'*)
       if [[ "${tag}" == rolling && -f "${dir}/assets/appcast.xml/bytes" ]]; then
         build="$(sed -n 's|.*<sparkle:version>\([0-9][0-9]*\)</sparkle:version>.*|\1|p' "${dir}/assets/appcast.xml/bytes" | head -1)"
