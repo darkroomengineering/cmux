@@ -263,17 +263,16 @@ extension TerminalController {
                 }
 
                 let agentId = UUID()
-                let parentValidation: (directory: String?, windowId: UUID?, error: V2CallResult?) = v2MainSync {
-                    guard let (tabManager, parentWorkspace) = agentWorkspace(id: parentWorkspaceId),
-                          let windowId = AppDelegate.shared?.windowId(for: tabManager) else {
-                        return (nil, nil, .err(code: "not_found", message: "Parent workspace not found", data: [
+                let parentValidation: (directory: String?, error: V2CallResult?) = v2MainSync {
+                    guard let (_, parentWorkspace) = agentWorkspace(id: parentWorkspaceId) else {
+                        return (nil, .err(code: "not_found", message: "Parent workspace not found", data: [
                             "parent_workspace_id": parentWorkspaceId.uuidString,
                         ]))
                     }
                     if let parentAgentId {
                         guard let parentRecord = AgentSupervisionRegistry.shared.record(id: parentAgentId),
                               parentRecord.workspaceId == parentWorkspaceId else {
-                            return (nil, nil, .err(code: "not_found", message: "Parent helper not found in the parent workspace", data: [
+                            return (nil, .err(code: "not_found", message: "Parent helper not found in the parent workspace", data: [
                                 "parent_agent_id": parentAgentId.uuidString,
                             ]))
                         }
@@ -290,13 +289,12 @@ extension TerminalController {
                             workspaceId: parentWorkspaceId
                         )
                     } catch {
-                        return (nil, nil, agentRegistryError(error))
+                        return (nil, agentRegistryError(error))
                     }
-                    return (parentWorkspace.currentDirectory, windowId, nil)
+                    return (parentWorkspace.currentDirectory, nil)
                 }
                 if let error = parentValidation.error { return error }
-                guard let parentDirectory = parentValidation.directory,
-                      let parentWindowId = parentValidation.windowId else {
+                guard let parentDirectory = parentValidation.directory else {
                     return .err(code: "internal_error", message: "Could not prepare the helper", data: nil)
                 }
                 guard let parentRepoRoot = GitWorktreeManager.resolveRepoRoot(
@@ -316,6 +314,16 @@ extension TerminalController {
                         message: "A helper worktree must use the parent workspace's repository",
                         data: ["parent_repository": normalizedParentRepo]
                     )
+                }
+                let parentWindowId: UUID? = v2MainSync {
+                    guard let (tabManager, _) = agentWorkspace(id: parentWorkspaceId) else { return nil }
+                    return AppDelegate.shared?.windowId(for: tabManager)
+                }
+                guard let parentWindowId else {
+                    v2MainSync { AgentSupervisionRegistry.shared.discard(id: agentId) }
+                    return .err(code: "not_found", message: "Parent workspace not found", data: [
+                        "parent_workspace_id": parentWorkspaceId.uuidString,
+                    ])
                 }
                 guard params["path"] == nil else {
                     v2MainSync { AgentSupervisionRegistry.shared.discard(id: agentId) }
