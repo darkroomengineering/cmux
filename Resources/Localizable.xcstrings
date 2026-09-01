@@ -2325,6 +2325,48 @@
         }
       }
     },
+    "alert.newWorktreeWorkspace.branchRequired": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Enter a branch name." } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ブランチ名を入力してください。" } }
+      }
+    },
+    "alert.newWorktreeWorkspace.cancel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Cancel" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "キャンセル" } }
+      }
+    },
+    "alert.newWorktreeWorkspace.create": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Create" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "作成" } }
+      }
+    },
+    "alert.newWorktreeWorkspace.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Enter the branch to create or open in a new worktree." } },
+        "ja": { "stringUnit": { "state": "translated", "value": "新しいワークツリーで作成または開くブランチを入力してください。" } }
+      }
+    },
+    "alert.newWorktreeWorkspace.placeholder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "feature/my-branch" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "feature/my-branch" } }
+      }
+    },
+    "alert.newWorktreeWorkspace.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "New Worktree Workspace" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "新しいワークツリーワークスペース" } }
+      }
+    },
     "alert.renameWorkspace.cancel": {
       "extractionState": "manual",
       "localizations": {
@@ -2378,6 +2420,48 @@
             "value": "Rename Workspace"
           }
         }
+      }
+    },
+    "alert.worktreeFolder.branchCheckedOut": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "That branch is already checked out at %@." } },
+        "ja": { "stringUnit": { "state": "translated", "value": "そのブランチはすでに %@ でチェックアウトされています。" } }
+      }
+    },
+    "alert.worktreeFolder.createFailed.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Couldn’t Create Worktree" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ワークツリーを作成できませんでした" } }
+      }
+    },
+    "alert.worktreeFolder.notGitRepo.message": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "This workspace is not inside a Git repository." } },
+        "ja": { "stringUnit": { "state": "translated", "value": "このワークスペースは Git リポジトリ内にありません。" } }
+      }
+    },
+    "alert.worktreeFolder.notGitRepo.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Git Repository Required" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "Git リポジトリが必要です" } }
+      }
+    },
+    "alert.worktreeFolder.ok": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "OK" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "OK" } }
+      }
+    },
+    "alert.worktreeFolder.pathExists": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "A file or folder already exists at %@." } },
+        "ja": { "stringUnit": { "state": "translated", "value": "%@ にはすでにファイルまたはフォルダがあります。" } }
       }
     },
     "appearance.auto": {
@@ -6141,6 +6225,20 @@
         }
       }
     },
+    "contextMenu.collapseWorktreeFolder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Collapse Worktree Folder" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ワークツリーフォルダを折りたたむ" } }
+      }
+    },
+    "contextMenu.expandWorktreeFolder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Expand Worktree Folder" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ワークツリーフォルダを展開" } }
+      }
+    },
     "contextMenu.moveDown": {
       "extractionState": "manual",
       "localizations": {
@@ -6194,6 +6292,13 @@
             "value": "Move Workspaces to Window"
           }
         }
+      }
+    },
+    "contextMenu.newWorktreeWorkspace": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "New Worktree Workspace…" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "新しいワークツリーワークスペース…" } }
       }
     },
     "contextMenu.newWindow": {
@@ -6251,6 +6356,13 @@
         }
       }
     },
+    "contextMenu.stopUsingAsWorktreeFolder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Stop Using as Worktree Folder" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ワークツリーフォルダとしての使用を停止" } }
+      }
+    },
     "contextMenu.unpinWorkspace": {
       "extractionState": "manual",
       "localizations": {
@@ -6271,6 +6383,13 @@
             "value": "Unpin Workspaces"
           }
         }
+      }
+    },
+    "contextMenu.useAsWorktreeFolder": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Use as Worktree Folder" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ワークツリーフォルダとして使用" } }
       }
     },
     "contextMenu.workspaceColor": {
@@ -12682,6 +12801,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Git worktree ワークスペース"
+          }
+        }
+      }
+    },
+    "sidebar.worktreeFolder.tooltip": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Worktree folder"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワークツリーフォルダ"
           }
         }
       }

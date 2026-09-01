@@ -372,6 +372,11 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var logEntries: [SessionLogEntrySnapshot]
     var progress: SessionProgressSnapshot?
     var gitBranch: SessionGitBranchSnapshot?
+    var worktreeFolderId: UUID? = nil
+    var worktreeFolderRepoRoot: String? = nil
+    var isWorktreeFolder: Bool? = nil
+    var isWorktreeFolderCollapsed: Bool? = nil
+    var worktreeBranch: String? = nil
 }
 
 struct SessionTabManagerSnapshot: Codable, Sendable {
@@ -794,6 +799,11 @@ enum SessionPersistenceStore {
                       workspace.logEntries.count <= SessionPersistencePolicy.maxLogEntriesPerWorkspace,
                       isValidString(workspace.progress?.label),
                       isValidString(workspace.gitBranch?.branch),
+                      isValidString(
+                          workspace.worktreeFolderRepoRoot,
+                          maxBytes: SessionPersistencePolicy.maxPathStringBytes
+                      ),
+                      isValidString(workspace.worktreeBranch),
                       workspace.statusEntries.allSatisfy(isValidStatusEntry),
                       workspace.logEntries.allSatisfy(isValidLogEntry),
                       workspace.panels.allSatisfy(isValidPanel) else {

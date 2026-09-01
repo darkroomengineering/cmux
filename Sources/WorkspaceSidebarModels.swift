@@ -11,6 +11,48 @@ import Darwin
 import Network
 import CoreText
 
+struct SidebarWorkspaceHierarchyEntry: Equatable {
+    let id: UUID
+    let parentId: UUID?
+    let isFolder: Bool
+    let isCollapsed: Bool
+}
+
+enum SidebarWorkspaceHierarchy {
+    static func visibleWorkspaceIds(_ entries: [SidebarWorkspaceHierarchyEntry]) -> [UUID] {
+        let folderIds = Set(entries.lazy.filter(\.isFolder).map(\.id))
+        var childrenByParent: [UUID: [SidebarWorkspaceHierarchyEntry]] = [:]
+        for entry in entries {
+            guard let parentId = entry.parentId, folderIds.contains(parentId) else { continue }
+            childrenByParent[parentId, default: []].append(entry)
+        }
+        var result: [UUID] = []
+        var emitted: Set<UUID> = []
+
+        for entry in entries {
+            if let parentId = entry.parentId, folderIds.contains(parentId) {
+                continue
+            }
+            guard emitted.insert(entry.id).inserted else { continue }
+            result.append(entry.id)
+            guard entry.isFolder, let children = childrenByParent[entry.id] else { continue }
+            for child in children where emitted.insert(child.id).inserted {
+                if !entry.isCollapsed {
+                    result.append(child.id)
+                }
+            }
+        }
+        // Malformed relationships (for example, a cycle in a user-edited snapshot) stay visible
+        // instead of silently dropping a workspace from the sidebar.
+        result.append(contentsOf: entries.lazy.map(\.id).filter { emitted.insert($0).inserted })
+        return result
+    }
+
+    static func childCount(of folderId: UUID, in entries: [SidebarWorkspaceHierarchyEntry]) -> Int {
+        entries.lazy.filter { $0.parentId == folderId }.count
+    }
+}
+
 struct SidebarStatusEntry: Equatable {
     let key: String
     let value: String

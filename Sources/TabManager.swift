@@ -551,6 +551,13 @@ class TabManager: ObservableObject {
     static let hiddenWorkspaceGitMetadataRefreshInterval: TimeInterval = 300
     @Published var selectedTabId: UUID? {
         willSet {
+            if let newValue,
+               let child = tabs.first(where: { $0.id == newValue }),
+               let parentId = child.worktreeParentWorkspaceId,
+               let parent = tabs.first(where: { $0.id == parentId && $0.isWorktreeFolderCollapsed }) {
+                parent.isWorktreeFolderCollapsed = false
+                tabs = Array(tabs)
+            }
 #if DEBUG
             guard newValue != selectedTabId else {
                 debugPendingWorkspaceSwitchTrigger = nil
@@ -1774,6 +1781,129 @@ class TabManager: ObservableObject {
         return false
     }
 
+    func enableWorktreeFolder(_ workspace: Workspace, repoRoot: String) {
+        guard tabs.contains(where: { $0.id == workspace.id }) else { return }
+        let folderId = workspace.worktreeFolderId ?? UUID()
+        workspace.isWorktreeFolder = true
+        workspace.isWorktreeFolderCollapsed = false
+        workspace.worktreeFolderId = folderId
+        workspace.worktreeFolderRepoRoot = repoRoot
+        workspace.worktreeParentWorkspaceId = nil
+        for child in worktreeChildren(of: workspace) {
+            child.worktreeFolderId = folderId
+        }
+        tabs = Array(tabs)
+    }
+
+    func disableWorktreeFolder(_ workspace: Workspace) {
+        guard tabs.contains(where: { $0.id == workspace.id }) else { return }
+        let childIds = Set(worktreeChildren(of: workspace).map(\.id))
+        for child in tabs where childIds.contains(child.id) {
+            child.worktreeParentWorkspaceId = nil
+            child.worktreeFolderId = nil
+        }
+        workspace.isWorktreeFolder = false
+        workspace.isWorktreeFolderCollapsed = false
+        workspace.worktreeFolderId = nil
+        workspace.worktreeFolderRepoRoot = nil
+        tabs = Array(tabs)
+    }
+
+    func setWorktreeFolderCollapsed(_ workspace: Workspace, collapsed: Bool) {
+        guard workspace.isWorktreeFolder,
+              tabs.contains(where: { $0.id == workspace.id }) else { return }
+        if collapsed,
+           let selectedTabId,
+           worktreeChildren(of: workspace).contains(where: { $0.id == selectedTabId }) {
+            selectWorkspace(workspace)
+        }
+        workspace.isWorktreeFolderCollapsed = collapsed
+        tabs = Array(tabs)
+    }
+
+    func worktreeChildren(of workspace: Workspace) -> [Workspace] {
+        tabs.filter { $0.worktreeParentWorkspaceId == workspace.id }
+    }
+
+    func worktreeInsertionAnchor(for workspace: Workspace) -> Workspace {
+        worktreeChildren(of: workspace).last ?? workspace
+    }
+
+    @discardableResult
+    func addWorktreeWorkspace(
+        path: String,
+        branch: String?,
+        repoRoot: String,
+        layoutName: String? = nil,
+        select: Bool
+    ) -> Workspace {
+        let parent = worktreeParentWorkspace(repoRoot: repoRoot)
+        let insertionAnchor = parent.map { worktreeInsertionAnchor(for: $0) }
+        if select, let parent, parent.isWorktreeFolderCollapsed {
+            parent.isWorktreeFolderCollapsed = false
+            tabs = Array(tabs)
+        }
+        let workspace = addWorkspace(
+            workingDirectory: path,
+            select: select,
+            eagerLoadTerminal: !select
+        )
+        workspace.worktreeBranch = branch
+        if let parent {
+            workspace.worktreeParentWorkspaceId = parent.id
+            if parent.isWorktreeFolder, let folderId = parent.worktreeFolderId {
+                workspace.worktreeFolderId = folderId
+            }
+            let anchor = insertionAnchor ?? parent
+            _ = reorderWorkspace(tabId: workspace.id, after: anchor.id)
+        }
+        if let layoutName {
+            _ = workspace.applyNamedLayout(
+                name: layoutName,
+                baseCwd: path,
+                store: ProgramaLayoutStore.shared
+            )
+        }
+        tabs = Array(tabs)
+        return workspace
+    }
+
+    private func worktreeParentWorkspace(repoRoot: String) -> Workspace? {
+        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
+        let repoKey = SidebarBranchOrdering.canonicalDirectoryKey(
+            repoRoot,
+            homeDirectoryForTildeExpansion: homeDirectory
+        )
+        guard let repoKey else { return nil }
+        if let folder = tabs.first(where: {
+            guard $0.isWorktreeFolder, let folderRoot = $0.worktreeFolderRepoRoot else { return false }
+            return SidebarBranchOrdering.canonicalDirectoryKey(
+                folderRoot,
+                homeDirectoryForTildeExpansion: homeDirectory
+            ) == repoKey
+        }) {
+            return folder
+        }
+        return tabs.first {
+            SidebarBranchOrdering.canonicalDirectoryKey(
+                $0.currentDirectory,
+                homeDirectoryForTildeExpansion: homeDirectory
+            ) == repoKey
+        }
+    }
+
+    private func detachWorktreeFolderRelationships(for workspace: Workspace) {
+        if workspace.isWorktreeFolder {
+            for child in worktreeChildren(of: workspace) {
+                child.worktreeParentWorkspaceId = nil
+                child.worktreeFolderId = nil
+            }
+        } else {
+            workspace.worktreeParentWorkspaceId = nil
+            workspace.worktreeFolderId = nil
+        }
+    }
+
     func setCustomTitle(tabId: UUID, title: String?) {
         guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return }
         tabs[index].setCustomTitle(title)
@@ -2005,6 +2135,7 @@ class TabManager: ObservableObject {
         // unconditionally mutate whatever workspace was passed in.
         guard tabs.contains(where: { $0.id == workspace.id }) else { return }
         guard tabs.count > 1 else { return }
+        detachWorktreeFolderRelationships(for: workspace)
         clearWorkspaceGitProbes(workspaceId: workspace.id)
         sidebarSelectedWorkspaceIds.remove(workspace.id)
 
@@ -2039,6 +2170,7 @@ class TabManager: ObservableObject {
     @discardableResult
     func detachWorkspace(tabId: UUID) -> Workspace? {
         guard let index = tabs.firstIndex(where: { $0.id == tabId }) else { return nil }
+        detachWorktreeFolderRelationships(for: tabs[index])
         clearWorkspaceGitProbes(workspaceId: tabId)
         sidebarSelectedWorkspaceIds.remove(tabId)
 

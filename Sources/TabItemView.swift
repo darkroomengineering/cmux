@@ -35,6 +35,13 @@ struct SidebarTrailingAccessorySlot<Content: View>: View {
     }
 }
 
+private enum SidebarWorktreeCreationResult: Sendable {
+    case success(path: String, branch: String)
+    case branchCheckedOut(path: String)
+    case pathExists(path: String)
+    case failure(message: String)
+}
+
 
 // PERF: TabItemView is Equatable so SwiftUI skips body re-evaluation when
 // the parent rebuilds with unchanged values. Without this, every TabManager
@@ -70,6 +77,9 @@ struct TabItemView: View, Equatable {
         lhs.allRemoteContextMenuTargetsDisconnected == rhs.allRemoteContextMenuTargetsDisconnected &&
         lhs.settings == rhs.settings &&
         lhs.showsWorktreeBadge == rhs.showsWorktreeBadge &&
+        lhs.isWorktreeFolder == rhs.isWorktreeFolder &&
+        lhs.isWorktreeFolderCollapsed == rhs.isWorktreeFolderCollapsed &&
+        lhs.worktreeChildCount == rhs.worktreeChildCount &&
         // Keep these immutable render snapshots last so `==` and body consume
         // the same drag state without reading Binding storage during typing.
         lhs.draggedTabIdSnapshot == rhs.draggedTabIdSnapshot &&
@@ -112,6 +122,9 @@ struct TabItemView: View, Equatable {
     /// Equatable typing-latency contract at the top of this file. Do NOT read
     /// `tab.worktreeParentWorkspaceId` directly in `body`.
     let showsWorktreeBadge: Bool
+    let isWorktreeFolder: Bool
+    let isWorktreeFolderCollapsed: Bool
+    let worktreeChildCount: Int
     @State private var workspaceObservationGeneration: UInt64 = 0
     @State private var isHovering = false
     @State private var rowHeight: CGFloat = 1
@@ -405,6 +418,7 @@ struct TabItemView: View, Equatable {
             : KeyboardShortcutSettings.Action.closeWorkspace.tooltip(closeWorkspaceTooltip)
         let worktreeBadgeTooltip = String(localized: "sidebar.worktreeBadge.tooltip", defaultValue: "Git worktree workspace")
         let worktreeBadgeAccessibilityLabel = String(localized: "sidebar.worktreeBadge.accessibilityLabel", defaultValue: "Git worktree workspace")
+        let worktreeFolderTooltip = String(localized: "sidebar.worktreeFolder.tooltip", defaultValue: "Worktree folder")
         let accessibilityHintText = String(localized: "sidebar.workspace.accessibilityHint", defaultValue: "Activate to focus this workspace. Drag to reorder, or use Move Up and Move Down actions.")
         let moveUpActionText = String(localized: "sidebar.workspace.moveUpAction", defaultValue: "Move Up")
         let moveDownActionText = String(localized: "sidebar.workspace.moveDownAction", defaultValue: "Move Down")
@@ -441,7 +455,37 @@ struct TabItemView: View, Equatable {
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                if showsWorktreeBadge {
+                if isWorktreeFolder {
+                    if worktreeChildCount > 0 {
+                        Button {
+                            tabManager.setWorktreeFolderCollapsed(
+                                tab,
+                                collapsed: !isWorktreeFolderCollapsed
+                            )
+                        } label: {
+                            HStack(spacing: 3) {
+                                Image(systemName: isWorktreeFolderCollapsed ? "chevron.right" : "chevron.down")
+                                Image(systemName: "folder.fill")
+                            }
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(activeSecondaryColor(0.78))
+                            .frame(height: 20)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                        .padding(.horizontal, -12)
+                        .padding(.vertical, -12)
+                        .safeHelp(worktreeFolderTooltip)
+                        .accessibilityLabel(Text(worktreeFolderTooltip))
+                    } else {
+                        Image(systemName: "folder")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(activeSecondaryColor(0.78))
+                            .safeHelp(worktreeFolderTooltip)
+                            .accessibilityLabel(Text(worktreeFolderTooltip))
+                    }
+                } else if showsWorktreeBadge {
                     Image(systemName: "arrow.triangle.branch")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(activeSecondaryColor(0.7))
@@ -713,7 +757,7 @@ struct TabItemView: View, Equatable {
         .animation(.easeInOut(duration: 0.2), value: tab.logEntries.count)
         .animation(.easeInOut(duration: 0.2), value: tab.progress != nil)
         .animation(.easeInOut(duration: 0.2), value: tab.metadataBlocks.count)
-        .padding(.leading, showsWorktreeBadge ? 6 : 0)
+        .padding(.leading, showsWorktreeBadge ? 14 : 0)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(
@@ -1041,6 +1085,37 @@ struct TabItemView: View, Equatable {
             if tab.hasCustomDescription {
                 Button(String(localized: "contextMenu.clearWorkspaceDescription", defaultValue: "Clear Workspace Description")) {
                     tabManager.clearCustomDescription(tabId: tab.id)
+                }
+            }
+        }
+
+        if !isMulti, !tab.isRemoteWorkspace, !showsWorktreeBadge {
+            Divider()
+
+            if isWorktreeFolder {
+                Button(String(localized: "contextMenu.newWorktreeWorkspace", defaultValue: "New Worktree Workspace…")) {
+                    promptNewWorktreeWorkspace()
+                }
+
+                if worktreeChildCount > 0 {
+                    Button(
+                        isWorktreeFolderCollapsed
+                            ? String(localized: "contextMenu.expandWorktreeFolder", defaultValue: "Expand Worktree Folder")
+                            : String(localized: "contextMenu.collapseWorktreeFolder", defaultValue: "Collapse Worktree Folder")
+                    ) {
+                        tabManager.setWorktreeFolderCollapsed(
+                            tab,
+                            collapsed: !isWorktreeFolderCollapsed
+                        )
+                    }
+                }
+
+                Button(String(localized: "contextMenu.stopUsingAsWorktreeFolder", defaultValue: "Stop Using as Worktree Folder")) {
+                    tabManager.disableWorktreeFolder(tab)
+                }
+            } else {
+                Button(String(localized: "contextMenu.useAsWorktreeFolder", defaultValue: "Use as Worktree Folder")) {
+                    enableWorktreeFolder()
                 }
             }
         }
@@ -1824,6 +1899,124 @@ struct TabItemView: View, Equatable {
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
         tabManager.setCustomTitle(tabId: tab.id, title: input.stringValue)
+    }
+
+    private func enableWorktreeFolder() {
+        let workspaceId = tab.id
+        let directory = tab.currentDirectory
+        Task { @MainActor in
+            let repoRoot = await Task.detached(priority: .userInitiated) {
+                GitWorktreeManager.resolveRepoRoot(from: directory)
+            }.value
+            guard let workspace = tabManager.tabs.first(where: { $0.id == workspaceId }) else { return }
+            guard let repoRoot else {
+                showWorktreeFolderError(
+                    title: String(localized: "alert.worktreeFolder.notGitRepo.title", defaultValue: "Git Repository Required"),
+                    message: String(localized: "alert.worktreeFolder.notGitRepo.message", defaultValue: "This workspace is not inside a Git repository.")
+                )
+                return
+            }
+            tabManager.enableWorktreeFolder(workspace, repoRoot: repoRoot)
+        }
+    }
+
+    private func promptNewWorktreeWorkspace() {
+        guard let repoRoot = tab.worktreeFolderRepoRoot,
+              let folderId = tab.worktreeFolderId else { return }
+        let alert = NSAlert()
+        alert.messageText = String(localized: "alert.newWorktreeWorkspace.title", defaultValue: "New Worktree Workspace")
+        alert.informativeText = String(localized: "alert.newWorktreeWorkspace.message", defaultValue: "Enter the branch to create or open in a new worktree.")
+        let input = NSTextField(string: "")
+        input.placeholderString = String(localized: "alert.newWorktreeWorkspace.placeholder", defaultValue: "feature/my-branch")
+        input.frame = NSRect(x: 0, y: 0, width: 280, height: 22)
+        alert.accessoryView = input
+        alert.addButton(withTitle: String(localized: "alert.newWorktreeWorkspace.create", defaultValue: "Create"))
+        alert.addButton(withTitle: String(localized: "alert.newWorktreeWorkspace.cancel", defaultValue: "Cancel"))
+        alert.window.initialFirstResponder = input
+        DispatchQueue.main.async {
+            alert.window.makeFirstResponder(input)
+        }
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let branch = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !branch.isEmpty else {
+            showWorktreeFolderError(
+                title: String(localized: "alert.worktreeFolder.createFailed.title", defaultValue: "Couldn’t Create Worktree"),
+                message: String(localized: "alert.newWorktreeWorkspace.branchRequired", defaultValue: "Enter a branch name.")
+            )
+            return
+        }
+
+        Task { @MainActor in
+            let result = await Task.detached(priority: .userInitiated) {
+                if let existing = GitWorktreeManager.worktreeCheckedOut(branch: branch, repoRoot: repoRoot) {
+                    return SidebarWorktreeCreationResult.branchCheckedOut(path: existing.path)
+                }
+                let baseDirectory = ProgramaWorktreeSettings.resolvedDirectory()
+                let path = (baseDirectory as NSString)
+                    .appendingPathComponent(GitWorktreeManager.repoName(forRepoRoot: repoRoot))
+                    .appending("/" + GitWorktreeManager.branchSlug(branch))
+                switch GitWorktreeManager.add(
+                    repoRoot: repoRoot,
+                    branch: branch,
+                    base: nil,
+                    path: path
+                ) {
+                case .success(let entry):
+                    return .success(path: entry.path, branch: entry.branch ?? branch)
+                case .branchCheckedOut(let existing):
+                    return .branchCheckedOut(path: existing.path)
+                case .worktreePathExists:
+                    return .pathExists(path: path)
+                case .notAGitRepo:
+                    return .failure(message: "not_a_git_repo")
+                case .gitCommandFailed(let message):
+                    return .failure(message: message)
+                }
+            }.value
+
+            let folder = tabManager.tabs.first(where: {
+                $0.isWorktreeFolder && $0.worktreeFolderId == folderId
+            })
+            switch result {
+            case .success(let path, let createdBranch):
+                if let folder {
+                    tabManager.setWorktreeFolderCollapsed(folder, collapsed: false)
+                }
+                _ = tabManager.addWorktreeWorkspace(
+                    path: path,
+                    branch: createdBranch,
+                    repoRoot: repoRoot,
+                    select: true
+                )
+            case .branchCheckedOut(let path):
+                showWorktreeFolderError(
+                    title: String(localized: "alert.worktreeFolder.createFailed.title", defaultValue: "Couldn’t Create Worktree"),
+                    message: String(localized: "alert.worktreeFolder.branchCheckedOut", defaultValue: "That branch is already checked out at \(path).")
+                )
+            case .pathExists(let path):
+                showWorktreeFolderError(
+                    title: String(localized: "alert.worktreeFolder.createFailed.title", defaultValue: "Couldn’t Create Worktree"),
+                    message: String(localized: "alert.worktreeFolder.pathExists", defaultValue: "A file or folder already exists at \(path).")
+                )
+            case .failure(let message):
+                let displayMessage = message == "not_a_git_repo"
+                    ? String(localized: "alert.worktreeFolder.notGitRepo.message", defaultValue: "This workspace is not inside a Git repository.")
+                    : message
+                showWorktreeFolderError(
+                    title: String(localized: "alert.worktreeFolder.createFailed.title", defaultValue: "Couldn’t Create Worktree"),
+                    message: displayMessage
+                )
+            }
+        }
+    }
+
+    private func showWorktreeFolderError(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: String(localized: "alert.worktreeFolder.ok", defaultValue: "OK"))
+        _ = alert.runModal()
     }
 
     private func beginWorkspaceDescriptionEditFromContextMenu() {

@@ -146,6 +146,48 @@ final class SidebarRemoteErrorCopySupportTests: XCTestCase {
     }
 }
 
+final class SidebarWorkspaceHierarchyTests: XCTestCase {
+    func testCollapsedFolderHidesOnlyItsChildren() {
+        let folder = UUID()
+        let childOne = UUID()
+        let unrelated = UUID()
+        let childTwo = UUID()
+        let orphanParent = UUID()
+        let orphan = UUID()
+        let entries = [
+            SidebarWorkspaceHierarchyEntry(id: folder, parentId: nil, isFolder: true, isCollapsed: true),
+            SidebarWorkspaceHierarchyEntry(id: childOne, parentId: folder, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: unrelated, parentId: nil, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: childTwo, parentId: folder, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: orphan, parentId: orphanParent, isFolder: false, isCollapsed: false),
+        ]
+
+        XCTAssertEqual(
+            SidebarWorkspaceHierarchy.visibleWorkspaceIds(entries),
+            [folder, unrelated, orphan]
+        )
+        XCTAssertEqual(SidebarWorkspaceHierarchy.childCount(of: folder, in: entries), 2)
+    }
+
+    func testExpandedFolderPreservesFlatWorkspaceOrder() {
+        let folder = UUID()
+        let childOne = UUID()
+        let unrelated = UUID()
+        let childTwo = UUID()
+        let entries = [
+            SidebarWorkspaceHierarchyEntry(id: folder, parentId: nil, isFolder: true, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: childOne, parentId: folder, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: unrelated, parentId: nil, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: childTwo, parentId: folder, isFolder: false, isCollapsed: false),
+        ]
+
+        XCTAssertEqual(
+            SidebarWorkspaceHierarchy.visibleWorkspaceIds(entries),
+            [folder, childOne, childTwo, unrelated]
+        )
+    }
+}
+
 
 final class SidebarBranchOrderingTests: XCTestCase {
 

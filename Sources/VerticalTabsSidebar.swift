@@ -206,6 +206,16 @@ struct VerticalTabsSidebar: View {
 
     var body: some View {
         let tabs = tabManager.tabs
+        let hierarchyEntries = tabs.map {
+            SidebarWorkspaceHierarchyEntry(
+                id: $0.id,
+                parentId: $0.worktreeParentWorkspaceId,
+                isFolder: $0.isWorktreeFolder,
+                isCollapsed: $0.isWorktreeFolderCollapsed
+            )
+        }
+        let visibleWorkspaceIds = Set(SidebarWorkspaceHierarchy.visibleWorkspaceIds(hierarchyEntries))
+        let visibleTabs = tabs.filter { visibleWorkspaceIds.contains($0.id) }
         let workspaceCount = tabs.count
         let canCloseWorkspace = workspaceCount > 1
         let workspaceNumberShortcut = self.workspaceNumberShortcut
@@ -251,7 +261,7 @@ struct VerticalTabsSidebar: View {
                         // Workspaces are bounded, so prefer a non-lazy stack here.
                         // LazyVStack + drag-state invalidations can recurse through layout.
                         VStack(spacing: tabRowSpacing) {
-                            ForEach(tabs, id: \.id) { tab in
+                            ForEach(visibleTabs, id: \.id) { tab in
                                 let index = tabIndexById[tab.id] ?? 0
                                 let usesSelectedContextMenuTargets = selectedTabIds.contains(tab.id)
                                 let contextMenuWorkspaceIds = usesSelectedContextMenuTargets
@@ -267,6 +277,10 @@ struct VerticalTabsSidebar: View {
                                     ? allSelectedRemoteContextMenuTargetsDisconnected
                                     : (tab.isRemoteWorkspace && tab.remoteConnectionState == .disconnected)
                                 let showsWorktreeBadge = tab.worktreeParentWorkspaceId != nil
+                                let worktreeChildCount = SidebarWorkspaceHierarchy.childCount(
+                                    of: tab.id,
+                                    in: hierarchyEntries
+                                )
                                 TabItemView(
                                     tabManager: tabManager,
                                     notificationStore: notificationStore,
@@ -305,7 +319,10 @@ struct VerticalTabsSidebar: View {
                                     allRemoteContextMenuTargetsConnecting: allRemoteContextMenuTargetsConnecting,
                                     allRemoteContextMenuTargetsDisconnected: allRemoteContextMenuTargetsDisconnected,
                                     settings: tabItemSettings,
-                                    showsWorktreeBadge: showsWorktreeBadge
+                                    showsWorktreeBadge: showsWorktreeBadge,
+                                    isWorktreeFolder: tab.isWorktreeFolder,
+                                    isWorktreeFolderCollapsed: tab.isWorktreeFolderCollapsed,
+                                    worktreeChildCount: worktreeChildCount
                                 )
                                 .equatable()
                             }

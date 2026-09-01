@@ -65,19 +65,13 @@ extension TerminalController {
         let shouldFocus = v2FocusAllowed(requested: focusRequested)
         var newId: UUID?
         v2MainSync {
-            let ws = tabManager.addWorkspace(
-                workingDirectory: entry.path,
-                select: shouldFocus,
-                eagerLoadTerminal: !shouldFocus
+            let ws = tabManager.addWorktreeWorkspace(
+                path: entry.path,
+                branch: entry.branch,
+                repoRoot: repoRoot,
+                layoutName: layoutName,
+                select: shouldFocus
             )
-            ws.worktreeBranch = entry.branch
-            if let parent = self.v2WorktreeParentWorkspace(tabManager: tabManager, repoRoot: repoRoot) {
-                ws.worktreeParentWorkspaceId = parent.id
-                _ = tabManager.reorderWorkspace(tabId: ws.id, after: parent.id)
-            }
-            if let layoutName {
-                _ = ws.applyNamedLayout(name: layoutName, baseCwd: entry.path, store: ProgramaLayoutStore.shared)
-            }
             newId = ws.id
         }
 
@@ -295,12 +289,4 @@ extension TerminalController {
         }
     }
 
-    /// Finds an already-open workspace whose directory matches `repoRoot` exactly, used to
-    /// group a newly created worktree workspace next to its parent repo workspace in the
-    /// sidebar (adjacency = grouping, see plan decision #4). Returns nil (ungrouped) if the
-    /// parent repo isn't open as a workspace -- the worktree workspace still opens correctly.
-    @MainActor
-    private func v2WorktreeParentWorkspace(tabManager: TabManager, repoRoot: String) -> Workspace? {
-        v2WorktreeOpenWorkspace(tabManager: tabManager, path: repoRoot)
-    }
 }

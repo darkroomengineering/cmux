@@ -1672,6 +1672,26 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNil(resolved)
     }
 
+    func testWorktreeFolderMetadataRoundTrips() throws {
+        let folderId = UUID()
+        var snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        snapshot.windows[0].tabManager.workspaces[0].worktreeFolderId = folderId
+        snapshot.windows[0].tabManager.workspaces[0].worktreeFolderRepoRoot = "/repo"
+        snapshot.windows[0].tabManager.workspaces[0].isWorktreeFolder = true
+        snapshot.windows[0].tabManager.workspaces[0].isWorktreeFolderCollapsed = true
+        snapshot.windows[0].tabManager.workspaces[0].worktreeBranch = "feature/sidebar"
+
+        let data = try JSONEncoder().encode(snapshot)
+        let decoded = try JSONDecoder().decode(AppSessionSnapshot.self, from: data)
+        let workspace = try XCTUnwrap(decoded.windows.first?.tabManager.workspaces.first)
+
+        XCTAssertEqual(workspace.worktreeFolderId, folderId)
+        XCTAssertEqual(workspace.worktreeFolderRepoRoot, "/repo")
+        XCTAssertEqual(workspace.isWorktreeFolder, true)
+        XCTAssertEqual(workspace.isWorktreeFolderCollapsed, true)
+        XCTAssertEqual(workspace.worktreeBranch, "feature/sidebar")
+    }
+
     private func makeSnapshot(version: Int) -> AppSessionSnapshot {
         let workspace = SessionWorkspaceSnapshot(
             processTitle: "Terminal",

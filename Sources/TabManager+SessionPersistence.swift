@@ -103,13 +103,48 @@ extension TabManager {
             newTabs.append(fallback)
         }
 
+        // Workspace instance IDs are intentionally regenerated on restore. Rebuild the runtime
+        // parent links from the persisted folder identity after every workspace exists.
+        var worktreeFoldersById: [UUID: Workspace] = [:]
+        for workspace in newTabs where workspace.isWorktreeFolder {
+            guard let folderId = workspace.worktreeFolderId else {
+                workspace.isWorktreeFolder = false
+                workspace.isWorktreeFolderCollapsed = false
+                workspace.worktreeFolderRepoRoot = nil
+                continue
+            }
+            guard worktreeFoldersById[folderId] == nil else {
+                workspace.isWorktreeFolder = false
+                workspace.isWorktreeFolderCollapsed = false
+                workspace.worktreeFolderId = nil
+                workspace.worktreeFolderRepoRoot = nil
+                continue
+            }
+            worktreeFoldersById[folderId] = workspace
+        }
+        for workspace in newTabs where !workspace.isWorktreeFolder {
+            guard let folderId = workspace.worktreeFolderId,
+                  let parent = worktreeFoldersById[folderId] else {
+                workspace.worktreeFolderId = nil
+                continue
+            }
+            workspace.worktreeParentWorkspaceId = parent.id
+        }
+
         // Determine selection before mutating @Published properties.
-        let newSelectedId: UUID?
+        var newSelectedId: UUID?
         if let selectedWorkspaceIndex = snapshot.selectedWorkspaceIndex,
            newTabs.indices.contains(selectedWorkspaceIndex) {
             newSelectedId = newTabs[selectedWorkspaceIndex].id
         } else {
             newSelectedId = newTabs.first?.id
+        }
+        if let selectedWorkspace = newTabs.first(where: { $0.id == newSelectedId }),
+           let parentId = selectedWorkspace.worktreeParentWorkspaceId,
+           let collapsedParent = newTabs.first(where: {
+               $0.id == parentId && $0.isWorktreeFolderCollapsed
+           }) {
+            newSelectedId = collapsedParent.id
         }
 
         // Single atomic assignment of @Published properties so SwiftUI observers

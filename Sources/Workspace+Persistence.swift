@@ -89,7 +89,12 @@ extension Workspace {
             statusEntries: statusSnapshots,
             logEntries: logSnapshots,
             progress: progressSnapshot,
-            gitBranch: gitBranchSnapshot
+            gitBranch: gitBranchSnapshot,
+            worktreeFolderId: worktreeFolderId,
+            worktreeFolderRepoRoot: worktreeFolderRepoRoot,
+            isWorktreeFolder: isWorktreeFolder,
+            isWorktreeFolderCollapsed: isWorktreeFolderCollapsed,
+            worktreeBranch: worktreeBranch
         )
     }
 
@@ -163,6 +168,12 @@ extension Workspace {
         setCustomDescription(snapshot.customDescription)
         setCustomColor(snapshot.customColor)
         isPinned = snapshot.isPinned
+        worktreeFolderId = snapshot.worktreeFolderId
+        worktreeFolderRepoRoot = normalizedSidebarDirectory(snapshot.worktreeFolderRepoRoot ?? "")
+        isWorktreeFolder = snapshot.isWorktreeFolder ?? false
+        isWorktreeFolderCollapsed = snapshot.isWorktreeFolderCollapsed ?? false
+        worktreeBranch = normalizedSidebarBranchName(snapshot.worktreeBranch)
+        worktreeParentWorkspaceId = nil
 
         // Status entries and agent PIDs are ephemeral runtime state tied to running
         // processes (e.g. claude_code "Running"). Don't restore them across app
