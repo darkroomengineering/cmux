@@ -385,14 +385,11 @@ extension Workspace {
         // The focused pane titles the workspace (tmux-style). Single-panel
         // workspaces have no focus ambiguity; in splits, only the focused
         // pane's title propagates so two panes never fight over the sidebar.
-        if panels.count == 1 || panelId == focusedPanelId, customTitle == nil {
-            if self.title != trimmed {
-                self.title = trimmed
-                didMutate = true
-            }
-            if processTitle != trimmed {
-                processTitle = trimmed
-            }
+        if panels.count == 1 || panelId == focusedPanelId {
+            let previousTitle = self.title
+            processTitle = trimmed
+            refreshResolvedWorkspaceTitle()
+            if self.title != previousTitle { didMutate = true }
         }
 
         return didMutate
@@ -404,12 +401,11 @@ extension Workspace {
     /// arrived through a real update qualify; creation-time displayTitle
     /// seeds must not overwrite the workspace's default title.
     func refreshWorkspaceTitleFromFocusedPanel() {
-        guard customTitle == nil,
-              let panelId = focusedPanelId,
+        guard let panelId = focusedPanelId,
               panelsWithLiveTitle.contains(panelId),
               let stored = panelTitles[panelId] else { return }
-        if title != stored { title = stored }
         if processTitle != stored { processTitle = stored }
+        refreshResolvedWorkspaceTitle()
     }
 
     func pruneSurfaceMetadata(validSurfaceIds: Set<UUID>) {

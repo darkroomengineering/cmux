@@ -2310,14 +2310,6 @@ struct ProgramaCLI {
                     let sfId = try self.normalizeSurfaceHandle(surfaceRaw, client: ctx.client, workspaceHandle: wsId)
                     if let sfId { params["surface_id"] = sfId }
                     let payload = try ctx.client.sendV2(method: "surface.close", params: params)
-                    if let closedWorkspaceId = (payload["workspace_id"] as? String) ?? wsId,
-                       let closedSurfaceId = (payload["surface_id"] as? String) ?? sfId {
-                        try? self.tmuxPruneCompatSurfaceState(
-                            workspaceId: closedWorkspaceId,
-                            surfaceId: closedSurfaceId,
-                            client: ctx.client
-                        )
-                    }
                     self.printV2Payload(payload, jsonOutput: ctx.jsonOutput, idFormat: ctx.idFormat, fallbackText: self.v2OKSummary(payload, idFormat: ctx.idFormat))
                 }
             ),
@@ -2745,9 +2737,6 @@ struct ProgramaCLI {
                     let wsId = try self.normalizeWorkspaceHandle(workspaceRaw, client: ctx.client)
                     if let wsId { params["workspace_id"] = wsId }
                     let payload = try ctx.client.sendV2(method: "workspace.close", params: params)
-                    if let closedWorkspaceId = (payload["workspace_id"] as? String) ?? wsId {
-                        try? self.tmuxPruneCompatWorkspaceState(workspaceId: closedWorkspaceId)
-                    }
                     self.printV2Payload(payload, jsonOutput: ctx.jsonOutput, idFormat: ctx.idFormat, fallbackText: self.v2OKSummary(payload, idFormat: ctx.idFormat, kinds: ["workspace"]))
                 }
             ),

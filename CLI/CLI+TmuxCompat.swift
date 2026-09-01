@@ -193,22 +193,111 @@ extension ProgramaCLI {
         return payload["workspaces"] as? [[String: Any]] ?? []
     }
 
-    private func tmuxTeamRootWorkspaceId(
-        workspaceId: String,
-        store: TmuxCompatStore
-    ) -> String {
-        store.teamWorkspaceIdsByRoot.first(where: { rootId, childIds in
-            rootId == workspaceId || childIds.contains(workspaceId)
-        })?.key ?? workspaceId
+    private func tmuxIsClaudeTeamWorkspace(_ item: [String: Any]) -> Bool {
+        guard let workspaceId = item["id"] as? String,
+              let helpers = item["helpers"] as? [[String: Any]] else { return false }
+        return helpers.contains { helper in
+            helper["host"] as? String == "claude-teams"
+                && helper["workspace_id"] as? String == workspaceId
+        }
     }
 
     private func tmuxTeamWorkspaceIds(
-        rootWorkspaceId: String,
-        liveWorkspaceIds: Set<String>,
-        store: TmuxCompatStore
+        containing workspaceId: String,
+        workspaceItems: [[String: Any]]
     ) -> [String] {
-        ([rootWorkspaceId] + (store.teamWorkspaceIdsByRoot[rootWorkspaceId] ?? []))
-            .filter { liveWorkspaceIds.contains($0) }
+        let orderedIds = workspaceItems.compactMap { $0["id"] as? String }
+        let liveWorkspaceIds = Set(orderedIds)
+        let teamWorkspaceIds = Set(workspaceItems.compactMap { item in
+            tmuxIsClaudeTeamWorkspace(item) ? item["id"] as? String : nil
+        })
+        let orderById = Dictionary(uniqueKeysWithValues: orderedIds.enumerated().map { ($0.element, $0.offset) })
+        let parentById = Dictionary(uniqueKeysWithValues: workspaceItems.compactMap { item in
+            guard let id = item["id"] as? String,
+                  teamWorkspaceIds.contains(id),
+                  let parentId = item["agent_parent_workspace_id"] as? String,
+                  liveWorkspaceIds.contains(parentId) else {
+                return nil
+            }
+            return (id, parentId)
+        })
+
+        var lineage = [workspaceId]
+        var lineageIndex = [workspaceId: 0]
+        var rootWorkspaceId = workspaceId
+        while let parentId = parentById[rootWorkspaceId] {
+            if let cycleStart = lineageIndex[parentId] {
+                rootWorkspaceId = lineage[cycleStart...].min {
+                    orderById[$0, default: .max] < orderById[$1, default: .max]
+                } ?? parentId
+                break
+            }
+            lineageIndex[parentId] = lineage.count
+            lineage.append(parentId)
+            rootWorkspaceId = parentId
+        }
+
+        var workspaceIds: [String] = []
+        var visited: Set<String> = []
+        func appendSubtree(parentId: String) {
+            guard visited.insert(parentId).inserted else { return }
+            workspaceIds.append(parentId)
+            for childId in orderedIds where parentById[childId] == parentId {
+                appendSubtree(parentId: childId)
+            }
+        }
+        appendSubtree(parentId: rootWorkspaceId)
+        return workspaceIds
+    }
+
+    private func tmuxDescendantWorkspaceIds(
+        of workspaceId: String,
+        workspaceItems: [[String: Any]]
+    ) -> [String] {
+        let orderedIds = workspaceItems.compactMap { $0["id"] as? String }
+        let teamWorkspaceIds = Set(workspaceItems.compactMap { item in
+            tmuxIsClaudeTeamWorkspace(item) ? item["id"] as? String : nil
+        })
+        let parentById = Dictionary(uniqueKeysWithValues: workspaceItems.compactMap { item in
+            guard let id = item["id"] as? String,
+                  teamWorkspaceIds.contains(id),
+                  let parentId = item["agent_parent_workspace_id"] as? String else {
+                return nil
+            }
+            return (id, parentId)
+        })
+        var descendants: [String] = []
+        var visited: Set<String> = [workspaceId]
+        func appendDescendants(parentId: String) {
+            for childId in orderedIds where parentById[childId] == parentId {
+                guard visited.insert(childId).inserted else { continue }
+                appendDescendants(parentId: childId)
+                descendants.append(childId)
+            }
+        }
+        appendDescendants(parentId: workspaceId)
+        return descendants
+    }
+
+    private func tmuxFinishLiveAgents(workspaceId: String, client: SocketClient) {
+        guard let payload = try? client.sendV2(method: "agent.task.list", params: [
+            "workspace_id": workspaceId,
+            "include_finished": false,
+        ]), let agents = payload["agents"] as? [[String: Any]] else {
+            return
+        }
+        for agent in agents {
+            guard let agentId = agent["id"] as? String else { continue }
+            _ = try? client.sendV2(method: "agent.task.finish", params: [
+                "agent_id": agentId,
+                "state": "cancelled",
+            ])
+        }
+    }
+
+    private func tmuxCloseHelperWorkspace(workspaceId: String, client: SocketClient) throws {
+        tmuxFinishLiveAgents(workspaceId: workspaceId, client: client)
+        _ = try client.sendV2(method: "workspace.close", params: ["workspace_id": workspaceId])
     }
 
     private func tmuxCallerWorkspaceHandle() -> String? {
@@ -483,56 +572,6 @@ extension ProgramaCLI {
         }
         let surfaceId = try resolveSurfaceId(nil, workspaceId: workspaceId, client: client)
         return (workspaceId, nil, surfaceId)
-    }
-
-    private func tmuxAnchoredSplitTarget(
-        workspaceId: String,
-        client: SocketClient
-    ) -> (targetSurfaceId: String, callerSurfaceId: String?, direction: String)? {
-        var store = loadTmuxCompatStore()
-        if let lastColumn = store.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId {
-            if let lastColumnId = try? tmuxCanonicalSurfaceId(
-                lastColumn,
-                workspaceId: workspaceId,
-                client: client
-            ) {
-                // Once the agent column exists, keep stacking into it even if the
-                // caller surface handle has churned from a stale surface:<n> ref.
-                return (lastColumnId, nil, "down")
-            }
-
-            // Right-column anchors can outlive the pane they pointed at.
-            // Drop stale state and rebuild from the caller surface instead.
-            store.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId = nil
-            store.lastSplitSurface.removeValue(forKey: workspaceId)
-            try? updateTmuxCompatStore { current in
-                guard current.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId == lastColumn else {
-                    return
-                }
-                current.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId = nil
-                current.lastSplitSurface.removeValue(forKey: workspaceId)
-            }
-        }
-
-        let candidateAnchors = [
-            tmuxCallerSurfaceHandle(),
-            store.mainVerticalLayouts[workspaceId]?.mainSurfaceId
-        ].compactMap { $0 }
-        for candidate in candidateAnchors {
-            if let anchorSurfaceId = try? tmuxCanonicalSurfaceId(
-                candidate,
-                workspaceId: workspaceId,
-                client: client
-            ) {
-                return (anchorSurfaceId, anchorSurfaceId, "right")
-            }
-        }
-
-        try? updateTmuxCompatStore { current in
-            current.mainVerticalLayouts.removeValue(forKey: workspaceId)
-            current.lastSplitSurface.removeValue(forKey: workspaceId)
-        }
-        return nil
     }
 
     private func tmuxRenderFormat(
@@ -960,34 +999,35 @@ extension ProgramaCLI {
             if parsed.value("-t") != nil {
                 throw CLIError(message: "new-window -t is not supported in programa claude-teams mode")
             }
-            var params: [String: Any] = ["focus": false]
-            if let cwd = parsed.value("-c") {
-                params["cwd"] = resolvePath(cwd)
+            let parentWorkspaceId = tmuxResolvedCallerWorkspaceId(client: client)
+                ?? (try tmuxResolveWorkspaceTarget(nil, client: client))
+            let requestedTitle = parsed.value("-n")?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let task = requestedTitle.flatMap { $0.isEmpty ? nil : $0 }
+                ?? String(localized: "agentOverview.helper", defaultValue: "Helper")
+            var params: [String: Any] = [
+                "parent_workspace_id": parentWorkspaceId,
+                "host": "claude-teams",
+                "task": task,
+            ]
+            if let initialCommand = tmuxShellCommandText(
+                commandTokens: parsed.positional,
+                cwd: parsed.value("-c")
+            ) {
+                params["initial_command"] = initialCommand
             }
-            if let callerWorkspace = tmuxCallerWorkspaceHandle(),
-               let parentWorkspaceId = try? resolveWorkspaceId(callerWorkspace, client: client) {
-                params["workspace_id"] = parentWorkspaceId
-                params["agent_parent_workspace_id"] = parentWorkspaceId
-            }
-            if let title = parsed.value("-n"),
-               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                params["title"] = title
-                params["title_is_automatic"] = true
-            }
-            let created = try client.sendV2(method: "workspace.create", params: params)
+            let created = try client.sendV2(method: "agent.spawn", params: params)
             guard let workspaceId = created["workspace_id"] as? String else {
-                throw CLIError(message: "workspace.create did not return workspace_id")
-            }
-            if let text = tmuxShellCommandText(commandTokens: parsed.positional, cwd: parsed.value("-c")) {
-                let surfaceId = try resolveSurfaceId(nil, workspaceId: workspaceId, client: client)
-                _ = try client.sendV2(method: "surface.send_text", params: [
-                    "workspace_id": workspaceId,
-                    "surface_id": surfaceId,
-                    "text": text
-                ])
+                throw CLIError(message: "agent.spawn did not return workspace_id")
             }
             if parsed.hasFlag("-P") {
-                let context = try tmuxFormatContext(workspaceId: workspaceId, client: client)
+                guard let surfaceId = created["surface_id"] as? String else {
+                    throw CLIError(message: "agent.spawn did not return surface_id")
+                }
+                let context = try tmuxFormatContext(
+                    workspaceId: workspaceId,
+                    surfaceId: surfaceId,
+                    client: client
+                )
                 print(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: "@\(workspaceId)"))
             }
 
@@ -1001,51 +1041,22 @@ extension ProgramaCLI {
             let parentWorkspaceId = tmuxResolvedCallerWorkspaceId(client: client)
                 ?? requestedTarget.workspaceId
             var createParams: [String: Any] = [
-                "workspace_id": parentWorkspaceId,
-                "agent_parent_workspace_id": parentWorkspaceId,
-                "focus": false,
+                "parent_workspace_id": parentWorkspaceId,
+                "host": "claude-teams",
+                "task": String(localized: "agentOverview.helper", defaultValue: "Helper"),
             ]
-            if let cwd = parsed.value("-c") {
-                createParams["cwd"] = resolvePath(cwd)
+            if let initialCommand = tmuxShellCommandText(
+                commandTokens: parsed.positional,
+                cwd: parsed.value("-c")
+            ) {
+                createParams["initial_command"] = initialCommand
             }
-            let created = try client.sendV2(method: "workspace.create", params: createParams)
+            let created = try client.sendV2(method: "agent.spawn", params: createParams)
             guard let workspaceId = created["workspace_id"] as? String else {
-                throw CLIError(message: "workspace.create did not return workspace_id")
+                throw CLIError(message: "agent.spawn did not return workspace_id")
             }
-            let surfaceId = try ((created["surface_id"] as? String)
-                ?? resolveSurfaceId(nil, workspaceId: workspaceId, client: client))
-            do {
-                try updateTmuxCompatStore { teamStore in
-                    let liveWorkspaceIds = Set(
-                        try tmuxWorkspaceItems(client: client).compactMap { $0["id"] as? String }
-                    )
-                    guard liveWorkspaceIds.contains(parentWorkspaceId),
-                          liveWorkspaceIds.contains(workspaceId) else {
-                        throw CLIError(message: "The parent workspace closed before the helper was ready")
-                    }
-                    let teamRootId = tmuxTeamRootWorkspaceId(
-                        workspaceId: parentWorkspaceId,
-                        store: teamStore
-                    )
-                    var teamWorkspaceIds = teamStore.teamWorkspaceIdsByRoot[teamRootId] ?? []
-                    if !teamWorkspaceIds.contains(workspaceId) {
-                        teamWorkspaceIds.append(workspaceId)
-                        teamStore.teamWorkspaceIdsByRoot[teamRootId] = teamWorkspaceIds
-                    }
-                }
-            } catch {
-                _ = try? client.sendV2(method: "workspace.close", params: [
-                    "workspace_id": workspaceId,
-                ])
-                throw error
-            }
-
-            if let text = tmuxShellCommandText(commandTokens: parsed.positional, cwd: parsed.value("-c")) {
-                _ = try client.sendV2(method: "surface.send_text", params: [
-                    "workspace_id": workspaceId,
-                    "surface_id": surfaceId,
-                    "text": text
-                ])
+            guard let surfaceId = created["surface_id"] as? String else {
+                throw CLIError(message: "agent.spawn did not return surface_id")
             }
             if parsed.hasFlag("-P") {
                 let context = try tmuxFormatContext(
@@ -1076,22 +1087,18 @@ extension ProgramaCLI {
         case "kill-window", "killw":
             let parsed = try parseTmuxArguments(rawArgs, valueFlags: ["-t"], boolFlags: [])
             let workspaceId = try tmuxResolveWorkspaceTarget(parsed.value("-t"), client: client)
-            try updateTmuxCompatStore { teamStore in
-                let teamRootId = tmuxTeamRootWorkspaceId(workspaceId: workspaceId, store: teamStore)
-                if workspaceId == teamRootId,
-                   let trackedChildren = teamStore.teamWorkspaceIdsByRoot[teamRootId] {
-                    let liveWorkspaceIds = Set(
-                        try tmuxWorkspaceItems(client: client).compactMap { $0["id"] as? String }
-                    )
-                    for childWorkspaceId in trackedChildren.reversed()
-                    where liveWorkspaceIds.contains(childWorkspaceId) {
-                        _ = try client.sendV2(method: "workspace.close", params: [
-                            "workspace_id": childWorkspaceId,
-                        ])
-                    }
-                }
+            let workspaceItems = try tmuxWorkspaceItems(client: client)
+            for descendantId in tmuxDescendantWorkspaceIds(
+                of: workspaceId,
+                workspaceItems: workspaceItems
+            ) {
+                try tmuxCloseHelperWorkspace(workspaceId: descendantId, client: client)
+            }
+            let workspaceItem = workspaceItems.first { ($0["id"] as? String) == workspaceId }
+            if (workspaceItem?["agent_parent_workspace_id"] as? String) != nil {
+                try tmuxCloseHelperWorkspace(workspaceId: workspaceId, client: client)
+            } else {
                 _ = try client.sendV2(method: "workspace.close", params: ["workspace_id": workspaceId])
-                pruneTmuxCompatWorkspaceState(&teamStore, workspaceId: workspaceId)
             }
 
         case "kill-pane", "killp":
@@ -1101,56 +1108,24 @@ extension ProgramaCLI {
                 "workspace_id": target.workspaceId,
             ])
             let panes = panePayload["panes"] as? [[String: Any]] ?? []
-            let closedTeamWorkspace = try updateTmuxCompatStore { teamStore -> Bool in
-                let teamRootId = tmuxTeamRootWorkspaceId(
-                    workspaceId: target.workspaceId,
-                    store: teamStore
-                )
-                guard teamStore.teamWorkspaceIdsByRoot[teamRootId]?.contains(target.workspaceId) == true,
-                      panes.count <= 1 else {
-                    return false
+            let workspaceItems = try tmuxWorkspaceItems(client: client)
+            let targetItem = workspaceItems.first { ($0["id"] as? String) == target.workspaceId }
+            let closedTeamWorkspace = panes.count <= 1
+                && targetItem.map { tmuxIsClaudeTeamWorkspace($0) } == true
+            if closedTeamWorkspace {
+                for descendantId in tmuxDescendantWorkspaceIds(
+                    of: target.workspaceId,
+                    workspaceItems: workspaceItems
+                ) {
+                    try tmuxCloseHelperWorkspace(workspaceId: descendantId, client: client)
                 }
-
-                let workspaceItems = try tmuxWorkspaceItems(client: client)
-                let trackedWorkspaceIds = Set(teamStore.teamWorkspaceIdsByRoot[teamRootId] ?? [])
-                let liveItemsById = Dictionary(uniqueKeysWithValues: workspaceItems.compactMap { item in
-                    (item["id"] as? String).map { ($0, item) }
-                })
-                var descendants: [String] = []
-                var visited: Set<String> = [target.workspaceId]
-                func appendDescendants(parentId: String) {
-                    for childId in trackedWorkspaceIds where !visited.contains(childId) {
-                        guard liveItemsById[childId]?["agent_parent_workspace_id"] as? String == parentId else {
-                            continue
-                        }
-                        visited.insert(childId)
-                        appendDescendants(parentId: childId)
-                        descendants.append(childId)
-                    }
-                }
-                appendDescendants(parentId: target.workspaceId)
-                for descendantId in descendants {
-                    _ = try client.sendV2(method: "workspace.close", params: [
-                        "workspace_id": descendantId,
-                    ])
-                    pruneTmuxCompatWorkspaceState(&teamStore, workspaceId: descendantId)
-                }
-                _ = try client.sendV2(method: "workspace.close", params: [
-                    "workspace_id": target.workspaceId,
-                ])
-                pruneTmuxCompatWorkspaceState(&teamStore, workspaceId: target.workspaceId)
-                return true
+                try tmuxCloseHelperWorkspace(workspaceId: target.workspaceId, client: client)
             }
             if !closedTeamWorkspace {
                 _ = try client.sendV2(method: "surface.close", params: [
                     "workspace_id": target.workspaceId,
                     "surface_id": target.surfaceId
                 ])
-                try? tmuxPruneCompatSurfaceState(
-                    workspaceId: target.workspaceId,
-                    surfaceId: target.surfaceId,
-                    client: client
-                )
                 // Re-equalize ordinary multi-pane workspaces after removing a pane.
                 _ = try? client.sendV2(method: "workspace.equalize_splits", params: [
                     "workspace_id": target.workspaceId,
@@ -1245,16 +1220,9 @@ extension ProgramaCLI {
                 workspaceId = try tmuxResolveWorkspaceTarget(parsed.value("-t"), client: client)
             }
             let workspaceItems = try tmuxWorkspaceItems(client: client)
-            let liveWorkspaceIds = Set(workspaceItems.compactMap { $0["id"] as? String })
-            let teamStore = loadTmuxCompatStore()
-            let rootWorkspaceId = tmuxTeamRootWorkspaceId(
-                workspaceId: workspaceId,
-                store: teamStore
-            )
             let workspaceIds = tmuxTeamWorkspaceIds(
-                rootWorkspaceId: rootWorkspaceId,
-                liveWorkspaceIds: liveWorkspaceIds,
-                store: teamStore
+                containing: workspaceId,
+                workspaceItems: workspaceItems
             )
             for listedWorkspaceId in workspaceIds {
                 let payload = try client.sendV2(method: "pane.list", params: ["workspace_id": listedWorkspaceId])
@@ -1408,32 +1376,15 @@ extension ProgramaCLI {
                 throw CLIError(message: "Could not resolve workspace for select-layout")
             }
             if layoutName == "main-vertical" || layoutName == "main-horizontal" {
-                // For main-* layouts, only equalize the agent column (vertical splits),
-                // not the top-level horizontal split between main and agents.
+                // Preserve tmux's requested main-axis layout when equalizing the workspace.
                 let orientation = layoutName == "main-vertical" ? "vertical" : "horizontal"
                 _ = try? client.sendV2(method: "workspace.equalize_splits", params: [
                     "workspace_id": workspaceId,
                     "orientation": orientation
                 ])
             } else {
-                // For tiled/even-* layouts, equalize everything
+                // Tiled and even layouts equalize every split.
                 _ = try? client.sendV2(method: "workspace.equalize_splits", params: ["workspace_id": workspaceId])
-            }
-            if layoutName == "main-vertical" {
-                if let callerSurface = tmuxCallerSurfaceHandle() {
-                    try updateTmuxCompatStore { store in
-                        let existingColumn = store.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId
-                        let seedColumn = existingColumn ?? store.lastSplitSurface[workspaceId]
-                        store.mainVerticalLayouts[workspaceId] = MainVerticalState(
-                            mainSurfaceId: callerSurface,
-                            lastColumnSurfaceId: seedColumn
-                        )
-                    }
-                }
-            } else if !layoutName.isEmpty {
-                // Non-main-vertical layout selected: clear stale state so
-                // future splits don't incorrectly redirect to the old column.
-                try tmuxPruneCompatWorkspaceState(workspaceId: workspaceId)
             }
 
         case "set-option", "set", "set-window-option", "setw", "source-file", "refresh-client", "attach-session", "detach-client":
@@ -1448,40 +1399,9 @@ extension ProgramaCLI {
         }
     }
 
-    private struct MainVerticalState: Codable {
-        /// The surface ID of the "main" (leader) pane on the left side.
-        var mainSurfaceId: String
-        /// The surface ID of the bottom-most pane in the right column.
-        /// Subsequent teammate splits target this pane with direction "down".
-        var lastColumnSurfaceId: String?
-    }
-
     private struct TmuxCompatStore: Codable {
         var buffers: [String: String] = [:]
         var hooks: [String: String] = [:]
-        /// Tracks main-vertical layout state per workspace, keyed by workspace ID.
-        var mainVerticalLayouts: [String: MainVerticalState] = [:]
-        /// Tracks the last surface created by split-window per workspace.
-        /// Used to seed lastColumnSurfaceId when select-layout main-vertical
-        /// is called after the first split.
-        var lastSplitSurface: [String: String] = [:]
-        /// Workspaces created by Claude Teams' tmux shim, grouped by the leader workspace.
-        /// This keeps team pane commands from reaching unrelated nested helpers.
-        var teamWorkspaceIdsByRoot: [String: [String]] = [:]
-
-        /// Custom decoder so older store files missing newer keys
-        /// (mainVerticalLayouts, lastSplitSurface) decode gracefully
-        /// instead of throwing and resetting the entire store.
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            buffers = try container.decodeIfPresent([String: String].self, forKey: .buffers) ?? [:]
-            hooks = try container.decodeIfPresent([String: String].self, forKey: .hooks) ?? [:]
-            mainVerticalLayouts = try container.decodeIfPresent([String: MainVerticalState].self, forKey: .mainVerticalLayouts) ?? [:]
-            lastSplitSurface = try container.decodeIfPresent([String: String].self, forKey: .lastSplitSurface) ?? [:]
-            teamWorkspaceIdsByRoot = try container.decodeIfPresent([String: [String]].self, forKey: .teamWorkspaceIdsByRoot) ?? [:]
-        }
-
-        init() {}
     }
 
     private func tmuxCompatStoreURL() -> URL {
@@ -1537,142 +1457,6 @@ extension ProgramaCLI {
         let result = try body(&store)
         try saveTmuxCompatStore(store)
         return result
-    }
-
-    func tmuxPruneCompatWorkspaceState(workspaceId: String) throws {
-        try updateTmuxCompatStore { store in
-            pruneTmuxCompatWorkspaceState(&store, workspaceId: workspaceId)
-        }
-    }
-
-    private func pruneTmuxCompatWorkspaceState(
-        _ store: inout TmuxCompatStore,
-        workspaceId: String
-    ) {
-        store.mainVerticalLayouts.removeValue(forKey: workspaceId)
-        store.lastSplitSurface.removeValue(forKey: workspaceId)
-        store.teamWorkspaceIdsByRoot.removeValue(forKey: workspaceId)
-        for rootId in Array(store.teamWorkspaceIdsByRoot.keys) {
-            let original = store.teamWorkspaceIdsByRoot[rootId] ?? []
-            let filtered = original.filter { $0 != workspaceId }
-            if filtered != original {
-                store.teamWorkspaceIdsByRoot[rootId] = filtered
-            }
-        }
-    }
-
-    private func tmuxCompatPaneAnchorSurfaceId(_ pane: [String: Any]) -> String? {
-        if let selected = pane["selected_surface_id"] as? String, !selected.isEmpty {
-            return selected
-        }
-        let surfaceIds = pane["surface_ids"] as? [String] ?? []
-        return surfaceIds.first
-    }
-
-    private func tmuxCompatPanePixelFrame(_ pane: [String: Any]) -> (x: Double, y: Double)? {
-        guard let frame = pane["pixel_frame"] as? [String: Any],
-              let x = doubleFromAny(frame["x"]),
-              let y = doubleFromAny(frame["y"]) else {
-            return nil
-        }
-        return (x, y)
-    }
-
-    private func tmuxReplacementColumnSurfaceId(
-        workspaceId: String,
-        layout: MainVerticalState,
-        client: SocketClient
-    ) -> String? {
-        guard let payload = try? client.sendV2(method: "pane.list", params: ["workspace_id": workspaceId]) else {
-            return nil
-        }
-        let panes = payload["panes"] as? [[String: Any]] ?? []
-        guard !panes.isEmpty else { return nil }
-
-        guard let mainPane = panes.first(where: { pane in
-            let surfaceIds = pane["surface_ids"] as? [String] ?? []
-            if surfaceIds.contains(layout.mainSurfaceId) {
-                return true
-            }
-            return (pane["selected_surface_id"] as? String) == layout.mainSurfaceId
-        }) else {
-            return nil
-        }
-
-        let mainPaneId = mainPane["id"] as? String
-        let nonMainPanes = panes.filter { ($0["id"] as? String) != mainPaneId }
-        guard !nonMainPanes.isEmpty else { return nil }
-
-        let candidatePanes: [[String: Any]]
-        if let mainFrame = tmuxCompatPanePixelFrame(mainPane) {
-            let rightColumn = nonMainPanes.filter { pane in
-                guard let frame = tmuxCompatPanePixelFrame(pane) else { return false }
-                return frame.x > mainFrame.x + 0.5
-            }
-            candidatePanes = rightColumn.isEmpty ? nonMainPanes : rightColumn
-        } else {
-            candidatePanes = nonMainPanes
-        }
-
-        let bottomMostPane = candidatePanes.max { lhs, rhs in
-            let lhsFrame = tmuxCompatPanePixelFrame(lhs)
-            let rhsFrame = tmuxCompatPanePixelFrame(rhs)
-            switch (lhsFrame, rhsFrame) {
-            case let (.some(lhsFrame), .some(rhsFrame)):
-                if lhsFrame.y == rhsFrame.y {
-                    return lhsFrame.x < rhsFrame.x
-                }
-                return lhsFrame.y < rhsFrame.y
-            case (.none, .some):
-                return true
-            case (.some, .none):
-                return false
-            case (.none, .none):
-                return false
-            }
-        }
-
-        return bottomMostPane.flatMap { tmuxCompatPaneAnchorSurfaceId($0) }
-    }
-
-    func tmuxPruneCompatSurfaceState(
-        workspaceId: String,
-        surfaceId: String,
-        client: SocketClient
-    ) throws {
-        let snapshot = loadTmuxCompatStore()
-        let replacementSurfaceId: String?
-        if let layout = snapshot.mainVerticalLayouts[workspaceId],
-           layout.lastColumnSurfaceId == surfaceId,
-           layout.mainSurfaceId != surfaceId {
-            replacementSurfaceId = tmuxReplacementColumnSurfaceId(
-                workspaceId: workspaceId,
-                layout: layout,
-                client: client
-            )
-        } else {
-            replacementSurfaceId = nil
-        }
-
-        try updateTmuxCompatStore { store in
-            if store.lastSplitSurface[workspaceId] == surfaceId {
-                store.lastSplitSurface.removeValue(forKey: workspaceId)
-            }
-            guard let layout = store.mainVerticalLayouts[workspaceId] else { return }
-            if layout.mainSurfaceId == surfaceId {
-                store.mainVerticalLayouts.removeValue(forKey: workspaceId)
-                store.lastSplitSurface.removeValue(forKey: workspaceId)
-            } else if layout.lastColumnSurfaceId == surfaceId {
-                var updatedLayout = layout
-                updatedLayout.lastColumnSurfaceId = replacementSurfaceId
-                store.mainVerticalLayouts[workspaceId] = updatedLayout
-                if let replacementSurfaceId {
-                    store.lastSplitSurface[workspaceId] = replacementSurfaceId
-                } else {
-                    store.lastSplitSurface.removeValue(forKey: workspaceId)
-                }
-            }
-        }
     }
 
     private func runShellCommand(_ command: String, stdinText: String) throws -> (status: Int32, stdout: String, stderr: String) {

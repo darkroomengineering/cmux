@@ -76,7 +76,7 @@ final class AgentSupervisionRegistryTests: XCTestCase {
         XCTAssertNotNil(registry.record(id: running.id))
         XCTAssertNil(registry.record(id: finished.id))
         XCTAssertNotNil(registry.record(id: newest.id))
-        XCTAssertEqual(registry.count, 2)
+        XCTAssertEqual(registry.records().count, 2)
     }
 
     func testCapacityNeverEvictsActiveHelpers() throws {
@@ -190,6 +190,40 @@ final class AgentSupervisionRegistryTests: XCTestCase {
 
         XCTAssertEqual(registry.record(id: helper.id)?.state, .working)
     }
+
+    func testAggregateTaskStateUsesOneWorstFirstRule() throws {
+        let registry = AgentSupervisionRegistry(capacity: 8)
+        let workspace = Workspace()
+
+        func aggregate() -> AgentTaskState? {
+            AgentSupervisionMetadata.aggregateTaskState(
+                for: workspace,
+                records: registry.records(workspaceIds: [workspace.id])
+            )
+        }
+
+        XCTAssertNil(aggregate())
+        let statesInIncreasingPriority: [AgentTaskState] = [
+            .completed, .idle, .cancelled, .failed, .working,
+        ]
+        for state in statesInIncreasingPriority {
+            _ = try registry.start(
+                host: "codex",
+                state: state,
+                placement: .runsWithParent,
+                workspaceId: workspace.id
+            )
+            XCTAssertEqual(aggregate(), state)
+            XCTAssertEqual(AgentSupervisionMetadata.aggregateState(
+                for: workspace,
+                records: registry.records(workspaceIds: [workspace.id])
+            ), state.rawValue)
+        }
+
+        let panelId = try XCTUnwrap(workspace.focusedPanelId)
+        workspace.updatePanelAgentState(panelId: panelId, state: .blocked)
+        XCTAssertEqual(aggregate(), .blocked)
+    }
 }
 
 @MainActor
@@ -227,8 +261,16 @@ final class AgentSupervisionCommandTests: XCTestCase {
         XCTAssertEqual(child.agentParentWorkspaceId, parent.id)
         XCTAssertEqual(child.currentDirectory, parent.currentDirectory)
         XCTAssertEqual(child.title, "Review ticket 42")
+        XCTAssertEqual(child.automaticAgentTitle, "Review ticket 42")
         XCTAssertNil(child.customTitle)
         XCTAssertNil(child.worktreeParentWorkspaceId)
+
+        child.applyProcessTitle("codex shell")
+        XCTAssertEqual(child.title, "Review ticket 42")
+        child.setCustomTitle("Manual review")
+        XCTAssertEqual(child.title, "Manual review")
+        child.setCustomTitle(nil)
+        XCTAssertEqual(child.title, "Review ticket 42")
     }
 
     func testSpawnRequiresExplicitWorktreeInputsForIsolation() {

@@ -904,13 +904,13 @@ extension ProgramaCLI {
 
             This command:
               - defaults Claude teammate mode to auto
-              - sets a tmux-like environment so Claude auto mode uses programa splits
+              - sets a tmux-like environment so Claude can open Programa helper workspaces
               - sets CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
               - prepends a private tmux shim to PATH
               - forwards all remaining arguments to claude
 
-            The tmux shim translates supported tmux window/pane commands into programa
-            workspace and split operations in the current programa session.
+            The tmux shim turns supported tmux window/pane commands into nested helper
+            workspaces in the current Programa window.
 
             Examples:
               programa claude-teams

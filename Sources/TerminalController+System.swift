@@ -398,8 +398,14 @@ extension TerminalController {
             "worktree_folder_repo_root": v2OrNull(workspace.worktreeFolderRepoRoot),
             "is_worktree_folder": workspace.isWorktreeFolder,
             "agent_parent_workspace_id": v2OrNull(workspace.agentParentWorkspaceId?.uuidString),
-            "agent_state": v2OrNull(AgentSupervisionMetadata.aggregateState(for: workspace)),
-            "agent_state_source": v2OrNull(AgentSupervisionMetadata.aggregateSource(for: workspace)),
+            "agent_state": v2OrNull(AgentSupervisionMetadata.aggregateState(
+                for: workspace,
+                records: workspaceHelpers
+            )),
+            "agent_state_source": v2OrNull(AgentSupervisionMetadata.aggregateSource(
+                for: workspace,
+                records: workspaceHelpers
+            )),
             "helpers": workspaceHelpers.map { $0.payload() },
             "helper_count": workspaceHelpers.count,
             "panes": panes

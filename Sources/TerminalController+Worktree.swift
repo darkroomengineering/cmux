@@ -19,6 +19,7 @@ extension TerminalController {
         let layoutName = v2String(params, "layout")
         let requiredParentWorkspaceId = v2UUID(params, "required_parent_workspace_id")
         let requiredParentDirectory = v2String(params, "required_parent_directory")
+        let focusRequested = v2Bool(params, "focus") ?? false
         guard let windowId = v2ResolveWorktreeWindowId(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)
         }
@@ -43,15 +44,17 @@ extension TerminalController {
 
         switch GitWorktreeManager.add(repoRoot: repoRoot, branch: branch, base: base, path: path) {
         case .success(let entry):
-            let completion = v2CompleteWorktreeCreation(
-                windowId: windowId,
-                entry: entry,
-                repoRoot: repoRoot,
-                layoutName: layoutName,
-                focusRequested: v2Bool(params, "focus") ?? false,
-                requiredParentWorkspaceId: requiredParentWorkspaceId,
-                requiredParentDirectory: requiredParentDirectory
-            )
+            let completion = v2MainSync {
+                v2CompleteWorktreeCreation(
+                    windowId: windowId,
+                    entry: entry,
+                    repoRoot: repoRoot,
+                    layoutName: layoutName,
+                    focusRequested: focusRequested,
+                    requiredParentWorkspaceId: requiredParentWorkspaceId,
+                    requiredParentDirectory: requiredParentDirectory
+                )
+            }
             if case .err(let originalCode, let originalMessage, _) = completion {
                 switch GitWorktreeManager.remove(repoRoot: repoRoot, path: entry.path, force: false) {
                 case .success:
@@ -81,45 +84,44 @@ extension TerminalController {
         }
     }
 
-    private nonisolated func v2CompleteWorktreeCreation(
+    @MainActor
+    private func v2CompleteWorktreeCreation(
         windowId: UUID,
         entry: GitWorktreeManager.WorktreeEntry,
         repoRoot: String,
         layoutName: String?,
         focusRequested: Bool,
-        requiredParentWorkspaceId: UUID? = nil,
-        requiredParentDirectory: String? = nil
+        requiredParentWorkspaceId: UUID?,
+        requiredParentDirectory: String?
     ) -> V2CallResult {
-        v2MainSync {
-            guard let tabManager = AppDelegate.shared?.tabManagerFor(windowId: windowId) else {
-                return .err(code: "unavailable", message: "TabManager not available", data: nil)
-            }
-            if let requiredParentWorkspaceId {
-                guard let parent = tabManager.tabs.first(where: { $0.id == requiredParentWorkspaceId }),
-                      requiredParentDirectory == nil || parent.currentDirectory == requiredParentDirectory else {
-                    return .err(
-                        code: "parent_changed",
-                        message: "The parent workspace changed while the worktree was being prepared",
-                        data: ["parent_workspace_id": requiredParentWorkspaceId.uuidString]
-                    )
-                }
-            }
-            let shouldFocus = v2FocusAllowed(requested: focusRequested)
-            let ws = tabManager.addWorktreeWorkspace(
-                path: entry.path,
-                branch: entry.branch,
-                repoRoot: repoRoot,
-                layoutName: layoutName,
-                select: shouldFocus
-            )
-            return .ok([
-                "worktree": ["path": entry.path, "branch": v2OrNull(entry.branch), "repo": repoRoot],
-                "workspace_id": ws.id.uuidString,
-                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
-                "window_id": windowId.uuidString,
-                "window_ref": v2Ref(kind: .window, uuid: windowId)
-            ])
+        guard let tabManager = AppDelegate.shared?.tabManagerFor(windowId: windowId) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
         }
+        if let requiredParentWorkspaceId {
+            guard let parent = tabManager.tabs.first(where: { $0.id == requiredParentWorkspaceId }),
+                  requiredParentDirectory == nil || parent.currentDirectory == requiredParentDirectory else {
+                return .err(
+                    code: "parent_changed",
+                    message: "The parent workspace changed while the worktree was being prepared",
+                    data: ["parent_workspace_id": requiredParentWorkspaceId.uuidString]
+                )
+            }
+        }
+        let shouldFocus = v2FocusAllowed(requested: focusRequested)
+        let ws = tabManager.addWorktreeWorkspace(
+            path: entry.path,
+            branch: entry.branch,
+            repoRoot: repoRoot,
+            layoutName: layoutName,
+            select: shouldFocus
+        )
+        return .ok([
+            "worktree": ["path": entry.path, "branch": v2OrNull(entry.branch), "repo": repoRoot],
+            "workspace_id": ws.id.uuidString,
+            "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+            "window_id": windowId.uuidString,
+            "window_ref": v2Ref(kind: .window, uuid: windowId)
+        ])
     }
 
     nonisolated func v2WorktreeOpen(params: [String: Any]) -> V2CallResult {

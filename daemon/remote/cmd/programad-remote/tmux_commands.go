@@ -10,52 +10,160 @@ import (
 
 // --- Command implementations ---
 
-// tmuxCreateWorkspace implements the body shared by `new-session` and
-// `new-window`: create a workspace (optionally routed into the macOS window
-// that owns targetWsId, mirroring tmux's "new window goes into the target's
-// session"), rename it, and pipe in a shell command if one was given.
-func tmuxCreateWorkspace(rc *rpcContext, p *tmuxParsed, title string, targetWsId string) (string, error) {
-	params := map[string]any{"focus": false}
-	if cwd := p.value("-c"); cwd != "" {
-		params["cwd"] = cwd
+func tmuxIsClaudeTeamWorkspace(item map[string]any) bool {
+	workspaceId, _ := item["id"].(string)
+	if workspaceId == "" {
+		return false
 	}
-	if targetWsId != "" {
-		// Route the new workspace into the same top-level window as the
-		// resolved target instead of always landing in the active window.
-		params["workspace_id"] = targetWsId
-	}
-	created, err := rc.call("workspace.create", params)
-	if err != nil {
-		return "", err
-	}
-	wsId, _ := created["workspace_id"].(string)
-	if wsId == "" {
-		return "", fmt.Errorf("workspace.create did not return workspace_id")
-	}
-	if strings.TrimSpace(title) != "" {
-		rc.call("workspace.rename", map[string]any{"workspace_id": wsId, "title": title})
-	}
-	if text := tmuxShellCommandText(p.positional, p.value("-c")); text != "" {
-		surfaceId, err := tmuxGetFirstSurface(rc, wsId)
-		if err == nil {
-			rc.call("surface.send_text", map[string]any{"workspace_id": wsId, "surface_id": surfaceId, "text": text})
+	helpers := []any{}
+	switch rawHelpers := item["helpers"].(type) {
+	case []any:
+		helpers = rawHelpers
+	case []map[string]any:
+		for _, helper := range rawHelpers {
+			helpers = append(helpers, helper)
 		}
 	}
-	return wsId, nil
+	for _, rawHelper := range helpers {
+		helper, _ := rawHelper.(map[string]any)
+		if helper == nil {
+			continue
+		}
+		host, _ := helper["host"].(string)
+		helperWorkspaceId, _ := helper["workspace_id"].(string)
+		if host == "claude-teams" && helperWorkspaceId == workspaceId {
+			return true
+		}
+	}
+	return false
 }
 
-// tmuxPrintWorkspaceRef prints the `-P`/`-F` formatted reference for a
-// newly created workspace, shared by `new-session` and `new-window`.
-func tmuxPrintWorkspaceRef(rc *rpcContext, p *tmuxParsed, wsId string) {
-	if !p.hasFlag("-P") {
-		return
+func tmuxTeamWorkspaceIds(workspaceId string, workspaceItems []map[string]any) []string {
+	orderedIds := make([]string, 0, len(workspaceItems))
+	liveWorkspaceIds := make(map[string]bool, len(workspaceItems))
+	teamWorkspaceIds := make(map[string]bool, len(workspaceItems))
+	orderById := make(map[string]int, len(workspaceItems))
+	for _, item := range workspaceItems {
+		id, _ := item["id"].(string)
+		if id == "" {
+			continue
+		}
+		orderById[id] = len(orderedIds)
+		orderedIds = append(orderedIds, id)
+		liveWorkspaceIds[id] = true
+		if tmuxIsClaudeTeamWorkspace(item) {
+			teamWorkspaceIds[id] = true
+		}
 	}
-	ctx, err := tmuxFormatContext(rc, wsId, "", "")
+
+	parentById := make(map[string]string, len(teamWorkspaceIds))
+	for _, item := range workspaceItems {
+		id, _ := item["id"].(string)
+		parentId, _ := item["agent_parent_workspace_id"].(string)
+		if teamWorkspaceIds[id] && liveWorkspaceIds[parentId] {
+			parentById[id] = parentId
+		}
+	}
+
+	lineage := []string{workspaceId}
+	lineageIndex := map[string]int{workspaceId: 0}
+	rootWorkspaceId := workspaceId
+	for {
+		parentId, ok := parentById[rootWorkspaceId]
+		if !ok {
+			break
+		}
+		if cycleStart, seen := lineageIndex[parentId]; seen {
+			rootWorkspaceId = lineage[cycleStart]
+			for _, candidate := range lineage[cycleStart:] {
+				if orderById[candidate] < orderById[rootWorkspaceId] {
+					rootWorkspaceId = candidate
+				}
+			}
+			break
+		}
+		lineageIndex[parentId] = len(lineage)
+		lineage = append(lineage, parentId)
+		rootWorkspaceId = parentId
+	}
+
+	workspaceIds := []string{}
+	visited := map[string]bool{}
+	var appendSubtree func(string)
+	appendSubtree = func(parentId string) {
+		if visited[parentId] {
+			return
+		}
+		visited[parentId] = true
+		workspaceIds = append(workspaceIds, parentId)
+		for _, childId := range orderedIds {
+			if parentById[childId] == parentId {
+				appendSubtree(childId)
+			}
+		}
+	}
+	appendSubtree(rootWorkspaceId)
+	return workspaceIds
+}
+
+func tmuxDescendantWorkspaceIds(workspaceId string, workspaceItems []map[string]any) []string {
+	orderedIds := make([]string, 0, len(workspaceItems))
+	parentById := map[string]string{}
+	for _, item := range workspaceItems {
+		id, _ := item["id"].(string)
+		if id == "" {
+			continue
+		}
+		orderedIds = append(orderedIds, id)
+		parentId, _ := item["agent_parent_workspace_id"].(string)
+		if tmuxIsClaudeTeamWorkspace(item) && parentId != "" {
+			parentById[id] = parentId
+		}
+	}
+
+	descendants := []string{}
+	visited := map[string]bool{workspaceId: true}
+	var appendDescendants func(string)
+	appendDescendants = func(parentId string) {
+		for _, childId := range orderedIds {
+			if parentById[childId] != parentId || visited[childId] {
+				continue
+			}
+			visited[childId] = true
+			appendDescendants(childId)
+			descendants = append(descendants, childId)
+		}
+	}
+	appendDescendants(workspaceId)
+	return descendants
+}
+
+func tmuxFinishLiveAgents(rc *rpcContext, workspaceId string) {
+	payload, err := rc.call("agent.task.list", map[string]any{
+		"workspace_id":    workspaceId,
+		"include_finished": false,
+	})
 	if err != nil {
-		fmt.Printf("@%s\n", wsId)
 		return
 	}
-	fmt.Println(tmuxRenderFormat(p.value("-F"), ctx, "@"+wsId))
+	agents, _ := payload["agents"].([]any)
+	for _, rawAgent := range agents {
+		agent, _ := rawAgent.(map[string]any)
+		agentId, _ := agent["id"].(string)
+		if agentId == "" {
+			continue
+		}
+		_, _ = rc.call("agent.task.finish", map[string]any{
+			"agent_id": agentId,
+			"state":    "cancelled",
+		})
+	}
+}
+
+func tmuxCloseHelperWorkspace(rc *rpcContext, workspaceId string) error {
+	tmuxFinishLiveAgents(rc, workspaceId)
+	_, err := rc.call("workspace.close", map[string]any{"workspace_id": workspaceId})
+	return err
 }
 
 func tmuxNewSession(rc *rpcContext, args []string) error {
@@ -63,114 +171,125 @@ func tmuxNewSession(rc *rpcContext, args []string) error {
 	if p.hasFlag("-A") {
 		return fmt.Errorf("new-session -A is not supported")
 	}
-	title := firstNonEmpty(p.value("-n"), p.value("-s"))
-	wsId, err := tmuxCreateWorkspace(rc, p, title, "")
+	params := map[string]any{"focus": false}
+	if cwd := p.value("-c"); cwd != "" {
+		params["cwd"] = cwd
+	}
+	created, err := rc.call("workspace.create", params)
 	if err != nil {
 		return err
 	}
-	tmuxPrintWorkspaceRef(rc, p, wsId)
+	workspaceId, _ := created["workspace_id"].(string)
+	if workspaceId == "" {
+		return fmt.Errorf("workspace.create did not return workspace_id")
+	}
+	if title := strings.TrimSpace(firstNonEmpty(p.value("-n"), p.value("-s"))); title != "" {
+		_, _ = rc.call("workspace.rename", map[string]any{"workspace_id": workspaceId, "title": title})
+	}
+	if text := tmuxShellCommandText(p.positional, p.value("-c")); text != "" {
+		if surfaceId, surfaceErr := tmuxGetFirstSurface(rc, workspaceId); surfaceErr == nil {
+			_, _ = rc.call("surface.send_text", map[string]any{
+				"workspace_id": workspaceId,
+				"surface_id":   surfaceId,
+				"text":         text,
+			})
+		}
+	}
+	if p.hasFlag("-P") {
+		ctx, formatErr := tmuxFormatContext(rc, workspaceId, "", "")
+		if formatErr != nil {
+			fmt.Printf("@%s\n", workspaceId)
+		} else {
+			fmt.Println(tmuxRenderFormat(p.value("-F"), ctx, "@"+workspaceId))
+		}
+	}
 	return nil
 }
 
 func tmuxNewWindow(rc *rpcContext, args []string) error {
 	p := parseTmuxArgs(args, []string{"-c", "-F", "-n", "-t"}, []string{"-d", "-P"})
-
-	targetWsId := ""
-	if raw := strings.TrimSpace(p.value("-t")); raw != "" {
-		resolved, err := tmuxResolveWorkspaceTarget(rc, raw)
+	if strings.TrimSpace(p.value("-t")) != "" {
+		return fmt.Errorf("new-window -t is not supported in programa claude-teams mode")
+	}
+	parentWorkspaceId := tmuxResolvedCallerWorkspaceId(rc)
+	if parentWorkspaceId == "" {
+		var err error
+		parentWorkspaceId, err = tmuxResolveWorkspaceTarget(rc, "")
 		if err != nil {
 			return err
 		}
-		targetWsId = resolved
 	}
-
-	wsId, err := tmuxCreateWorkspace(rc, p, p.value("-n"), targetWsId)
+	task := strings.TrimSpace(p.value("-n"))
+	if task == "" {
+		task = "Helper"
+	}
+	params := map[string]any{
+		"parent_workspace_id": parentWorkspaceId,
+		"host":                "claude-teams",
+		"task":                task,
+		"focus":               false,
+	}
+	if initialCommand := tmuxShellCommandText(p.positional, p.value("-c")); initialCommand != "" {
+		params["initial_command"] = initialCommand
+	}
+	created, err := rc.call("agent.spawn", params)
 	if err != nil {
 		return err
 	}
-	tmuxPrintWorkspaceRef(rc, p, wsId)
+	workspaceId, _ := created["workspace_id"].(string)
+	if workspaceId == "" {
+		return fmt.Errorf("agent.spawn did not return workspace_id")
+	}
+	if p.hasFlag("-P") {
+		surfaceId, _ := created["surface_id"].(string)
+		if surfaceId == "" {
+			return fmt.Errorf("agent.spawn did not return surface_id")
+		}
+		ctx, err := tmuxFormatContext(rc, workspaceId, "", surfaceId)
+		if err != nil {
+			fmt.Printf("@%s\n", workspaceId)
+			return nil
+		}
+		fmt.Println(tmuxRenderFormat(p.value("-F"), ctx, "@"+workspaceId))
+	}
 	return nil
 }
 
 func tmuxSplitWindow(rc *rpcContext, args []string) error {
 	p := parseTmuxArgs(args, []string{"-c", "-F", "-l", "-t"}, []string{"-P", "-b", "-d", "-h", "-v"})
 
-	targetWs, _, targetSurface, err := tmuxResolveSurfaceTarget(rc, p.value("-t"))
+	targetWs, _, _, err := tmuxResolveSurfaceTarget(rc, p.value("-t"))
 	if err != nil {
 		return err
 	}
-
-	direction := "down"
-	if p.hasFlag("-h") {
-		direction = "right"
-		if p.hasFlag("-b") {
-			direction = "left"
-		}
-	} else if p.hasFlag("-b") {
-		direction = "up"
+	parentWorkspaceId := tmuxResolvedCallerWorkspaceId(rc)
+	if parentWorkspaceId == "" {
+		parentWorkspaceId = targetWs
 	}
-
-	// Anchor splits to the leader surface for agent teams.
-	callerWorkspace := tmuxCallerWorkspaceHandle()
-	anchoredCallerSurface := ""
-	if callerWorkspace != "" {
-		if wsId, err := tmuxResolveWorkspaceId(rc, callerWorkspace); err == nil {
-			if anchored := tmuxAnchoredSplitTarget(rc, wsId); anchored != nil {
-				targetWs = wsId
-				targetSurface = anchored.targetSurfaceId
-				direction = anchored.direction
-				anchoredCallerSurface = anchored.callerSurfaceId
-			}
-		}
+	params := map[string]any{
+		"parent_workspace_id": parentWorkspaceId,
+		"host":                "claude-teams",
+		"task":                "Helper",
+		"focus":               false,
 	}
-
-	focusNewPane := !p.hasFlag("-d")
-	created, err := rc.call("surface.split", map[string]any{
-		"workspace_id": targetWs,
-		"surface_id":   targetSurface,
-		"direction":    direction,
-		"focus":        focusNewPane,
-	})
+	if initialCommand := tmuxShellCommandText(p.positional, p.value("-c")); initialCommand != "" {
+		params["initial_command"] = initialCommand
+	}
+	created, err := rc.call("agent.spawn", params)
 	if err != nil {
 		return err
+	}
+	workspaceId, _ := created["workspace_id"].(string)
+	if workspaceId == "" {
+		return fmt.Errorf("agent.spawn did not return workspace_id")
 	}
 	surfaceId, _ := created["surface_id"].(string)
 	if surfaceId == "" {
-		return fmt.Errorf("surface.split did not return surface_id")
-	}
-	newPaneId, _ := created["pane_id"].(string)
-
-	// Track for main-vertical layout
-	store := loadTmuxCompatStore()
-	store.LastSplitSurface[targetWs] = surfaceId
-	if _, ok := store.MainVerticalLayouts[targetWs]; ok {
-		mvs := store.MainVerticalLayouts[targetWs]
-		mvs.LastColumnSurfaceId = surfaceId
-		store.MainVerticalLayouts[targetWs] = mvs
-	} else if direction == "right" && anchoredCallerSurface != "" {
-		store.MainVerticalLayouts[targetWs] = mainVerticalState{
-			MainSurfaceId:       anchoredCallerSurface,
-			LastColumnSurfaceId: surfaceId,
-		}
-	}
-	saveTmuxCompatStore(store)
-
-	// Equalize vertical splits
-	rc.call("workspace.equalize_splits", map[string]any{
-		"workspace_id": targetWs,
-		"orientation":  "vertical",
-	})
-
-	if text := tmuxShellCommandText(p.positional, p.value("-c")); text != "" {
-		rc.call("surface.send_text", map[string]any{
-			"workspace_id": targetWs,
-			"surface_id":   surfaceId,
-			"text":         text,
-		})
+		return fmt.Errorf("agent.spawn did not return surface_id")
 	}
 
 	if p.hasFlag("-P") {
-		ctx, err := tmuxFormatContext(rc, targetWs, newPaneId, surfaceId)
+		ctx, err := tmuxFormatContext(rc, workspaceId, "", surfaceId)
 		if err != nil {
 			fmt.Println(surfaceId)
 			return nil
@@ -214,12 +333,23 @@ func tmuxKillWindow(rc *rpcContext, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, err = rc.call("workspace.close", map[string]any{"workspace_id": wsId})
+	workspaceItems, err := tmuxWorkspaceItems(rc)
 	if err != nil {
 		return err
 	}
-	_ = tmuxPruneCompatWorkspaceState(wsId)
-	return nil
+	for _, descendantId := range tmuxDescendantWorkspaceIds(wsId, workspaceItems) {
+		if err := tmuxCloseHelperWorkspace(rc, descendantId); err != nil {
+			return err
+		}
+	}
+	for _, item := range workspaceItems {
+		itemId, _ := item["id"].(string)
+		if itemId == wsId && tmuxIsClaudeTeamWorkspace(item) {
+			return tmuxCloseHelperWorkspace(rc, wsId)
+		}
+	}
+	_, err = rc.call("workspace.close", map[string]any{"workspace_id": wsId})
+	return err
 }
 
 func tmuxKillPane(rc *rpcContext, args []string) error {
@@ -228,14 +358,36 @@ func tmuxKillPane(rc *rpcContext, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, err = rc.call("surface.close", map[string]any{"workspace_id": wsId, "surface_id": surfId})
+	panePayload, err := rc.call("pane.list", map[string]any{"workspace_id": wsId})
 	if err != nil {
 		return err
 	}
-	_ = tmuxPruneCompatSurfaceState(wsId, surfId)
-	// Re-equalize after removal
-	rc.call("workspace.equalize_splits", map[string]any{"workspace_id": wsId, "orientation": "vertical"})
-	return nil
+	panes, _ := panePayload["panes"].([]any)
+	workspaceItems, err := tmuxWorkspaceItems(rc)
+	if err != nil {
+		return err
+	}
+	teamWorkspace := false
+	for _, item := range workspaceItems {
+		itemId, _ := item["id"].(string)
+		if itemId == wsId {
+			teamWorkspace = tmuxIsClaudeTeamWorkspace(item)
+			break
+		}
+	}
+	if len(panes) <= 1 && teamWorkspace {
+		for _, descendantId := range tmuxDescendantWorkspaceIds(wsId, workspaceItems) {
+			if err := tmuxCloseHelperWorkspace(rc, descendantId); err != nil {
+				return err
+			}
+		}
+		return tmuxCloseHelperWorkspace(rc, wsId)
+	}
+	_, err = rc.call("surface.close", map[string]any{"workspace_id": wsId, "surface_id": surfId})
+	if err == nil {
+		_, _ = rc.call("workspace.equalize_splits", map[string]any{"workspace_id": wsId, "orientation": "vertical"})
+	}
+	return err
 }
 
 func tmuxSendKeys(rc *rpcContext, args []string) error {
@@ -387,32 +539,38 @@ func tmuxListPanes(rc *rpcContext, args []string) error {
 		return err
 	}
 
-	payload, err := rc.call("pane.list", map[string]any{"workspace_id": wsId})
+	workspaceItems, err := tmuxWorkspaceItems(rc)
 	if err != nil {
 		return err
 	}
-	panes, _ := payload["panes"].([]any)
-	containerFrame, _ := payload["container_frame"].(map[string]any)
-
-	for _, p2 := range panes {
-		pane, _ := p2.(map[string]any)
-		if pane == nil {
-			continue
-		}
-		paneId, _ := pane["id"].(string)
-		if paneId == "" {
-			continue
-		}
-		ctx, err := tmuxFormatContext(rc, wsId, paneId, "")
+	for _, listedWorkspaceId := range tmuxTeamWorkspaceIds(wsId, workspaceItems) {
+		payload, err := rc.call("pane.list", map[string]any{"workspace_id": listedWorkspaceId})
 		if err != nil {
-			continue
+			return err
 		}
-		tmuxEnrichContextWithGeometry(ctx, pane, containerFrame)
-		fallback := "%" + paneId
-		if pid, ok := ctx["pane_id"]; ok {
-			fallback = pid
+		panes, _ := payload["panes"].([]any)
+		containerFrame, _ := payload["container_frame"].(map[string]any)
+
+		for _, p2 := range panes {
+			pane, _ := p2.(map[string]any)
+			if pane == nil {
+				continue
+			}
+			paneId, _ := pane["id"].(string)
+			if paneId == "" {
+				continue
+			}
+			ctx, err := tmuxFormatContext(rc, listedWorkspaceId, paneId, "")
+			if err != nil {
+				continue
+			}
+			tmuxEnrichContextWithGeometry(ctx, pane, containerFrame)
+			fallback := "%" + paneId
+			if pid, ok := ctx["pane_id"]; ok {
+				fallback = pid
+			}
+			fmt.Println(tmuxRenderFormat(p.value("-F"), ctx, fallback))
 		}
-		fmt.Println(tmuxRenderFormat(p.value("-F"), ctx, fallback))
 	}
 	return nil
 }
@@ -610,27 +768,6 @@ func tmuxSelectLayout(rc *rpcContext, args []string) error {
 		})
 	} else {
 		rc.call("workspace.equalize_splits", map[string]any{"workspace_id": wsId})
-	}
-
-	if layoutName == "main-vertical" {
-		if callerSurface := tmuxCallerSurfaceHandle(); callerSurface != "" {
-			store := loadTmuxCompatStore()
-			existingColumn := ""
-			if existing, ok := store.MainVerticalLayouts[wsId]; ok {
-				existingColumn = existing.LastColumnSurfaceId
-			}
-			seedColumn := existingColumn
-			if seedColumn == "" {
-				seedColumn = store.LastSplitSurface[wsId]
-			}
-			store.MainVerticalLayouts[wsId] = mainVerticalState{
-				MainSurfaceId:       callerSurface,
-				LastColumnSurfaceId: seedColumn,
-			}
-			saveTmuxCompatStore(store)
-		}
-	} else if layoutName != "" {
-		_ = tmuxPruneCompatWorkspaceState(wsId)
 	}
 
 	return nil

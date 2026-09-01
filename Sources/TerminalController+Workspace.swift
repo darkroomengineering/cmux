@@ -43,8 +43,14 @@ extension TerminalController {
             "worktree_folder_repo_root": v2OrNull(workspace.worktreeFolderRepoRoot),
             "is_worktree_folder": workspace.isWorktreeFolder,
             "agent_parent_workspace_id": v2OrNull(workspace.agentParentWorkspaceId?.uuidString),
-            "agent_state": v2OrNull(AgentSupervisionMetadata.aggregateState(for: workspace)),
-            "agent_state_source": v2OrNull(AgentSupervisionMetadata.aggregateSource(for: workspace)),
+            "agent_state": v2OrNull(AgentSupervisionMetadata.aggregateState(
+                for: workspace,
+                records: helpers
+            )),
+            "agent_state_source": v2OrNull(AgentSupervisionMetadata.aggregateSource(
+                for: workspace,
+                records: helpers
+            )),
             "helpers": helpers.map { $0.payload() },
             "helper_count": helpers.count,
         ]
@@ -97,25 +103,6 @@ extension TerminalController {
             let title = (requestedTitle?.isEmpty == false) ? requestedTitle : nil
             let description = v2RawString(params, "description")
             let applyRememberedFolderColor = v2Bool(params, "apply_remembered_folder_color") ?? true
-            let agentParentWorkspaceId = v2UUID(params, "agent_parent_workspace_id")
-            if params["agent_parent_workspace_id"] != nil, agentParentWorkspaceId == nil {
-                return .err(
-                    code: "invalid_params",
-                    message: "agent_parent_workspace_id must be a valid workspace UUID or reference",
-                    data: nil
-                )
-            }
-            let agentParentWorkspace: Workspace?
-            if let agentParentWorkspaceId {
-                guard let parent = tabManager.tabs.first(where: { $0.id == agentParentWorkspaceId }) else {
-                    return .err(code: "not_found", message: "Agent parent workspace not found", data: [
-                        "agent_parent_workspace_id": agentParentWorkspaceId.uuidString,
-                    ])
-                }
-                agentParentWorkspace = parent
-            } else {
-                agentParentWorkspace = nil
-            }
             let cwd: String?
             if let workingDirectory {
                 cwd = workingDirectory
@@ -125,16 +112,12 @@ extension TerminalController {
                 }
                 cwd = str
             } else {
-                cwd = agentParentWorkspace?.currentDirectory
-            }
-            let titleIsAutomatic = v2Bool(params, "title_is_automatic") ?? false
-            if titleIsAutomatic, title == nil {
-                return .err(code: "invalid_params", message: "title is required when title_is_automatic is true", data: nil)
+                cwd = nil
             }
 
             let shouldFocus = v2FocusAllowed()
             let ws = tabManager.addWorkspace(
-                title: titleIsAutomatic ? nil : title,
+                title: title,
                 workingDirectory: cwd,
                 initialTerminalCommand: initialCommand,
                 initialTerminalEnvironment: initialEnv,
@@ -142,10 +125,6 @@ extension TerminalController {
                 eagerLoadTerminal: !shouldFocus,
                 applyRememberedFolderColor: applyRememberedFolderColor
             )
-            if titleIsAutomatic, let title {
-                ws.title = title
-            }
-            ws.agentParentWorkspaceId = agentParentWorkspaceId
             ws.setCustomDescription(description)
             let newId = ws.id
             let windowId = v2ResolveWindowId(tabManager: tabManager)
@@ -156,8 +135,6 @@ extension TerminalController {
                 "workspace_ref": v2Ref(kind: .workspace, uuid: newId),
                 "surface_id": v2OrNull(ws.focusedTerminalPanel?.id.uuidString),
                 "surface_ref": v2Ref(kind: .surface, uuid: ws.focusedTerminalPanel?.id),
-                "agent_parent_workspace_id": v2OrNull(agentParentWorkspaceId?.uuidString),
-                "title_is_automatic": titleIsAutomatic,
             ])
         }
     }

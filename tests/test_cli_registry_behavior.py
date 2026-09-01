@@ -19,12 +19,23 @@ CLI_PATH = os.environ.get("PROGRAMA_CLI_BIN", "")
 WINDOW_ID = "11111111-1111-1111-1111-111111111111"
 WORKSPACE_ID = "22222222-2222-2222-2222-222222222222"
 SURFACE_ID = "33333333-3333-3333-3333-333333333333"
+CHILD_WORKSPACE_ID = "55555555-5555-5555-5555-555555555555"
+DESCENDANT_WORKSPACE_ID = "66666666-6666-6666-6666-666666666666"
+HELPER_AGENT_ID = "77777777-7777-7777-7777-777777777777"
+DESCENDANT_AGENT_ID = "88888888-8888-8888-8888-888888888888"
+OTHER_HELPER_WORKSPACE_ID = "99999999-9999-9999-9999-999999999999"
 
 
 class SocketRecorder:
     """Minimal v2 server that records whether and how the CLI used its socket."""
 
-    def __init__(self, directory: str):
+    def __init__(
+        self,
+        directory: str,
+        *,
+        workspace_items: list[dict[str, Any]] | None = None,
+        agents_by_workspace: dict[str, list[dict[str, Any]]] | None = None,
+    ):
         self.path = os.path.join(directory, "programa.sock")
         self.accept_count = 0
         self.frames: list[dict[str, Any]] = []
@@ -35,6 +46,10 @@ class SocketRecorder:
         self._listener.listen(4)
         self._listener.settimeout(0.05)
         self._thread = threading.Thread(target=self._serve, daemon=True)
+        self.workspace_items = workspace_items or [
+            {"id": WORKSPACE_ID, "ref": "workspace:1", "selected": True}
+        ]
+        self.agents_by_workspace = agents_by_workspace or {}
 
     def __enter__(self) -> SocketRecorder:
         self._thread.start()
@@ -88,12 +103,20 @@ class SocketRecorder:
                 }
                 connection.sendall(json.dumps(response, separators=(",", ":")).encode("utf-8") + b"\n")
 
-    @staticmethod
-    def _result_for(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _result_for(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "system.ping":
             return {"pong": True}
         if method == "workspace.list":
-            return {"workspaces": [{"id": WORKSPACE_ID, "ref": "workspace:1", "selected": True}]}
+            return {"workspaces": self.workspace_items}
+        if method == "agent.spawn":
+            return {
+                "agent_id": HELPER_AGENT_ID,
+                "workspace_id": CHILD_WORKSPACE_ID,
+                "surface_id": SURFACE_ID,
+            }
+        if method == "agent.task.list":
+            agents = self.agents_by_workspace.get(str(params.get("workspace_id")), [])
+            return {"agents": agents, "count": len(agents)}
         if method == "surface.list":
             return {
                 "surfaces": [{
@@ -413,6 +436,146 @@ def main() -> int:
             params = move_frames[0].get("params", {})
             check(type(params.get("index")) is int and params["index"] == 2, f"move index lost integer type: {params!r}")
             check(type(params.get("focus")) is bool and params["focus"] is False, f"move focus lost boolean type: {params!r}")
+
+    # Claude Teams helpers use the native agent lifecycle instead of a second
+    # workspace hierarchy maintained by the tmux shim.
+    tmux_env = {
+        "PROGRAMA_WORKSPACE_ID": WORKSPACE_ID,
+        "PROGRAMA_SURFACE_ID": SURFACE_ID,
+        "TMUX_PANE": "%1",
+    }
+    with tempfile.TemporaryDirectory(prefix="pcli-", dir="/tmp") as directory:
+        with SocketRecorder(directory) as recorder:
+            helper = run_cli(
+                recorder.path,
+                ["__tmux-compat", "new-window", "-n", "Reviewer", "-c", "/tmp", "printf", "ready"],
+                env_overrides=tmux_env,
+            )
+    check(helper.returncode == 0, f"Claude Teams new-window failed: {merged_output(helper)!r}")
+    spawn_frames = [frame for frame in recorder.frames if frame.get("method") == "agent.spawn"]
+    check(len(spawn_frames) == 1, f"Claude Teams new-window frames={recorder.frames!r}")
+    if spawn_frames:
+        params = spawn_frames[0].get("params", {})
+        check(params.get("parent_workspace_id") == WORKSPACE_ID, f"helper parent mismatch: {params!r}")
+        check(params.get("host") == "claude-teams", f"helper host mismatch: {params!r}")
+        check(params.get("task") == "Reviewer", f"helper task mismatch: {params!r}")
+        check(params.get("initial_command") == "cd -- '/tmp' && printf ready\r", f"helper command mismatch: {params!r}")
+        check("needs_isolation" not in params, f"helper unexpectedly requested isolation: {params!r}")
+    check(
+        not any(frame.get("method") in {"workspace.create", "surface.send_text"} for frame in recorder.frames),
+        f"Claude Teams helper used legacy creation calls: {recorder.frames!r}",
+    )
+
+    with tempfile.TemporaryDirectory(prefix="pcli-", dir="/tmp") as directory:
+        with SocketRecorder(directory) as recorder:
+            split_helper = run_cli(
+                recorder.path,
+                ["__tmux-compat", "split-window", "-c", "/tmp", "echo", "split"],
+                env_overrides=tmux_env,
+            )
+    check(split_helper.returncode == 0, f"Claude Teams split-window failed: {merged_output(split_helper)!r}")
+    split_spawn_frames = [frame for frame in recorder.frames if frame.get("method") == "agent.spawn"]
+    check(len(split_spawn_frames) == 1, f"Claude Teams split-window frames={recorder.frames!r}")
+    if split_spawn_frames:
+        params = split_spawn_frames[0].get("params", {})
+        check(params.get("parent_workspace_id") == WORKSPACE_ID, f"split helper parent mismatch: {params!r}")
+        check(params.get("host") == "claude-teams", f"split helper host mismatch: {params!r}")
+        check(params.get("task") == "Helper", f"split helper task mismatch: {params!r}")
+        check(params.get("initial_command") == "cd -- '/tmp' && echo split\r", f"split helper command mismatch: {params!r}")
+    check(
+        not any(frame.get("method") in {"workspace.create", "surface.send_text"} for frame in recorder.frames),
+        f"Claude Teams split helper used legacy creation calls: {recorder.frames!r}",
+    )
+
+    workspace_items = [
+        {"id": WORKSPACE_ID, "ref": "workspace:1", "selected": True},
+        {
+            "id": CHILD_WORKSPACE_ID,
+            "ref": "workspace:2",
+            "agent_parent_workspace_id": WORKSPACE_ID,
+            "helpers": [{
+                "id": HELPER_AGENT_ID,
+                "host": "claude-teams",
+                "workspace_id": CHILD_WORKSPACE_ID,
+            }],
+        },
+        {
+            "id": DESCENDANT_WORKSPACE_ID,
+            "ref": "workspace:3",
+            "agent_parent_workspace_id": CHILD_WORKSPACE_ID,
+            "helpers": [{
+                "id": DESCENDANT_AGENT_ID,
+                "host": "claude-teams",
+                "workspace_id": DESCENDANT_WORKSPACE_ID,
+            }],
+        },
+        {
+            "id": OTHER_HELPER_WORKSPACE_ID,
+            "ref": "workspace:4",
+            "agent_parent_workspace_id": WORKSPACE_ID,
+            "helpers": [{
+                "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "host": "codex",
+                "workspace_id": OTHER_HELPER_WORKSPACE_ID,
+            }],
+        },
+    ]
+    agents_by_workspace = {
+        CHILD_WORKSPACE_ID: [{"id": HELPER_AGENT_ID}],
+        DESCENDANT_WORKSPACE_ID: [{"id": DESCENDANT_AGENT_ID}],
+    }
+    with tempfile.TemporaryDirectory(prefix="pcli-", dir="/tmp") as directory:
+        with SocketRecorder(
+            directory,
+            workspace_items=workspace_items,
+            agents_by_workspace=agents_by_workspace,
+        ) as recorder:
+            killed = run_cli(
+                recorder.path,
+                ["__tmux-compat", "kill-window", "-t", WORKSPACE_ID],
+                env_overrides=tmux_env,
+            )
+    check(killed.returncode == 0, f"Claude Teams root close failed: {merged_output(killed)!r}")
+    close_frames = [frame for frame in recorder.frames if frame.get("method") == "workspace.close"]
+    closed_ids = [frame.get("params", {}).get("workspace_id") for frame in close_frames]
+    check(
+        closed_ids == [DESCENDANT_WORKSPACE_ID, CHILD_WORKSPACE_ID, WORKSPACE_ID],
+        f"Claude Teams close order changed: {recorder.frames!r}",
+    )
+    list_frames = [frame for frame in recorder.frames if frame.get("method") == "agent.task.list"]
+    listed_workspace_ids = [frame.get("params", {}).get("workspace_id") for frame in list_frames]
+    check(
+        listed_workspace_ids == [DESCENDANT_WORKSPACE_ID, CHILD_WORKSPACE_ID],
+        f"Claude Teams live-helper queries changed: {list_frames!r}",
+    )
+    check(
+        all(frame.get("params", {}).get("include_finished") is False for frame in list_frames),
+        f"Claude Teams queried finished helpers while closing: {list_frames!r}",
+    )
+    finished_ids = [
+        frame.get("params", {}).get("agent_id")
+        for frame in recorder.frames
+        if frame.get("method") == "agent.task.finish"
+    ]
+    check(
+        finished_ids == [DESCENDANT_AGENT_ID, HELPER_AGENT_ID],
+        f"Claude Teams did not finish live helpers deepest-first: {recorder.frames!r}",
+    )
+    lifecycle_events = [
+        (frame.get("method"), frame.get("params", {}).get("agent_id") or frame.get("params", {}).get("workspace_id"))
+        for frame in recorder.frames
+        if frame.get("method") in {"agent.task.finish", "workspace.close"}
+    ]
+    check(
+        lifecycle_events == [
+            ("agent.task.finish", DESCENDANT_AGENT_ID),
+            ("workspace.close", DESCENDANT_WORKSPACE_ID),
+            ("agent.task.finish", HELPER_AGENT_ID),
+            ("workspace.close", CHILD_WORKSPACE_ID),
+            ("workspace.close", WORKSPACE_ID),
+        ],
+        f"Claude Teams helper lifecycle order changed: {recorder.frames!r}",
+    )
 
     # Global window targeting stays ordered and shares one lazy connection.
     with tempfile.TemporaryDirectory(prefix="pcli-", dir="/tmp") as directory:

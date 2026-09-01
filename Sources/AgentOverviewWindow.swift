@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-enum AgentOverviewFriendlyState: String, Equatable, Sendable {
+enum AgentOverviewFriendlyState: Equatable, Sendable {
     case idle
     case working
     case needsInput
@@ -59,40 +59,6 @@ struct AgentOverviewHierarchyNode: Equatable, Sendable {
 }
 
 enum AgentOverviewHierarchy {
-    static func orderedIds(_ nodes: [AgentOverviewHierarchyNode]) -> [UUID] {
-        let nodeIds = Set(nodes.map(\.id))
-        var children: [UUID: [AgentOverviewHierarchyNode]] = [:]
-        for node in nodes {
-            guard let parentId = node.sidebarParentId,
-                  parentId != node.id,
-                  nodeIds.contains(parentId) else { continue }
-            children[parentId, default: []].append(node)
-        }
-
-        var result: [UUID] = []
-        var emitted: Set<UUID> = []
-
-        func append(_ node: AgentOverviewHierarchyNode, visiting: Set<UUID>) {
-            guard !visiting.contains(node.id), emitted.insert(node.id).inserted else { return }
-            result.append(node.id)
-            let nextVisiting = visiting.union([node.id])
-            for child in children[node.id] ?? [] {
-                append(child, visiting: nextVisiting)
-            }
-        }
-
-        for node in nodes {
-            guard node.sidebarParentId.map({ nodeIds.contains($0) && $0 != node.id }) != true else {
-                continue
-            }
-            append(node, visiting: [])
-        }
-        for node in nodes where emitted.insert(node.id).inserted {
-            result.append(node.id)
-        }
-        return result
-    }
-
     static func scopedIds(_ nodes: [AgentOverviewHierarchyNode], rootId: UUID) -> Set<UUID> {
         guard let root = nodes.first(where: { $0.id == rootId }) else { return [] }
         var included: Set<UUID> = [rootId]
@@ -110,19 +76,6 @@ enum AgentOverviewHierarchy {
         return included
     }
 
-    static func depth(of id: UUID, nodes: [AgentOverviewHierarchyNode]) -> Int {
-        let nodesById = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
-        var depth = 0
-        var currentId = id
-        var visited: Set<UUID> = []
-        while visited.insert(currentId).inserted,
-              let parentId = nodesById[currentId]?.sidebarParentId,
-              nodesById[parentId] != nil {
-            depth += 1
-            currentId = parentId
-        }
-        return depth
-    }
 }
 
 enum AgentOverviewSelection: Hashable, Sendable {
@@ -155,11 +108,6 @@ enum AgentOverviewSelection: Hashable, Sendable {
     }
 }
 
-struct AgentOverviewOutputReadRequest: Equatable, Sendable {
-    let surfaceId: UUID
-    let lineLimit: Int
-}
-
 struct AgentOverviewOutputGate: Equatable, Sendable {
     private(set) var selection: AgentOverviewSelection?
     private(set) var isOutputVisible = false
@@ -185,11 +133,11 @@ struct AgentOverviewOutputGate: Equatable, Sendable {
         isOutputVisible = false
     }
 
-    var readRequest: AgentOverviewOutputReadRequest? {
+    var readLineLimit: Int? {
         guard isWindowVisible,
               isOutputVisible,
-              let surfaceId = selection?.outputSurfaceId else { return nil }
-        return AgentOverviewOutputReadRequest(surfaceId: surfaceId, lineLimit: 200)
+              selection?.outputSurfaceId != nil else { return nil }
+        return 200
     }
 }
 
@@ -227,8 +175,6 @@ struct AgentOverviewHelperSnapshot: Identifiable, Equatable, Sendable {
 
 struct AgentOverviewWorkspaceSnapshot: Identifiable, Equatable, Sendable {
     let id: UUID
-    let windowId: UUID
-    let windowIndex: Int
     let title: String
     let state: AgentOverviewFriendlyState
     let branchOrPullRequest: String?
@@ -287,7 +233,6 @@ final class AgentOverviewViewModel: ObservableObject {
         hasScope = workspaceId != nil
         outputGate.select(nil)
         output = ""
-        refreshMetadataAndOutput()
     }
 
     func showAllWorkspaces() {
@@ -410,9 +355,17 @@ final class AgentOverviewViewModel: ObservableObject {
                     isWorktreeFolder: $0.isWorktreeFolder
                 )
             }
+            let hierarchyEntries = nodes.map {
+                SidebarWorkspaceHierarchyEntry(
+                    id: $0.id,
+                    parentId: $0.sidebarParentId,
+                    isFolder: $0.isWorktreeFolder,
+                    isCollapsed: false
+                )
+            }
             let scopedIds: Set<UUID>? = scopedWorkspaceIds(manager: manager, nodes: nodes)
             let workspaceById = Dictionary(uniqueKeysWithValues: manager.tabs.map { ($0.id, $0) })
-            let orderedIds = AgentOverviewHierarchy.orderedIds(nodes)
+            let orderedIds = SidebarWorkspaceHierarchy.visibleWorkspaceIds(hierarchyEntries)
             var workspaceSnapshots: [AgentOverviewWorkspaceSnapshot] = []
 
             for workspaceId in orderedIds {
@@ -452,13 +405,19 @@ final class AgentOverviewViewModel: ObservableObject {
                 workspaceSnapshots.append(
                     AgentOverviewWorkspaceSnapshot(
                         id: workspace.id,
-                        windowId: state.windowId,
-                        windowIndex: windowIndex,
                         title: workspace.title,
-                        state: workspaceState(workspace, records: records),
+                        state: AgentOverviewFriendlyState.from(
+                            taskState: AgentSupervisionMetadata.aggregateTaskState(
+                                for: workspace,
+                                records: records
+                            ) ?? .idle
+                        ),
                         branchOrPullRequest: branchOrPullRequest(workspace),
                         folder: AgentOverviewFormatting.shortenedFolder(workspace.currentDirectory),
-                        depth: AgentOverviewHierarchy.depth(of: workspace.id, nodes: nodes),
+                        depth: SidebarWorkspaceHierarchy.depth(
+                            of: workspace.id,
+                            entries: hierarchyEntries
+                        ),
                         terminals: terminals,
                         helpers: helpers
                     )
@@ -497,22 +456,10 @@ final class AgentOverviewViewModel: ObservableObject {
     }
 
     private func liveWindowStates() -> [AppDelegate.ScriptableMainWindowState] {
-        if let appDelegate = AppDelegate.shared {
-            let states = appDelegate.scriptableMainWindows()
-            if scopedWorkspaceId == nil { return states }
-            return states.filter { $0.tabManager === requestedTabManager }
-        }
-        guard let manager = requestedTabManager else { return [] }
-        return [AppDelegate.ScriptableMainWindowState(windowId: UUID(), tabManager: manager, window: nil)]
-    }
-
-    private func workspaceState(_ workspace: Workspace, records: [AgentTaskRecord]) -> AgentOverviewFriendlyState {
-        let taskStates = records.map { AgentOverviewFriendlyState.from(taskState: $0.state) }
-        if taskStates.contains(.needsInput) || workspace.aggregateAgentState == .blocked { return .needsInput }
-        if taskStates.contains(.working) || workspace.aggregateAgentState == .working { return .working }
-        if taskStates.contains(.failed) { return .failed }
-        if !taskStates.isEmpty, taskStates.allSatisfy({ $0 == .done }) { return .done }
-        return AgentOverviewFriendlyState.from(activityState: workspace.aggregateAgentState)
+        guard let appDelegate = AppDelegate.shared else { return [] }
+        let states = appDelegate.scriptableMainWindows()
+        if scopedWorkspaceId == nil { return states }
+        return states.filter { $0.tabManager === requestedTabManager }
     }
 
     private func branchOrPullRequest(_ workspace: Workspace) -> String? {
@@ -570,13 +517,13 @@ final class AgentOverviewViewModel: ObservableObject {
     }
 
     private func refreshOutput() {
-        guard let request = outputGate.readRequest,
+        guard let lineLimit = outputGate.readLineLimit,
               let panel = resolveTerminalPanel(),
               outputRefreshGate.shouldRead(now: Date()) else { return }
         output = TerminalController.shared.readTerminalText(
             terminalPanel: panel,
             includeScrollback: false,
-            lineLimit: request.lineLimit
+            lineLimit: lineLimit
         ) ?? ""
     }
 }

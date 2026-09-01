@@ -163,12 +163,21 @@ func TestTmuxCompatStoreRoundTrip(t *testing.T) {
 	os.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
-	store := loadTmuxCompatStore()
-	store.Buffers["test"] = "captured text"
-	store.MainVerticalLayouts["ws1"] = mainVerticalState{
-		MainSurfaceId:       "surface-main",
-		LastColumnSurfaceId: "surface-col",
+	storePath := filepath.Join(tmpDir, ".programaterm", "tmux-compat-store.json")
+	if err := os.MkdirAll(filepath.Dir(storePath), 0o755); err != nil {
+		t.Fatalf("mkdir store dir: %v", err)
 	}
+	if err := os.WriteFile(storePath, []byte(`{
+        "buffers":{"test":"captured text"},
+        "hooks":{"after-new-window":"display-message ready"},
+        "mainVerticalLayouts":{"ws1":{"mainSurfaceId":"surface-main"}},
+        "lastSplitSurface":{"ws1":"surface-col"}
+    }`), 0o644); err != nil {
+		t.Fatalf("write legacy store: %v", err)
+	}
+
+	store := loadTmuxCompatStore()
+	store.Buffers["next"] = "more text"
 	if err := saveTmuxCompatStore(store); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -177,10 +186,18 @@ func TestTmuxCompatStoreRoundTrip(t *testing.T) {
 	if loaded.Buffers["test"] != "captured text" {
 		t.Errorf("buffer = %q, want %q", loaded.Buffers["test"], "captured text")
 	}
-	if mvs, ok := loaded.MainVerticalLayouts["ws1"]; !ok {
-		t.Error("missing main vertical layout for ws1")
-	} else if mvs.LastColumnSurfaceId != "surface-col" {
-		t.Errorf("lastColumnSurfaceId = %q, want %q", mvs.LastColumnSurfaceId, "surface-col")
+	if loaded.Hooks["after-new-window"] != "display-message ready" {
+		t.Errorf("hook = %q, want saved hook", loaded.Hooks["after-new-window"])
+	}
+	if loaded.Buffers["next"] != "more text" {
+		t.Errorf("next buffer = %q, want %q", loaded.Buffers["next"], "more text")
+	}
+	saved, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read saved store: %v", err)
+	}
+	if strings.Contains(string(saved), "mainVerticalLayouts") || strings.Contains(string(saved), "lastSplitSurface") {
+		t.Fatalf("saved store retained obsolete layout state: %s", saved)
 	}
 }
 
@@ -962,10 +979,10 @@ func TestTmuxWaitForRejectsSymlinkSignal(t *testing.T) {
 }
 
 // startMockNewWindowSocket returns a mock relay socket that resolves
-// workspace.list to a single "target" workspace and records the params
-// passed to every workspace.create call (guarded by a mutex, since the
+// workspace.list to a single parent workspace and records the params
+// passed to every agent.spawn call (guarded by a mutex, since the
 // listener services requests on their own goroutines).
-func startMockNewWindowSocket(t *testing.T) (sockPath string, createCalls *[]map[string]any, mu *sync.Mutex) {
+func startMockNewWindowSocket(t *testing.T) (sockPath string, spawnCalls *[]map[string]any, mu *sync.Mutex) {
 	t.Helper()
 	sockPath = makeShortUnixSocketPath(t)
 	calls := []map[string]any{}
@@ -1011,13 +1028,14 @@ func startMockNewWindowSocket(t *testing.T) (sockPath string, createCalls *[]map
 							"title": "target-session",
 						}},
 					}
-				case "workspace.create":
+				case "agent.spawn":
 					lock.Lock()
 					calls = append(calls, params)
 					lock.Unlock()
-					resp["result"] = map[string]any{"workspace_id": "33333333-3333-4333-8333-333333333333"}
-				case "workspace.rename":
-					resp["result"] = map[string]any{"ok": true}
+					resp["result"] = map[string]any{
+						"workspace_id": "33333333-3333-4333-8333-333333333333",
+						"surface_id":   "44444444-4444-4444-8444-444444444444",
+					}
 				default:
 					resp["ok"] = false
 					resp["error"] = map[string]any{"code": "unsupported", "message": method}
@@ -1032,40 +1050,38 @@ func startMockNewWindowSocket(t *testing.T) (sockPath string, createCalls *[]map
 	return sockPath, &calls, &lock
 }
 
-func TestTmuxNewWindowHonorsTargetSession(t *testing.T) {
-	sockPath, calls, mu := startMockNewWindowSocket(t)
+func TestTmuxNewWindowRejectsTargetSession(t *testing.T) {
+	sockPath, _, _ := startMockNewWindowSocket(t)
 	rc := &rpcContext{socketPath: sockPath}
 
-	if err := dispatchTmuxCommand(rc, "new-window", []string{"-t", "target-session"}); err != nil {
-		t.Fatalf("new-window: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(*calls) != 1 {
-		t.Fatalf("workspace.create calls = %d, want 1", len(*calls))
-	}
-	got, _ := (*calls)[0]["workspace_id"].(string)
-	if got != "22222222-2222-4222-8222-222222222222" {
-		t.Errorf("workspace.create routed workspace_id = %q, want the resolved -t target", got)
+	if err := dispatchTmuxCommand(rc, "new-window", []string{"-t", "target-session"}); err == nil {
+		t.Fatal("new-window -t should be rejected in claude-teams mode")
 	}
 }
 
-func TestTmuxNewWindowWithoutTargetDoesNotRoute(t *testing.T) {
+func TestTmuxNewWindowSpawnsNestedTeamHelper(t *testing.T) {
 	sockPath, calls, mu := startMockNewWindowSocket(t)
 	rc := &rpcContext{socketPath: sockPath}
+	t.Setenv("PROGRAMA_WORKSPACE_ID", "22222222-2222-4222-8222-222222222222")
 
-	if err := dispatchTmuxCommand(rc, "new-window", nil); err != nil {
+	if err := dispatchTmuxCommand(rc, "new-window", []string{"-n", "Review", "-c", "/repo", "codex"}); err != nil {
 		t.Fatalf("new-window: %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if len(*calls) != 1 {
-		t.Fatalf("workspace.create calls = %d, want 1", len(*calls))
+		t.Fatalf("agent.spawn calls = %d, want 1", len(*calls))
 	}
-	if _, ok := (*calls)[0]["workspace_id"]; ok {
-		t.Errorf("workspace.create params should not carry workspace_id routing when -t is absent, got %v", (*calls)[0])
+	call := (*calls)[0]
+	if call["parent_workspace_id"] != "22222222-2222-4222-8222-222222222222" {
+		t.Errorf("parent_workspace_id = %v, want caller workspace", call["parent_workspace_id"])
+	}
+	if call["host"] != "claude-teams" || call["task"] != "Review" || call["focus"] != false {
+		t.Errorf("agent.spawn helper metadata = %v", call)
+	}
+	if call["initial_command"] != "cd -- '/repo' && codex\r" {
+		t.Errorf("initial_command = %q", call["initial_command"])
 	}
 }
 

@@ -383,7 +383,7 @@ extension TerminalController {
                         )
                     }
                     let automaticTitle = agentAutomaticTitle(task: task, role: role, siblingNumber: 1)
-                    workspace.title = automaticTitle
+                    workspace.automaticAgentTitle = automaticTitle
                     workspace.agentParentWorkspaceId = parentWorkspaceId
                     let surfaceId = workspace.focusedTerminalPanel?.id
 
@@ -466,7 +466,7 @@ extension TerminalController {
                     eagerLoadTerminal: true,
                     autoWelcomeIfNeeded: false
                 )
-                workspace.title = automaticTitle
+                workspace.automaticAgentTitle = automaticTitle
                 workspace.agentParentWorkspaceId = parentWorkspaceId
                 let surfaceId = workspace.focusedTerminalPanel?.id
 

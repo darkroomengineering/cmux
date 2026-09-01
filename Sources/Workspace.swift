@@ -27,6 +27,14 @@ final class Workspace: Identifiable, ObservableObject {
     /// Transient parent used for helpers that run in their own nested workspace. Agent
     /// relationships intentionally do not persist: restored workspaces return to the top level.
     @Published var agentParentWorkspaceId: UUID?
+    /// Transient title for a helper workspace. Manual names take priority, while shell/process
+    /// titles remain available underneath it if the helper relationship is later cleared.
+    @Published var automaticAgentTitle: String? = nil {
+        didSet {
+            guard automaticAgentTitle != oldValue else { return }
+            refreshResolvedWorkspaceTitle()
+        }
+    }
     /// The git branch checked out in this workspace's worktree, if it was created/opened via
     /// `worktree.create`/`worktree.open`. Used for the sidebar badge tooltip.
     @Published var worktreeBranch: String?
@@ -1275,8 +1283,7 @@ final class Workspace: Identifiable, ObservableObject {
 
     func applyProcessTitle(_ title: String) {
         processTitle = title
-        guard customTitle == nil else { return }
-        self.title = title
+        refreshResolvedWorkspaceTitle()
     }
 
     func setCustomColor(_ hex: String?) {
@@ -1298,13 +1305,17 @@ final class Workspace: Identifiable, ObservableObject {
 
     func setCustomTitle(_ title: String?) {
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if trimmed.isEmpty {
-            customTitle = nil
-            self.title = processTitle
-        } else {
-            customTitle = trimmed
-            self.title = trimmed
-        }
+        customTitle = trimmed.isEmpty ? nil : trimmed
+        refreshResolvedWorkspaceTitle()
+    }
+
+    func refreshResolvedWorkspaceTitle() {
+        let manualTitle = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let agentTitle = automaticAgentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolved = !manualTitle.isEmpty
+            ? manualTitle
+            : (!agentTitle.isEmpty ? agentTitle : processTitle)
+        if title != resolved { title = resolved }
     }
 
     func setCustomDescription(_ description: String?) {

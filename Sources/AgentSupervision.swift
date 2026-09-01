@@ -1,6 +1,6 @@
 import Foundation
 
-enum AgentTaskState: String, CaseIterable, Sendable {
+enum AgentTaskState: String, Sendable {
     case idle
     case working
     case blocked
@@ -18,13 +18,13 @@ enum AgentTaskState: String, CaseIterable, Sendable {
     }
 }
 
-enum AgentTaskPlacement: String, CaseIterable, Sendable {
+enum AgentTaskPlacement: String, Sendable {
     case nestedWorkspace = "nested_workspace"
     case separateWorktree = "separate_worktree"
     case runsWithParent = "runs_with_parent"
 }
 
-struct AgentTaskRecord: Identifiable, Equatable, Sendable {
+struct AgentTaskRecord: Sendable {
     let id: UUID
     let parentId: UUID?
     let host: String
@@ -98,8 +98,6 @@ final class AgentSupervisionRegistry {
     init(capacity: Int = 256) {
         self.capacity = max(1, capacity)
     }
-
-    var count: Int { recordsById.count }
 
     func record(id: UUID) -> AgentTaskRecord? {
         recordsById[id]
@@ -246,14 +244,7 @@ final class AgentSupervisionRegistry {
         guard state.isFinished else {
             throw AgentSupervisionRegistryError.finishStateRequired
         }
-        let ids = recordsById.values.compactMap { record in
-            record.workspaceId == workspaceId
-                && record.surfaceId == surfaceId
-                && record.placement != .runsWithParent
-                && !record.state.isFinished
-                ? record.id
-                : nil
-        }
+        let ids = activeSurfaceRecordIds(workspaceId: workspaceId, surfaceId: surfaceId)
         return try ids.map { try finish(id: $0, state: state, now: now) }
     }
 
@@ -266,14 +257,7 @@ final class AgentSupervisionRegistry {
         guard !state.isFinished else {
             throw AgentSupervisionRegistryError.finishStateRequired
         }
-        let ids = recordsById.values.compactMap { record in
-            record.workspaceId == workspaceId
-                && record.surfaceId == surfaceId
-                && record.placement != .runsWithParent
-                && !record.state.isFinished
-                ? record.id
-                : nil
-        }
+        let ids = activeSurfaceRecordIds(workspaceId: workspaceId, surfaceId: surfaceId)
         return try ids.map { try update(id: $0, state: state, now: now) }
     }
 
@@ -287,6 +271,17 @@ final class AgentSupervisionRegistry {
 
     func retainWorkspaces(_ liveWorkspaceIds: Set<UUID>) {
         recordsById = recordsById.filter { liveWorkspaceIds.contains($0.value.workspaceId) }
+    }
+
+    private func activeSurfaceRecordIds(workspaceId: UUID, surfaceId: UUID) -> [UUID] {
+        recordsById.values.compactMap { record in
+            record.workspaceId == workspaceId
+                && record.surfaceId == surfaceId
+                && record.placement != .runsWithParent
+                && !record.state.isFinished
+                ? record.id
+                : nil
+        }
     }
 
     private func makeRoomForNewRecord() throws {
@@ -314,25 +309,33 @@ enum AgentSupervisionMetadata {
         )
     }
 
-    static func aggregateState(for workspace: Workspace) -> String? {
-        let helperStates = relatedRecords(for: workspace).map(\.state)
-        if workspace.aggregateAgentState == .blocked || helperStates.contains(.blocked) {
-            return AgentTaskState.blocked.rawValue
+    static func aggregateTaskState(
+        for workspace: Workspace,
+        records: [AgentTaskRecord]
+    ) -> AgentTaskState? {
+        var states = records.map(\.state)
+        switch workspace.aggregateAgentState {
+        case .blocked: states.append(.blocked)
+        case .working: states.append(.working)
+        case .idle: states.append(.idle)
+        case nil: break
         }
-        if workspace.aggregateAgentState == .working || helperStates.contains(.working) {
-            return AgentTaskState.working.rawValue
-        }
-        if helperStates.contains(.failed) { return AgentTaskState.failed.rawValue }
-        if helperStates.contains(.cancelled) { return AgentTaskState.cancelled.rawValue }
-        if workspace.aggregateAgentState == .idle || helperStates.contains(.idle) {
-            return AgentActivityState.idle.rawValue
-        }
-        if helperStates.contains(.completed) { return AgentTaskState.completed.rawValue }
-        return nil
+        return [.blocked, .working, .failed, .cancelled, .idle, .completed]
+            .first(where: states.contains)
     }
 
-    static func aggregateSource(for workspace: Workspace) -> String? {
-        let hasHelpers = !relatedRecords(for: workspace).isEmpty
+    static func aggregateState(
+        for workspace: Workspace,
+        records: [AgentTaskRecord]
+    ) -> String? {
+        aggregateTaskState(for: workspace, records: records)?.rawValue
+    }
+
+    static func aggregateSource(
+        for workspace: Workspace,
+        records: [AgentTaskRecord]
+    ) -> String? {
+        let hasHelpers = !records.isEmpty
         if !workspace.panelAgentStateSources.isEmpty, hasHelpers {
             return "mixed"
         }

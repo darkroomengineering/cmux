@@ -43,8 +43,6 @@ final class AgentOverviewHierarchyTests: XCTestCase {
             AgentOverviewHierarchy.scopedIds(nodes, rootId: folder),
             [folder, worktree, helper]
         )
-        XCTAssertEqual(AgentOverviewHierarchy.orderedIds(nodes), [folder, worktree, helper, unrelated])
-        XCTAssertEqual(AgentOverviewHierarchy.depth(of: helper, nodes: nodes), 2)
     }
 
     func testNormalWorkspaceScopeIncludesOnlyItsAgentDescendants() {
@@ -114,7 +112,7 @@ final class AgentOverviewOutputGateTests: XCTestCase {
         gate.showOutput()
 
         XCTAssertFalse(gate.isOutputVisible)
-        XCTAssertNil(gate.readRequest)
+        XCTAssertNil(gate.readLineLimit)
     }
 
     func testReportedHelperCannotControlItsAssociatedTerminal() {
@@ -136,16 +134,13 @@ final class AgentOverviewOutputGateTests: XCTestCase {
         gate.select(.terminal(workspaceId: workspaceId, panelId: panelId))
         gate.showOutput()
 
-        XCTAssertNil(gate.readRequest)
+        XCTAssertNil(gate.readLineLimit)
 
         gate.isWindowVisible = true
-        XCTAssertEqual(
-            gate.readRequest,
-            AgentOverviewOutputReadRequest(surfaceId: panelId, lineLimit: 200)
-        )
+        XCTAssertEqual(gate.readLineLimit, 200)
 
         gate.hideOutput()
-        XCTAssertNil(gate.readRequest)
+        XCTAssertNil(gate.readLineLimit)
     }
 
     func testSelectionChangeRequiresOutputToBeOpenedAgain() {
@@ -154,12 +149,12 @@ final class AgentOverviewOutputGateTests: XCTestCase {
         gate.isWindowVisible = true
         gate.select(.terminal(workspaceId: workspaceId, panelId: UUID()))
         gate.showOutput()
-        XCTAssertNotNil(gate.readRequest)
+        XCTAssertEqual(gate.readLineLimit, 200)
 
         gate.select(.workspace(workspaceId))
 
         XCTAssertFalse(gate.isOutputVisible)
-        XCTAssertNil(gate.readRequest)
+        XCTAssertNil(gate.readLineLimit)
     }
 
     func testDisappearedSelectionClearsOutputAndSelection() {
@@ -173,7 +168,7 @@ final class AgentOverviewOutputGateTests: XCTestCase {
 
         XCTAssertNil(gate.selection)
         XCTAssertFalse(gate.isOutputVisible)
-        XCTAssertNil(gate.readRequest)
+        XCTAssertNil(gate.readLineLimit)
     }
 
     func testOutputRefreshesAtMostOncePerSecond() {

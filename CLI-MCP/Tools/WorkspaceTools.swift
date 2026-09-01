@@ -28,16 +28,14 @@ enum WorkspaceTools {
         ProgramaTool(
             name: "workspace_create",
             socketMethod: "workspace.create",
-            description: "Creates a new workspace (sidebar tab) with its own terminal. It can be nested under a parent workspace for helper work without changing worktrees.",
+            description: "Creates a new workspace (sidebar tab) with its own terminal.",
             inputSchema: ProgramaToolSchema.object(properties: [
                 "working_directory": ProgramaToolSchema.string("Starting directory for the new workspace's terminal. Takes priority over cwd if both are set."),
                 "cwd": ProgramaToolSchema.string("Alias for working_directory, used only if working_directory is omitted."),
                 "initial_command": ProgramaToolSchema.string("Shell command to run immediately in the new workspace's terminal."),
                 "initial_env": ProgramaToolSchema.stringMap("Extra environment variables to set for the new workspace's terminal."),
                 "title": ProgramaToolSchema.string("Custom title for the new workspace."),
-                "title_is_automatic": ProgramaToolSchema.boolean("Treat title as an automatic helper label, so it does not count as a manual rename."),
                 "description": ProgramaToolSchema.string("Custom description for the new workspace."),
-                "agent_parent_workspace_id": ProgramaToolSchema.string("Parent workspace UUID or short ref. The new helper workspace appears nested under it and shares the requested folder."),
                 "window_id": ProgramaToolSchema.windowIdProperty,
                 "workspace_id": ProgramaToolSchema.workspaceIdProperty,
                 "surface_id": ProgramaToolSchema.surfaceRoutingIdProperty,

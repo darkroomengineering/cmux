@@ -4247,7 +4247,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Usage: programa claude-teams [claude-args...]\n\nLaunch Claude Code with agent teams enabled.\n\nThis command:\n  - defaults Claude teammate mode to auto\n  - sets a tmux-like environment so Claude auto mode uses Programa splits\n  - sets CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1\n  - prepends a private tmux shim to PATH\n  - forwards all remaining arguments to claude\n\nThe tmux shim translates supported tmux window/pane commands into Programa\nworkspace and split operations in the current Programa session.\n\nExamples:\n  programa claude-teams\n  programa claude-teams --continue\n  programa claude-teams --model sonnet"
+            "value": "Usage: programa claude-teams [claude-args...]\n\nLaunch Claude Code with agent teams enabled.\n\nThis command:\n  - defaults Claude teammate mode to auto\n  - sets a tmux-like environment so Claude can open Programa helper workspaces\n  - sets CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1\n  - prepends a private tmux shim to PATH\n  - forwards all remaining arguments to claude\n\nThe tmux shim turns supported tmux window/pane commands into nested helper\nworkspaces in the current Programa window.\n\nExamples:\n  programa claude-teams\n  programa claude-teams --continue\n  programa claude-teams --model sonnet"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用方法: programa claude-teams [claude-args...]\n\nエージェントチームを有効にして Claude Code を起動します。\n\nこのコマンドは次の処理を行います:\n  - Claude のチームメイトモードをデフォルトで auto に設定\n  - Claude が Programa のヘルパーワークスペースを開ける tmux 互換環境を設定\n  - CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 を設定\n  - 専用の tmux シムを PATH の先頭に追加\n  - 残りの引数をすべて claude に渡す\n\ntmux シムは対応する tmux の window/pane コマンドを、現在の Programa\nウインドウ内にあるネストされたヘルパーワークスペースへ変換します。\n\n例:\n  programa claude-teams\n  programa claude-teams --continue\n  programa claude-teams --model sonnet"
           }
         }
       }
