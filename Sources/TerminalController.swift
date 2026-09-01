@@ -1950,7 +1950,7 @@ class TerminalController {
         }
 
         return withSocketCommandPolicy(commandKey: method, isV2: true) {
-            if let result = browserRPCDispatcher.dispatch(method: method, params: params, controller: self) {
+            if let result = browserRPCDispatcher.dispatch(method: method, params: params, controller: self) ?? AgentRPCDispatcher.dispatch(method: method, params: params, controller: self) {
                 return v2Result(id: id, result)
             }
             switch method {
@@ -1989,18 +1989,6 @@ class TerminalController {
             return v2Result(id: id, self.v2WorkspaceList(params: params))
         case "workspace.create":
             return v2Result(id: id, self.v2WorkspaceCreate(params: params))
-        case "agent.task.start":
-            return v2Result(id: id, self.v2AgentTaskStart(params: params))
-        case "agent.task.update":
-            return v2Result(id: id, self.v2AgentTaskUpdate(params: params))
-        case "agent.task.finish":
-            return v2Result(id: id, self.v2AgentTaskFinish(params: params))
-        case "agent.task.finish_session":
-            return v2Result(id: id, self.v2AgentTaskFinishSession(params: params))
-        case "agent.task.list":
-            return v2Result(id: id, self.v2AgentTaskList(params: params))
-        case "agent.spawn":
-            return v2Result(id: id, self.v2AgentSpawn(params: params))
         case "workspace.select":
             return v2Result(id: id, self.v2WorkspaceSelect(params: params))
         case "workspace.current":

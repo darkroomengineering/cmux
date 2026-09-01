@@ -28,6 +28,7 @@
 			AGST0001A1B2C3D4E5F60719 /* AgentActivityState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGST0002A1B2C3D4E5F60719 /* AgentActivityState.swift */; };
 			AGSV0001A1B2C3D4E5F60719 /* AgentSupervision.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGSV0002A1B2C3D4E5F60719 /* AgentSupervision.swift */; };
 			AGSV0003A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGSV0004A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift */; };
+			AGRP0001A1B2C3D4E5F60719 /* AgentRPCDispatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGRP0002A1B2C3D4E5F60719 /* AgentRPCDispatcher.swift */; };
 			AGSV0005A1B2C3D4E5F60719 /* AgentSupervisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGSV0006A1B2C3D4E5F60719 /* AgentSupervisionTests.swift */; };
 			AGOV0001A1B2C3D4E5F60719 /* AgentOverviewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGOV0002A1B2C3D4E5F60719 /* AgentOverviewWindow.swift */; };
 			AGOV0003A1B2C3D4E5F60719 /* AgentOverviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGOV0004A1B2C3D4E5F60719 /* AgentOverviewTests.swift */; };
@@ -292,6 +293,7 @@
 		B900003BA1B2C3D4E5F60719 /* CLI+TmuxCompat.swift in Sources */ = {isa = PBXBuildFile; fileRef = B900003AA1B2C3D4E5F60719 /* CLI+TmuxCompat.swift */; };
 		B900003DA1B2C3D4E5F60719 /* CLI+AgentWrappers.swift in Sources */ = {isa = PBXBuildFile; fileRef = B900003CA1B2C3D4E5F60719 /* CLI+AgentWrappers.swift */; };
 		B900003FA1B2C3D4E5F60719 /* CLI+Hooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = B900003EA1B2C3D4E5F60719 /* CLI+Hooks.swift */; };
+		H1HC0002 /* CLI+HookCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = H1HC0001 /* CLI+HookCommands.swift */; };
 		H1CL0002 /* CLICommandDispatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = H1CL0001 /* CLICommandDispatcher.swift */; };
 		H1HK0002 /* HookInstallationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = H1HK0001 /* HookInstallationCoordinator.swift */; };
 		B9000027A1B2C3D4E5F60719 /* RemoteRelayZshBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001641 /* RemoteRelayZshBootstrap.swift */; };
@@ -466,6 +468,7 @@
 			AGST0002A1B2C3D4E5F60719 /* AgentActivityState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AgentActivityState.swift"; sourceTree = "<group>"; };
 			AGSV0002A1B2C3D4E5F60719 /* AgentSupervision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSupervision.swift; sourceTree = "<group>"; };
 			AGSV0004A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+AgentSupervision.swift"; sourceTree = "<group>"; };
+			AGRP0002A1B2C3D4E5F60719 /* AgentRPCDispatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentRPCDispatcher.swift; sourceTree = "<group>"; };
 			AGSV0006A1B2C3D4E5F60719 /* AgentSupervisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSupervisionTests.swift; sourceTree = "<group>"; };
 			AGOV0002A1B2C3D4E5F60719 /* AgentOverviewWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentOverviewWindow.swift; sourceTree = "<group>"; };
 			AGOV0004A1B2C3D4E5F60719 /* AgentOverviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentOverviewTests.swift; sourceTree = "<group>"; };
@@ -733,6 +736,7 @@
 		B900003AA1B2C3D4E5F60719 /* CLI+TmuxCompat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+TmuxCompat.swift"; sourceTree = "<group>"; };
 		B900003CA1B2C3D4E5F60719 /* CLI+AgentWrappers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+AgentWrappers.swift"; sourceTree = "<group>"; };
 		B900003EA1B2C3D4E5F60719 /* CLI+Hooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+Hooks.swift"; sourceTree = "<group>"; };
+		H1HC0001 /* CLI+HookCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+HookCommands.swift"; sourceTree = "<group>"; };
 		H1CL0001 /* CLICommandDispatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLICommandDispatcher.swift; sourceTree = "<group>"; };
 		H1HK0001 /* HookInstallationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HookInstallationCoordinator.swift; sourceTree = "<group>"; };
 		B9000004A1B2C3D4E5F60719 /* programa */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = programa; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -1057,6 +1061,7 @@
 				NRTC0003 /* TerminalController+Window.swift */,
 				NRTC0004 /* TerminalController+Workspace.swift */,
 				AGSV0004A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift */,
+				AGRP0002A1B2C3D4E5F60719 /* AgentRPCDispatcher.swift */,
 				WTMG000004 /* TerminalController+Worktree.swift */,
 				WTMG000008 /* TerminalController+Layout.swift */,
 					SNAP000002 /* TerminalController+Snapshot.swift */,
@@ -1185,6 +1190,7 @@
 				B900003AA1B2C3D4E5F60719 /* CLI+TmuxCompat.swift */,
 				B900003CA1B2C3D4E5F60719 /* CLI+AgentWrappers.swift */,
 				B900003EA1B2C3D4E5F60719 /* CLI+Hooks.swift */,
+				H1HC0001 /* CLI+HookCommands.swift */,
 				H1CL0001 /* CLICommandDispatcher.swift */,
 				H1HK0001 /* HookInstallationCoordinator.swift */,
 				RVPN0000000000000000000F /* CLI+Review.swift */,
@@ -1639,6 +1645,7 @@
 				NRTC0013 /* TerminalController+Window.swift in Sources */,
 				NRTC0014 /* TerminalController+Workspace.swift in Sources */,
 				AGSV0003A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift in Sources */,
+				AGRP0001A1B2C3D4E5F60719 /* AgentRPCDispatcher.swift in Sources */,
 				WTMG000003 /* TerminalController+Worktree.swift in Sources */,
 				WTMG000007 /* TerminalController+Layout.swift in Sources */,
 					SNAP000001 /* TerminalController+Snapshot.swift in Sources */,
@@ -1859,6 +1866,7 @@
 				B900003BA1B2C3D4E5F60719 /* CLI+TmuxCompat.swift in Sources */,
 				B900003DA1B2C3D4E5F60719 /* CLI+AgentWrappers.swift in Sources */,
 				B900003FA1B2C3D4E5F60719 /* CLI+Hooks.swift in Sources */,
+				H1HC0002 /* CLI+HookCommands.swift in Sources */,
 				H1CL0002 /* CLICommandDispatcher.swift in Sources */,
 				H1HK0002 /* HookInstallationCoordinator.swift in Sources */,
 				F796E92ACEB543370DEF3E6A /* SocketPathResolution.swift in Sources */,
