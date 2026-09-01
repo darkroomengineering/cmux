@@ -218,7 +218,7 @@ func TestTmuxDisplayReporterFormatFields(t *testing.T) {
 	os.Setenv("HOME", t.TempDir())
 	os.Setenv("PROGRAMA_WORKSPACE_ID", "workspace:1")
 	os.Setenv("PROGRAMA_SURFACE_ID", "surface:1")
-	leaderPaneToken := "%" + tmuxStableNumericId("33333333-3333-4333-8333-333333333333")
+	leaderPaneToken := "%" + tmuxStableNumericId(tmuxLeaderPane)
 	os.Setenv("TMUX_PANE", leaderPaneToken)
 	defer func() {
 		os.Setenv("HOME", origHome)
@@ -325,7 +325,7 @@ func TestGetFocusedContextCanonicalizesPaneRef(t *testing.T) {
 	if focused.paneHandle != "pane:1" {
 		t.Fatalf("paneHandle = %q, want pane:1", focused.paneHandle)
 	}
-	if focused.paneId != "33333333-3333-4333-8333-333333333333" {
+	if focused.paneId != tmuxLeaderPane {
 		t.Fatalf("paneId = %q, want canonical pane UUID", focused.paneId)
 	}
 }
@@ -352,8 +352,8 @@ func TestGetFocusedContextKeepsBaseContextWhenCanonicalizationTimesOut(t *testin
 func TestTmuxSigiledSelectorsSkipRefsAndIndexes(t *testing.T) {
 	sockPath, _, _ := startMockAgentTmuxSocket(t, tmuxTeamWorkspaceFixture())
 	rc := &rpcContext{socketPath: sockPath}
-	workspaceId := "11111111-1111-4111-8111-111111111111"
-	paneId := "33333333-3333-4333-8333-333333333333"
+	workspaceId := tmuxLeaderWorkspace
+	paneId := tmuxLeaderPane
 
 	if got, err := tmuxResolveWorkspaceId(rc, "1"); err != nil || got != workspaceId {
 		t.Fatalf("unsigiled workspace index resolved to %q, %v; want %s", got, err, workspaceId)
