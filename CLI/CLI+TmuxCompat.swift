@@ -1012,8 +1012,8 @@ extension ProgramaCLI {
             guard let workspaceId = created["workspace_id"] as? String else {
                 throw CLIError(message: "workspace.create did not return workspace_id")
             }
-            let surfaceId = (created["surface_id"] as? String)
-                ?? (try resolveSurfaceId(nil, workspaceId: workspaceId, client: client))
+            let surfaceId = try ((created["surface_id"] as? String)
+                ?? resolveSurfaceId(nil, workspaceId: workspaceId, client: client))
             do {
                 try updateTmuxCompatStore { teamStore in
                     let liveWorkspaceIds = Set(
