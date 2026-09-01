@@ -59,8 +59,13 @@ func startMockAgentTmuxSocket(
 ) (string, *[]tmuxAgentRequest, *sync.Mutex) {
 	t.Helper()
 	sockPath := makeShortUnixSocketPath(t)
+	cwd := t.TempDir()
 	requests := []tmuxAgentRequest{}
 	var lock sync.Mutex
+	if len(workspaceItems) > 0 {
+		workspaceItems[0]["active"] = true
+		workspaceItems[0]["current_directory"] = cwd
+	}
 
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -93,12 +98,26 @@ func startMockAgentTmuxSocket(
 				workspaceId, _ := params["workspace_id"].(string)
 				paneId := tmuxLeaderPane
 				surfaceId := tmuxLeaderSurface
+				paneRef := "pane:1"
+				surfaceRef := "surface:1"
 				if workspaceId == tmuxSpawnWorkspace {
 					paneId = tmuxSpawnPane
 					surfaceId = tmuxSpawnSurface
+					paneRef = "pane:2"
+					surfaceRef = "surface:2"
 				}
 				resp := map[string]any{"id": req["id"], "ok": true}
 				switch method {
+				case "system.identify":
+					resp["result"] = map[string]any{
+						"focused": map[string]any{
+							"workspace_id":  tmuxLeaderWorkspace,
+							"workspace_ref": "workspace:1",
+							"pane_id":       "pane:1",
+							"pane_ref":      "pane:1",
+							"surface_ref":   "surface:1",
+						},
+					}
 				case "workspace.list":
 					resp["result"] = map[string]any{"workspaces": workspaceItems}
 				case "surface.current":
@@ -109,16 +128,30 @@ func startMockAgentTmuxSocket(
 					}
 				case "surface.list":
 					resp["result"] = map[string]any{"surfaces": []map[string]any{{
-						"id":      surfaceId,
-						"focused": true,
-						"pane_id": paneId,
+						"id":                          surfaceId,
+						"ref":                         surfaceRef,
+						"focused":                     true,
+						"selected_in_pane":            true,
+						"pane_id":                     paneId,
+						"pane_ref":                    paneRef,
+						"title":                       "leader",
+						"requested_working_directory": cwd,
 					}}}
 				case "pane.list":
 					resp["result"] = map[string]any{
 						"panes": []map[string]any{{
 							"id":                  paneId,
+							"ref":                 paneRef,
 							"index":               1,
 							"focused":             true,
+							"columns":             120,
+							"rows":                40,
+							"cell_width_px":       10,
+							"cell_height_px":      20,
+							"pixel_frame":         map[string]any{"x": 0, "y": 0, "width": 1200, "height": 800},
+							"surface_ids":         []any{surfaceId},
+							"surface_refs":        []any{surfaceRef},
+							"surface_count":       1,
 							"selected_surface_id": surfaceId,
 						}},
 						"container_frame": map[string]any{"width": 1200, "height": 800},
@@ -126,7 +159,9 @@ func startMockAgentTmuxSocket(
 				case "pane.surfaces":
 					resp["result"] = map[string]any{"surfaces": []map[string]any{{
 						"id":       surfaceId,
+						"ref":      surfaceRef,
 						"selected": true,
+						"focused":  true,
 					}}}
 				case "agent.spawn":
 					resp["result"] = map[string]any{

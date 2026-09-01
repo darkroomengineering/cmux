@@ -239,7 +239,7 @@ func TestTmuxDisplayReporterFormatFields(t *testing.T) {
 		}
 	}()
 
-	sockPath := startMockTmuxCompatSocket(t)
+	sockPath, _, _ := startMockAgentTmuxSocket(t, tmuxTeamWorkspaceFixture())
 	rc := &rpcContext{socketPath: sockPath}
 	fields := []string{
 		"session_id",
@@ -315,7 +315,7 @@ func assertTmuxFieldMatch(t *testing.T, got string, pattern string, field string
 }
 
 func TestGetFocusedContextCanonicalizesPaneRef(t *testing.T) {
-	sockPath := startMockTmuxCompatSocket(t)
+	sockPath, _, _ := startMockAgentTmuxSocket(t, tmuxTeamWorkspaceFixture())
 	rc := &rpcContext{socketPath: sockPath}
 
 	focused := getFocusedContext(rc)
@@ -350,7 +350,7 @@ func TestGetFocusedContextKeepsBaseContextWhenCanonicalizationTimesOut(t *testin
 }
 
 func TestTmuxSigiledSelectorsSkipRefsAndIndexes(t *testing.T) {
-	sockPath := startMockTmuxCompatSocket(t)
+	sockPath, _, _ := startMockAgentTmuxSocket(t, tmuxTeamWorkspaceFixture())
 	rc := &rpcContext{socketPath: sockPath}
 	workspaceId := "11111111-1111-4111-8111-111111111111"
 	paneId := "33333333-3333-4333-8333-333333333333"
