@@ -6,7 +6,7 @@ extension ProgramaCLI {
         switch command {
         case "claude-hook":
             return """
-            Usage: programa claude-hook <session-start|active|stop|idle|notification|notify|prompt-submit> [flags]
+            Usage: programa claude-hook <session-start|stop|session-end|notification|prompt-submit|pre-tool-use|subagent-start|subagent-stop> [flags]
 
             Hook for Claude Code integration. Reads JSON from stdin.
 
@@ -18,6 +18,10 @@ extension ProgramaCLI {
               notification    Forward a Claude notification
               notify          Alias for notification
               prompt-submit   Clear notification and set Running on user prompt
+              session-end     Clean up a Claude session when it exits
+              pre-tool-use    Update the current task before a tool runs
+              subagent-start  Track a helper when it starts
+              subagent-stop   Mark a helper as finished
 
             Flags:
               --workspace <id|ref>   Target workspace (default: $PROGRAMA_WORKSPACE_ID)
@@ -101,7 +105,7 @@ extension ProgramaCLI {
         [
             CommandDescriptor(
                 names: ["claude-hook"],
-                helpLines: ["claude-hook <session-start|stop|notification> [--workspace <id|ref>] [--surface <id|ref>]"],
+                helpLines: ["claude-hook <session-start|stop|session-end|notification|prompt-submit|pre-tool-use|subagent-start|subagent-stop> [--workspace <id|ref>] [--surface <id|ref>]"],
                 execute: { ctx in
                     try self.runClaudeHook(commandArgs: ctx.commandArgs, client: ctx.client)
                 }

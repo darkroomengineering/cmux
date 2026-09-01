@@ -6690,7 +6690,7 @@ struct ProgramaCLI {
         case "claude-hook":
             let parsed = try parse(values: ["workspace", "surface"], maxPositionals: 1)
             if let subcommand = parsed.positional.first?.lowercased(),
-               !["session-start", "active", "stop", "idle", "prompt-submit", "notification", "notify", "session-end", "pre-tool-use", "help", "--help", "-h"].contains(subcommand) {
+               !["session-start", "active", "stop", "idle", "prompt-submit", "notification", "notify", "session-end", "pre-tool-use", "subagent-start", "subagent-stop", "help", "--help", "-h"].contains(subcommand) {
                 throw CLIError(message: "claude-hook: unknown event \(subcommand)")
             }
 
