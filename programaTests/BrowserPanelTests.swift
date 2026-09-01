@@ -30,7 +30,7 @@ final class BrowserRPCLifecycleOwnerTests: XCTestCase {
         XCTAssertFalse(BrowserRPCDispatcher.recognizes("browser.unknown"))
     }
 
-    func testNavigationGenerationInvalidatesOwnedElementReferences() {
+    func testNavigationGenerationRetainsOneStaleGenerationThenDiscardsIt() {
         let state = BrowserRPCState()
         let surfaceId = UUID()
 
@@ -47,8 +47,13 @@ final class BrowserRPCLifecycleOwnerTests: XCTestCase {
         state.advanceNavigationGeneration(for: surfaceId)
 
         XCTAssertEqual(state.navigationGeneration(for: surfaceId), 1)
-        XCTAssertNil(state.elementRefs[refs[0]])
+        XCTAssertEqual(state.elementRefs[refs[0]]?.navigationGeneration, 0)
         XCTAssertNil(state.elementRefBySelectorBySurface[surfaceId])
+
+        state.advanceNavigationGeneration(for: surfaceId)
+
+        XCTAssertEqual(state.navigationGeneration(for: surfaceId), 2)
+        XCTAssertNil(state.elementRefs[refs[0]])
     }
 
     func testDownloadQueueIsBoundedAndReportsDroppedEvents() {

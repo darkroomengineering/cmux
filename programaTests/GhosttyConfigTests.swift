@@ -1155,7 +1155,7 @@ final class GhosttyTerminalStartupEnvironmentTests: XCTestCase {
         let assignment = ProgramaPortRangePolicy.assignment(
             base: Int.max,
             range: Int.max,
-            ordinal: Int.max
+            ordinal: 0
         )
 
         XCTAssertEqual(

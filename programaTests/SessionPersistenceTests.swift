@@ -254,11 +254,16 @@ final class SessionPersistenceTests: XCTestCase {
 
         let result = SessionPersistenceStore.historyScan(fileURL: snapshotURL, scanLimit: 8)
         let returnedNames = result.entries.map(\.lastPathComponent)
+        let resolvedHistoryDirectory = historyDirectory.resolvingSymlinksInPath()
 
         XCTAssertEqual(result.inspectedEntryCount, 8)
         XCTAssertEqual(result.entries.count, 8)
         XCTAssertEqual(returnedNames, returnedNames.sorted(by: >))
-        XCTAssertTrue(result.entries.allSatisfy { $0.deletingLastPathComponent() == historyDirectory })
+        XCTAssertTrue(
+            result.entries.allSatisfy {
+                $0.deletingLastPathComponent().resolvingSymlinksInPath() == resolvedHistoryDirectory
+            }
+        )
     }
 
     func testRotateIntoHistoryCapsDuplicateAndPruningScansInHostileDirectory() throws {
