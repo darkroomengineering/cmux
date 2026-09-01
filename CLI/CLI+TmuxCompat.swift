@@ -193,6 +193,24 @@ extension ProgramaCLI {
         return payload["workspaces"] as? [[String: Any]] ?? []
     }
 
+    private func tmuxTeamRootWorkspaceId(
+        workspaceId: String,
+        store: TmuxCompatStore
+    ) -> String {
+        store.teamWorkspaceIdsByRoot.first(where: { rootId, childIds in
+            rootId == workspaceId || childIds.contains(workspaceId)
+        })?.key ?? workspaceId
+    }
+
+    private func tmuxTeamWorkspaceIds(
+        rootWorkspaceId: String,
+        liveWorkspaceIds: Set<String>,
+        store: TmuxCompatStore
+    ) -> [String] {
+        ([rootWorkspaceId] + (store.teamWorkspaceIdsByRoot[rootWorkspaceId] ?? []))
+            .filter { liveWorkspaceIds.contains($0) }
+    }
+
     private func tmuxCallerWorkspaceHandle() -> String? {
         normalizedTmuxTarget(ProcessInfo.processInfo.environment["PROGRAMA_WORKSPACE_ID"])
     }
@@ -487,7 +505,13 @@ extension ProgramaCLI {
             // Drop stale state and rebuild from the caller surface instead.
             store.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId = nil
             store.lastSplitSurface.removeValue(forKey: workspaceId)
-            try? saveTmuxCompatStore(store)
+            try? updateTmuxCompatStore { current in
+                guard current.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId == lastColumn else {
+                    return
+                }
+                current.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId = nil
+                current.lastSplitSurface.removeValue(forKey: workspaceId)
+            }
         }
 
         let candidateAnchors = [
@@ -504,10 +528,9 @@ extension ProgramaCLI {
             }
         }
 
-        let removedLayout = store.mainVerticalLayouts.removeValue(forKey: workspaceId) != nil
-        let removedSplit = store.lastSplitSurface.removeValue(forKey: workspaceId) != nil
-        if removedLayout || removedSplit {
-            try? saveTmuxCompatStore(store)
+        try? updateTmuxCompatStore { current in
+            current.mainVerticalLayouts.removeValue(forKey: workspaceId)
+            current.lastSplitSurface.removeValue(forKey: workspaceId)
         }
         return nil
     }
@@ -941,16 +964,19 @@ extension ProgramaCLI {
             if let cwd = parsed.value("-c") {
                 params["cwd"] = resolvePath(cwd)
             }
-            let created = try client.sendV2(method: "workspace.create", params: params)
-            guard let workspaceId = created["workspace_id"] as? String else {
-                throw CLIError(message: "workspace.create did not return workspace_id")
+            if let callerWorkspace = tmuxCallerWorkspaceHandle(),
+               let parentWorkspaceId = try? resolveWorkspaceId(callerWorkspace, client: client) {
+                params["workspace_id"] = parentWorkspaceId
+                params["agent_parent_workspace_id"] = parentWorkspaceId
             }
             if let title = parsed.value("-n"),
                !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                _ = try client.sendV2(method: "workspace.rename", params: [
-                    "workspace_id": workspaceId,
-                    "title": title
-                ])
+                params["title"] = title
+                params["title_is_automatic"] = true
+            }
+            let created = try client.sendV2(method: "workspace.create", params: params)
+            guard let workspaceId = created["workspace_id"] as? String else {
+                throw CLIError(message: "workspace.create did not return workspace_id")
             }
             if let text = tmuxShellCommandText(commandTokens: parsed.positional, cwd: parsed.value("-c")) {
                 let surfaceId = try resolveSurfaceId(nil, workspaceId: workspaceId, client: client)
@@ -971,80 +997,59 @@ extension ProgramaCLI {
                 valueFlags: ["-c", "-F", "-l", "-t"],
                 boolFlags: ["-P", "-b", "-d", "-h", "-v"]
             )
-            var target = try tmuxResolveSurfaceTarget(parsed.value("-t"), client: client)
-            var direction: String
-            var anchoredCallerSurfaceId: String?
-            if parsed.hasFlag("-h") {
-                direction = parsed.hasFlag("-b") ? "left" : "right"
-            } else {
-                direction = parsed.hasFlag("-b") ? "up" : "down"
+            let requestedTarget = try tmuxResolveSurfaceTarget(parsed.value("-t"), client: client)
+            let parentWorkspaceId = tmuxResolvedCallerWorkspaceId(client: client)
+                ?? requestedTarget.workspaceId
+            var createParams: [String: Any] = [
+                "workspace_id": parentWorkspaceId,
+                "agent_parent_workspace_id": parentWorkspaceId,
+                "focus": false,
+            ]
+            if let cwd = parsed.value("-c") {
+                createParams["cwd"] = resolvePath(cwd)
             }
-
-            // Claude's agent teams targets arbitrary panes (from list-panes),
-            // not necessarily the leader pane from TMUX_PANE. Override the
-            // target to anchor all teammate splits to the leader surface.
-            // Only apply caller anchoring when the caller's workspace resolves
-            // successfully. Falling back to target.workspaceId would pair
-            // the caller's surface with a different workspace, creating an
-            // invalid cross-workspace split.
-            if let callerWorkspace = tmuxCallerWorkspaceHandle(),
-               let wsId = try? resolveWorkspaceId(callerWorkspace, client: client),
-               let anchoredTarget = tmuxAnchoredSplitTarget(workspaceId: wsId, client: client) {
-                target = (wsId, nil, anchoredTarget.targetSurfaceId)
-                direction = anchoredTarget.direction
-                anchoredCallerSurfaceId = anchoredTarget.callerSurfaceId
+            let created = try client.sendV2(method: "workspace.create", params: createParams)
+            guard let workspaceId = created["workspace_id"] as? String else {
+                throw CLIError(message: "workspace.create did not return workspace_id")
             }
-
-            // Keep the leader pane focused while agents spawn beside it.
-            // -d explicitly means "don't focus the new pane".
-            let focusNewPane = !parsed.hasFlag("-d")
-            let created = try client.sendV2(method: "surface.split", params: [
-                "workspace_id": target.workspaceId,
-                "surface_id": target.surfaceId,
-                "direction": direction,
-                "focus": focusNewPane
-            ])
-            guard let surfaceId = created["surface_id"] as? String else {
-                throw CLIError(message: "surface.split did not return surface_id")
-            }
-            let paneId = created["pane_id"] as? String
-
-            // Track the newly created pane for main-vertical layout.
+            let surfaceId = (created["surface_id"] as? String)
+                ?? (try resolveSurfaceId(nil, workspaceId: workspaceId, client: client))
             do {
-                var updatedStore = loadTmuxCompatStore()
-                updatedStore.lastSplitSurface[target.workspaceId] = surfaceId
-                if updatedStore.mainVerticalLayouts[target.workspaceId] != nil {
-                    updatedStore.mainVerticalLayouts[target.workspaceId]?.lastColumnSurfaceId = surfaceId
-                } else if direction == "right", let anchoredCallerSurfaceId {
-                    // First right split created the column; seed main-vertical
-                    // state so subsequent splits stack downward.
-                    updatedStore.mainVerticalLayouts[target.workspaceId] = MainVerticalState(
-                        mainSurfaceId: anchoredCallerSurfaceId,
-                        lastColumnSurfaceId: surfaceId
+                try updateTmuxCompatStore { teamStore in
+                    let liveWorkspaceIds = Set(
+                        try tmuxWorkspaceItems(client: client).compactMap { $0["id"] as? String }
                     )
+                    guard liveWorkspaceIds.contains(parentWorkspaceId),
+                          liveWorkspaceIds.contains(workspaceId) else {
+                        throw CLIError(message: "The parent workspace closed before the helper was ready")
+                    }
+                    let teamRootId = tmuxTeamRootWorkspaceId(
+                        workspaceId: parentWorkspaceId,
+                        store: teamStore
+                    )
+                    var teamWorkspaceIds = teamStore.teamWorkspaceIdsByRoot[teamRootId] ?? []
+                    if !teamWorkspaceIds.contains(workspaceId) {
+                        teamWorkspaceIds.append(workspaceId)
+                        teamStore.teamWorkspaceIdsByRoot[teamRootId] = teamWorkspaceIds
+                    }
                 }
-                try saveTmuxCompatStore(updatedStore)
+            } catch {
+                _ = try? client.sendV2(method: "workspace.close", params: [
+                    "workspace_id": workspaceId,
+                ])
+                throw error
             }
-
-            // Equalize vertical splits so teammate panes are evenly distributed.
-            // Use orientation: "vertical" to only equalize the agent column,
-            // preserving the leader/column horizontal divider position.
-            _ = try? client.sendV2(method: "workspace.equalize_splits", params: [
-                "workspace_id": target.workspaceId,
-                "orientation": "vertical"
-            ])
 
             if let text = tmuxShellCommandText(commandTokens: parsed.positional, cwd: parsed.value("-c")) {
                 _ = try client.sendV2(method: "surface.send_text", params: [
-                    "workspace_id": target.workspaceId,
+                    "workspace_id": workspaceId,
                     "surface_id": surfaceId,
                     "text": text
                 ])
             }
             if parsed.hasFlag("-P") {
                 let context = try tmuxFormatContext(
-                    workspaceId: target.workspaceId,
-                    paneId: paneId,
+                    workspaceId: workspaceId,
                     surfaceId: surfaceId,
                     client: client
                 )
@@ -1071,26 +1076,87 @@ extension ProgramaCLI {
         case "kill-window", "killw":
             let parsed = try parseTmuxArguments(rawArgs, valueFlags: ["-t"], boolFlags: [])
             let workspaceId = try tmuxResolveWorkspaceTarget(parsed.value("-t"), client: client)
-            _ = try client.sendV2(method: "workspace.close", params: ["workspace_id": workspaceId])
-            try? tmuxPruneCompatWorkspaceState(workspaceId: workspaceId)
+            try updateTmuxCompatStore { teamStore in
+                let teamRootId = tmuxTeamRootWorkspaceId(workspaceId: workspaceId, store: teamStore)
+                if workspaceId == teamRootId,
+                   let trackedChildren = teamStore.teamWorkspaceIdsByRoot[teamRootId] {
+                    let liveWorkspaceIds = Set(
+                        try tmuxWorkspaceItems(client: client).compactMap { $0["id"] as? String }
+                    )
+                    for childWorkspaceId in trackedChildren.reversed()
+                    where liveWorkspaceIds.contains(childWorkspaceId) {
+                        _ = try client.sendV2(method: "workspace.close", params: [
+                            "workspace_id": childWorkspaceId,
+                        ])
+                    }
+                }
+                _ = try client.sendV2(method: "workspace.close", params: ["workspace_id": workspaceId])
+                pruneTmuxCompatWorkspaceState(&teamStore, workspaceId: workspaceId)
+            }
 
         case "kill-pane", "killp":
             let parsed = try parseTmuxArguments(rawArgs, valueFlags: ["-t"], boolFlags: [])
             let target = try tmuxResolveSurfaceTarget(parsed.value("-t"), client: client)
-            _ = try client.sendV2(method: "surface.close", params: [
+            let panePayload = try client.sendV2(method: "pane.list", params: [
                 "workspace_id": target.workspaceId,
-                "surface_id": target.surfaceId
             ])
-            try? tmuxPruneCompatSurfaceState(
-                workspaceId: target.workspaceId,
-                surfaceId: target.surfaceId,
-                client: client
-            )
-            // Re-equalize the agent column after removing a pane
-            _ = try? client.sendV2(method: "workspace.equalize_splits", params: [
-                "workspace_id": target.workspaceId,
-                "orientation": "vertical"
-            ])
+            let panes = panePayload["panes"] as? [[String: Any]] ?? []
+            let closedTeamWorkspace = try updateTmuxCompatStore { teamStore -> Bool in
+                let teamRootId = tmuxTeamRootWorkspaceId(
+                    workspaceId: target.workspaceId,
+                    store: teamStore
+                )
+                guard teamStore.teamWorkspaceIdsByRoot[teamRootId]?.contains(target.workspaceId) == true,
+                      panes.count <= 1 else {
+                    return false
+                }
+
+                let workspaceItems = try tmuxWorkspaceItems(client: client)
+                let trackedWorkspaceIds = Set(teamStore.teamWorkspaceIdsByRoot[teamRootId] ?? [])
+                let liveItemsById = Dictionary(uniqueKeysWithValues: workspaceItems.compactMap { item in
+                    (item["id"] as? String).map { ($0, item) }
+                })
+                var descendants: [String] = []
+                var visited: Set<String> = [target.workspaceId]
+                func appendDescendants(parentId: String) {
+                    for childId in trackedWorkspaceIds where !visited.contains(childId) {
+                        guard liveItemsById[childId]?["agent_parent_workspace_id"] as? String == parentId else {
+                            continue
+                        }
+                        visited.insert(childId)
+                        appendDescendants(parentId: childId)
+                        descendants.append(childId)
+                    }
+                }
+                appendDescendants(parentId: target.workspaceId)
+                for descendantId in descendants {
+                    _ = try client.sendV2(method: "workspace.close", params: [
+                        "workspace_id": descendantId,
+                    ])
+                    pruneTmuxCompatWorkspaceState(&teamStore, workspaceId: descendantId)
+                }
+                _ = try client.sendV2(method: "workspace.close", params: [
+                    "workspace_id": target.workspaceId,
+                ])
+                pruneTmuxCompatWorkspaceState(&teamStore, workspaceId: target.workspaceId)
+                return true
+            }
+            if !closedTeamWorkspace {
+                _ = try client.sendV2(method: "surface.close", params: [
+                    "workspace_id": target.workspaceId,
+                    "surface_id": target.surfaceId
+                ])
+                try? tmuxPruneCompatSurfaceState(
+                    workspaceId: target.workspaceId,
+                    surfaceId: target.surfaceId,
+                    client: client
+                )
+                // Re-equalize ordinary multi-pane workspaces after removing a pane.
+                _ = try? client.sendV2(method: "workspace.equalize_splits", params: [
+                    "workspace_id": target.workspaceId,
+                    "orientation": "vertical"
+                ])
+            }
 
         case "send-keys", "send":
             let parsed = try parseTmuxArguments(rawArgs, valueFlags: ["-t"], boolFlags: ["-l"])
@@ -1124,9 +1190,9 @@ extension ProgramaCLI {
             if parsed.hasFlag("-p") {
                 print(text)
             } else {
-                var store = loadTmuxCompatStore()
-                store.buffers["default"] = text
-                try saveTmuxCompatStore(store)
+                try updateTmuxCompatStore { store in
+                    store.buffers["default"] = text
+                }
             }
 
         case "display-message", "display", "displayp":
@@ -1178,15 +1244,33 @@ extension ProgramaCLI {
             } else {
                 workspaceId = try tmuxResolveWorkspaceTarget(parsed.value("-t"), client: client)
             }
-            let payload = try client.sendV2(method: "pane.list", params: ["workspace_id": workspaceId])
-            let panes = payload["panes"] as? [[String: Any]] ?? []
-            let containerFrame = payload["container_frame"] as? [String: Any]
-            for pane in panes {
-                guard let paneId = pane["id"] as? String else { continue }
-                var context = try tmuxFormatContext(workspaceId: workspaceId, paneId: paneId, client: client)
-                tmuxEnrichContextWithGeometry(&context, pane: pane, containerFrame: containerFrame)
-                let fallback = context["pane_id"] ?? paneId
-                print(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: fallback))
+            let workspaceItems = try tmuxWorkspaceItems(client: client)
+            let liveWorkspaceIds = Set(workspaceItems.compactMap { $0["id"] as? String })
+            let teamStore = loadTmuxCompatStore()
+            let rootWorkspaceId = tmuxTeamRootWorkspaceId(
+                workspaceId: workspaceId,
+                store: teamStore
+            )
+            let workspaceIds = tmuxTeamWorkspaceIds(
+                rootWorkspaceId: rootWorkspaceId,
+                liveWorkspaceIds: liveWorkspaceIds,
+                store: teamStore
+            )
+            for listedWorkspaceId in workspaceIds {
+                let payload = try client.sendV2(method: "pane.list", params: ["workspace_id": listedWorkspaceId])
+                let panes = payload["panes"] as? [[String: Any]] ?? []
+                let containerFrame = payload["container_frame"] as? [String: Any]
+                for pane in panes {
+                    guard let paneId = pane["id"] as? String else { continue }
+                    var context = try tmuxFormatContext(
+                        workspaceId: listedWorkspaceId,
+                        paneId: paneId,
+                        client: client
+                    )
+                    tmuxEnrichContextWithGeometry(&context, pane: pane, containerFrame: containerFrame)
+                    let fallback = context["pane_id"] ?? paneId
+                    print(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: fallback))
+                }
             }
 
         case "rename-window", "renamew":
@@ -1337,14 +1421,14 @@ extension ProgramaCLI {
             }
             if layoutName == "main-vertical" {
                 if let callerSurface = tmuxCallerSurfaceHandle() {
-                    var store = loadTmuxCompatStore()
-                    let existingColumn = store.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId
-                    let seedColumn = existingColumn ?? store.lastSplitSurface[workspaceId]
-                    store.mainVerticalLayouts[workspaceId] = MainVerticalState(
-                        mainSurfaceId: callerSurface,
-                        lastColumnSurfaceId: seedColumn
-                    )
-                    try saveTmuxCompatStore(store)
+                    try updateTmuxCompatStore { store in
+                        let existingColumn = store.mainVerticalLayouts[workspaceId]?.lastColumnSurfaceId
+                        let seedColumn = existingColumn ?? store.lastSplitSurface[workspaceId]
+                        store.mainVerticalLayouts[workspaceId] = MainVerticalState(
+                            mainSurfaceId: callerSurface,
+                            lastColumnSurfaceId: seedColumn
+                        )
+                    }
                 }
             } else if !layoutName.isEmpty {
                 // Non-main-vertical layout selected: clear stale state so
@@ -1381,6 +1465,9 @@ extension ProgramaCLI {
         /// Used to seed lastColumnSurfaceId when select-layout main-vertical
         /// is called after the first split.
         var lastSplitSurface: [String: String] = [:]
+        /// Workspaces created by Claude Teams' tmux shim, grouped by the leader workspace.
+        /// This keeps team pane commands from reaching unrelated nested helpers.
+        var teamWorkspaceIdsByRoot: [String: [String]] = [:]
 
         /// Custom decoder so older store files missing newer keys
         /// (mainVerticalLayouts, lastSplitSurface) decode gracefully
@@ -1391,6 +1478,7 @@ extension ProgramaCLI {
             hooks = try container.decodeIfPresent([String: String].self, forKey: .hooks) ?? [:]
             mainVerticalLayouts = try container.decodeIfPresent([String: MainVerticalState].self, forKey: .mainVerticalLayouts) ?? [:]
             lastSplitSurface = try container.decodeIfPresent([String: String].self, forKey: .lastSplitSurface) ?? [:]
+            teamWorkspaceIdsByRoot = try container.decodeIfPresent([String: [String]].self, forKey: .teamWorkspaceIdsByRoot) ?? [:]
         }
 
         init() {}
@@ -1421,12 +1509,55 @@ extension ProgramaCLI {
         try data.write(to: url, options: .atomic)
     }
 
-    func tmuxPruneCompatWorkspaceState(workspaceId: String) throws {
+    private func updateTmuxCompatStore<T>(
+        _ body: (inout TmuxCompatStore) throws -> T
+    ) throws -> T {
+        let storeURL = tmuxCompatStoreURL()
+        let parent = storeURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: nil)
+        let lockPath = storeURL.path + ".lock"
+        let descriptor = lockPath.withCString {
+            Darwin.open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        }
+        guard descriptor >= 0 else {
+            throw CLIError(message: "Failed to open tmux compatibility state lock: \(lockPath)")
+        }
+        defer { Darwin.close(descriptor) }
+
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw CLIError(message: "Tmux compatibility state lock is not a regular file: \(lockPath)")
+        }
+        guard flock(descriptor, LOCK_EX) == 0 else {
+            throw CLIError(message: "Failed to lock tmux compatibility state: \(lockPath)")
+        }
+        defer { _ = flock(descriptor, LOCK_UN) }
+
         var store = loadTmuxCompatStore()
-        let removedLayout = store.mainVerticalLayouts.removeValue(forKey: workspaceId) != nil
-        let removedSplit = store.lastSplitSurface.removeValue(forKey: workspaceId) != nil
-        if removedLayout || removedSplit {
-            try saveTmuxCompatStore(store)
+        let result = try body(&store)
+        try saveTmuxCompatStore(store)
+        return result
+    }
+
+    func tmuxPruneCompatWorkspaceState(workspaceId: String) throws {
+        try updateTmuxCompatStore { store in
+            pruneTmuxCompatWorkspaceState(&store, workspaceId: workspaceId)
+        }
+    }
+
+    private func pruneTmuxCompatWorkspaceState(
+        _ store: inout TmuxCompatStore,
+        workspaceId: String
+    ) {
+        store.mainVerticalLayouts.removeValue(forKey: workspaceId)
+        store.lastSplitSurface.removeValue(forKey: workspaceId)
+        store.teamWorkspaceIdsByRoot.removeValue(forKey: workspaceId)
+        for rootId in Array(store.teamWorkspaceIdsByRoot.keys) {
+            let original = store.teamWorkspaceIdsByRoot[rootId] ?? []
+            let filtered = original.filter { $0 != workspaceId }
+            if filtered != original {
+                store.teamWorkspaceIdsByRoot[rootId] = filtered
+            }
         }
     }
 
@@ -1509,26 +1640,30 @@ extension ProgramaCLI {
         surfaceId: String,
         client: SocketClient
     ) throws {
-        var store = loadTmuxCompatStore()
-        var changed = false
-
-        if store.lastSplitSurface[workspaceId] == surfaceId {
-            store.lastSplitSurface.removeValue(forKey: workspaceId)
-            changed = true
+        let snapshot = loadTmuxCompatStore()
+        let replacementSurfaceId: String?
+        if let layout = snapshot.mainVerticalLayouts[workspaceId],
+           layout.lastColumnSurfaceId == surfaceId,
+           layout.mainSurfaceId != surfaceId {
+            replacementSurfaceId = tmuxReplacementColumnSurfaceId(
+                workspaceId: workspaceId,
+                layout: layout,
+                client: client
+            )
+        } else {
+            replacementSurfaceId = nil
         }
 
-        if let layout = store.mainVerticalLayouts[workspaceId] {
+        try updateTmuxCompatStore { store in
+            if store.lastSplitSurface[workspaceId] == surfaceId {
+                store.lastSplitSurface.removeValue(forKey: workspaceId)
+            }
+            guard let layout = store.mainVerticalLayouts[workspaceId] else { return }
             if layout.mainSurfaceId == surfaceId {
                 store.mainVerticalLayouts.removeValue(forKey: workspaceId)
                 store.lastSplitSurface.removeValue(forKey: workspaceId)
-                changed = true
             } else if layout.lastColumnSurfaceId == surfaceId {
                 var updatedLayout = layout
-                let replacementSurfaceId = tmuxReplacementColumnSurfaceId(
-                    workspaceId: workspaceId,
-                    layout: layout,
-                    client: client
-                )
                 updatedLayout.lastColumnSurfaceId = replacementSurfaceId
                 store.mainVerticalLayouts[workspaceId] = updatedLayout
                 if let replacementSurfaceId {
@@ -1536,12 +1671,7 @@ extension ProgramaCLI {
                 } else {
                     store.lastSplitSurface.removeValue(forKey: workspaceId)
                 }
-                changed = true
             }
-        }
-
-        if changed {
-            try saveTmuxCompatStore(store)
         }
     }
 
@@ -1940,7 +2070,7 @@ extension ProgramaCLI {
             printV2Payload(payload, jsonOutput: jsonOutput, idFormat: idFormat, fallbackText: v2OKSummary(payload, idFormat: idFormat))
 
         case "set-hook":
-            var store = loadTmuxCompatStore()
+            let store = loadTmuxCompatStore()
             if commandArgs.contains("--list") {
                 if jsonOutput {
                     print(jsonString(["hooks": store.hooks]))
@@ -1957,8 +2087,9 @@ extension ProgramaCLI {
                 guard let event = commandArgs.last else {
                     throw CLIError(message: "set-hook --unset requires an event name")
                 }
-                store.hooks.removeValue(forKey: event)
-                try saveTmuxCompatStore(store)
+                try updateTmuxCompatStore { store in
+                    store.hooks.removeValue(forKey: event)
+                }
                 print("OK")
                 return
             }
@@ -1969,8 +2100,9 @@ extension ProgramaCLI {
             guard !commandText.isEmpty else {
                 throw CLIError(message: "set-hook requires <event> <command>")
             }
-            store.hooks[event] = commandText
-            try saveTmuxCompatStore(store)
+            try updateTmuxCompatStore { store in
+                store.hooks[event] = commandText
+            }
             print("OK")
 
         case "popup":
@@ -1986,9 +2118,9 @@ extension ProgramaCLI {
             guard !content.isEmpty else {
                 throw CLIError(message: "set-buffer requires text")
             }
-            var store = loadTmuxCompatStore()
-            store.buffers[name] = content
-            try saveTmuxCompatStore(store)
+            try updateTmuxCompatStore { store in
+                store.buffers[name] = content
+            }
             print("OK")
 
         case "list-buffers":

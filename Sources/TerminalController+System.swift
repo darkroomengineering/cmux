@@ -275,6 +275,7 @@ extension TerminalController {
         index: Int,
         selected: Bool
     ) -> [String: Any] {
+        let workspaceHelpers = AgentSupervisionMetadata.relatedRecords(for: workspace)
         var paneByPanelId: [UUID: UUID] = [:]
         var indexInPaneByPanelId: [UUID: Int] = [:]
         var selectedInPaneByPanelId: [UUID: Bool] = [:]
@@ -309,8 +310,28 @@ extension TerminalController {
                 "pane_id": v2OrNull(paneUUID?.uuidString),
                 "pane_ref": v2Ref(kind: .pane, uuid: paneUUID),
                 "index_in_pane": v2OrNull(indexInPaneByPanelId[panel.id]),
-                "tty": v2OrNull(workspace.surfaceTTYNames[panel.id])
+                "tty": v2OrNull(workspace.surfaceTTYNames[panel.id]),
+                "current_directory": v2OrNull(workspace.panelDirectories[panel.id] ?? workspace.currentDirectory),
+                "branch": v2OrNull(workspace.panelGitBranches[panel.id]?.branch ?? workspace.gitBranch?.branch ?? workspace.worktreeBranch),
+                "agent_state": v2OrNull(workspace.panelAgentStates[panel.id]?.rawValue),
+                "agent_state_source": v2OrNull(workspace.panelAgentStateSources[panel.id]?.rawValue),
+                "helpers": workspaceHelpers
+                    .filter { $0.surfaceId == panel.id }
+                    .map { $0.payload() },
             ]
+
+            if let pullRequest = workspace.panelPullRequests[panel.id] ?? workspace.pullRequest {
+                item["pull_request"] = [
+                    "number": pullRequest.number,
+                    "label": pullRequest.label,
+                    "url": pullRequest.url.absoluteString,
+                    "status": pullRequest.status.rawValue,
+                    "branch": v2OrNull(pullRequest.branch),
+                    "checks": v2OrNull(pullRequest.checks?.rawValue),
+                ] as [String: Any]
+            } else {
+                item["pull_request"] = NSNull()
+            }
 
             if panel.panelType == .browser, let browserPanel = panel as? BrowserPanel {
                 item["url"] = browserPanel.currentURL?.absoluteString ?? ""
@@ -351,6 +372,16 @@ extension TerminalController {
             ]
         }
 
+        let pullRequest = workspace.pullRequest.map { pullRequest in
+            [
+                "number": pullRequest.number,
+                "label": pullRequest.label,
+                "url": pullRequest.url.absoluteString,
+                "status": pullRequest.status.rawValue,
+                "branch": v2OrNull(pullRequest.branch),
+                "checks": v2OrNull(pullRequest.checks?.rawValue),
+            ] as [String: Any]
+        }
         return [
             "id": workspace.id.uuidString,
             "ref": v2Ref(kind: .workspace, uuid: workspace.id),
@@ -359,6 +390,18 @@ extension TerminalController {
             "description": v2OrNull(workspace.customDescription),
             "selected": selected,
             "pinned": workspace.isPinned,
+            "current_directory": v2OrNull(workspace.currentDirectory),
+            "branch": v2OrNull(workspace.gitBranch?.branch ?? workspace.worktreeBranch),
+            "pull_request": v2OrNull(pullRequest),
+            "worktree_parent_workspace_id": v2OrNull(workspace.worktreeParentWorkspaceId?.uuidString),
+            "worktree_folder_id": v2OrNull(workspace.worktreeFolderId?.uuidString),
+            "worktree_folder_repo_root": v2OrNull(workspace.worktreeFolderRepoRoot),
+            "is_worktree_folder": workspace.isWorktreeFolder,
+            "agent_parent_workspace_id": v2OrNull(workspace.agentParentWorkspaceId?.uuidString),
+            "agent_state": v2OrNull(AgentSupervisionMetadata.aggregateState(for: workspace)),
+            "agent_state_source": v2OrNull(AgentSupervisionMetadata.aggregateSource(for: workspace)),
+            "helpers": workspaceHelpers.map { $0.payload() },
+            "helper_count": workspaceHelpers.count,
             "panes": panes
         ]
     }

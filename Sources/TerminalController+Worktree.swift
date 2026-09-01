@@ -8,10 +8,7 @@ import Foundation
 extension TerminalController {
     // MARK: - V2 Worktree Methods
 
-    func v2WorktreeCreate(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
+    nonisolated func v2WorktreeCreate(params: [String: Any]) -> V2CallResult {
         guard let repoRoot = v2ResolveWorktreeRepoRoot(params: params) else {
             return .err(code: "not_a_git_repo", message: "Could not resolve a git repository from 'repo'", data: nil)
         }
@@ -20,6 +17,11 @@ extension TerminalController {
         }
         let base = v2String(params, "base")
         let layoutName = v2String(params, "layout")
+        let requiredParentWorkspaceId = v2UUID(params, "required_parent_workspace_id")
+        let requiredParentDirectory = v2String(params, "required_parent_directory")
+        guard let windowId = v2ResolveWorktreeWindowId(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
 
         if let layoutName, v2MainSync({ ProgramaLayoutStore.shared.load(name: layoutName) }) == nil {
             return .err(code: "layout_not_found", message: "No saved layout named '\(layoutName)'", data: nil)
@@ -31,17 +33,41 @@ extension TerminalController {
             ])
         }
 
-        let path = v2ResolveWorktreePath(params: params, repoRoot: repoRoot, branch: branch)
+        let worktreeBaseDirectory = v2MainSync { ProgramaWorktreeSettings.resolvedDirectory() }
+        let path = v2ResolveWorktreePath(
+            params: params,
+            repoRoot: repoRoot,
+            branch: branch,
+            baseDirectory: worktreeBaseDirectory
+        )
 
         switch GitWorktreeManager.add(repoRoot: repoRoot, branch: branch, base: base, path: path) {
         case .success(let entry):
-            return v2CompleteWorktreeCreation(
-                tabManager: tabManager,
+            let completion = v2CompleteWorktreeCreation(
+                windowId: windowId,
                 entry: entry,
                 repoRoot: repoRoot,
                 layoutName: layoutName,
-                focusRequested: v2Bool(params, "focus") ?? false
+                focusRequested: v2Bool(params, "focus") ?? false,
+                requiredParentWorkspaceId: requiredParentWorkspaceId,
+                requiredParentDirectory: requiredParentDirectory
             )
+            if case .err(let originalCode, let originalMessage, _) = completion {
+                switch GitWorktreeManager.remove(repoRoot: repoRoot, path: entry.path, force: false) {
+                case .success:
+                    break
+                case .notAGitRepo, .worktreeNotFound, .worktreeDirty, .gitCommandFailed:
+                    return .err(
+                        code: "cleanup_failed",
+                        message: "\(originalMessage). The unused worktree could not be removed.",
+                        data: [
+                            "original_code": originalCode,
+                            "worktree_path": entry.path,
+                        ]
+                    )
+                }
+            }
+            return completion
         case .notAGitRepo:
             return .err(code: "not_a_git_repo", message: "'\(repoRoot)' is not a git repository", data: nil)
         case .branchCheckedOut(let existing):
@@ -55,16 +81,30 @@ extension TerminalController {
         }
     }
 
-    private func v2CompleteWorktreeCreation(
-        tabManager: TabManager,
+    private nonisolated func v2CompleteWorktreeCreation(
+        windowId: UUID,
         entry: GitWorktreeManager.WorktreeEntry,
         repoRoot: String,
         layoutName: String?,
-        focusRequested: Bool
+        focusRequested: Bool,
+        requiredParentWorkspaceId: UUID? = nil,
+        requiredParentDirectory: String? = nil
     ) -> V2CallResult {
-        let shouldFocus = v2FocusAllowed(requested: focusRequested)
-        var newId: UUID?
         v2MainSync {
+            guard let tabManager = AppDelegate.shared?.tabManagerFor(windowId: windowId) else {
+                return .err(code: "unavailable", message: "TabManager not available", data: nil)
+            }
+            if let requiredParentWorkspaceId {
+                guard let parent = tabManager.tabs.first(where: { $0.id == requiredParentWorkspaceId }),
+                      requiredParentDirectory == nil || parent.currentDirectory == requiredParentDirectory else {
+                    return .err(
+                        code: "parent_changed",
+                        message: "The parent workspace changed while the worktree was being prepared",
+                        data: ["parent_workspace_id": requiredParentWorkspaceId.uuidString]
+                    )
+                }
+            }
+            let shouldFocus = v2FocusAllowed(requested: focusRequested)
             let ws = tabManager.addWorktreeWorkspace(
                 path: entry.path,
                 branch: entry.branch,
@@ -72,20 +112,14 @@ extension TerminalController {
                 layoutName: layoutName,
                 select: shouldFocus
             )
-            newId = ws.id
+            return .ok([
+                "worktree": ["path": entry.path, "branch": v2OrNull(entry.branch), "repo": repoRoot],
+                "workspace_id": ws.id.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                "window_id": windowId.uuidString,
+                "window_ref": v2Ref(kind: .window, uuid: windowId)
+            ])
         }
-
-        guard let newId else {
-            return .err(code: "internal_error", message: "Failed to create worktree workspace", data: nil)
-        }
-        let windowId = v2ResolveWindowId(tabManager: tabManager)
-        return .ok([
-            "worktree": ["path": entry.path, "branch": v2OrNull(entry.branch), "repo": repoRoot],
-            "workspace_id": newId.uuidString,
-            "workspace_ref": v2Ref(kind: .workspace, uuid: newId),
-            "window_id": v2OrNull(windowId?.uuidString),
-            "window_ref": v2Ref(kind: .window, uuid: windowId)
-        ])
     }
 
     nonisolated func v2WorktreeOpen(params: [String: Any]) -> V2CallResult {
@@ -135,11 +169,13 @@ extension TerminalController {
             }
 
             return self.v2CompleteWorktreeCreation(
-                tabManager: tabManager,
+                windowId: windowId,
                 entry: entry,
                 repoRoot: repoRoot,
                 layoutName: nil,
-                focusRequested: focusRequested
+                focusRequested: focusRequested,
+                requiredParentWorkspaceId: nil,
+                requiredParentDirectory: nil
             )
         }
     }
@@ -265,11 +301,15 @@ extension TerminalController {
         return GitWorktreeManager.resolveRepoRoot(from: v2ExpandedPath(raw))
     }
 
-    private func v2ResolveWorktreePath(params: [String: Any], repoRoot: String, branch: String) -> String {
+    private nonisolated func v2ResolveWorktreePath(
+        params: [String: Any],
+        repoRoot: String,
+        branch: String,
+        baseDirectory: String
+    ) -> String {
         if let raw = v2String(params, "path") {
             return v2ExpandedPath(raw)
         }
-        let baseDirectory = ProgramaWorktreeSettings.resolvedDirectory()
         let repoName = GitWorktreeManager.repoName(forRepoRoot: repoRoot)
         let branchSlug = GitWorktreeManager.branchSlug(branch)
         return (baseDirectory as NSString)

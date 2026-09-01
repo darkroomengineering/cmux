@@ -186,6 +186,44 @@ final class SidebarWorkspaceHierarchyTests: XCTestCase {
             [folder, childOne, childTwo, unrelated]
         )
     }
+
+    func testAgentWorkspaceNestsUnderARegularWorkspace() {
+        let parent = UUID()
+        let child = UUID()
+        let grandchild = UUID()
+        let unrelated = UUID()
+        let entries = [
+            SidebarWorkspaceHierarchyEntry(id: parent, parentId: nil, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: unrelated, parentId: nil, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: child, parentId: parent, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: grandchild, parentId: child, isFolder: false, isCollapsed: false),
+        ]
+
+        XCTAssertEqual(
+            SidebarWorkspaceHierarchy.visibleWorkspaceIds(entries),
+            [parent, child, grandchild, unrelated]
+        )
+        XCTAssertEqual(SidebarWorkspaceHierarchy.depth(of: parent, entries: entries), 0)
+        XCTAssertEqual(SidebarWorkspaceHierarchy.depth(of: child, entries: entries), 1)
+        XCTAssertEqual(SidebarWorkspaceHierarchy.depth(of: grandchild, entries: entries), 2)
+    }
+
+    func testCyclesAndOrphansRemainVisible() {
+        let cycleOne = UUID()
+        let cycleTwo = UUID()
+        let orphan = UUID()
+        let missingParent = UUID()
+        let entries = [
+            SidebarWorkspaceHierarchyEntry(id: cycleOne, parentId: cycleTwo, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: orphan, parentId: missingParent, isFolder: false, isCollapsed: false),
+            SidebarWorkspaceHierarchyEntry(id: cycleTwo, parentId: cycleOne, isFolder: false, isCollapsed: false),
+        ]
+
+        XCTAssertEqual(
+            SidebarWorkspaceHierarchy.visibleWorkspaceIds(entries),
+            [orphan, cycleOne, cycleTwo]
+        )
+    }
 }
 
 

@@ -1087,6 +1087,15 @@ struct TabItemView: View, Equatable {
                     tabManager.clearCustomDescription(tabId: tab.id)
                 }
             }
+
+            Divider()
+
+            Button(String(localized: "contextMenu.openAgentOverview", defaultValue: "Open Agent Overview")) {
+                AgentOverviewWindowController.shared.show(
+                    tabManager: tabManager,
+                    workspaceId: tab.id
+                )
+            }
         }
 
         if !isMulti, !tab.isRemoteWorkspace, !showsWorktreeBadge {

@@ -28,17 +28,114 @@ enum WorkspaceTools {
         ProgramaTool(
             name: "workspace_create",
             socketMethod: "workspace.create",
-            description: "Creates a new workspace (sidebar tab) with its own terminal, optionally with a starting directory, command, environment, title, and description.",
+            description: "Creates a new workspace (sidebar tab) with its own terminal. It can be nested under a parent workspace for helper work without changing worktrees.",
             inputSchema: ProgramaToolSchema.object(properties: [
                 "working_directory": ProgramaToolSchema.string("Starting directory for the new workspace's terminal. Takes priority over cwd if both are set."),
                 "cwd": ProgramaToolSchema.string("Alias for working_directory, used only if working_directory is omitted."),
                 "initial_command": ProgramaToolSchema.string("Shell command to run immediately in the new workspace's terminal."),
                 "initial_env": ProgramaToolSchema.stringMap("Extra environment variables to set for the new workspace's terminal."),
                 "title": ProgramaToolSchema.string("Custom title for the new workspace."),
+                "title_is_automatic": ProgramaToolSchema.boolean("Treat title as an automatic helper label, so it does not count as a manual rename."),
                 "description": ProgramaToolSchema.string("Custom description for the new workspace."),
+                "agent_parent_workspace_id": ProgramaToolSchema.string("Parent workspace UUID or short ref. The new helper workspace appears nested under it and shares the requested folder."),
                 "window_id": ProgramaToolSchema.windowIdProperty,
                 "workspace_id": ProgramaToolSchema.workspaceIdProperty,
                 "surface_id": ProgramaToolSchema.surfaceRoutingIdProperty,
+            ])
+        ),
+        ProgramaTool(
+            name: "agent_spawn",
+            socketMethod: "agent.spawn",
+            description: "Starts a helper in a nested workspace that shares the parent folder. Set needs_isolation only when the helper needs its own git worktree.",
+            inputSchema: ProgramaToolSchema.object(
+                properties: [
+                    "parent_workspace_id": ProgramaToolSchema.string("Workspace UUID or short ref that owns the helper."),
+                    "parent_agent_id": ProgramaToolSchema.string("Optional parent helper UUID for nested helper tasks."),
+                    "host": ProgramaToolSchema.string("Short host name, such as codex or claude."),
+                    "session": ProgramaToolSchema.string("Optional host session identifier."),
+                    "task": ProgramaToolSchema.string("Short description used as the automatic workspace name."),
+                    "role": ProgramaToolSchema.string("Optional helper role, such as reviewer or tester."),
+                    "initial_command": ProgramaToolSchema.string("Command to run in the helper terminal."),
+                    "initial_env": ProgramaToolSchema.stringMap("Environment variables for a shared-folder helper. Not supported with a separate worktree."),
+                    "needs_isolation": ProgramaToolSchema.boolean("Create a separate git worktree. Requires repository_path and branch."),
+                    "repository_path": ProgramaToolSchema.string("Path to or inside the repository when a separate worktree is requested."),
+                    "branch": ProgramaToolSchema.string("Branch for the separate worktree."),
+                    "base": ProgramaToolSchema.string("Optional base ref for a new worktree branch."),
+                    "layout": ProgramaToolSchema.string("Optional saved layout for the worktree workspace."),
+                ],
+                required: ["parent_workspace_id"]
+            )
+        ),
+        ProgramaTool(
+            name: "agent_task_start",
+            socketMethod: "agent.task.start",
+            description: "Reports a helper that is already running, including helpers that run inside their parent and share its output.",
+            inputSchema: ProgramaToolSchema.object(
+                properties: [
+                    "workspace_id": ProgramaToolSchema.string("Workspace UUID or short ref that owns the helper."),
+                    "agent_id": ProgramaToolSchema.string("Optional stable helper UUID. Programa creates one when omitted."),
+                    "parent_id": ProgramaToolSchema.string("Optional parent helper UUID."),
+                    "surface_id": ProgramaToolSchema.string("Optional terminal surface UUID owned by the workspace."),
+                    "host": ProgramaToolSchema.string("Host name, such as codex or claude."),
+                    "session": ProgramaToolSchema.string("Optional host session identifier."),
+                    "task": ProgramaToolSchema.string("Short task description."),
+                    "role": ProgramaToolSchema.string("Optional helper role."),
+                    "state": ProgramaToolSchema.stringEnum("Current helper state.", ["idle", "working", "blocked", "completed", "failed", "cancelled"]),
+                    "placement": ProgramaToolSchema.stringEnum("Where the helper runs.", ["nested_workspace", "separate_worktree", "runs_with_parent"]),
+                ],
+                required: ["workspace_id", "host"]
+            )
+        ),
+        ProgramaTool(
+            name: "agent_task_update",
+            socketMethod: "agent.task.update",
+            description: "Updates a running helper's state or description.",
+            inputSchema: ProgramaToolSchema.object(
+                properties: [
+                    "agent_id": ProgramaToolSchema.string("Helper UUID to update."),
+                    "workspace_id": ProgramaToolSchema.string("Optional new owning workspace UUID or short ref."),
+                    "surface_id": ProgramaToolSchema.string("Optional terminal surface UUID in the owning workspace."),
+                    "session": ProgramaToolSchema.string("Optional host session identifier."),
+                    "task": ProgramaToolSchema.string("Updated task description."),
+                    "role": ProgramaToolSchema.string("Updated helper role."),
+                    "state": ProgramaToolSchema.stringEnum("Updated helper state.", ["idle", "working", "blocked", "completed", "failed", "cancelled"]),
+                ],
+                required: ["agent_id"]
+            )
+        ),
+        ProgramaTool(
+            name: "agent_task_finish",
+            socketMethod: "agent.task.finish",
+            description: "Marks a helper as done, failed, or stopped.",
+            inputSchema: ProgramaToolSchema.object(
+                properties: [
+                    "agent_id": ProgramaToolSchema.string("Helper UUID to finish."),
+                    "state": ProgramaToolSchema.stringEnum("Final state. Defaults to completed.", ["completed", "failed", "cancelled"]),
+                ],
+                required: ["agent_id"]
+            )
+        ),
+        ProgramaTool(
+            name: "agent_task_finish_session",
+            socketMethod: "agent.task.finish_session",
+            description: "Stops any helpers that are still active when their host session ends.",
+            inputSchema: ProgramaToolSchema.object(
+                properties: [
+                    "host": ProgramaToolSchema.string("Host name, such as codex or claude."),
+                    "session": ProgramaToolSchema.string("Host session identifier."),
+                    "state": ProgramaToolSchema.stringEnum("Final state. Defaults to cancelled.", ["completed", "failed", "cancelled"]),
+                ],
+                required: ["host", "session"]
+            )
+        ),
+        ProgramaTool(
+            name: "agent_task_list",
+            socketMethod: "agent.task.list",
+            description: "Lists helpers and where they run, including whether output is separate or shared with the parent.",
+            inputSchema: ProgramaToolSchema.object(properties: [
+                "workspace_id": ProgramaToolSchema.string("Optional workspace UUID or short ref to filter by."),
+                "parent_id": ProgramaToolSchema.string("Optional parent helper UUID to filter by."),
+                "include_finished": ProgramaToolSchema.boolean("Include finished helpers. Defaults to true."),
             ])
         ),
         ProgramaTool(

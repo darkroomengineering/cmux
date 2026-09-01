@@ -110,7 +110,9 @@ Use this to check a build log, a test runner, or another agent's output without 
 
 ## Spawning a helper agent and coordinating with it
 
-Split a pane, launch an agent CLI into it with `send`, then treat it like any other sibling pane: read its output, send it follow-up input, report on it through the sidebar instead of the pane the user isn't looking at.
+When the `agent_spawn` tool is available, use it for helper agents. It opens the helper as a nested workspace under the current workspace, keeps the same folder, and does not move the user's focus. Set `needs_isolation` only when the helper will make conflicting Git changes and genuinely needs a separate worktree. Programa then shows the helper in Agent Overview automatically.
+
+Use a split for a long-running shell command, or as a fallback when `agent_spawn` is unavailable. Launch the command with `send`, then treat it like any other sibling pane: read its output, send follow-up input, and report through the sidebar instead of the pane the user isn't looking at.
 
 ```bash
 # 1. Split and capture the new surface's handle

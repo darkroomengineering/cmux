@@ -24,6 +24,9 @@ final class Workspace: Identifiable, ObservableObject {
     /// Runtime link to the parent workspace for sidebar nesting. Session persistence rebuilds
     /// this UUID from `worktreeFolderId` because workspace instance IDs change on restore.
     @Published var worktreeParentWorkspaceId: UUID?
+    /// Transient parent used for helpers that run in their own nested workspace. Agent
+    /// relationships intentionally do not persist: restored workspaces return to the top level.
+    @Published var agentParentWorkspaceId: UUID?
     /// The git branch checked out in this workspace's worktree, if it was created/opened via
     /// `worktree.create`/`worktree.open`. Used for the sidebar badge tooltip.
     @Published var worktreeBranch: String?
@@ -211,6 +214,7 @@ final class Workspace: Identifiable, ObservableObject {
             sidebarObservationSignal($customDescription),
             sidebarObservationSignal($isPinned),
             sidebarObservationSignal($customColor),
+            sidebarObservationSignal($agentParentWorkspaceId),
         ]
 
         return Publishers.MergeMany(publishers).eraseToAnyPublisher()

@@ -19,32 +19,66 @@ struct SidebarWorkspaceHierarchyEntry: Equatable {
 }
 
 enum SidebarWorkspaceHierarchy {
+    static func depth(of id: UUID, entries: [SidebarWorkspaceHierarchyEntry]) -> Int {
+        let entriesById = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+        var depth = 0
+        var currentId = id
+        var visited: Set<UUID> = []
+        while visited.insert(currentId).inserted,
+              let parentId = entriesById[currentId]?.parentId,
+              parentId != currentId,
+              entriesById[parentId] != nil {
+            depth += 1
+            currentId = parentId
+        }
+        return depth
+    }
+
     static func visibleWorkspaceIds(_ entries: [SidebarWorkspaceHierarchyEntry]) -> [UUID] {
-        let folderIds = Set(entries.lazy.filter(\.isFolder).map(\.id))
+        let entryIds = Set(entries.map(\.id))
         var childrenByParent: [UUID: [SidebarWorkspaceHierarchyEntry]] = [:]
         for entry in entries {
-            guard let parentId = entry.parentId, folderIds.contains(parentId) else { continue }
+            guard let parentId = entry.parentId,
+                  parentId != entry.id,
+                  entryIds.contains(parentId) else { continue }
             childrenByParent[parentId, default: []].append(entry)
         }
         var result: [UUID] = []
         var emitted: Set<UUID> = []
+        var hidden: Set<UUID> = []
+
+        func hideDescendants(of entry: SidebarWorkspaceHierarchyEntry) {
+            for child in childrenByParent[entry.id] ?? [] where hidden.insert(child.id).inserted {
+                hideDescendants(of: child)
+            }
+        }
+
+        func append(_ entry: SidebarWorkspaceHierarchyEntry, visiting: Set<UUID>) {
+            guard !visiting.contains(entry.id), emitted.insert(entry.id).inserted else { return }
+            result.append(entry.id)
+            if entry.isFolder && entry.isCollapsed {
+                hideDescendants(of: entry)
+                return
+            }
+            let nextVisiting = visiting.union([entry.id])
+            for child in childrenByParent[entry.id] ?? [] {
+                append(child, visiting: nextVisiting)
+            }
+        }
 
         for entry in entries {
-            if let parentId = entry.parentId, folderIds.contains(parentId) {
-                continue
-            }
-            guard emitted.insert(entry.id).inserted else { continue }
-            result.append(entry.id)
-            guard entry.isFolder, let children = childrenByParent[entry.id] else { continue }
-            for child in children where emitted.insert(child.id).inserted {
-                if !entry.isCollapsed {
-                    result.append(child.id)
-                }
+            let hasValidParent = entry.parentId.map {
+                $0 != entry.id && entryIds.contains($0)
+            } ?? false
+            if !hasValidParent {
+                append(entry, visiting: [])
             }
         }
         // Malformed relationships (for example, a cycle in a user-edited snapshot) stay visible
         // instead of silently dropping a workspace from the sidebar.
-        result.append(contentsOf: entries.lazy.map(\.id).filter { emitted.insert($0).inserted })
+        result.append(contentsOf: entries.lazy.map(\.id).filter {
+            !hidden.contains($0) && emitted.insert($0).inserted
+        })
         return result
     }
 

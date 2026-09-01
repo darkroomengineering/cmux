@@ -92,6 +92,17 @@ class SocketRecorder:
     def _result_for(method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "system.ping":
             return {"pong": True}
+        if method == "workspace.list":
+            return {"workspaces": [{"id": WORKSPACE_ID, "ref": "workspace:1", "selected": True}]}
+        if method == "surface.list":
+            return {
+                "surfaces": [{
+                    "id": SURFACE_ID,
+                    "ref": "surface:1",
+                    "workspace_id": params.get("workspace_id", WORKSPACE_ID),
+                    "selected": True,
+                }]
+            }
         if method == "surface.move":
             return {
                 "surface_id": params.get("surface_id", SURFACE_ID),
@@ -170,6 +181,7 @@ def run_cli(
     args: list[str],
     *,
     env_overrides: dict[str, str] | None = None,
+    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env.pop("PROGRAMA_SOCKET", None)
@@ -183,6 +195,7 @@ def run_cli(
         [CLI_PATH, "--socket", socket_path, *args],
         capture_output=True,
         text=True,
+        input=input_text,
         check=False,
         timeout=8.0,
         env=env,
@@ -409,6 +422,55 @@ def main() -> int:
         check(recorder.accept_count == 1, f"window-targeted ping accepted {recorder.accept_count} connections, want 1")
         methods = [frame.get("method") for frame in recorder.frames]
         check(methods == ["window.focus", "system.ping"], f"window focus/ping order changed: {methods!r}")
+
+    # Claude's native subagent hooks automatically create and finish one stable
+    # virtual helper record in Agent Overview.
+    subagent_payload = json.dumps({
+        "session_id": "session-agent-overview",
+        "agent_id": "agent-reviewer",
+        "agent_type": "reviewer",
+    })
+    hook_env = {
+        "PROGRAMA_WORKSPACE_ID": WORKSPACE_ID,
+        "PROGRAMA_SURFACE_ID": SURFACE_ID,
+        "PROGRAMA_CLAUDE_HOOK_STATE_PATH": "/tmp/programa-cli-registry-claude-hooks.json",
+    }
+    with tempfile.TemporaryDirectory(prefix="pcli-", dir="/tmp") as directory:
+        hook_env["PROGRAMA_CLAUDE_HOOK_STATE_PATH"] = str(Path(directory) / "sessions.json")
+        with SocketRecorder(directory) as recorder:
+            started = run_cli(
+                recorder.path,
+                ["claude-hook", "subagent-start"],
+                env_overrides=hook_env,
+                input_text=subagent_payload,
+            )
+            stopped = run_cli(
+                recorder.path,
+                ["claude-hook", "subagent-stop"],
+                env_overrides=hook_env,
+                input_text=subagent_payload,
+            )
+            session_ended = run_cli(
+                recorder.path,
+                ["claude-hook", "session-end"],
+                env_overrides=hook_env,
+                input_text=subagent_payload,
+            )
+    check(started.returncode == 0, f"Claude subagent start hook failed: {merged_output(started)!r}")
+    check(stopped.returncode == 0, f"Claude subagent stop hook failed: {merged_output(stopped)!r}")
+    check(session_ended.returncode == 0, f"Claude session-end hook failed: {merged_output(session_ended)!r}")
+    start_frames = [frame for frame in recorder.frames if frame.get("method") == "agent.task.start"]
+    finish_frames = [frame for frame in recorder.frames if frame.get("method") == "agent.task.finish"]
+    finish_session_frames = [frame for frame in recorder.frames if frame.get("method") == "agent.task.finish_session"]
+    check(len(start_frames) == 1, f"Claude subagent start frames={recorder.frames!r}")
+    check(len(finish_frames) == 1, f"Claude subagent finish frames={recorder.frames!r}")
+    check(len(finish_session_frames) == 1, f"Claude session cleanup frames={recorder.frames!r}")
+    if start_frames and finish_frames:
+        start_params = start_frames[0].get("params", {})
+        finish_params = finish_frames[0].get("params", {})
+        check(start_params.get("agent_id") == finish_params.get("agent_id"), "Claude helper ID changed between hooks")
+        check(start_params.get("placement") == "runs_with_parent", f"Claude helper placement={start_params!r}")
+        check(start_params.get("task") == "reviewer", f"Claude helper title={start_params!r}")
 
     # TCP relays use the Programa-owned handshake identifier. A stale cmux
     # protocol literal rejects the challenge before any v2 request is sent.

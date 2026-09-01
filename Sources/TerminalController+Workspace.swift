@@ -13,6 +13,18 @@ extension TerminalController {
         index: Int?,
         selected: Bool
     ) -> [String: Any] {
+        let branch = workspace.gitBranch?.branch ?? workspace.worktreeBranch
+        let pullRequest = workspace.pullRequest.map { pullRequest in
+            [
+                "number": pullRequest.number,
+                "label": pullRequest.label,
+                "url": pullRequest.url.absoluteString,
+                "status": pullRequest.status.rawValue,
+                "branch": v2OrNull(pullRequest.branch),
+                "checks": v2OrNull(pullRequest.checks?.rawValue),
+            ] as [String: Any]
+        }
+        let helpers = AgentSupervisionMetadata.relatedRecords(for: workspace)
         var payload: [String: Any] = [
             "id": workspace.id.uuidString,
             "ref": v2Ref(kind: .workspace, uuid: workspace.id),
@@ -23,7 +35,18 @@ extension TerminalController {
             "listening_ports": workspace.listeningPorts,
             "remote": workspace.remoteStatusPayload(),
             "current_directory": v2OrNull(workspace.currentDirectory),
-            "custom_color": v2OrNull(workspace.customColor)
+            "custom_color": v2OrNull(workspace.customColor),
+            "branch": v2OrNull(branch),
+            "pull_request": v2OrNull(pullRequest),
+            "worktree_parent_workspace_id": v2OrNull(workspace.worktreeParentWorkspaceId?.uuidString),
+            "worktree_folder_id": v2OrNull(workspace.worktreeFolderId?.uuidString),
+            "worktree_folder_repo_root": v2OrNull(workspace.worktreeFolderRepoRoot),
+            "is_worktree_folder": workspace.isWorktreeFolder,
+            "agent_parent_workspace_id": v2OrNull(workspace.agentParentWorkspaceId?.uuidString),
+            "agent_state": v2OrNull(AgentSupervisionMetadata.aggregateState(for: workspace)),
+            "agent_state_source": v2OrNull(AgentSupervisionMetadata.aggregateSource(for: workspace)),
+            "helpers": helpers.map { $0.payload() },
+            "helper_count": helpers.count,
         ]
         if let index {
             payload["index"] = index
@@ -70,6 +93,29 @@ extension TerminalController {
                 guard !key.isEmpty else { return }
                 result[key] = pair.value
             }
+            let requestedTitle = v2RawString(params, "title")?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = (requestedTitle?.isEmpty == false) ? requestedTitle : nil
+            let description = v2RawString(params, "description")
+            let applyRememberedFolderColor = v2Bool(params, "apply_remembered_folder_color") ?? true
+            let agentParentWorkspaceId = v2UUID(params, "agent_parent_workspace_id")
+            if params["agent_parent_workspace_id"] != nil, agentParentWorkspaceId == nil {
+                return .err(
+                    code: "invalid_params",
+                    message: "agent_parent_workspace_id must be a valid workspace UUID or reference",
+                    data: nil
+                )
+            }
+            let agentParentWorkspace: Workspace?
+            if let agentParentWorkspaceId {
+                guard let parent = tabManager.tabs.first(where: { $0.id == agentParentWorkspaceId }) else {
+                    return .err(code: "not_found", message: "Agent parent workspace not found", data: [
+                        "agent_parent_workspace_id": agentParentWorkspaceId.uuidString,
+                    ])
+                }
+                agentParentWorkspace = parent
+            } else {
+                agentParentWorkspace = nil
+            }
             let cwd: String?
             if let workingDirectory {
                 cwd = workingDirectory
@@ -79,17 +125,16 @@ extension TerminalController {
                 }
                 cwd = str
             } else {
-                cwd = nil
+                cwd = agentParentWorkspace?.currentDirectory
             }
-
-            let requestedTitle = v2RawString(params, "title")?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let title = (requestedTitle?.isEmpty == false) ? requestedTitle : nil
-            let description = v2RawString(params, "description")
-            let applyRememberedFolderColor = v2Bool(params, "apply_remembered_folder_color") ?? true
+            let titleIsAutomatic = v2Bool(params, "title_is_automatic") ?? false
+            if titleIsAutomatic, title == nil {
+                return .err(code: "invalid_params", message: "title is required when title_is_automatic is true", data: nil)
+            }
 
             let shouldFocus = v2FocusAllowed()
             let ws = tabManager.addWorkspace(
-                title: title,
+                title: titleIsAutomatic ? nil : title,
                 workingDirectory: cwd,
                 initialTerminalCommand: initialCommand,
                 initialTerminalEnvironment: initialEnv,
@@ -97,6 +142,10 @@ extension TerminalController {
                 eagerLoadTerminal: !shouldFocus,
                 applyRememberedFolderColor: applyRememberedFolderColor
             )
+            if titleIsAutomatic, let title {
+                ws.title = title
+            }
+            ws.agentParentWorkspaceId = agentParentWorkspaceId
             ws.setCustomDescription(description)
             let newId = ws.id
             let windowId = v2ResolveWindowId(tabManager: tabManager)
@@ -104,7 +153,11 @@ extension TerminalController {
                 "window_id": v2OrNull(windowId?.uuidString),
                 "window_ref": v2Ref(kind: .window, uuid: windowId),
                 "workspace_id": newId.uuidString,
-                "workspace_ref": v2Ref(kind: .workspace, uuid: newId)
+                "workspace_ref": v2Ref(kind: .workspace, uuid: newId),
+                "surface_id": v2OrNull(ws.focusedTerminalPanel?.id.uuidString),
+                "surface_ref": v2Ref(kind: .surface, uuid: ws.focusedTerminalPanel?.id),
+                "agent_parent_workspace_id": v2OrNull(agentParentWorkspaceId?.uuidString),
+                "title_is_automatic": titleIsAutomatic,
             ])
         }
     }

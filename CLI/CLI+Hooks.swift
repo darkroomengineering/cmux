@@ -441,11 +441,109 @@ extension ProgramaCLI {
             )
             print("OK")
 
+        case "subagent-start":
+            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+            guard let externalAgentId = firstString(in: parsedInput.object ?? [:], keys: ["agent_id"]),
+                  let workspaceId = try? resolvePreferredWorkspaceIdForClaudeHook(
+                    preferred: mappedSession?.workspaceId,
+                    fallback: workspaceArg,
+                    client: client
+                  ) else {
+                print("OK")
+                return
+            }
+            let surfaceId = try? resolvePreferredSurfaceIdForClaudeHook(
+                preferred: mappedSession?.surfaceId,
+                fallback: surfaceArg,
+                workspaceId: workspaceId,
+                client: client
+            )
+            let taskId = claudeSubagentTaskIdentifier(
+                scope: parsedInput.sessionId ?? workspaceId,
+                externalAgentId: externalAgentId
+            )
+            let agentType = firstString(in: parsedInput.object ?? [:], keys: ["agent_type"])
+            var startParams: [String: Any] = [
+                "agent_id": taskId,
+                "workspace_id": workspaceId,
+                "host": "claude",
+                "placement": "runs_with_parent",
+                "state": "working",
+            ]
+            if let surfaceId { startParams["surface_id"] = surfaceId }
+            if let sessionId = parsedInput.sessionId { startParams["session"] = sessionId }
+            if let agentType {
+                startParams["role"] = agentType
+                startParams["task"] = agentType
+            }
+            do {
+                _ = try client.sendV2(method: "agent.task.start", params: startParams)
+            } catch {
+                var updateParams: [String: Any] = ["agent_id": taskId, "state": "working"]
+                if let sessionId = parsedInput.sessionId { updateParams["session"] = sessionId }
+                if let agentType {
+                    updateParams["role"] = agentType
+                    updateParams["task"] = agentType
+                }
+                _ = try? client.sendV2(method: "agent.task.update", params: updateParams)
+            }
+            print("OK")
+
+        case "subagent-stop":
+            let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
+            guard let externalAgentId = firstString(in: parsedInput.object ?? [:], keys: ["agent_id"]),
+                  let workspaceId = try? resolvePreferredWorkspaceIdForClaudeHook(
+                    preferred: mappedSession?.workspaceId,
+                    fallback: workspaceArg,
+                    client: client
+                  ) else {
+                print("OK")
+                return
+            }
+            let taskId = claudeSubagentTaskIdentifier(
+                scope: parsedInput.sessionId ?? workspaceId,
+                externalAgentId: externalAgentId
+            )
+            if (try? client.sendV2(method: "agent.task.finish", params: [
+                "agent_id": taskId,
+                "state": "completed",
+            ])) == nil {
+                let surfaceId = try? resolvePreferredSurfaceIdForClaudeHook(
+                    preferred: mappedSession?.surfaceId,
+                    fallback: surfaceArg,
+                    workspaceId: workspaceId,
+                    client: client
+                )
+                let agentType = firstString(in: parsedInput.object ?? [:], keys: ["agent_type"])
+                var completedParams: [String: Any] = [
+                    "agent_id": taskId,
+                    "workspace_id": workspaceId,
+                    "host": "claude",
+                    "placement": "runs_with_parent",
+                    "state": "completed",
+                ]
+                if let surfaceId { completedParams["surface_id"] = surfaceId }
+                if let sessionId = parsedInput.sessionId { completedParams["session"] = sessionId }
+                if let agentType {
+                    completedParams["role"] = agentType
+                    completedParams["task"] = agentType
+                }
+                _ = try? client.sendV2(method: "agent.task.start", params: completedParams)
+            }
+            print("OK")
+
         case "session-end":
             // Final cleanup when Claude process exits.
             // Only clear when we are the primary cleanup path (Stop didn't fire first).
             // If Stop already consumed the session, consumedSession is nil and we skip
             // to avoid wiping the completion notification that Stop just delivered.
+            if let sessionId = parsedInput.sessionId {
+                _ = try? client.sendV2(method: "agent.task.finish_session", params: [
+                    "host": "claude",
+                    "session": sessionId,
+                    "state": "cancelled",
+                ])
+            }
             let mappedSession = parsedInput.sessionId.flatMap { try? sessionStore.lookup(sessionId: $0) }
             let fallbackWorkspaceId = try? resolvePreferredWorkspaceIdForClaudeHook(
                 preferred: mappedSession?.workspaceId,
@@ -577,7 +675,7 @@ extension ProgramaCLI {
         case "help", "--help", "-h":
             print(
                 """
-                programa claude-hook <session-start|stop|session-end|notification|prompt-submit|pre-tool-use> [--workspace <id|index>] [--surface <id|index>]
+                programa claude-hook <session-start|stop|session-end|notification|prompt-submit|pre-tool-use|subagent-start|subagent-stop> [--workspace <id|index>] [--surface <id|index>]
                 """
             )
 
@@ -977,6 +1075,8 @@ extension ProgramaCLI {
 
         for key in [
             "tool_name",
+            "agent_id",
+            "agent_type",
             "last_assistant_message",
             "lastAssistantMessage",
             "event",
@@ -1056,7 +1156,7 @@ extension ProgramaCLI {
 
     private func claudeHookCompactFieldLimit(for key: String) -> Int {
         switch key {
-        case "tool_name", "event", "event_name", "hook_event_name", "type", "kind", "notification_type", "matcher", "reason":
+        case "tool_name", "agent_id", "agent_type", "event", "event_name", "hook_event_name", "type", "kind", "notification_type", "matcher", "reason":
             return 80
         case "last_assistant_message", "lastAssistantMessage", "message", "body", "text", "prompt", "error", "description":
             return 240
@@ -1296,6 +1396,18 @@ extension ProgramaCLI {
             }
         }
         return nil
+    }
+
+    private func claudeSubagentTaskIdentifier(scope: String, externalAgentId: String) -> String {
+        var bytes = Array(SHA256.hash(data: Data("claude:\(scope):\(externalAgentId)".utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        )).uuidString
     }
 
     private func normalizedSingleLine(_ value: String) -> String {
@@ -2646,7 +2758,9 @@ extension ProgramaCLI {
 
     ## Spawning a helper agent and coordinating with it
 
-    Split a pane, launch an agent CLI into it with `send`, then treat it like any other sibling pane: read its output, send it follow-up input, report on it through the sidebar instead of the pane the user isn't looking at.
+    When the `agent_spawn` tool is available, use it for helper agents. It opens the helper as a nested workspace under the current workspace, keeps the same folder, and does not move the user's focus. Set `needs_isolation` only when the helper will make conflicting Git changes and genuinely needs a separate worktree. Programa then shows the helper in Agent Overview automatically.
+
+    Use a split for a long-running shell command, or as a fallback when `agent_spawn` is unavailable. Launch the command with `send`, then treat it like any other sibling pane: read its output, send follow-up input, and report through the sidebar instead of the pane the user isn't looking at.
 
     ```bash
     # 1. Split and capture the new surface's handle
@@ -2835,7 +2949,7 @@ extension ProgramaCLI {
         let isAsync: Bool
     }
 
-    /// The six lifecycle events the runtime wrapper's HOOKS_JSON injects
+    /// The lifecycle events the runtime wrapper's HOOKS_JSON injects
     /// (Resources/bin/claude:207), reproduced here for the persistent file.
     private static let claudeHookEventSpecs: [ClaudeHookEventSpec] = [
         ClaudeHookEventSpec(name: "SessionStart", event: "session-start", timeout: 10, isAsync: false),
@@ -2843,7 +2957,9 @@ extension ProgramaCLI {
         ClaudeHookEventSpec(name: "SessionEnd", event: "session-end", timeout: 1, isAsync: false),
         ClaudeHookEventSpec(name: "Notification", event: "notification", timeout: 10, isAsync: false),
         ClaudeHookEventSpec(name: "UserPromptSubmit", event: "prompt-submit", timeout: 10, isAsync: false),
-        ClaudeHookEventSpec(name: "PreToolUse", event: "pre-tool-use", timeout: 5, isAsync: true)
+        ClaudeHookEventSpec(name: "PreToolUse", event: "pre-tool-use", timeout: 5, isAsync: true),
+        ClaudeHookEventSpec(name: "SubagentStart", event: "subagent-start", timeout: 5, isAsync: false),
+        ClaudeHookEventSpec(name: "SubagentStop", event: "subagent-stop", timeout: 5, isAsync: false)
     ]
 
     /// Builds the programa-owned hook groups, keyed by Claude Code lifecycle event

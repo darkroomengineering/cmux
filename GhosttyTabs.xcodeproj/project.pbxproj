@@ -26,6 +26,11 @@
 			NRSP0076A1B2C3D4E5F60719 /* Workspace+Surfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0075A1B2C3D4E5F60719 /* Workspace+Surfaces.swift */; };
 			NRSP0074A1B2C3D4E5F60719 /* Workspace+SidebarTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRSP0073A1B2C3D4E5F60719 /* Workspace+SidebarTelemetry.swift */; };
 			AGST0001A1B2C3D4E5F60719 /* AgentActivityState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGST0002A1B2C3D4E5F60719 /* AgentActivityState.swift */; };
+			AGSV0001A1B2C3D4E5F60719 /* AgentSupervision.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGSV0002A1B2C3D4E5F60719 /* AgentSupervision.swift */; };
+			AGSV0003A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGSV0004A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift */; };
+			AGSV0005A1B2C3D4E5F60719 /* AgentSupervisionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGSV0006A1B2C3D4E5F60719 /* AgentSupervisionTests.swift */; };
+			AGOV0001A1B2C3D4E5F60719 /* AgentOverviewWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGOV0002A1B2C3D4E5F60719 /* AgentOverviewWindow.swift */; };
+			AGOV0003A1B2C3D4E5F60719 /* AgentOverviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AGOV0004A1B2C3D4E5F60719 /* AgentOverviewTests.swift */; };
 			AMDT000001 /* AgentManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000002 /* AgentManifest.swift */; };
 			AMDT000003 /* AgentManifestLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000004 /* AgentManifestLoader.swift */; };
 			AMDT000005 /* AgentScreenDetectionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AMDT000006 /* AgentScreenDetectionEngine.swift */; };
@@ -459,6 +464,11 @@
 			NRSP0075A1B2C3D4E5F60719 /* Workspace+Surfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+Surfaces.swift"; sourceTree = "<group>"; };
 			NRSP0073A1B2C3D4E5F60719 /* Workspace+SidebarTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+SidebarTelemetry.swift"; sourceTree = "<group>"; };
 			AGST0002A1B2C3D4E5F60719 /* AgentActivityState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AgentActivityState.swift"; sourceTree = "<group>"; };
+			AGSV0002A1B2C3D4E5F60719 /* AgentSupervision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSupervision.swift; sourceTree = "<group>"; };
+			AGSV0004A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+AgentSupervision.swift"; sourceTree = "<group>"; };
+			AGSV0006A1B2C3D4E5F60719 /* AgentSupervisionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSupervisionTests.swift; sourceTree = "<group>"; };
+			AGOV0002A1B2C3D4E5F60719 /* AgentOverviewWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentOverviewWindow.swift; sourceTree = "<group>"; };
+			AGOV0004A1B2C3D4E5F60719 /* AgentOverviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentOverviewTests.swift; sourceTree = "<group>"; };
 			AMDT000002 /* AgentManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentManifest.swift; sourceTree = "<group>"; };
 			AMDT000004 /* AgentManifestLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentManifestLoader.swift; sourceTree = "<group>"; };
 			AMDT000006 /* AgentScreenDetectionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentScreenDetectionEngine.swift; sourceTree = "<group>"; };
@@ -943,6 +953,8 @@
 					NRSP0075A1B2C3D4E5F60719 /* Workspace+Surfaces.swift */,
 					NRSP0073A1B2C3D4E5F60719 /* Workspace+SidebarTelemetry.swift */,
 					AGST0002A1B2C3D4E5F60719 /* AgentActivityState.swift */,
+					AGSV0002A1B2C3D4E5F60719 /* AgentSupervision.swift */,
+					AGOV0002A1B2C3D4E5F60719 /* AgentOverviewWindow.swift */,
 					AMDT000002 /* AgentManifest.swift */,
 					AMDT000004 /* AgentManifestLoader.swift */,
 					AMDT000006 /* AgentScreenDetectionEngine.swift */,
@@ -1044,6 +1056,7 @@
 				NRTC0002 /* TerminalController+Telemetry.swift */,
 				NRTC0003 /* TerminalController+Window.swift */,
 				NRTC0004 /* TerminalController+Workspace.swift */,
+				AGSV0004A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift */,
 				WTMG000004 /* TerminalController+Worktree.swift */,
 				WTMG000008 /* TerminalController+Layout.swift */,
 					SNAP000002 /* TerminalController+Snapshot.swift */,
@@ -1306,6 +1319,8 @@
 					BEE83F8394D90ACACD8E19DD /* WindowAndDragTests.swift */,
 					6083A7DAD962E287FC2FFE94 /* ShortcutAndCommandPaletteTests.swift */,
 					BC39DE4B96D1931C52AF7D68 /* SidebarOrderingTests.swift */,
+					AGSV0006A1B2C3D4E5F60719 /* AgentSupervisionTests.swift */,
+					AGOV0004A1B2C3D4E5F60719 /* AgentOverviewTests.swift */,
 					B09C007F42697761B5F1A2AB /* OmnibarAndToolsTests.swift */,
 					D2C075029771815DD5DA1332 /* NotificationAndMenuBarTests.swift */,
 					42092CDB2109E250F7F2A76E /* TabManagerUnitTests.swift */,
@@ -1518,6 +1533,8 @@
 					NRSP0076A1B2C3D4E5F60719 /* Workspace+Surfaces.swift in Sources */,
 					NRSP0074A1B2C3D4E5F60719 /* Workspace+SidebarTelemetry.swift in Sources */,
 					AGST0001A1B2C3D4E5F60719 /* AgentActivityState.swift in Sources */,
+					AGSV0001A1B2C3D4E5F60719 /* AgentSupervision.swift in Sources */,
+					AGOV0001A1B2C3D4E5F60719 /* AgentOverviewWindow.swift in Sources */,
 					AMDT000001 /* AgentManifest.swift in Sources */,
 					AMDT000003 /* AgentManifestLoader.swift in Sources */,
 					AMDT000005 /* AgentScreenDetectionEngine.swift in Sources */,
@@ -1621,6 +1638,7 @@
 				NRTC0012 /* TerminalController+Telemetry.swift in Sources */,
 				NRTC0013 /* TerminalController+Window.swift in Sources */,
 				NRTC0014 /* TerminalController+Workspace.swift in Sources */,
+				AGSV0003A1B2C3D4E5F60719 /* TerminalController+AgentSupervision.swift in Sources */,
 				WTMG000003 /* TerminalController+Worktree.swift in Sources */,
 				WTMG000007 /* TerminalController+Layout.swift in Sources */,
 					SNAP000001 /* TerminalController+Snapshot.swift in Sources */,
@@ -1797,6 +1815,8 @@
 					063BC42CEE257D6213A2E30C /* WindowAndDragTests.swift in Sources */,
 					1521D55DC63D5E5FC4955E31 /* ShortcutAndCommandPaletteTests.swift in Sources */,
 					CB23911D7E131E8FBC9B82B6 /* SidebarOrderingTests.swift in Sources */,
+					AGSV0005A1B2C3D4E5F60719 /* AgentSupervisionTests.swift in Sources */,
+					AGOV0003A1B2C3D4E5F60719 /* AgentOverviewTests.swift in Sources */,
 					4378399A7C0245EF8186F306 /* OmnibarAndToolsTests.swift in Sources */,
 					734F49D37E543DD01C2F4FEF /* NotificationAndMenuBarTests.swift in Sources */,
 					B6BF3DC98DB1495E57900199 /* TabManagerUnitTests.swift in Sources */,

@@ -209,13 +209,15 @@ struct VerticalTabsSidebar: View {
         let hierarchyEntries = tabs.map {
             SidebarWorkspaceHierarchyEntry(
                 id: $0.id,
-                parentId: $0.worktreeParentWorkspaceId,
+                parentId: $0.worktreeParentWorkspaceId ?? $0.agentParentWorkspaceId,
                 isFolder: $0.isWorktreeFolder,
                 isCollapsed: $0.isWorktreeFolderCollapsed
             )
         }
-        let visibleWorkspaceIds = Set(SidebarWorkspaceHierarchy.visibleWorkspaceIds(hierarchyEntries))
-        let visibleTabs = tabs.filter { visibleWorkspaceIds.contains($0.id) }
+        let tabsById = Dictionary(uniqueKeysWithValues: tabs.map { ($0.id, $0) })
+        let visibleTabs = SidebarWorkspaceHierarchy.visibleWorkspaceIds(hierarchyEntries).compactMap {
+            tabsById[$0]
+        }
         let workspaceCount = tabs.count
         let canCloseWorkspace = workspaceCount > 1
         let workspaceNumberShortcut = self.workspaceNumberShortcut
@@ -325,6 +327,10 @@ struct VerticalTabsSidebar: View {
                                     worktreeChildCount: worktreeChildCount
                                 )
                                 .equatable()
+                                .padding(
+                                    .leading,
+                                    CGFloat(SidebarWorkspaceHierarchy.depth(of: tab.id, entries: hierarchyEntries)) * 14
+                                )
                             }
                         }
                         .padding(.vertical, 8)

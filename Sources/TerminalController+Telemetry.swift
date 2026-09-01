@@ -338,6 +338,17 @@ extension TerminalController {
 
         v2ScheduleSurfaceTelemetryMutation(workspaceId: workspaceId, surfaceId: surfaceId) { tabManager, _, sid in
             tabManager.updateSurfaceAgentState(tabId: workspaceId, surfaceId: sid, state: state, source: source)
+            let taskState: AgentTaskState
+            switch state {
+            case .idle: taskState = .idle
+            case .working: taskState = .working
+            case .blocked: taskState = .blocked
+            }
+            _ = try? AgentSupervisionRegistry.shared.updateActiveSurface(
+                workspaceId: workspaceId,
+                surfaceId: sid,
+                state: taskState
+            )
         }
 
         return .ok([
@@ -360,6 +371,10 @@ extension TerminalController {
 
         v2ScheduleSurfaceTelemetryMutation(workspaceId: workspaceId, surfaceId: surfaceId) { tabManager, _, sid in
             tabManager.clearSurfaceAgentState(tabId: workspaceId, surfaceId: sid)
+            _ = try? AgentSupervisionRegistry.shared.finishActiveSurface(
+                workspaceId: workspaceId,
+                surfaceId: sid
+            )
         }
 
         return .ok([
