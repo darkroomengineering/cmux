@@ -157,6 +157,9 @@ struct WorkspaceTabColorEntry: Equatable, Identifiable {
 
 enum WorkspaceTabColorSettings {
     static let paletteKey = "workspaceTabColor.colors"
+    static let folderColorsKey = "workspaceTabColor.folderColors"
+    static let folderColorOrderKey = "workspaceTabColor.folderColorOrder"
+    static let maxRememberedFolderColors = 256
 
     private static let legacyDefaultOverridesKey = "workspaceTabColor.defaultOverrides"
     private static let legacyCustomColorsKey = "workspaceTabColor.customColors"
@@ -269,6 +272,50 @@ enum WorkspaceTabColorSettings {
         defaults.removeObject(forKey: legacyCustomColorsKey)
     }
 
+    static func resetRememberedFolderColors(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: folderColorsKey)
+        defaults.removeObject(forKey: folderColorOrderKey)
+    }
+
+    static func rememberedColor(
+        forDirectory directory: String?,
+        defaults: UserDefaults = .standard
+    ) -> String? {
+        guard let key = folderDirectoryKey(directory) else { return nil }
+        return storedFolderColors(defaults: defaults)[key]
+    }
+
+    static func rememberColor(
+        _ color: String?,
+        forDirectory directory: String?,
+        defaults: UserDefaults = .standard
+    ) {
+        guard let key = folderDirectoryKey(directory) else { return }
+        var colors = storedFolderColors(defaults: defaults)
+        var order = storedFolderColorOrder(colors: colors, defaults: defaults)
+        let orderedKeys = Set(order)
+        colors = colors.filter { orderedKeys.contains($0.key) }
+        order.removeAll { $0 == key }
+
+        if let color, let normalized = normalizedHex(color) {
+            colors[key] = normalized
+            order.append(key)
+        } else {
+            colors.removeValue(forKey: key)
+        }
+
+        while order.count > maxRememberedFolderColors {
+            colors.removeValue(forKey: order.removeFirst())
+        }
+        if colors.isEmpty {
+            defaults.removeObject(forKey: folderColorsKey)
+            defaults.removeObject(forKey: folderColorOrderKey)
+        } else {
+            defaults.set(colors, forKey: folderColorsKey)
+            defaults.set(order, forKey: folderColorOrderKey)
+        }
+    }
+
     static func normalizedHex(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -372,6 +419,49 @@ enum WorkspaceTabColorSettings {
             normalized[name] = hex
         }
         return normalized
+    }
+
+    private static func folderDirectoryKey(_ directory: String?) -> String? {
+        guard let key = SidebarBranchOrdering.canonicalDirectoryKey(
+            directory,
+            homeDirectoryForTildeExpansion: FileManager.default.homeDirectoryForCurrentUser.path
+        ), key.utf8.count <= SessionPersistencePolicy.maxPathStringBytes else {
+            return nil
+        }
+        return key
+    }
+
+    private static func storedFolderColors(defaults: UserDefaults) -> [String: String] {
+        guard let rawColors = defaults.dictionary(forKey: folderColorsKey) else {
+            return [:]
+        }
+        var colors: [String: String] = [:]
+        for (rawDirectory, rawValue) in rawColors {
+            guard let rawColor = rawValue as? String,
+                  let directory = folderDirectoryKey(rawDirectory),
+                  let color = normalizedHex(rawColor) else { continue }
+            colors[directory] = color
+        }
+        return colors
+    }
+
+    private static func storedFolderColorOrder(
+        colors: [String: String],
+        defaults: UserDefaults
+    ) -> [String] {
+        var order: [String] = []
+        var seen: Set<String> = []
+        for rawDirectory in defaults.stringArray(forKey: folderColorOrderKey) ?? [] {
+            guard let directory = folderDirectoryKey(rawDirectory),
+                  colors[directory] != nil,
+                  seen.insert(directory).inserted else { continue }
+            order.append(directory)
+        }
+        order.append(contentsOf: colors.keys.sorted().filter { seen.insert($0).inserted })
+        if order.count > maxRememberedFolderColors {
+            order = Array(order.suffix(maxRememberedFolderColors))
+        }
+        return order
     }
 
     private static var defaultPaletteMap: [String: String] {
@@ -1094,7 +1184,8 @@ class TabManager: ObservableObject {
         select: Bool = true,
         eagerLoadTerminal: Bool = false,
         placementOverride: NewWorkspacePlacement? = nil,
-        autoWelcomeIfNeeded: Bool = true
+        autoWelcomeIfNeeded: Bool = true,
+        applyRememberedFolderColor: Bool = true
     ) -> Workspace {
         let sourceWorkspace = selectedWorkspace
         let capturedTabs = tabs
@@ -1149,6 +1240,12 @@ class TabManager: ObservableObject {
                 initialTerminalEnvironment: initialTerminalEnvironment
             )
             newWorkspace.owningTabManager = self
+            if applyRememberedFolderColor,
+               let rememberedColor = WorkspaceTabColorSettings.rememberedColor(
+                   forDirectory: newWorkspace.currentDirectory
+               ) {
+                newWorkspace.setCustomColor(rememberedColor)
+            }
             if title != nil {
                 newWorkspace.setCustomTitle(title)
             }
@@ -1933,6 +2030,11 @@ class TabManager: ObservableObject {
     func setTabColor(tabId: UUID, color: String?) {
         guard let tab = workspace(withId: tabId) else { return }
         tab.setCustomColor(color)
+        guard !tab.isRemoteWorkspace else { return }
+        WorkspaceTabColorSettings.rememberColor(
+            tab.customColor,
+            forDirectory: tab.currentDirectory
+        )
     }
 
     func togglePin(tabId: UUID) {

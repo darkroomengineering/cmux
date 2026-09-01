@@ -1976,6 +1976,7 @@ struct SettingsView: View {
         refreshDetectedImportBrowsers()
         KeyboardShortcutSettings.resetAll()
         WorkspaceTabColorSettings.reset()
+        WorkspaceTabColorSettings.resetRememberedFolderColors()
         shortcutResetToken = UUID()
     }
 

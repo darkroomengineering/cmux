@@ -2402,6 +2402,7 @@ final class CLINotifyProcessIntegrationTests: XCTestCase {
         let createParams = try XCTUnwrap(requests[0]["params"] as? [String: Any])
         let initialCommand = try XCTUnwrap(createParams["initial_command"] as? String)
         XCTAssertFalse(initialCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        XCTAssertEqual(createParams["apply_remembered_folder_color"] as? Bool, false)
 
         let renameParams = try XCTUnwrap(requests[1]["params"] as? [String: Any])
         XCTAssertEqual(renameParams["workspace_id"] as? String, workspaceID)

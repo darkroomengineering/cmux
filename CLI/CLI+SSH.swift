@@ -119,6 +119,7 @@ extension ProgramaCLI {
 
         let workspaceCreateParams: [String: Any] = [
             "initial_command": initialSSHStartupCommand,
+            "apply_remembered_folder_color": false,
         ]
 
         let workspaceCreateStartedAt = Date()

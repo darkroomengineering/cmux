@@ -2112,6 +2112,156 @@ final class WorkspaceTabColorSettingsTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: WorkspaceTabColorSettings.paletteKey))
     }
 
+    func testRememberedFolderColorCanonicalizesAndClearsDirectory() {
+        let suiteName = "WorkspaceTabColorSettingsTests.FolderColor.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let directory = "/tmp/programa-folder-color-\(UUID().uuidString)"
+
+        WorkspaceTabColorSettings.rememberColor(
+            " #abc123 ",
+            forDirectory: directory + "/./",
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            WorkspaceTabColorSettings.rememberedColor(
+                forDirectory: directory,
+                defaults: defaults
+            ),
+            "#ABC123"
+        )
+        WorkspaceTabColorSettings.rememberColor(nil, forDirectory: directory, defaults: defaults)
+        XCTAssertNil(
+            WorkspaceTabColorSettings.rememberedColor(
+                forDirectory: directory,
+                defaults: defaults
+            )
+        )
+        XCTAssertNil(defaults.object(forKey: WorkspaceTabColorSettings.folderColorsKey))
+        XCTAssertNil(defaults.object(forKey: WorkspaceTabColorSettings.folderColorOrderKey))
+    }
+
+    func testRememberedFolderColorsStayWithinBound() {
+        let suiteName = "WorkspaceTabColorSettingsTests.FolderColorBound.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        for index in 0...WorkspaceTabColorSettings.maxRememberedFolderColors {
+            WorkspaceTabColorSettings.rememberColor(
+                "#123456",
+                forDirectory: "/tmp/programa-folder-color-\(index)",
+                defaults: defaults
+            )
+        }
+
+        let stored = defaults.dictionary(forKey: WorkspaceTabColorSettings.folderColorsKey)
+        XCTAssertEqual(stored?.count, WorkspaceTabColorSettings.maxRememberedFolderColors)
+        XCTAssertNil(
+            WorkspaceTabColorSettings.rememberedColor(
+                forDirectory: "/tmp/programa-folder-color-0",
+                defaults: defaults
+            )
+        )
+        XCTAssertEqual(
+            WorkspaceTabColorSettings.rememberedColor(
+                forDirectory: "/tmp/programa-folder-color-\(WorkspaceTabColorSettings.maxRememberedFolderColors)",
+                defaults: defaults
+            ),
+            "#123456"
+        )
+    }
+
+    func testRememberedFolderColorsIgnoreMalformedEntriesIndependently() {
+        let suiteName = "WorkspaceTabColorSettingsTests.MalformedFolderColors.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let validDirectory = "/tmp/programa-valid-folder-color"
+        defaults.set(
+            [
+                validDirectory: "#123456",
+                "/tmp/programa-invalid-folder-color": 42,
+            ] as [String: Any],
+            forKey: WorkspaceTabColorSettings.folderColorsKey
+        )
+
+        XCTAssertEqual(
+            WorkspaceTabColorSettings.rememberedColor(
+                forDirectory: validDirectory,
+                defaults: defaults
+            ),
+            "#123456"
+        )
+    }
+
+    @MainActor
+    func testNewWorkspaceUsesColorRememberedForFolder() throws {
+        let defaults = UserDefaults.standard
+        let previousColors = defaults.dictionary(forKey: WorkspaceTabColorSettings.folderColorsKey)
+        let previousOrder = defaults.stringArray(forKey: WorkspaceTabColorSettings.folderColorOrderKey)
+        defer {
+            WorkspaceTabColorSettings.resetRememberedFolderColors(defaults: defaults)
+            if let previousColors {
+                defaults.set(previousColors, forKey: WorkspaceTabColorSettings.folderColorsKey)
+            }
+            if let previousOrder {
+                defaults.set(previousOrder, forKey: WorkspaceTabColorSettings.folderColorOrderKey)
+            }
+        }
+        WorkspaceTabColorSettings.resetRememberedFolderColors(defaults: defaults)
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-folder-color-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let manager = TabManager(initialWorkingDirectory: directoryURL.path)
+        let firstWorkspace = try XCTUnwrap(manager.tabs.first)
+        manager.setTabColor(tabId: firstWorkspace.id, color: "#AABBCC")
+        let nextWorkspace = manager.addWorkspace(workingDirectory: directoryURL.path + "/./")
+
+        XCTAssertEqual(nextWorkspace.customColor, "#AABBCC")
+    }
+
+    @MainActor
+    func testNewWorkspaceCanSkipColorRememberedForFolder() throws {
+        let defaults = UserDefaults.standard
+        let previousColors = defaults.dictionary(forKey: WorkspaceTabColorSettings.folderColorsKey)
+        let previousOrder = defaults.stringArray(forKey: WorkspaceTabColorSettings.folderColorOrderKey)
+        defer {
+            WorkspaceTabColorSettings.resetRememberedFolderColors(defaults: defaults)
+            if let previousColors {
+                defaults.set(previousColors, forKey: WorkspaceTabColorSettings.folderColorsKey)
+            }
+            if let previousOrder {
+                defaults.set(previousOrder, forKey: WorkspaceTabColorSettings.folderColorOrderKey)
+            }
+        }
+        WorkspaceTabColorSettings.resetRememberedFolderColors(defaults: defaults)
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programa-folder-color-opt-out-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let manager = TabManager(initialWorkingDirectory: directoryURL.path)
+        let firstWorkspace = try XCTUnwrap(manager.tabs.first)
+        manager.setTabColor(tabId: firstWorkspace.id, color: "#AABBCC")
+        let nextWorkspace = manager.addWorkspace(
+            workingDirectory: directoryURL.path,
+            applyRememberedFolderColor: false
+        )
+
+        XCTAssertNil(nextWorkspace.customColor)
+    }
+
     func testAddCustomColorCreatesNamedEntriesAndDeduplicatesByHex() {
         let suiteName = "WorkspaceTabColorSettingsTests.NamedCustomColors.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -2199,6 +2349,27 @@ final class WorkspaceTabColorSettingsTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: "workspaceTabColor.defaultOverrides"))
         XCTAssertNil(defaults.object(forKey: "workspaceTabColor.customColors"))
         XCTAssertEqual(WorkspaceTabColorSettings.palette(defaults: defaults), WorkspaceTabColorSettings.defaultPalette)
+    }
+
+    func testResetRememberedFolderColorsLeavesPaletteUntouched() {
+        let suiteName = "WorkspaceTabColorSettingsTests.ResetFolderColors.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        WorkspaceTabColorSettings.persistPaletteMap(["Neon Mint": "#00F5D4"], defaults: defaults)
+        WorkspaceTabColorSettings.rememberColor(
+            "#112233",
+            forDirectory: "/tmp/programa-folder-color",
+            defaults: defaults
+        )
+
+        WorkspaceTabColorSettings.resetRememberedFolderColors(defaults: defaults)
+
+        XCTAssertEqual(WorkspaceTabColorSettings.palette(defaults: defaults).map(\.name), ["Neon Mint"])
+        XCTAssertNil(defaults.object(forKey: WorkspaceTabColorSettings.folderColorsKey))
+        XCTAssertNil(defaults.object(forKey: WorkspaceTabColorSettings.folderColorOrderKey))
     }
 
     func testDisplayColorLightModeKeepsOriginalHex() {

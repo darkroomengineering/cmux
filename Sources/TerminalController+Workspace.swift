@@ -85,6 +85,7 @@ extension TerminalController {
             let requestedTitle = v2RawString(params, "title")?.trimmingCharacters(in: .whitespacesAndNewlines)
             let title = (requestedTitle?.isEmpty == false) ? requestedTitle : nil
             let description = v2RawString(params, "description")
+            let applyRememberedFolderColor = v2Bool(params, "apply_remembered_folder_color") ?? true
 
             let shouldFocus = v2FocusAllowed()
             let ws = tabManager.addWorkspace(
@@ -93,7 +94,8 @@ extension TerminalController {
                 initialTerminalCommand: initialCommand,
                 initialTerminalEnvironment: initialEnv,
                 select: shouldFocus,
-                eagerLoadTerminal: !shouldFocus
+                eagerLoadTerminal: !shouldFocus,
+                applyRememberedFolderColor: applyRememberedFolderColor
             )
             ws.setCustomDescription(description)
             let newId = ws.id
