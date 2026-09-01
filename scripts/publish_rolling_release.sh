@@ -654,7 +654,7 @@ if [[ "${ROLLING_PUBLISHED_AT_START}" == "true" && "${STARTING_REF}" == "${SELEC
   published_title="$("${GH_BIN}" release view "${ROLLING_TAG}" \
     --repo "${REPOSITORY}" --json name --jq .name)" || fail "could not read published rolling title"
   "${GH_BIN}" release view "${ROLLING_TAG}" \
-    --repo "${REPOSITORY}" --json body --jq .body > "${PUBLISHED_BODY}" || \
+    --repo "${REPOSITORY}" --json body --template '{{.body}}' > "${PUBLISHED_BODY}" || \
     fail "could not read published rolling notes"
   [[ "${published_title}" == "Rolling ${SELECTED_VERSION}" ]] || \
     fail "published rolling title conflicts with the selected candidate"
@@ -755,7 +755,7 @@ IFS=$'\t' read -r \
   FINAL_IMMUTABLE \
   FINAL_TARGET <<< "${FINAL_RELEASE_ROW}"
 FINAL_BODY="${TEMP_DIR}/final-body.md"
-"${GH_BIN}" release view "${ROLLING_TAG}" --repo "${REPOSITORY}" --json body --jq .body > "${FINAL_BODY}"
+"${GH_BIN}" release view "${ROLLING_TAG}" --repo "${REPOSITORY}" --json body --template '{{.body}}' > "${FINAL_BODY}"
 FINAL_REF="$("${GH_BIN}" api "repos/${REPOSITORY}/git/ref/tags/${ROLLING_TAG}" --jq .object.sha)"
 [[ "${FINAL_TITLE}" == "Rolling ${SELECTED_VERSION}" ]] || fail "rolling release title did not converge"
 [[ "${final_tag}" == "${ROLLING_TAG}" ]] || fail "rolling release resolved to an unexpected tag"
