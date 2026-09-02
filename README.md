@@ -47,7 +47,7 @@ brew tap darkroomengineering/programa
 brew install --cask programa
 ```
 
-Programa auto-updates: every commit on `main` that passes CI ships automatically as the latest release. On relaunch it restores layout, directories, scrollback, and browser state. Live processes don't survive a relaunch yet.
+Programa auto-updates: every commit on `main` that passes CI ships automatically as the latest release. On relaunch it restores layout, directories, scrollback, and browser state. Terminal processes survive Programa quitting or crashing, and the app reattaches to them live on the next launch.
 
 ## Why
 

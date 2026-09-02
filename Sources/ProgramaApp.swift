@@ -540,16 +540,6 @@ struct programaApp: App {
 
                 Button(
                     String(
-                        localized: "menu.file.openFolderInVSCodeInline",
-                        defaultValue: "Open Folder in VS Code (Inline)…"
-                    )
-                ) {
-                    AppDelegate.shared?.showOpenFolderInInlineVSCodePanel()
-                }
-                .disabled(!TerminalDirectoryOpenTarget.vscodeInline.isAvailable())
-
-                Button(
-                    String(
                         localized: "menu.file.installClaudeIntegration",
                         defaultValue: "Install Claude Code Integration…"
                     )

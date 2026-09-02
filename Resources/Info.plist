@@ -49,10 +49,6 @@
 	<string>A program running within Programa would like to use your camera.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<key>NSAppleScriptEnabled</key>
-	<true/>
-	<key>OSAScriptingDefinition</key>
-	<string>programa.sdef</string>
 	<key>NSServices</key>
 	<array>
 		<dict>

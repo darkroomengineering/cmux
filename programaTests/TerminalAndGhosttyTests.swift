@@ -1345,12 +1345,6 @@ final class TerminalDirectoryOpenTargetAvailabilityTests: XCTestCase {
         XCTAssertFalse(availableTargets.contains(.vscode))
     }
 
-    func testVSCodeInlineRequiresCodeTunnelExecutable() {
-        let env = environment(existingPaths: ["/Applications/Visual Studio Code.app"])
-        XCTAssertTrue(TerminalDirectoryOpenTarget.vscode.isAvailable(in: env))
-        XCTAssertFalse(TerminalDirectoryOpenTarget.vscodeInline.isAvailable(in: env))
-    }
-
     func testITerm2DetectsLegacyBundleName() {
         let env = environment(existingPaths: ["/Applications/iTerm.app"])
         XCTAssertTrue(TerminalDirectoryOpenTarget.iterm2.isAvailable(in: env))
@@ -1375,7 +1369,6 @@ final class TerminalDirectoryOpenTargetAvailabilityTests: XCTestCase {
 
         let availableTargets = TerminalDirectoryOpenTarget.availableTargets(in: env)
         XCTAssertTrue(availableTargets.contains(.vscode))
-        XCTAssertTrue(availableTargets.contains(.vscodeInline))
     }
 
     func testTowerDetectedViaApplicationLookupOutsideApplications() {

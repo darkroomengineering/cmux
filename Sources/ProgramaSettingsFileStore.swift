@@ -501,9 +501,6 @@ final class ProgramaSettingsFileStore {
                 logInvalid("notifications.sound", sourcePath: sourcePath)
             }
         }
-        if let raw = jsonString(section["customSoundFilePath"]) {
-            snapshot.managedUserDefaults[NotificationSoundSettings.customFilePathKey] = .string(raw)
-        }
         if let raw = jsonString(section["command"]) {
             snapshot.managedUserDefaults[NotificationSoundSettings.customCommandKey] = .string(raw)
         }
@@ -1574,7 +1571,6 @@ final class ProgramaSettingsFileStore {
                 "notifications": [
                     "showInMenuBar": MenuBarExtraSettings.defaultShowInMenuBar,
                     "sound": NotificationSoundSettings.defaultValue,
-                    "customSoundFilePath": NotificationSoundSettings.defaultCustomFilePath,
                     "command": NotificationSoundSettings.defaultCustomCommand,
                 ],
             ],
