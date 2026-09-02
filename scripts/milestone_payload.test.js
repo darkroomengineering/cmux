@@ -14,9 +14,9 @@ const path = require("node:path");
 //   verifyMilestonePayload({ directory, build }) -> manifest
 //
 // The manifest is `{ schemaVersion: 1, build, files }`, where `files` is the
-// deterministic list of exactly ten milestone assets as
+// deterministic list of exactly four milestone assets as
 // `{ name, size, sha256 }`. The written filename is
-// `programa-milestone-payload.json`. Verification requires exactly those ten
+// `programa-milestone-payload.json`. Verification requires exactly those four
 // payloads plus that manifest, validates its exact JSON schema, and hashes the
 // downloaded bytes rather than trusting metadata.
 const {
@@ -34,12 +34,6 @@ function expectedNames(build = BUILD) {
     `programa-dSYMs-${build}.zip`,
     `programa-macos-${build}.dmg`,
     "programa-macos.dmg",
-    `programad-remote-checksums-${build}.txt`,
-    `programad-remote-darwin-amd64-${build}`,
-    `programad-remote-darwin-arm64-${build}`,
-    `programad-remote-linux-amd64-${build}`,
-    `programad-remote-linux-arm64-${build}`,
-    `programad-remote-manifest-${build}.json`,
   ];
 }
 
@@ -56,7 +50,7 @@ function sha256(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
-test("manifest creation records the exact ten milestone files and their bytes", (t) => {
+test("manifest creation records the exact four milestone files and their bytes", (t) => {
   const directory = fixture(t);
   const manifest = createMilestoneManifest({ directory, build: BUILD });
 
@@ -123,7 +117,10 @@ test("verification rejects missing, extra, tampered, and wrong-build downloads",
   await t.test("wrong requested build", (t) => {
     const directory = fixture(t);
     writeMilestoneManifest({ directory, build: BUILD });
-    assert.throws(() => verifyMilestonePayload({ directory, build: "41" }), /build|manifest/i);
+    assert.throws(
+      () => verifyMilestonePayload({ directory, build: "41" }),
+      /build|manifest|missing|unexpected/i,
+    );
   });
 });
 

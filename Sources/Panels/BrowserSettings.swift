@@ -7,13 +7,6 @@ struct BrowserProxyEndpoint: Equatable {
     let port: Int
 }
 
-struct BrowserRemoteWorkspaceStatus: Equatable {
-    let target: String
-    let connectionState: WorkspaceRemoteConnectionState
-    let heartbeatCount: Int
-    let lastHeartbeatAt: Date?
-}
-
 enum GhosttyBackgroundTheme {
     static func clampedOpacity(_ opacity: Double) -> CGFloat {
         CGFloat(max(0.0, min(1.0, opacity)))

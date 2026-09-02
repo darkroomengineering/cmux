@@ -853,14 +853,16 @@ class TerminalController {
         }
     }
 
-    nonisolated static func parseRemotePortScanKickReason(
-        _ rawReason: String
-    ) -> WorkspaceRemoteSessionController.PortScanKickReason? {
+    /// `surface.ports_kick` still validates and canonicalizes its optional `reason`
+    /// argument so callers that send a typo get `invalid_params` instead of a silent
+    /// no-op, and the response echoes the same canonical value it always did. The value
+    /// no longer selects a scan strategy.
+    nonisolated static func normalizedPortScanKickReason(_ rawReason: String) -> String? {
         switch rawReason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "command", "running", "foreground", "start":
-            return .command
+            return "command"
         case "refresh", "prompt", "idle":
-            return .refresh
+            return "refresh"
         default:
             return nil
         }
@@ -1996,18 +1998,6 @@ class TerminalController {
             return v2Result(id: id, self.v2WorkspaceLast(params: params))
         case "workspace.equalize_splits":
             return v2Result(id: id, self.v2WorkspaceEqualizeSplits(params: params))
-        case "workspace.remote.configure":
-            return v2Result(id: id, self.v2WorkspaceRemoteConfigure(params: params))
-        case "workspace.remote.foreground_auth_ready":
-            return v2Result(id: id, self.v2WorkspaceRemoteForegroundAuthReady(params: params))
-        case "workspace.remote.reconnect":
-            return v2Result(id: id, self.v2WorkspaceRemoteReconnect(params: params))
-        case "workspace.remote.disconnect":
-            return v2Result(id: id, self.v2WorkspaceRemoteDisconnect(params: params))
-        case "workspace.remote.status":
-            return v2Result(id: id, self.v2WorkspaceRemoteStatus(params: params))
-        case "workspace.remote.terminal_session_end":
-            return v2Result(id: id, self.v2WorkspaceRemoteTerminalSessionEnd(params: params))
         case "workspace.set_status":
             return v2Result(id: id, self.v2WorkspaceSetStatus(params: params))
         case "workspace.clear_status":

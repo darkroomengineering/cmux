@@ -212,7 +212,7 @@ for (const asset of manifest.assets) {
 NODE
   cut -f2 "${metadata}" | LC_ALL=C sort > "${candidate_dir}/actual-names"
   { cut -f1 "${expected_tsv}"; printf '%s\n' "${SEAL_NAME}"; } | LC_ALL=C sort > "${candidate_dir}/expected-names"
-  cmp -s "${candidate_dir}/actual-names" "${candidate_dir}/expected-names" || fail "sealed candidate ${tag} does not contain exact ten payloads plus seal"
+  cmp -s "${candidate_dir}/actual-names" "${candidate_dir}/expected-names" || fail "sealed candidate ${tag} does not contain the exact payload set plus seal"
 
   while IFS=$'\t' read -r name size sha extra; do
     [[ -n "${name}" && -z "${extra:-}" ]] || fail "candidate ${tag} seal produced malformed asset metadata"
@@ -220,13 +220,12 @@ NODE
   done < "${expected_tsv}"
 
   node - "${STATE_MODULE}" "${normalized}" "${payload_dir}/appcast.xml" \
-    "${payload_dir}/programad-remote-manifest-${BUILD}.json" "${REPOSITORY}" "${DESTINATION_TAG}" <<'NODE'
+    "${REPOSITORY}" "${DESTINATION_TAG}" <<'NODE'
 const fs = require("node:fs");
-const [modulePath, manifestPath, appcastPath, daemonPath, repository, tag] = process.argv.slice(2);
+const [modulePath, manifestPath, appcastPath, repository, tag] = process.argv.slice(2);
 const { validateReleasePayloadReferences } = require(modulePath);
 validateReleasePayloadReferences({
   appcastXml: fs.readFileSync(appcastPath, "utf8"),
-  daemonManifestJson: fs.readFileSync(daemonPath, "utf8"),
   repository,
   tag,
   manifest: require(manifestPath),

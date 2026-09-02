@@ -714,15 +714,6 @@ final class BrowserPanel: Panel, ObservableObject {
     var developerToolsRestoreRetryAttempt: Int = 0
     let developerToolsRestoreRetryDelay: TimeInterval = 0.05
     let developerToolsRestoreRetryMaxAttempts: Int = 40
-    private var remoteProxyEndpoint: BrowserProxyEndpoint?
-    @Published private(set) var remoteWorkspaceStatus: BrowserRemoteWorkspaceStatus?
-    private var usesRemoteWorkspaceProxy: Bool
-    private struct PendingRemoteNavigation {
-        let request: URLRequest
-        let recordTypedNavigation: Bool
-        let preserveRestoredSessionHistory: Bool
-    }
-    private var pendingRemoteNavigation: PendingRemoteNavigation?
     private var browserStateRestoreGeneration = UUID()
     private var browserStateRestoreLease: TerminalController.V2BrowserStateRestoreLeaseCoordinator.Lease?
     private var browserStateRestoreNavigationWaiter: BrowserStateRestoreNavigationWaiter?
@@ -1089,10 +1080,7 @@ final class BrowserPanel: Panel, ObservableObject {
         workspaceId: UUID,
         profileID: UUID? = nil,
         initialURL: URL? = nil,
-        bypassInsecureHTTPHostOnce: String? = nil,
-        proxyEndpoint: BrowserProxyEndpoint? = nil,
-        isRemoteWorkspace: Bool = false,
-        remoteWebsiteDataStoreIdentifier: UUID? = nil
+        bypassInsecureHTTPHostOnce: String? = nil
     ) {
         self.id = UUID()
         self.workspaceId = workspaceId
@@ -1103,12 +1091,8 @@ final class BrowserPanel: Panel, ObservableObject {
         self.profileID = resolvedProfileID
         self.historyStore = BrowserProfileStore.shared.historyStore(for: resolvedProfileID)
         self.insecureHTTPBypassHostOnce = BrowserInsecureHTTPSettings.normalizeHost(bypassInsecureHTTPHostOnce ?? "")
-        self.remoteProxyEndpoint = proxyEndpoint
-        self.usesRemoteWorkspaceProxy = isRemoteWorkspace
         self.browserThemeMode = BrowserThemeSettings.mode()
-        self.websiteDataStore = isRemoteWorkspace
-            ? WKWebsiteDataStore(forIdentifier: remoteWebsiteDataStoreIdentifier ?? workspaceId)
-            : BrowserProfileStore.shared.websiteDataStore(for: resolvedProfileID)
+        self.websiteDataStore = BrowserProfileStore.shared.websiteDataStore(for: resolvedProfileID)
 
         let webView = Self.makeWebView(
             profileID: resolvedProfileID,
@@ -1116,7 +1100,7 @@ final class BrowserPanel: Panel, ObservableObject {
         )
         self.webView = webView
         self.insecureHTTPAlertFactory = { NSAlert() }
-        applyRemoteProxyConfigurationIfAvailable()
+        applyUserProxyConfiguration()
         BrowserProfileStore.shared.noteUsed(resolvedProfileID)
 
         // Set up navigation delegate
@@ -1218,40 +1202,10 @@ final class BrowserPanel: Panel, ObservableObject {
         }
     }
 
-    func setRemoteProxyEndpoint(_ endpoint: BrowserProxyEndpoint?) {
-        guard remoteProxyEndpoint != endpoint else { return }
-        invalidateBrowserStateRestore(with: .unavailable)
-        remoteProxyEndpoint = endpoint
-        applyRemoteProxyConfigurationIfAvailable()
-        resumePendingRemoteNavigationIfNeeded()
-    }
-
-    func setRemoteWorkspaceStatus(_ status: BrowserRemoteWorkspaceStatus?) {
-        guard remoteWorkspaceStatus != status else { return }
-        remoteWorkspaceStatus = status
-    }
-
-    private func applyRemoteProxyConfigurationIfAvailable() {
+    /// Applies the `browser.proxy` user setting to this panel's data store, or clears
+    /// any proxy configuration when the setting is absent or malformed.
+    private func applyUserProxyConfiguration() {
         let store = webView.configuration.websiteDataStore
-
-        // Relay endpoint takes precedence: when active, configure both SOCKS and
-        // HTTP CONNECT so the SSH relay can intercept all WebView traffic.
-        if let endpoint = remoteProxyEndpoint {
-            let host = endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !host.isEmpty,
-                  endpoint.port > 0 && endpoint.port <= 65535,
-                  let nwPort = NWEndpoint.Port(rawValue: UInt16(endpoint.port)) else {
-                store.proxyConfigurations = []
-                return
-            }
-            let nwEndpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: nwPort)
-            let socks = ProxyConfiguration(socksv5Proxy: nwEndpoint)
-            let connect = ProxyConfiguration(httpCONNECTProxy: nwEndpoint)
-            store.proxyConfigurations = [socks, connect]
-            return
-        }
-
-        // No relay endpoint — apply the user-configured proxy if set, else clear.
         if let descriptor = BrowserUserProxySettings.descriptor() {
             guard let nwPort = NWEndpoint.Port(rawValue: UInt16(descriptor.port)) else {
                 store.proxyConfigurations = []
@@ -1286,23 +1240,12 @@ final class BrowserPanel: Panel, ObservableObject {
         workspaceId = newWorkspaceId
     }
 
-    func reattachToWorkspace(
-        _ newWorkspaceId: UUID,
-        isRemoteWorkspace: Bool,
-        remoteWebsiteDataStoreIdentifier: UUID? = nil,
-        proxyEndpoint: BrowserProxyEndpoint?,
-        remoteStatus: BrowserRemoteWorkspaceStatus?
-    ) {
+    func reattachToWorkspace(_ newWorkspaceId: UUID) {
         invalidateBrowserStateRestoreForWorkspaceTransfer()
         workspaceId = newWorkspaceId
-        usesRemoteWorkspaceProxy = isRemoteWorkspace
-        let targetStore = isRemoteWorkspace
-            ? WKWebsiteDataStore(forIdentifier: remoteWebsiteDataStoreIdentifier ?? newWorkspaceId)
-            : BrowserProfileStore.shared.websiteDataStore(for: profileID)
+        let targetStore = BrowserProfileStore.shared.websiteDataStore(for: profileID)
         let needsStoreSwap = webView.configuration.websiteDataStore !== targetStore
         websiteDataStore = targetStore
-        remoteProxyEndpoint = proxyEndpoint
-        remoteWorkspaceStatus = remoteStatus
         if needsStoreSwap {
             replaceWebViewPreservingState(
                 from: webView,
@@ -1310,8 +1253,7 @@ final class BrowserPanel: Panel, ObservableObject {
                 reason: "workspace_reattach"
             )
         }
-        applyRemoteProxyConfigurationIfAvailable()
-        resumePendingRemoteNavigationIfNeeded()
+        applyUserProxyConfiguration()
     }
 
     @discardableResult
@@ -1357,9 +1299,7 @@ final class BrowserPanel: Panel, ObservableObject {
         historyStore = BrowserProfileStore.shared.historyStore(for: resolvedProfileID)
         BrowserProfileStore.shared.noteUsed(resolvedProfileID)
 
-        if !usesRemoteWorkspaceProxy {
-            websiteDataStore = BrowserProfileStore.shared.websiteDataStore(for: resolvedProfileID)
-        }
+        websiteDataStore = BrowserProfileStore.shared.websiteDataStore(for: resolvedProfileID)
 
         let replacement = Self.makeWebView(
             profileID: resolvedProfileID,
@@ -1446,7 +1386,7 @@ final class BrowserPanel: Panel, ObservableObject {
     }
 
     private func resolvedLiveSessionHistoryURL() -> URL? {
-        if let webViewURL = Self.remoteProxyDisplayURL(for: webView.url),
+        if let webViewURL = webView.url,
            Self.serializableSessionHistoryURLString(webViewURL) != nil {
             return webViewURL
         }
@@ -1581,7 +1521,7 @@ final class BrowserPanel: Panel, ObservableObject {
         let urlObserver = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
             Task { @MainActor in
                 guard let self, self.isCurrentWebView(webView, instanceID: observedWebViewInstanceID) else { return }
-                self.currentURL = Self.remoteProxyDisplayURL(for: webView.url)
+                self.currentURL = webView.url
             }
         }
         webViewObservers.append(urlObserver)
@@ -1690,7 +1630,7 @@ final class BrowserPanel: Panel, ObservableObject {
         invalidateBrowserStateRestore(with: .unavailable)
 
         let wasRenderable = shouldRenderWebView
-        let restoreURL = Self.remoteProxyDisplayURL(for: oldWebView.url) ?? currentURL
+        let restoreURL = oldWebView.url ?? currentURL
         let restoreURLString = restoreURL?.absoluteString
         let shouldRestoreURL = wasRenderable && restoreURLString != nil && restoreURLString != blankURLString
         let history = sessionNavigationHistorySnapshot()
@@ -1782,7 +1722,7 @@ final class BrowserPanel: Panel, ObservableObject {
 
         // If nothing meaningful is loaded yet, prefer letting the omnibar take focus.
         if !webView.isLoading {
-            let urlString = Self.remoteProxyDisplayURL(for: webView.url)?.absoluteString ?? currentURL?.absoluteString
+            let urlString = webView.url?.absoluteString ?? currentURL?.absoluteString
             if urlString == nil || urlString == "about:blank" {
                 return
             }
@@ -1999,40 +1939,20 @@ final class BrowserPanel: Panel, ObservableObject {
             req.timeoutInterval = 2.0
             req.cachePolicy = .returnCacheDataElseLoad
             req.setValue(BrowserUserAgentSettings.safariUserAgent, forHTTPHeaderField: "User-Agent")
-            let effectiveRequest = remoteProxyPreparedRequest(from: req, logScope: "faviconRewrite")
-
             let data: Data
             let response: URLResponse
             do {
-                let remoteSession = remoteProxyURLSession()
-                defer { remoteSession?.finishTasksAndInvalidate() }
-                if let remoteSession {
 #if DEBUG
-                    dlog(
-                        "browser.favicon.fetch " +
-                        "panel=\(id.uuidString.prefix(5)) " +
-                        "via=proxy " +
-                        "url=\(effectiveRequest.url?.absoluteString ?? "<nil>")"
-                    )
+                dlog(
+                    "browser.favicon.fetch " +
+                    "panel=\(id.uuidString.prefix(5)) " +
+                    "url=\(req.url?.absoluteString ?? "<nil>")"
+                )
 #endif
-                    (data, response) = try await Self.loadBoundedFaviconData(
-                        for: effectiveRequest,
-                        session: remoteSession
-                    )
-                } else {
-#if DEBUG
-                    dlog(
-                        "browser.favicon.fetch " +
-                        "panel=\(id.uuidString.prefix(5)) " +
-                        "via=direct " +
-                        "url=\(effectiveRequest.url?.absoluteString ?? "<nil>")"
-                    )
-#endif
-                    (data, response) = try await Self.loadBoundedFaviconData(
-                        for: effectiveRequest,
-                        session: .shared
-                    )
-                }
+                (data, response) = try await Self.loadBoundedFaviconData(
+                    for: req,
+                    session: .shared
+                )
             } catch {
 #if DEBUG
                 dlog(
@@ -2308,10 +2228,8 @@ final class BrowserPanel: Panel, ObservableObject {
     ) -> BrowserStateRestoreNavigationStartOutcome {
         guard browserStateRestoreNavigationWaiter == nil else { return .busy }
         guard !browserShouldBlockInsecureHTTPURL(url) else { return .permissionDenied }
-        guard !usesRemoteWorkspaceProxy || remoteProxyEndpoint != nil else { return .unavailable }
 
-        let request = URLRequest(url: url)
-        let effectiveRequest = remoteProxyPreparedRequest(from: request, logScope: "stateRestore")
+        let effectiveRequest = URLRequest(url: url)
         guard let effectiveURL = effectiveRequest.url else { return .unavailable }
 
         let restoreWebView = webView
@@ -2499,37 +2417,11 @@ final class BrowserPanel: Panel, ObservableObject {
         if preserveRestoredSessionHistory, browserShouldBlockInsecureHTTPURL(url) {
             dilog("browser.restore", "insecure_http_reload_without_prompt host=\(url.host ?? "-")")
         }
-        if usesRemoteWorkspaceProxy, remoteProxyEndpoint == nil {
-            pendingRemoteNavigation = PendingRemoteNavigation(
-                request: request,
-                recordTypedNavigation: recordTypedNavigation,
-                preserveRestoredSessionHistory: preserveRestoredSessionHistory
-            )
-            shouldRenderWebView = true
-            currentURL = Self.remoteProxyDisplayURL(for: url) ?? url
-            navigationDelegate?.lastAttemptedURL = url
-            return
-        }
         performNavigation(
             request: request,
             originalURL: url,
             recordTypedNavigation: recordTypedNavigation,
             preserveRestoredSessionHistory: preserveRestoredSessionHistory
-        )
-    }
-
-    private func resumePendingRemoteNavigationIfNeeded() {
-        guard remoteProxyEndpoint != nil,
-              let pendingRemoteNavigation else {
-            return
-        }
-        self.pendingRemoteNavigation = nil
-        guard let originalURL = pendingRemoteNavigation.request.url else { return }
-        performNavigation(
-            request: pendingRemoteNavigation.request,
-            originalURL: originalURL,
-            recordTypedNavigation: pendingRemoteNavigation.recordTypedNavigation,
-            preserveRestoredSessionHistory: pendingRemoteNavigation.preserveRestoredSessionHistory
         )
     }
 
@@ -2542,7 +2434,6 @@ final class BrowserPanel: Panel, ObservableObject {
         if !preserveRestoredSessionHistory {
             abandonRestoredSessionHistoryIfNeeded()
         }
-        let effectiveRequest = remoteProxyPreparedRequest(from: request, logScope: "rewrite")
         // Some installs can end up with a legacy Chrome UA override; keep this pinned.
         webView.customUserAgent = BrowserUserAgentSettings.safariUserAgent
         shouldRenderWebView = true
@@ -2550,53 +2441,7 @@ final class BrowserPanel: Panel, ObservableObject {
             historyStore.recordTypedNavigation(url: originalURL)
         }
         navigationDelegate?.lastAttemptedURL = originalURL
-        browserLoadRequest(effectiveRequest, in: webView)
-    }
-
-    private func remoteProxyPreparedRequest(from request: URLRequest, logScope: String) -> URLRequest {
-        guard remoteProxyEndpoint != nil else { return request }
-        guard let url = request.url else { return request }
-        guard let rewrittenURL = Self.remoteProxyLoopbackAliasURL(for: url) else { return request }
-
-        var rewrittenRequest = request
-        rewrittenRequest.url = rewrittenURL
-#if DEBUG
-        dlog(
-            "browser.remoteProxy.\(logScope) " +
-            "panel=\(id.uuidString.prefix(5)) " +
-            "from=\(url.absoluteString) " +
-            "to=\(rewrittenURL.absoluteString)"
-        )
-#endif
-        return rewrittenRequest
-    }
-
-    private func remoteProxyURLSession() -> URLSession? {
-        guard let endpoint = remoteProxyEndpoint else { return nil }
-        let host = endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !host.isEmpty, endpoint.port > 0, endpoint.port <= 65535 else { return nil }
-
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.requestCachePolicy = .returnCacheDataElseLoad
-        configuration.timeoutIntervalForRequest = 2.0
-        configuration.timeoutIntervalForResource = 4.0
-        configuration.connectionProxyDictionary = [
-            kCFNetworkProxiesSOCKSEnable as String: 1,
-            kCFNetworkProxiesSOCKSProxy as String: host,
-            kCFNetworkProxiesSOCKSPort as String: endpoint.port,
-        ]
-        return URLSession(configuration: configuration)
-    }
-
-    static func remoteProxyDisplayURL(for url: URL?) -> URL? {
-        WorkspaceRemoteLoopbackPolicy.displayURL(for: url)
-    }
-
-    // Internal so the browser-to-proxy routing contract can be exercised as one
-    // behavioral path by the unit tests. Keep this as the production implementation,
-    // rather than duplicating the URL transformation in a test-only helper.
-    static func remoteProxyLoopbackAliasURL(for url: URL) -> URL? {
-        WorkspaceRemoteLoopbackPolicy.browserAliasURL(for: url)
+        browserLoadRequest(request, in: webView)
     }
 
     /// Navigate with smart URL/search detection

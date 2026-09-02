@@ -323,71 +323,12 @@ class GhosttyApp {
                 case .insertText(let text):
                     completeClipboardRequest(with: text)
                 case .fileURLs(let fileURLs):
-                    let operation = TerminalImageTransferOperation()
-                    terminalSurface.hostedView.beginImageTransferIndicator(
-                        for: operation,
-                        onCancel: {
-                            completeClipboardRequest(with: "")
-                        }
-                    )
-
-                    let target = terminalSurface.resolvedImageTransferTarget()
-                    let plan = TerminalImageTransferPlanner.plan(
-                        fileURLs: fileURLs,
-                        target: target
-                    )
-
-                    TerminalImageTransferPlanner.execute(
-                        plan: plan,
-                        operation: operation,
-                        uploadWorkspaceRemote: { fileURLs, operation, finish in
-                            guard let workspace = MainActor.assumeIsolated({
-                                terminalSurface.owningWorkspace()
-                            }) else {
-                                finish(.failure(NSError(domain: "programa.remote.paste", code: 3)))
-                                GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
-                                return
-                            }
-                            workspace.uploadDroppedFilesForRemoteTerminal(
-                                fileURLs,
-                                operation: operation,
-                                completion: { result in
-                                    finish(result)
-                                    GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
-                                }
-                            )
-                        },
-                        uploadDetectedSSH: { session, fileURLs, operation, finish in
-                            session.uploadDroppedFiles(
-                                fileURLs,
-                                operation: operation,
-                                completion: { result in
-                                    finish(result)
-                                    GhosttyPasteboardHelper.cleanupTransferredTemporaryImageFiles(fileURLs)
-                                }
-                            )
-                        },
-                        insertText: { text in
-                            MainActor.assumeIsolated {
-                                terminalSurface.hostedView.endImageTransferIndicator(
-                                    for: operation
-                                )
-                            }
-                            completeClipboardRequest(with: text)
-                        },
-                        onFailure: { _ in
-                            MainActor.assumeIsolated {
-                                terminalSurface.hostedView.endImageTransferIndicator(
-                                    for: operation
-                                )
-                            }
-                            NSSound.beep()
-#if DEBUG
-                            dlog("terminal.remotePasteUpload.failed surface=\(callbackSurfaceId.uuidString.prefix(5))")
-#endif
-                            completeClipboardRequest(with: "")
-                        }
-                    )
+                    switch TerminalImageTransferPlanner.plan(fileURLs: fileURLs) {
+                    case .insertText(let text):
+                        completeClipboardRequest(with: text)
+                    case .reject:
+                        completeClipboardRequest(with: "")
+                    }
                 }
             }
         }

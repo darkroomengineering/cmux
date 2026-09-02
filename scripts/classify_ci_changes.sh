@@ -2,7 +2,6 @@
 set -euo pipefail
 
 RUN_APP_JOBS=false
-RUN_REMOTE_DAEMON_JOBS=false
 SAW_CHANGED_PATH=false
 
 while IFS= read -r path || [[ -n "$path" ]]; do
@@ -30,9 +29,6 @@ while IFS= read -r path || [[ -n "$path" ]]; do
     .github/*)
       continue
       ;;
-    daemon/**)
-      RUN_REMOTE_DAEMON_JOBS=true
-      ;;
     *)
       RUN_APP_JOBS=true
       ;;
@@ -41,8 +37,6 @@ done
 
 if [[ "$SAW_CHANGED_PATH" == "false" ]]; then
   RUN_APP_JOBS=true
-  RUN_REMOTE_DAEMON_JOBS=true
 fi
 
 printf 'run_app_jobs=%s\n' "$RUN_APP_JOBS"
-printf 'run_remote_daemon_jobs=%s\n' "$RUN_REMOTE_DAEMON_JOBS"

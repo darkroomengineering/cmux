@@ -1191,33 +1191,6 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
 #endif
     }
 
-    func testRemoteStatusPayloadOmitsSensitiveSSHConfiguration() {
-        let tabManager = TabManager()
-        let workspace = tabManager.addWorkspace(select: false, eagerLoadTerminal: false)
-
-        workspace.configureRemoteConnection(
-            .init(
-                destination: "example.com",
-                port: 2222,
-                identityFile: "/Users/test/.ssh/id_ed25519",
-                sshOptions: ["ControlMaster=auto", "ControlPersist=600"],
-                localProxyPort: 1080,
-                relayPort: 4444,
-                relayID: "relay-id",
-                relayToken: "relay-token",
-                localSocketPath: "/tmp/programa-test.sock",
-                terminalStartupCommand: "ssh example.com"
-            ),
-            autoConnect: false
-        )
-
-        let payload = workspace.remoteStatusPayload()
-        XCTAssertNil(payload["identity_file"])
-        XCTAssertNil(payload["ssh_options"])
-        XCTAssertEqual(payload["has_identity_file"] as? Bool, true)
-        XCTAssertEqual(payload["has_ssh_options"] as? Bool, true)
-    }
-
     func testNotificationCreateUsesExplicitSurfaceIDWhenProvided() async throws {
         let socketPath = makeSocketPath("notify-surface")
         let store = TerminalNotificationStore.shared
@@ -2798,17 +2771,6 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         XCTAssertEqual(workspace.agentPIDs["agent-0"], pid_t.max)
         XCTAssertEqual(workspace.agentPIDs.count, SidebarTelemetryLimits.maxAgentPIDs)
 
-        let exactDiagnostic = String(repeating: "e", count: SidebarTelemetryLimits.maxLogMessageBytes)
-        workspace.applyRemoteConnectionStateUpdate(.connecting, detail: exactDiagnostic, target: "example")
-        XCTAssertEqual(workspace.remoteConnectionDetail, exactDiagnostic)
-        workspace.applyRemoteConnectionStateUpdate(.connecting, detail: exactDiagnostic + "e", target: "example")
-        XCTAssertEqual(workspace.remoteConnectionDetail, exactDiagnostic)
-
-        workspace.applyRemoteDaemonStatusUpdate(
-            WorkspaceRemoteDaemonStatus(state: .ready, detail: exactDiagnostic + "e"),
-            target: "example"
-        )
-        XCTAssertEqual(workspace.remoteDaemonStatus.detail, exactDiagnostic)
     }
 
     func testNewAgentRefreshInvalidatesResultsAlreadyValidatedForPublication() async {

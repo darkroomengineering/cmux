@@ -6,19 +6,8 @@ enum TerminalImageTransferMode {
     case drop
 }
 
-enum TerminalRemoteUploadTarget: Equatable {
-    case workspaceRemote
-    case detectedSSH(DetectedSSHSession)
-}
-
-enum TerminalImageTransferTarget: Equatable {
-    case local
-    case remote(TerminalRemoteUploadTarget)
-}
-
 enum TerminalImageTransferPlan: Equatable {
     case insertText(String)
-    case uploadFiles([URL], TerminalRemoteUploadTarget)
     case reject
 }
 
@@ -112,27 +101,9 @@ final class TerminalImageTransferOperation: @unchecked Sendable {
 enum TerminalImageTransferPlanner {
     static func plan(
         pasteboard: NSPasteboard,
-        mode: TerminalImageTransferMode,
-        target: TerminalImageTransferTarget
+        mode: TerminalImageTransferMode
     ) -> TerminalImageTransferPlan {
-        plan(
-            preparedContent: prepare(pasteboard: pasteboard, mode: mode),
-            target: target
-        )
-    }
-
-    static func plan(
-        pasteboard: NSPasteboard,
-        mode: TerminalImageTransferMode,
-        resolveTarget: () -> TerminalImageTransferTarget
-    ) -> TerminalImageTransferPlan {
-        let preparedContent = prepare(pasteboard: pasteboard, mode: mode)
-        switch preparedContent {
-        case .insertText, .reject:
-            return plan(preparedContent: preparedContent, target: .local)
-        case .fileURLs:
-            return plan(preparedContent: preparedContent, target: resolveTarget())
-        }
+        plan(preparedContent: prepare(pasteboard: pasteboard, mode: mode))
     }
 
     static func prepare(
@@ -148,85 +119,21 @@ enum TerminalImageTransferPlanner {
     }
 
     static func plan(
-        preparedContent: TerminalImageTransferPreparedContent,
-        target: TerminalImageTransferTarget
+        preparedContent: TerminalImageTransferPreparedContent
     ) -> TerminalImageTransferPlan {
         switch preparedContent {
         case .insertText(let text):
             return .insertText(text)
         case .fileURLs(let fileURLs):
-            return plan(fileURLs: fileURLs, target: target)
+            return plan(fileURLs: fileURLs)
         case .reject:
             return .reject
         }
     }
 
-    static func plan(fileURLs: [URL], target: TerminalImageTransferTarget) -> TerminalImageTransferPlan {
+    static func plan(fileURLs: [URL]) -> TerminalImageTransferPlan {
         guard !fileURLs.isEmpty else { return .reject }
-
-        switch target {
-        case .local:
-            return .insertText(insertedText(for: fileURLs))
-        case .remote(let remoteTarget):
-            guard fileURLs.allSatisfy(isRemoteUploadableFileURL) else {
-                return .insertText(insertedText(for: fileURLs))
-            }
-            return .uploadFiles(fileURLs, remoteTarget)
-        }
-    }
-
-    @discardableResult
-    static func executeForTesting(
-        plan: TerminalImageTransferPlan,
-        operation: TerminalImageTransferOperation? = nil,
-        uploadWorkspaceRemote: ([URL], TerminalImageTransferOperation, @escaping (Result<[String], Error>) -> Void) -> Void,
-        uploadDetectedSSH: (DetectedSSHSession, [URL], TerminalImageTransferOperation, @escaping (Result<[String], Error>) -> Void) -> Void,
-        insertText: @escaping (String) -> Void,
-        onFailure: @escaping (Error) -> Void
-    ) -> TerminalImageTransferOperation? {
-        execute(
-            plan: plan,
-            operation: operation,
-            uploadWorkspaceRemote: uploadWorkspaceRemote,
-            uploadDetectedSSH: uploadDetectedSSH,
-            insertText: insertText,
-            onFailure: onFailure
-        )
-    }
-
-    @discardableResult
-    static func execute(
-        plan: TerminalImageTransferPlan,
-        operation: TerminalImageTransferOperation? = nil,
-        uploadWorkspaceRemote: ([URL], TerminalImageTransferOperation, @escaping (Result<[String], Error>) -> Void) -> Void,
-        uploadDetectedSSH: (DetectedSSHSession, [URL], TerminalImageTransferOperation, @escaping (Result<[String], Error>) -> Void) -> Void,
-        insertText: @escaping (String) -> Void,
-        onFailure: @escaping (Error) -> Void
-    ) -> TerminalImageTransferOperation? {
-        switch plan {
-        case .insertText(let text):
-            if let operation, !operation.finish() {
-                return operation
-            }
-            insertText(text)
-            return operation
-        case .uploadFiles(let fileURLs, .workspaceRemote):
-            let operation = operation ?? TerminalImageTransferOperation()
-            uploadWorkspaceRemote(fileURLs, operation) { result in
-                guard operation.finish() else { return }
-                finishUpload(result: result, insertText: insertText, onFailure: onFailure)
-            }
-            return operation
-        case .uploadFiles(let fileURLs, .detectedSSH(let session)):
-            let operation = operation ?? TerminalImageTransferOperation()
-            uploadDetectedSSH(session, fileURLs, operation) { result in
-                guard operation.finish() else { return }
-                finishUpload(result: result, insertText: insertText, onFailure: onFailure)
-            }
-            return operation
-        case .reject:
-            return operation
-        }
+        return .insertText(insertedText(for: fileURLs))
     }
 
     static func escapeForShell(_ value: String) -> String {
@@ -237,16 +144,6 @@ enum TerminalImageTransferPlanner {
         fileURLs
             .map { escapeForShell($0.path) }
             .joined(separator: " ")
-    }
-
-    private static func isRemoteUploadableFileURL(_ fileURL: URL) -> Bool {
-        let normalizedFileURL = fileURL.standardizedFileURL
-        guard normalizedFileURL.isFileURL,
-              let resourceValues = try? normalizedFileURL.resourceValues(forKeys: [.isRegularFileKey]),
-              resourceValues.isRegularFile == true else {
-            return false
-        }
-        return true
     }
 
     private static func preparePaste(
@@ -307,40 +204,5 @@ enum TerminalImageTransferPlanner {
             return []
         }
         return urls.filter(\.isFileURL)
-    }
-
-    private static func finishUpload(
-        result: Result<[String], Error>,
-        insertText: @escaping (String) -> Void,
-        onFailure: @escaping (Error) -> Void
-    ) {
-        switch result {
-        case .success(let remotePaths):
-            let content = remotePaths
-                .map(escapeForShell)
-                .joined(separator: " ")
-            guard !content.isEmpty else {
-                onFailure(NSError(domain: "programa.remote.drop", code: 5))
-                return
-            }
-            insertText(content)
-        case .failure(let error):
-            onFailure(error)
-        }
-    }
-}
-
-extension TerminalSurface {
-    @MainActor
-    func resolvedImageTransferTarget() -> TerminalImageTransferTarget {
-        guard let workspace = owningWorkspace() else { return .local }
-        if workspace.isRemoteTerminalSurface(id) {
-            return .remote(.workspaceRemote)
-        }
-        if let ttyName = workspace.surfaceTTYNames[id],
-           let session = TerminalSSHSessionDetector.detect(forTTY: ttyName) {
-            return .remote(.detectedSSH(session))
-        }
-        return .local
     }
 }

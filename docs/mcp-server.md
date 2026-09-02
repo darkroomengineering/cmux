@@ -137,8 +137,6 @@ Deliberate omissions, not oversights:
   Programa's browser panels, unrelated to terminal control. A candidate for a later pass.
 - **Debug methods** (`debug.*`). DEBUG builds only, and mostly UI-test hooks that can
   synthesize keystrokes and activate the app.
-- **Remote sessions** (`workspace.remote.*`). The SSH control plane belongs to the remote
-  daemon and has its own lifecycle.
 - **App chrome** (`auth.login`, `settings.open`, `feedback.*`, `markdown.open`) and
   app-wide test hooks (`app.*`).
 

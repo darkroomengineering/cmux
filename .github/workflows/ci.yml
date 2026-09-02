@@ -9,7 +9,6 @@ on:
       - "Sources/**"
       - "CLI/**"
       - "CLI-MCP/**"
-      - "daemon/**"
       - "programaTests/**"
       - "tests/**"
       - "tests_v2/**"
@@ -64,7 +63,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run_app_jobs: ${{ steps.detect.outputs.run_app_jobs }}
-      run_remote_daemon_jobs: ${{ steps.detect.outputs.run_remote_daemon_jobs }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -88,7 +86,6 @@ jobs:
           # Keep full CI for push events and non-PR runs.
           if [[ "${{ github.event_name }}" != "pull_request" ]]; then
             echo "run_app_jobs=true" >> "$GITHUB_OUTPUT"
-            echo "run_remote_daemon_jobs=true" >> "$GITHUB_OUTPUT"
             echo "Changed files: full suite (non-PR context)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
@@ -99,9 +96,8 @@ jobs:
           CHANGED_FILES="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
           CLASSIFICATION="$(printf '%s' "$CHANGED_FILES" | ./scripts/classify_ci_changes.sh)"
           APP_OUTPUT="${CLASSIFICATION%%$'\n'*}"
-          REMOTE_OUTPUT="${CLASSIFICATION#*$'\n'}"
 
-          if [[ "$APP_OUTPUT" == "$CLASSIFICATION" || "$REMOTE_OUTPUT" == *$'\n'* ]]; then
+          if [[ "$APP_OUTPUT" != "$CLASSIFICATION" ]]; then
             echo "CI change classifier returned an invalid output shape" >&2
             exit 1
           fi
@@ -115,24 +111,13 @@ jobs:
               ;;
           esac
 
-          case "$REMOTE_OUTPUT" in
-            run_remote_daemon_jobs=true) RUN_REMOTE_DAEMON_JOBS=true ;;
-            run_remote_daemon_jobs=false) RUN_REMOTE_DAEMON_JOBS=false ;;
-            *)
-              echo "CI change classifier returned an invalid daemon result" >&2
-              exit 1
-              ;;
-          esac
-
           printf '%s\n' "$CLASSIFICATION" >> "$GITHUB_OUTPUT"
           {
             echo "### CI scope decision"
             if [[ "$RUN_APP_JOBS" == "true" ]]; then
               echo "Changed file set contains app-relevant changes; running full macOS jobs."
-            elif [[ "$RUN_REMOTE_DAEMON_JOBS" == "true" ]]; then
-              echo "Changed file set contains daemon-only changes; running remote daemon jobs."
             else
-              echo "Pull request appears docs/workflow/localization-only; skipping heavy app/daemon jobs."
+              echo "Pull request appears docs/workflow/localization-only; skipping heavy app jobs."
             fi
             echo ""
             echo "Changed files:"
@@ -186,26 +171,6 @@ jobs:
 
       - name: Validate Sparkle enclosure naming and pruning
         run: node --test scripts/sparkle_enclosure.test.js
-
-  remote-daemon-tests:
-    needs: change-detection
-    if: needs.change-detection.outputs.run_remote_daemon_jobs == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Setup Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version-file: daemon/remote/go.mod
-
-      - name: Run remote daemon tests
-        working-directory: daemon/remote
-        run: go test ./...
-
-      - name: Validate remote daemon release assets
-        run: ./tests/test_remote_daemon_release_assets.sh
 
   unit-tests:
     needs: change-detection

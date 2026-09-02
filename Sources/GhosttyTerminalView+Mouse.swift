@@ -138,8 +138,7 @@ extension GhosttyNSView {
         guard let surface = surface else { return nil }
 
         guard let termSurface = terminalSurface,
-              let workspace = termSurface.owningWorkspace(),
-              !workspace.isRemoteTerminalSurface(termSurface.id) else { return nil }
+              let workspace = termSurface.owningWorkspace() else { return nil }
 
         guard let cwd = resolvedWordPathWorkingDirectory(workspace: workspace, terminalSurface: termSurface) else {
             return nil

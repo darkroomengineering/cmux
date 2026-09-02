@@ -59,7 +59,6 @@ test("never prunes the stable download-button dmg or unrelated assets", () => {
     assetNames: [
       STABLE_DMG_NAME,
       "appcast.xml",
-      "programad-remote-darwin-arm64",
       "programa-macos-100.dmg",
       "programa-macos-200.dmg",
       "programa-macos-300.dmg",

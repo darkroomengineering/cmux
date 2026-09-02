@@ -13,7 +13,7 @@ set -euo pipefail
 # Passing --prepare-only computes and writes the exact seal, then exits with no
 # GitHub mutation. A later normal invocation with that existing --seal-output
 # must verify the prepared bytes against the current payload before creating or
-# changing a candidate. It uploads all ten payloads before uploading that exact
+# changing a candidate. It uploads every payload before uploading that exact
 # prepared seal last. This two-phase contract applies to rolling and milestone
 # candidates through the same CLI.
 #
@@ -25,7 +25,7 @@ set -euo pipefail
 # has the authoritative state-module shape `{schemaVersion:1,sealed:true,
 # targetSha,version,build,assets:[{name,role,size,sha256}]}`. Manifest sha256
 # values are bare lowercase hex; GitHub asset metadata uses `sha256:<hex>`.
-# Payload appcast and daemon-manifest URLs bind to the requested destination
+# Payload appcast URLs bind to the requested destination
 # tag. Archive candidates use their permanent build tag; legacy rolling
 # candidate coverage still verifies an explicitly requested `rolling` target.
 #
@@ -38,7 +38,7 @@ set -euo pipefail
 # persistent lock. It discovers the greatest sealed decimal build, validates
 # and downloads every candidate
 # asset through authenticated gh calls, then reconciles the rolling release.
-# Before mutation it verifies the seal and all ten payload attestations against the release
+# Before mutation it verifies the seal and all payload attestations against the release
 # workflow on refs/heads/main with self-hosted runners denied, and requires a
 # completed successful main-branch push CI run for the sealed target SHA.
 # Rolling's published build is a high-water mark: lower candidates cannot move
@@ -166,27 +166,6 @@ make_fixture() {
   mkdir -p "${dir}"
   printf 'enclosure-%s\n' "${build}" > "${dir}/programa-macos-${build}.dmg"
   printf 'dsym-%s\n' "${build}" > "${dir}/programa-dSYMs-${build}.zip"
-  for daemon in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
-    printf 'daemon-%s-%s\n' "${daemon}" "${build}" > "${dir}/programad-remote-${daemon}-${build}"
-  done
-  printf 'checksums-%s\n' "${build}" > "${dir}/programad-remote-checksums-${build}.txt"
-  local release_url="https://github.com/${REPOSITORY}/releases/download/${destination}"
-  cat > "${dir}/programad-remote-manifest-${build}.json" <<EOF
-{
-  "schemaVersion": 1,
-  "appVersion": "${version}",
-  "releaseTag": "${destination}",
-  "releaseURL": "${release_url}",
-  "checksumsAssetName": "programad-remote-checksums-${build}.txt",
-  "checksumsURL": "${release_url}/programad-remote-checksums-${build}.txt",
-  "entries": [
-    {"goOS":"darwin","goArch":"arm64","assetName":"programad-remote-darwin-arm64-${build}","downloadURL":"${release_url}/programad-remote-darwin-arm64-${build}","sha256":"$(sha256_file "${dir}/programad-remote-darwin-arm64-${build}")"},
-    {"goOS":"darwin","goArch":"amd64","assetName":"programad-remote-darwin-amd64-${build}","downloadURL":"${release_url}/programad-remote-darwin-amd64-${build}","sha256":"$(sha256_file "${dir}/programad-remote-darwin-amd64-${build}")"},
-    {"goOS":"linux","goArch":"arm64","assetName":"programad-remote-linux-arm64-${build}","downloadURL":"${release_url}/programad-remote-linux-arm64-${build}","sha256":"$(sha256_file "${dir}/programad-remote-linux-arm64-${build}")"},
-    {"goOS":"linux","goArch":"amd64","assetName":"programad-remote-linux-amd64-${build}","downloadURL":"${release_url}/programad-remote-linux-amd64-${build}","sha256":"$(sha256_file "${dir}/programad-remote-linux-amd64-${build}")"}
-  ]
-}
-EOF
   cp "${dir}/programa-macos-${build}.dmg" "${dir}/programa-macos.dmg"
   local enclosure_size
   enclosure_size="$(file_size "${dir}/programa-macos-${build}.dmg")"
@@ -226,35 +205,11 @@ write_invalid_appcast_item() {
     "${item}" > "${file}"
 }
 
-poison_daemon_manifest_url() {
-  local build="$1" file="${FIXTURE_DIR}/$1/programad-remote-manifest-$1.json"
-  cat > "${file}" <<EOF
-{
-  "schemaVersion":1,"appVersion":"0.64.73","releaseTag":"rolling",
-  "releaseURL":"https://github.com/${REPOSITORY}/releases/download/rolling",
-  "checksumsAssetName":"programad-remote-checksums-${build}.txt",
-  "checksumsURL":"https://github.com/attacker/example/releases/download/not-rolling/programad-remote-checksums-${build}.txt",
-  "entries":[
-    {"goOS":"darwin","goArch":"arm64","assetName":"programad-remote-darwin-arm64-${build}","downloadURL":"https://github.com/attacker/example/releases/download/not-rolling/programad-remote-darwin-arm64-${build}","sha256":"$(sha256_file "${FIXTURE_DIR}/${build}/programad-remote-darwin-arm64-${build}")"},
-    {"goOS":"darwin","goArch":"amd64","assetName":"programad-remote-darwin-amd64-${build}","downloadURL":"https://github.com/${REPOSITORY}/releases/download/rolling/programad-remote-darwin-amd64-${build}","sha256":"$(sha256_file "${FIXTURE_DIR}/${build}/programad-remote-darwin-amd64-${build}")"},
-    {"goOS":"linux","goArch":"arm64","assetName":"programad-remote-linux-arm64-${build}","downloadURL":"https://github.com/${REPOSITORY}/releases/download/rolling/programad-remote-linux-arm64-${build}","sha256":"$(sha256_file "${FIXTURE_DIR}/${build}/programad-remote-linux-arm64-${build}")"},
-    {"goOS":"linux","goArch":"amd64","assetName":"programad-remote-linux-amd64-${build}","downloadURL":"https://github.com/${REPOSITORY}/releases/download/rolling/programad-remote-linux-amd64-${build}","sha256":"$(sha256_file "${FIXTURE_DIR}/${build}/programad-remote-linux-amd64-${build}")"}
-  ]
-}
-EOF
-}
-
 fixture_roles() {
   local build="$1" dir="${FIXTURE_DIR}/$1"
   printf '%s\n' \
     "immutable=${dir}/programa-macos-${build}.dmg" \
     "immutable=${dir}/programa-dSYMs-${build}.zip" \
-    "immutable=${dir}/programad-remote-darwin-arm64-${build}" \
-    "immutable=${dir}/programad-remote-darwin-amd64-${build}" \
-    "immutable=${dir}/programad-remote-linux-arm64-${build}" \
-    "immutable=${dir}/programad-remote-linux-amd64-${build}" \
-    "immutable=${dir}/programad-remote-checksums-${build}.txt" \
-    "immutable=${dir}/programad-remote-manifest-${build}.json" \
     "appcast=${dir}/appcast.xml" \
     "stable-alias=${dir}/programa-macos.dmg"
 }
@@ -435,7 +390,7 @@ release_upload() {
     case "${corrupt}" in state:${name}) printf 'open\n' > "${dir}/state" ;; size:${name}) printf '1\n' > "${dir}/size" ;;
       digest:${name}) printf 'sha256:deadbeef\n' > "${dir}/digest" ;; esac
     mutation "upload-asset ${tag} ${name}"
-    if [[ "${tag}" == rolling && "${name}" == programad-remote-manifest-*.json && -n "${FAKE_GH_EXPOSE_MILESTONE_APPCAST:-}" ]]; then
+    if [[ "${tag}" == rolling && "${name}" == programa-dSYMs-*.zip && -n "${FAKE_GH_EXPOSE_MILESTONE_APPCAST:-}" ]]; then
       milestone_asset="$(asset_dir v0.63.0 appcast.xml)"
       cp "${FAKE_GH_EXPOSE_MILESTONE_APPCAST}" "${milestone_asset}/bytes"
       file_size "${FAKE_GH_EXPOSE_MILESTONE_APPCAST}" > "${milestone_asset}/size"
@@ -711,12 +666,9 @@ assert_candidate_sealed() {
     if (Object.keys(value).sort().join(",") !== "assets,build,schemaVersion,sealed,targetSha,version") process.exit(1);
     const expectedSha = BigInt(build).toString(16).padStart(40, "0");
     if (value.schemaVersion !== 1 || value.sealed !== true || value.build !== build || value.version !== version || value.targetSha !== expectedSha) process.exit(1);
-    if (!Array.isArray(value.assets) || value.assets.length !== 10) process.exit(1);
+    if (!Array.isArray(value.assets) || value.assets.length !== 4) process.exit(1);
     const expected = new Map([
       [`programa-macos-${build}.dmg`, "immutable"], [`programa-dSYMs-${build}.zip`, "immutable"],
-      [`programad-remote-darwin-arm64-${build}`, "immutable"], [`programad-remote-darwin-amd64-${build}`, "immutable"],
-      [`programad-remote-linux-arm64-${build}`, "immutable"], [`programad-remote-linux-amd64-${build}`, "immutable"],
-      [`programad-remote-checksums-${build}.txt`, "immutable"], [`programad-remote-manifest-${build}.json`, "immutable"],
       ["appcast.xml", "appcast"], ["programa-macos.dmg", "stable-alias"],
     ]);
     for (const a of value.assets) {
@@ -745,7 +697,7 @@ assert_published_archive() {
   assert_file_equals "$(release_dir "${tag}")/latest" false
   assert_file_equals "$(release_dir "${tag}")/prerelease" true
   assert_file_equals "$(release_dir "${tag}")/immutable" false
-  assert_asset_count "${tag}" 11
+  assert_asset_count "${tag}" 5
 }
 
 # A prepared seal is a durable handoff between build and staging. Preparation
@@ -763,8 +715,8 @@ stage_prepared_candidate 104 0.64.73
 assert_candidate_sealed 104 0.64.73
 cmp -s "${TMP_DIR}/rolling-prepared-seal.snapshot" "${rolling_prepared_seal}" || fail "rolling staging rewrote the prepared seal"
 grep '^mutation upload-asset rolling-candidate-104 ' "${STATE_DIR}/operations.log" > "${TMP_DIR}/rolling-prepared-uploads"
-[[ "$(wc -l < "${TMP_DIR}/rolling-prepared-uploads" | tr -d ' ')" == 11 ]] || fail "rolling prepared staging did not upload exact ten payloads plus seal"
-! sed -n '1,10p' "${TMP_DIR}/rolling-prepared-uploads" | grep -Fq " ${SEAL_NAME}" || fail "rolling prepared seal was uploaded before all payloads"
+[[ "$(wc -l < "${TMP_DIR}/rolling-prepared-uploads" | tr -d ' ')" == 5 ]] || fail "rolling prepared staging did not upload the exact payload set plus seal"
+! sed -n '1,4p' "${TMP_DIR}/rolling-prepared-uploads" | grep -Fq " ${SEAL_NAME}" || fail "rolling prepared seal was uploaded before all payloads"
 [[ "$(tail -1 "${TMP_DIR}/rolling-prepared-uploads")" == *" ${SEAL_NAME}" ]] || fail "rolling prepared seal was not uploaded last"
 
 reset_state
@@ -779,8 +731,8 @@ stage_prepared_candidate 201 1.2.3 milestone-candidate- v1.2.3 009
 assert_candidate_sealed 201 1.2.3 milestone-candidate-201-009
 cmp -s "${TMP_DIR}/milestone-prepared-seal.snapshot" "${milestone_prepared_seal}" || fail "milestone staging rewrote the prepared seal"
 grep '^mutation upload-asset milestone-candidate-201-009 ' "${STATE_DIR}/operations.log" > "${TMP_DIR}/milestone-prepared-uploads"
-[[ "$(wc -l < "${TMP_DIR}/milestone-prepared-uploads" | tr -d ' ')" == 11 ]] || fail "milestone prepared staging did not upload exact ten payloads plus seal"
-! sed -n '1,10p' "${TMP_DIR}/milestone-prepared-uploads" | grep -Fq " ${SEAL_NAME}" || fail "milestone prepared seal was uploaded before all payloads"
+[[ "$(wc -l < "${TMP_DIR}/milestone-prepared-uploads" | tr -d ' ')" == 5 ]] || fail "milestone prepared staging did not upload the exact payload set plus seal"
+! sed -n '1,4p' "${TMP_DIR}/milestone-prepared-uploads" | grep -Fq " ${SEAL_NAME}" || fail "milestone prepared seal was uploaded before all payloads"
 [[ "$(tail -1 "${TMP_DIR}/milestone-prepared-uploads")" == *" ${SEAL_NAME}" ]] || fail "milestone prepared seal was not uploaded last"
 
 # Both kinds of stale handoff fail before candidate mutation: altered seal
@@ -817,13 +769,13 @@ printf '%s\n' "$(target_sha_for 201)" > "${STATE_DIR}/main_sha"
 RESTORED="${TMP_DIR}/restored-milestone"; mkdir -p "${RESTORED}"
 : > "${STATE_DIR}/operations.log"; invoke_restore "${RESTORED}"
 ! grep -q '^mutation ' "${STATE_DIR}/operations.log" || fail "candidate restore mutated GitHub"
-[[ "$(find "${RESTORED}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == 11 ]] || fail "restore did not write exact ten payloads plus manifest"
+[[ "$(find "${RESTORED}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == 5 ]] || fail "restore did not write the exact payload set plus manifest"
 node - "${MILESTONE_MODULE}" "${RESTORED}" <<'NODE'
 const [modulePath, directory] = process.argv.slice(2);
 require(modulePath).verifyMilestonePayload({ directory, build: "201" });
 NODE
 grep -Fxq "attestation-verify ${SEAL_NAME} source=$(target_sha_for 201)" "${STATE_DIR}/operations.log" || fail "restore did not attest the seal"
-[[ "$(grep -c '^attestation-verify ' "${STATE_DIR}/operations.log")" == 11 ]] || fail "restore did not attest exact ten payloads plus seal"
+[[ "$(grep -c '^attestation-verify ' "${STATE_DIR}/operations.log")" == 5 ]] || fail "restore did not attest the exact payload set plus seal"
 
 # Stored-byte tampering and failed provenance never reach the output directory.
 printf 'tampered\n' >> "$(asset_dir milestone-candidate-201-002 programa-macos-201.dmg)/bytes"
@@ -868,14 +820,11 @@ grep -Fq 'authenticated-download rolling-candidate-100' "${STATE_DIR}/operations
 candidate_appcast="$(asset_dir rolling-candidate-100 appcast.xml)/bytes"
 grep -Fq '/releases/download/rolling/' "${candidate_appcast}" || fail "candidate appcast does not target rolling"
 ! grep -Fq '/releases/download/rolling-candidate-' "${candidate_appcast}" || fail "candidate appcast exposes candidate URL"
-candidate_daemon_manifest="$(asset_dir rolling-candidate-100 programad-remote-manifest-100.json)/bytes"
-grep -Fq '/releases/download/rolling/' "${candidate_daemon_manifest}" || fail "candidate daemon manifest does not target rolling"
-! grep -Fq '/releases/download/rolling-candidate-' "${candidate_daemon_manifest}" || fail "candidate daemon manifest exposes candidate URL"
 
 # Decoy rolling text cannot conceal an operative URL to another repository or tag.
-for poisoned_payload in appcast daemon-manifest; do
+for poisoned_payload in appcast; do
   reset_state; make_fixture 105 0.64.73
-  case "${poisoned_payload}" in appcast) poison_appcast_url 105 ;; daemon-manifest) poison_daemon_manifest_url 105 ;; esac
+  case "${poisoned_payload}" in appcast) poison_appcast_url 105 ;; esac
   if invoke_candidate 105 0.64.73; then fail "candidate staging accepted poisoned ${poisoned_payload} URL"; fi
   [[ ! -d "$(asset_dir rolling-candidate-105 "${SEAL_NAME}")" ]] || fail "poisoned ${poisoned_payload} candidate was sealed"
 done
@@ -892,16 +841,16 @@ make_fixture 105 0.64.73
 
 # Retry adds only missing assets and never clobbers existing exact bytes.
 reset_state
-if invoke_candidate 101 0.64.73 'upload:rolling-candidate-101:programa-dSYMs-101.zip'; then fail "candidate interruption was not propagated"; fi
+if invoke_candidate 101 0.64.73 'upload:rolling-candidate-101:appcast.xml'; then fail "candidate interruption was not propagated"; fi
 : > "${STATE_DIR}/operations.log"; invoke_candidate 101 0.64.73; assert_candidate_sealed 101 0.64.73
-for present in programad-remote-darwin-arm64-101 programa-macos-101.dmg; do
+for present in programa-dSYMs-101.zip programa-macos-101.dmg; do
   ! grep -Eq "(delete-asset|upload-asset) rolling-candidate-101 ${present}$" "${STATE_DIR}/operations.log" || fail "retry clobbered ${present}"
 done
 
 # Reconciliation validates operative URLs again instead of trusting a sealed decoy.
-for poisoned_payload in appcast daemon-manifest; do
+for poisoned_payload in appcast; do
   reset_state; make_fixture 105 0.64.73 rolling-candidate-105
-  case "${poisoned_payload}" in appcast) poison_appcast_url 105 ;; daemon-manifest) poison_daemon_manifest_url 105 ;; esac
+  case "${poisoned_payload}" in appcast) poison_appcast_url 105 ;; esac
   seed_sealed_candidate 105 0.64.73 false; seed_rolling 104
   : > "${STATE_DIR}/operations.log"
   if invoke_rolling; then fail "reconciliation accepted poisoned ${poisoned_payload} URL"; fi
@@ -914,9 +863,9 @@ done
 for field in state size digest; do
   reset_state; seed_sealed_candidate 102; seed_rolling 101
   case "${field}" in
-    state) printf 'open\n' > "$(asset_dir rolling-candidate-102 programad-remote-darwin-arm64-102)/state" ;;
-    size) printf '1\n' > "$(asset_dir rolling-candidate-102 programad-remote-darwin-arm64-102)/size" ;;
-    digest) printf 'sha256:deadbeef\n' > "$(asset_dir rolling-candidate-102 programad-remote-darwin-arm64-102)/digest" ;;
+    state) printf 'open\n' > "$(asset_dir rolling-candidate-102 programa-dSYMs-102.zip)/state" ;;
+    size) printf '1\n' > "$(asset_dir rolling-candidate-102 programa-dSYMs-102.zip)/size" ;;
+    digest) printf 'sha256:deadbeef\n' > "$(asset_dir rolling-candidate-102 programa-dSYMs-102.zip)/digest" ;;
   esac
   : > "${STATE_DIR}/operations.log"
   if invoke_rolling; then fail "promotion accepted corrupt candidate ${field}"; fi
@@ -928,10 +877,10 @@ done
 # Conflicting bytes and corrupt state/size/digest block the seal.
 reset_state
 write_release rolling-candidate-102 "$(target_sha_for 102)" true false 'Candidate 102' candidate; printf '502\n' > "$(release_dir rolling-candidate-102)/id"
-wrong="${TMP_DIR}/wrong"; printf 'wrong\n' > "${wrong}"; write_asset rolling-candidate-102 programad-remote-darwin-arm64-102 "${wrong}"
+wrong="${TMP_DIR}/wrong"; printf 'wrong\n' > "${wrong}"; write_asset rolling-candidate-102 programa-dSYMs-102.zip "${wrong}"
 if invoke_candidate 102 0.64.73; then fail "conflicting candidate bytes were accepted"; fi
 [[ ! -d "$(asset_dir rolling-candidate-102 "${SEAL_NAME}")" ]] || fail "conflicting candidate was sealed"
-for corruption in state:programad-remote-darwin-arm64-103 size:programad-remote-darwin-arm64-103 digest:programad-remote-darwin-arm64-103; do
+for corruption in state:programa-dSYMs-103.zip size:programa-dSYMs-103.zip digest:programa-dSYMs-103.zip; do
   reset_state
   if FAKE_GH_CORRUPT_UPLOAD="${corruption}" invoke_candidate 103 0.64.73; then fail "candidate with corrupt ${corruption%%:*} was sealed"; fi
   [[ ! -d "$(asset_dir rolling-candidate-103 "${SEAL_NAME}")" ]] || fail "corrupt candidate was sealed"
@@ -947,7 +896,7 @@ expected_attestations="$(while IFS='=' read -r role path; do basename "${path}";
 expected_attestations="$(printf '%s\n%s\n%s\n' "${expected_attestations}" "${SEAL_NAME}" "${SEAL_NAME}" | LC_ALL=C sort)"
 actual_attestations="$(sed -n 's/^attestation-verify \([^ ]*\) source=.*/\1/p' "${STATE_DIR}/operations.log" | LC_ALL=C sort)"
 [[ "${actual_attestations}" == "${expected_attestations}" ]] || \
-  fail "reconciler did not attest ten payloads plus the seal before and after publication"
+  fail "reconciler did not attest every payload plus the seal before and after publication"
 expected_source="$(target_sha_for 103)"
 source_digest_count="$(grep -Fxc "attestation-verify programa-macos-103.dmg source=${expected_source}" "${STATE_DIR}/operations.log")"
 [[ "${source_digest_count}" == 1 ]] || fail "payload attestation was not bound to the selected target SHA"
@@ -971,7 +920,7 @@ first_rolling_mutation="$(grep -n -E '^mutation (delete-asset|upload-asset|edit-
 # One failed payload attestation blocks every rolling mutation and retains the seal.
 reset_state
 seed_sealed_candidate 103; seed_rolling 102; : > "${STATE_DIR}/operations.log"
-if FAKE_GH_FAIL_ATTESTATION=programad-remote-checksums-103.txt invoke_rolling; then fail "failed payload attestation was ignored"; fi
+if FAKE_GH_FAIL_ATTESTATION=programa-dSYMs-103.zip invoke_rolling; then fail "failed payload attestation was ignored"; fi
 assert_rolling_converged 102; assert_release_exists rolling-candidate-103
 ! grep -Eq '^mutation (upload-asset|delete-asset|edit-release|move-ref) rolling ' "${STATE_DIR}/operations.log" || fail "attestation failure mutated rolling"
 

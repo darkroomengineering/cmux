@@ -3,12 +3,6 @@
 const IMMUTABLE_RELEASE_ASSETS = [
   "programa-macos.dmg",
   "appcast.xml",
-  "programad-remote-darwin-arm64",
-  "programad-remote-darwin-amd64",
-  "programad-remote-linux-arm64",
-  "programad-remote-linux-amd64",
-  "programad-remote-checksums.txt",
-  "programad-remote-manifest.json",
 ];
 const RELEASE_ASSET_GUARD_STATE = Object.freeze({
   CLEAR: "clear",

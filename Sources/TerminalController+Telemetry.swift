@@ -76,23 +76,10 @@ extension TerminalController {
                 requestedSurfaceId: requestedSurfaceId,
                 validSurfaceIds: validSurfaceIds
             )
-            guard let surfaceId, validSurfaceIds.contains(surfaceId) else {
-                // `isLiveRemoteWorkspace`, not `isRemoteWorkspace`: a disconnected-but-configured
-                // workspace has no active remote session to buffer this report for, and its
-                // panels are ordinary local shells again -- route it like any local workspace.
-                if tab.isLiveRemoteWorkspace, validSurfaceIds.isEmpty {
-                    tab.rememberPendingRemoteSurfaceTTY(ttyName, requestedSurfaceId: requestedSurfaceId)
-                }
-                return
-            }
+            guard let surfaceId, validSurfaceIds.contains(surfaceId) else { return }
 
             guard tab.setSidebarTTYName(panelId: surfaceId, ttyName: ttyName) else { return }
-            if tab.isLiveRemoteWorkspace {
-                tab.syncRemotePortScanTTYs()
-                _ = tab.applyPendingRemoteSurfacePortKickIfNeeded(to: surfaceId)
-            } else {
-                PortScanner.shared.registerTTY(workspaceId: workspaceId, panelId: surfaceId, ttyName: ttyName)
-            }
+            PortScanner.shared.registerTTY(workspaceId: workspaceId, panelId: surfaceId, ttyName: ttyName)
         }
 
         return .ok([
@@ -112,18 +99,12 @@ extension TerminalController {
         if v2HasNonNullParam(params, "surface_id"), requestedSurfaceId == nil {
             return v2InvalidParam("surface_id")
         }
-        let reason: WorkspaceRemoteSessionController.PortScanKickReason
-        if let rawReason = v2RawString(params, "reason") {
-            guard let parsedReason = Self.parseRemotePortScanKickReason(rawReason) else {
-                return .err(
-                    code: "invalid_params",
-                    message: "reason must be command or refresh",
-                    data: nil
-                )
-            }
-            reason = parsedReason
-        } else {
-            reason = .command
+        guard let reason = Self.normalizedPortScanKickReason(v2RawString(params, "reason") ?? "command") else {
+            return .err(
+                code: "invalid_params",
+                message: "reason must be command or refresh",
+                data: nil
+            )
         }
 
         v2ScheduleTelemetryMutation(workspaceId: workspaceId) { [weak self] _, tab in
@@ -136,24 +117,9 @@ extension TerminalController {
                 requestedSurfaceId: requestedSurfaceId,
                 validSurfaceIds: validSurfaceIds
             )
-            guard let surfaceId, validSurfaceIds.contains(surfaceId) else {
-                // See v2SurfaceReportTTY above: `isLiveRemoteWorkspace`, not `isRemoteWorkspace`
-                // -- a disconnected-but-configured workspace has no active remote session to
-                // buffer this kick for.
-                if tab.isLiveRemoteWorkspace, validSurfaceIds.isEmpty {
-                    tab.rememberPendingRemoteSurfacePortKick(
-                        reason: reason,
-                        requestedSurfaceId: requestedSurfaceId
-                    )
-                }
-                return
-            }
+            guard let surfaceId, validSurfaceIds.contains(surfaceId) else { return }
 
-            if tab.isLiveRemoteWorkspace {
-                tab.kickRemotePortScan(panelId: surfaceId, reason: reason)
-            } else {
-                PortScanner.shared.kick(workspaceId: workspaceId, panelId: surfaceId)
-            }
+            PortScanner.shared.kick(workspaceId: workspaceId, panelId: surfaceId)
         }
 
         return .ok([
@@ -161,7 +127,7 @@ extension TerminalController {
             "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId),
             "surface_id": v2OrNull(requestedSurfaceId?.uuidString),
             "surface_ref": v2Ref(kind: .surface, uuid: requestedSurfaceId),
-            "reason": reason.rawValue,
+            "reason": reason,
         ])
     }
 
@@ -586,20 +552,8 @@ extension TerminalController {
         }
 
         if let focusedSurfaceId = workspace.focusedPanelId,
-           validSurfaceIds.contains(focusedSurfaceId),
-           (!workspace.isRemoteWorkspace || workspace.isRemoteTerminalSurface(focusedSurfaceId)) {
+           validSurfaceIds.contains(focusedSurfaceId) {
             return focusedSurfaceId
-        }
-
-        guard workspace.isRemoteWorkspace else { return nil }
-
-        let remoteTerminalSurfaceIds = validSurfaceIds.filter { workspace.isRemoteTerminalSurface($0) }
-        if remoteTerminalSurfaceIds.count == 1 {
-            return remoteTerminalSurfaceIds.first
-        }
-
-        if validSurfaceIds.count == 1 {
-            return validSurfaceIds.first
         }
 
         return nil

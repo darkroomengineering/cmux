@@ -143,7 +143,6 @@ jobs:
             PAYLOAD_RELEASE_TAG="${RELEASE_TAG}"
             IS_AUTO_SHIP="false"
             EFFECTIVE_MARKETING_VERSION="${MARKETING_VERSION}"
-            REMOTE_DAEMON_ASSET_SUFFIX="-${EFFECTIVE_BUILD}"
           else
             # Auto-ship from main (workflow_run) or dry-run (workflow_dispatch): keep the
             # user-facing latest surface on the reused mutable `rolling` release while every
@@ -160,7 +159,6 @@ jobs:
             # (scripts/bump-version.sh); the patch sequence continues across them,
             # which keeps versions strictly increasing in Sparkle-visible order.
             EFFECTIVE_MARKETING_VERSION="${MARKETING_VERSION%.*}.${GITHUB_RUN_NUMBER}"
-            REMOTE_DAEMON_ASSET_SUFFIX="-${EFFECTIVE_BUILD}"
           fi
 
           echo "MARKETING_VERSION=${MARKETING_VERSION}" >> "$GITHUB_ENV"
@@ -169,7 +167,6 @@ jobs:
           echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
           echo "PAYLOAD_RELEASE_TAG=${PAYLOAD_RELEASE_TAG}" >> "$GITHUB_ENV"
           echo "IS_AUTO_SHIP=${IS_AUTO_SHIP}" >> "$GITHUB_ENV"
-          echo "REMOTE_DAEMON_ASSET_SUFFIX=${REMOTE_DAEMON_ASSET_SUFFIX}" >> "$GITHUB_ENV"
           echo "effective_build=${EFFECTIVE_BUILD}" >> "$GITHUB_OUTPUT"
 
           echo "Marketing version: ${MARKETING_VERSION} (effective: ${EFFECTIVE_MARKETING_VERSION})"
@@ -317,12 +314,6 @@ jobs:
           key: spm-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: spm-
 
-      - name: Setup Go
-        if: steps.milestone_artifact.outputs.reuse != 'true'
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version-file: daemon/remote/go.mod
-
       - name: Derive Sparkle public key from private key
         if: steps.milestone_artifact.outputs.reuse != 'true'
         env:
@@ -381,27 +372,9 @@ jobs:
           # No-op for tag releases (both values already match the committed ones).
           # For auto-ship runs this stamps the monotonic run-derived build number AND
           # the distinct per-ship marketing version (major.minor.run_number) without
-          # committing anything back to the repo. Must run BEFORE the remote-daemon
-          # manifest step below, which reads CFBundleShortVersionString.
+          # committing anything back to the repo.
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${EFFECTIVE_BUILD}" "$APP_PLIST"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${EFFECTIVE_MARKETING_VERSION}" "$APP_PLIST"
-
-      - name: Build remote daemon release assets and inject manifest
-        if: steps.milestone_artifact.outputs.reuse != 'true'
-        run: |
-          set -euo pipefail
-          APP_PLIST="build-universal/Build/Products/Release/Programa.app/Contents/Info.plist"
-          APP_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PLIST")
-          ./scripts/build_remote_daemon_release_assets.sh \
-            --version "$APP_VERSION" \
-            --release-tag "$PAYLOAD_RELEASE_TAG" \
-            --repo "darkroomengineering/programa" \
-            --output-dir "remote-daemon-assets" \
-            --asset-suffix "${REMOTE_DAEMON_ASSET_SUFFIX#-}"
-          MANIFEST_PATH="remote-daemon-assets/programad-remote-manifest${REMOTE_DAEMON_ASSET_SUFFIX}.json"
-          MANIFEST_JSON="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding="utf-8")), separators=(",",":")))' "$MANIFEST_PATH")"
-          plutil -remove CMUXRemoteDaemonManifestJSON "$APP_PLIST" >/dev/null 2>&1 || true
-          plutil -insert CMUXRemoteDaemonManifestJSON -string "$MANIFEST_JSON" "$APP_PLIST"
 
       - name: Run CLI version memory guard regression
         if: steps.milestone_artifact.outputs.reuse != 'true'
@@ -614,12 +587,6 @@ jobs:
           cp "programa-dSYMs-${EFFECTIVE_BUILD}.zip" "$MILESTONE_PAYLOAD_DIR/"
           cp "programa-macos-${EFFECTIVE_BUILD}.dmg" "$MILESTONE_PAYLOAD_DIR/"
           cp programa-macos.dmg "$MILESTONE_PAYLOAD_DIR/"
-          cp "remote-daemon-assets/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" "$MILESTONE_PAYLOAD_DIR/"
-          cp "remote-daemon-assets/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" "$MILESTONE_PAYLOAD_DIR/"
-          cp "remote-daemon-assets/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" "$MILESTONE_PAYLOAD_DIR/"
-          cp "remote-daemon-assets/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" "$MILESTONE_PAYLOAD_DIR/"
-          cp "remote-daemon-assets/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" "$MILESTONE_PAYLOAD_DIR/"
-          cp "remote-daemon-assets/programad-remote-manifest-${EFFECTIVE_BUILD}.json" "$MILESTONE_PAYLOAD_DIR/"
           node - "$MILESTONE_PAYLOAD_DIR" "$EFFECTIVE_BUILD" <<'NODE'
           "use strict";
           const path = require("node:path");
@@ -645,12 +612,6 @@ jobs:
           subject-path: |
             programa-macos-${{ env.EFFECTIVE_BUILD }}.dmg
             programa-dSYMs-${{ env.EFFECTIVE_BUILD }}.zip
-            remote-daemon-assets/programad-remote-darwin-arm64${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}
-            remote-daemon-assets/programad-remote-darwin-amd64${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}
-            remote-daemon-assets/programad-remote-linux-arm64${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}
-            remote-daemon-assets/programad-remote-linux-amd64${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}
-            remote-daemon-assets/programad-remote-checksums${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}.txt
-            remote-daemon-assets/programad-remote-manifest${{ env.REMOTE_DAEMON_ASSET_SUFFIX }}.json
             appcast.xml
             programa-macos.dmg
 
@@ -682,12 +643,6 @@ jobs:
             --seal-output "$CANDIDATE_SEAL" \
             --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programa-macos-${EFFECTIVE_BUILD}.dmg" \
             --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programa-dSYMs-${EFFECTIVE_BUILD}.zip" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-manifest-${EFFECTIVE_BUILD}.json" \
             --asset-role "appcast=${MILESTONE_PAYLOAD_DIR}/appcast.xml" \
             --asset-role "stable-alias=${MILESTONE_PAYLOAD_DIR}/programa-macos.dmg"
           echo "CANDIDATE_SEAL=${CANDIDATE_SEAL}" >> "$GITHUB_ENV"
@@ -722,12 +677,6 @@ jobs:
             --seal-output "$CANDIDATE_SEAL" \
             --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programa-macos-${EFFECTIVE_BUILD}.dmg" \
             --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programa-dSYMs-${EFFECTIVE_BUILD}.zip" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" \
-            --asset-role "immutable=${MILESTONE_PAYLOAD_DIR}/programad-remote-manifest-${EFFECTIVE_BUILD}.json" \
             --asset-role "appcast=${MILESTONE_PAYLOAD_DIR}/appcast.xml" \
             --asset-role "stable-alias=${MILESTONE_PAYLOAD_DIR}/programa-macos.dmg"
 
@@ -741,7 +690,6 @@ jobs:
             programa-macos-*.dmg
             programa-dSYMs-*.zip
             appcast.xml
-            remote-daemon-assets/programad-remote-*
           if-no-files-found: error
 
       - name: Upload milestone release assets
@@ -805,12 +753,6 @@ jobs:
             --version "$EFFECTIVE_MARKETING_VERSION" \
             --asset-role "immutable=programa-macos-${EFFECTIVE_BUILD}.dmg" \
             --asset-role "immutable=$DSYM_ZIP" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-manifest-${EFFECTIVE_BUILD}.json" \
             --asset-role "appcast=appcast.xml" \
             --asset-role "stable-alias=programa-macos.dmg"
 
@@ -838,12 +780,6 @@ jobs:
             --version "$EFFECTIVE_MARKETING_VERSION" \
             --asset-role "immutable=programa-macos-${EFFECTIVE_BUILD}.dmg" \
             --asset-role "immutable=$DSYM_ZIP" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-darwin-arm64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-darwin-amd64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-linux-arm64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-linux-amd64-${EFFECTIVE_BUILD}" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-checksums-${EFFECTIVE_BUILD}.txt" \
-            --asset-role "immutable=remote-daemon-assets/programad-remote-manifest-${EFFECTIVE_BUILD}.json" \
             --asset-role "appcast=appcast.xml" \
             --asset-role "stable-alias=programa-macos.dmg"
 
@@ -931,12 +867,6 @@ jobs:
                 const expectedNames = new Set([
                   `programa-macos-${build}.dmg`,
                   `programa-dSYMs-${build}.zip`,
-                  `programad-remote-darwin-arm64-${build}`,
-                  `programad-remote-darwin-amd64-${build}`,
-                  `programad-remote-linux-arm64-${build}`,
-                  `programad-remote-linux-amd64-${build}`,
-                  `programad-remote-checksums-${build}.txt`,
-                  `programad-remote-manifest-${build}.json`,
                   'appcast.xml',
                   'programa-macos.dmg',
                 ]);

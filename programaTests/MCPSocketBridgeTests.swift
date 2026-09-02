@@ -25,7 +25,7 @@ import Darwin
 /// `send(method:params:)` connects to a real Unix domain socket per call (no
 /// pooling), so these tests stand up a throwaway local listener per case (same
 /// `bindUnixSocket`/`startMockServer` pattern as
-/// `WorkspaceRemoteConnectionTests.swift`) and feed it canned v2 responses --
+/// and feed it canned v2 responses --
 /// this is real runtime behavior through the bridge's actual `send()` path,
 /// not a hand-decoded JSON fixture.
 final class MCPSocketBridgeTests: XCTestCase {
