@@ -52,7 +52,10 @@ set -euo pipefail
 # Metadata and latest status change before the rolling ref moves. Stale drafts
 # may be deleted after final verification, but the selected archive remains.
 # Rolling must already exist as the legacy mutable release; missing or immutable
-# state fails.
+# state fails. After promotion, published candidate archives strictly below the
+# finalized build are also retired, keeping only the newest
+# PROGRAMA_RETAINED_CANDIDATES (default 2, immutable archives excepted) so the
+# releases page does not accumulate every promoted candidate forever.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CANDIDATE_HELPER="${ROOT_DIR}/scripts/publish_release_candidate.sh"
@@ -470,9 +473,15 @@ release_edit() {
   fi
 }
 release_delete() {
-  local tag="$1"
+  local tag="$1"; shift
+  local yes=false cleanup_tag=false repo=""
+  while (($#)); do case "$1" in
+    --repo) repo="$2"; shift 2 ;; --yes) yes=true; shift ;; --cleanup-tag) cleanup_tag=true; shift ;;
+    *) echo "unsupported fake gh release delete argument: $1" >&2; exit 2 ;;
+  esac; done
+  [[ -n "${repo}" && "${yes}" == true ]] || { echo "release delete missing required flags" >&2; exit 2; }
   [[ "$(cat "$(release_dir "${tag}")/immutable")" == false ]] || { echo "release is immutable" >&2; exit 1; }
-  rm -rf "$(release_dir "${tag}")"; mutation "delete-release ${tag}"
+  rm -rf "$(release_dir "${tag}")"; mutation "delete-release ${tag} cleanup-tag=${cleanup_tag}"
 }
 
 attestation_verify() {
@@ -971,6 +980,59 @@ write_release rolling-candidate-104 "$(target_sha_for 104)" true false 'higher d
 seed_rolling 100; invoke_rolling; assert_rolling_converged 103
 assert_release_absent rolling-candidate-099; assert_release_absent rolling-candidate-100
 assert_release_absent rolling-candidate-101; assert_published_archive 103; assert_release_exists rolling-candidate-104
+
+# Promotion also retires old published (non-draft) candidate archives: only
+# the newest PROGRAMA_RETAINED_CANDIDATES (default 2) below the finalized
+# build survive, the finalized build and anything at or above it is never
+# touched, an immutable archive is skipped regardless of its build, and
+# deletion goes through --cleanup-tag so the tag is removed too.
+reset_state
+seed_sealed_candidate 103
+write_release rolling-candidate-050 "$(target_sha_for 50)" false false 'Candidate 50' candidate true
+write_release rolling-candidate-060 "$(target_sha_for 60)" false false 'Candidate 60' candidate true
+write_release rolling-candidate-065 "$(target_sha_for 65)" false false 'Candidate 65' candidate true
+printf 'true\n' > "$(release_dir rolling-candidate-065)/immutable"
+write_release rolling-candidate-070 "$(target_sha_for 70)" false false 'Candidate 70' candidate true
+write_release rolling-candidate-080 "$(target_sha_for 80)" false false 'Candidate 80' candidate true
+seed_rolling 100
+: > "${STATE_DIR}/operations.log"
+invoke_rolling
+assert_rolling_converged 103; assert_published_archive 103
+assert_release_absent rolling-candidate-050
+assert_release_absent rolling-candidate-060
+assert_release_exists rolling-candidate-065
+assert_release_exists rolling-candidate-070
+assert_release_exists rolling-candidate-080
+grep -Fq 'mutation delete-release rolling-candidate-050 cleanup-tag=true' "${STATE_DIR}/operations.log" || \
+  fail "retention did not delete the oldest promoted candidate with --cleanup-tag"
+grep -Fq 'mutation delete-release rolling-candidate-060 cleanup-tag=true' "${STATE_DIR}/operations.log" || \
+  fail "retention did not delete the second-oldest promoted candidate with --cleanup-tag"
+! grep -Fq 'mutation delete-release rolling-candidate-065' "${STATE_DIR}/operations.log" || \
+  fail "retention deleted an immutable promoted candidate"
+! grep -Fq 'mutation delete-release rolling-candidate-070' "${STATE_DIR}/operations.log" || \
+  fail "retention deleted a promoted candidate within the default retained window"
+! grep -Fq 'mutation delete-release rolling-candidate-080' "${STATE_DIR}/operations.log" || \
+  fail "retention deleted a promoted candidate within the default retained window"
+
+# PROGRAMA_RETAINED_CANDIDATES overrides the default window down to one.
+reset_state
+seed_sealed_candidate 103
+write_release rolling-candidate-050 "$(target_sha_for 50)" false false 'Candidate 50' candidate true
+write_release rolling-candidate-060 "$(target_sha_for 60)" false false 'Candidate 60' candidate true
+write_release rolling-candidate-070 "$(target_sha_for 70)" false false 'Candidate 70' candidate true
+write_release rolling-candidate-080 "$(target_sha_for 80)" false false 'Candidate 80' candidate true
+seed_rolling 100
+: > "${STATE_DIR}/operations.log"
+PROGRAMA_RETAINED_CANDIDATES=1 invoke_rolling
+assert_rolling_converged 103; assert_published_archive 103
+assert_release_absent rolling-candidate-050
+assert_release_absent rolling-candidate-060
+assert_release_absent rolling-candidate-070
+assert_release_exists rolling-candidate-080
+grep -Fq 'mutation delete-release rolling-candidate-070 cleanup-tag=true' "${STATE_DIR}/operations.log" || \
+  fail "PROGRAMA_RETAINED_CANDIDATES=1 did not delete the newly-out-of-window candidate"
+! grep -Fq 'mutation delete-release rolling-candidate-080' "${STATE_DIR}/operations.log" || \
+  fail "PROGRAMA_RETAINED_CANDIDATES=1 deleted the one retained candidate"
 
 # Lower candidates cannot regress rolling's high-water build.
 reset_state

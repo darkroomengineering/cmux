@@ -19,6 +19,9 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - Workspace colors are now remembered by local folder and automatically reused when that folder opens in a new workspace.
 - New setting, off by default: open a browser split beside the terminal whenever a new agent workspace is created (⌘⇧C, `programa` helper agents, and `race`). Also `automation.openBrowserWithAgentSplits` in settings.json.
 
+### Changed
+- Each ship now deletes promoted release candidates older than the two most recent, so the releases page stops accumulating 110 MB prereleases.
+
 ### Fixed
 - Release publishing accepts the previous ten-asset candidate manifests again, so the first ship after the remote daemon removal no longer fails.
 - Remote and local CLI clients now share the v2 JSON-RPC and `programa-relay-auth` contracts, password-protected sockets work through MCP, and remote bootstrap files, tmux wait signals, relay diagnostics, and downloaded daemon artifacts have bounded ownership and lifetime.

@@ -147,6 +147,10 @@ build_is_at_most() {
   node -e 'process.exit(BigInt(process.argv[1]) <= BigInt(process.argv[2]) ? 0 : 1)' "$1" "$2"
 }
 
+build_is_less_than() {
+  node -e 'process.exit(BigInt(process.argv[1]) < BigInt(process.argv[2]) ? 0 : 1)' "$1" "$2"
+}
+
 require_selected_target_is_current_main() {
   local checkpoint="$1" current_main
   current_main="$("${GH_BIN}" api \
@@ -179,6 +183,41 @@ prune_candidates() {
       "${GH_BIN}" release delete "${tag}" --repo "${REPOSITORY}" --yes
     fi
   done < "${RELEASE_LIST}"
+}
+
+# Deletes published (non-draft) candidate archives strictly older than the
+# finalized build, keeping the newest PROGRAMA_RETAINED_CANDIDATES (default 2)
+# of them for rollback so the releases page stops accumulating every promoted
+# candidate forever. The finalized candidate and anything at or above its
+# build are never touched here; prune_candidates above still owns draft
+# cleanup.
+retire_promoted_candidates() {
+  local finalized_build="$1" keep_tag="$2"
+  local retained="${PROGRAMA_RETAINED_CANDIDATES:-2}"
+  [[ "${retained}" =~ ^[1-9][0-9]*$ ]] || \
+    fail "PROGRAMA_RETAINED_CANDIDATES must be a positive integer"
+
+  local tag is_draft is_prerelease is_immutable target suffix
+  local candidates_file="${TEMP_DIR}/retire-candidates.tsv"
+  : > "${candidates_file}"
+  while IFS=$'\t' read -r tag is_draft is_prerelease is_immutable target; do
+    [[ "${is_draft}" == "false" && "${tag}" == "${CANDIDATE_PREFIX}"* ]] || continue
+    [[ "${tag}" != "${keep_tag}" ]] || continue
+    [[ "${is_immutable}" == "false" ]] || continue
+    suffix="${tag#"${CANDIDATE_PREFIX}"}"
+    [[ "${suffix}" =~ ^[0-9]+$ ]] || continue
+    suffix="$((10#${suffix}))"
+    build_is_less_than "${suffix}" "${finalized_build}" || continue
+    printf '%s\t%s\n' "${suffix}" "${tag}" >> "${candidates_file}"
+  done < "${RELEASE_LIST}"
+
+  [[ -s "${candidates_file}" ]] || return 0
+
+  local tag_to_delete
+  while IFS= read -r tag_to_delete; do
+    [[ -n "${tag_to_delete}" ]] || continue
+    "${GH_BIN}" release delete "${tag_to_delete}" --repo "${REPOSITORY}" --yes --cleanup-tag
+  done < <(LC_ALL=C sort -t $'\t' -k1,1nr "${candidates_file}" | awk -F '\t' -v retained="${retained}" 'NR > retained { print $2 }')
 }
 
 snapshot_public_high_water() {
@@ -765,3 +804,4 @@ cmp -s "${FINAL_BODY}" "${NOTES_FILE}" || fail "rolling release notes did not co
 [[ "${FINAL_REF}" == "${SELECTED_TARGET}" ]] || fail "rolling ref did not converge"
 
 prune_candidates "${SELECTED_BUILD}" "${SELECTED_TAG}"
+retire_promoted_candidates "${SELECTED_BUILD}" "${SELECTED_TAG}"
