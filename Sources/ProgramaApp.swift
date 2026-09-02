@@ -82,7 +82,6 @@ struct programaApp: App {
     @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
     @AppStorage(SocketControlSettings.appStorageKey) private var socketControlMode = SocketControlSettings.defaultMode.rawValue
-    @AppStorage(MobileBridgeSettings.appStorageKey) private var mobileBridgeMode = MobileBridgeSettings.defaultMode.rawValue
     @AppStorage(BrowserToolbarAccessorySpacingDebugSettings.key) private var browserToolbarAccessorySpacingRaw = BrowserToolbarAccessorySpacingDebugSettings.defaultSpacing
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
@@ -103,11 +102,9 @@ struct programaApp: App {
         SessionEscrowHolder.runIfRequested()
 
         // Writing to a socket whose peer has hung up raises SIGPIPE, whose
-        // default disposition kills the process. The mobile bridge relays
-        // bytes to/from a phone that can disconnect at any moment (see
-        // `Sources/MobileBridge/MobileBridgeSession.swift`), so this must be
-        // ignored and surfaced as an EPIPE write error instead (mirrors
-        // `tools/mobile-spike/Sources/iroh-spike/App.swift`).
+        // default disposition kills the process. Programa's socket/CLI
+        // clients can disconnect at any moment, so this must be ignored and
+        // surfaced as an EPIPE write error instead.
         signal(SIGPIPE, SIG_IGN)
 
         UITestLaunchManifest.applyIfPresent()
@@ -280,9 +277,6 @@ struct programaApp: App {
 #endif
                     // Start the Unix socket controller for programmatic access
                     updateSocketController()
-                    // Start the mobile companion bridge (M1) if enabled -- binds
-                    // asynchronously off the main thread, never blocking launch.
-                    updateMobileBridgeController()
                     appDelegate.configure(tabManager: tabManager, notificationStore: notificationStore, sidebarState: sidebarState)
                     programaConfigStore.wireDirectoryTracking(tabManager: tabManager)
                     programaConfigStore.loadAll()
@@ -298,9 +292,6 @@ struct programaApp: App {
                 }
                 .onChange(of: socketControlMode) {
                     updateSocketController()
-                }
-                .onChange(of: mobileBridgeMode) {
-                    updateMobileBridgeController()
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -844,19 +835,6 @@ struct programaApp: App {
 
     private var currentSocketMode: SocketControlMode {
         SocketControlSettings.migrateMode(socketControlMode)
-    }
-
-    /// Starts/stops the mobile companion bridge (M1) to match the persisted
-    /// mode -- mirrors `updateSocketController()`'s shape, but this is a
-    /// wholly separate on/off switch from Programa's Unix control socket
-    /// (see `MobileBridgeListener`).
-    private func updateMobileBridgeController() {
-        let mode = MobileBridgeSettings.mode(for: mobileBridgeMode)
-        if mode == .pairedDevicesOnly {
-            MobileBridgeListener.shared.start(tabManager: tabManager)
-        } else {
-            MobileBridgeListener.shared.stop()
-        }
     }
 
     private func menuShortcut(for action: KeyboardShortcutSettings.Action) -> StoredShortcut {
