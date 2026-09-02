@@ -50,6 +50,22 @@ function requiredImmutableNames(build) {
   ];
 }
 
+// The remote daemon (programad-remote) was removed in PR #329, which narrowed
+// requiredImmutableNames to just the two current build artifacts. The already-published
+// prerelease that the live appcast points at was sealed before that change and still
+// carries these six legacy daemon immutables. It cannot be deleted, so the validator
+// must keep accepting its sealed manifest as-is instead of rejecting it as corrupt.
+function legacyImmutableNames(build) {
+  return [
+    `programad-remote-checksums-${build}.txt`,
+    `programad-remote-darwin-amd64-${build}`,
+    `programad-remote-darwin-arm64-${build}`,
+    `programad-remote-linux-amd64-${build}`,
+    `programad-remote-linux-arm64-${build}`,
+    `programad-remote-manifest-${build}.json`,
+  ];
+}
+
 function validateAsset(asset, index) {
   const label = `manifest asset ${index}`;
   assertPlainObject(asset, label);
@@ -109,6 +125,7 @@ function validateCandidateManifest(manifest) {
   const stableAliases = assets.filter((asset) => asset.role === "stable-alias");
   const immutable = assets.filter((asset) => asset.role === "immutable");
   const requiredNames = new Set(requiredImmutableNames(manifest.build));
+  const legacyNames = new Set(legacyImmutableNames(manifest.build));
 
   for (const asset of assets) {
     if (asset.name === "appcast.xml" && asset.role !== "appcast") {
@@ -123,13 +140,21 @@ function validateCandidateManifest(manifest) {
     if (asset.role === "stable-alias" && asset.name !== "programa-macos.dmg") {
       throw new TypeError("the stable-alias role is reserved for programa-macos.dmg");
     }
-    if (asset.role === "immutable" && !requiredNames.has(asset.name)) {
+    if (asset.role === "immutable" && !requiredNames.has(asset.name) && !legacyNames.has(asset.name)) {
       throw new TypeError(`manifest has an unexpected immutable asset or build suffix: ${asset.name}`);
     }
   }
 
   if (manifest.sealed) {
-    if (assets.length !== 4) throw new TypeError("sealed manifest must contain exactly 4 assets");
+    const presentLegacyNames = immutable.filter((asset) => legacyNames.has(asset.name));
+    const isLegacyManifest = presentLegacyNames.length > 0;
+    if (isLegacyManifest && presentLegacyNames.length !== legacyNames.size) {
+      throw new TypeError("sealed manifest has a partial legacy daemon asset set");
+    }
+    const expectedAssetCount = isLegacyManifest ? 10 : 4;
+    if (assets.length !== expectedAssetCount) {
+      throw new TypeError(`sealed manifest must contain exactly ${expectedAssetCount} assets`);
+    }
     if (appcast.length !== 1 || stableAliases.length !== 1) {
       throw new TypeError("sealed manifest must contain exactly one appcast and one stable alias");
     }
