@@ -267,6 +267,56 @@ test("immutable payload suffixes must match the candidate build", () => {
   assert.throws(() => validateCandidateManifest(value), /build|suffix|asset|required/i);
 });
 
+// PR #329 removed the remote daemon (programad-remote) and narrowed the required
+// immutable set from ten assets to two. The already-published rolling candidate that
+// the live appcast points at was sealed before that change and still carries the six
+// legacy daemon immutables, so the validator must keep accepting it.
+function legacyDaemonAssets(build) {
+  return [
+    `programad-remote-checksums-${build}.txt`,
+    `programad-remote-darwin-amd64-${build}`,
+    `programad-remote-darwin-arm64-${build}`,
+    `programad-remote-linux-amd64-${build}`,
+    `programad-remote-linux-arm64-${build}`,
+    `programad-remote-manifest-${build}.json`,
+  ].map((name, index) => ({
+    name,
+    role: "immutable",
+    size: index + 100,
+    sha256: String(index + 100).padStart(64, "0"),
+  }));
+}
+
+test("a sealed manifest with the full legacy ten-asset daemon set still validates", () => {
+  const value = manifestFor("41");
+  value.assets.push(...legacyDaemonAssets("41"));
+
+  const validated = validateCandidateManifest(value);
+  assert.equal(validated.assets.length, 10);
+});
+
+test("a sealed manifest with a partial legacy daemon asset set fails closed", () => {
+  const value = manifestFor("41");
+  value.assets.push(...legacyDaemonAssets("41").slice(0, 3));
+
+  assert.throws(() => validateCandidateManifest(value), /partial|legacy|daemon|asset/i);
+});
+
+test("an immutable asset with an unknown, non-legacy name still fails validation", () => {
+  const value = manifestFor("41");
+  value.assets.push({
+    name: "programad-remote-windows-amd64-41",
+    role: "immutable",
+    size: 900,
+    sha256: "e".repeat(64),
+  });
+
+  assert.throws(
+    () => validateCandidateManifest(value),
+    /unexpected immutable asset or build suffix/i,
+  );
+});
+
 test("the stable DMG is byte-identical to the immutable build DMG", () => {
   const valid = manifestFor("41");
   assert.doesNotThrow(() => validateCandidateManifest(valid));

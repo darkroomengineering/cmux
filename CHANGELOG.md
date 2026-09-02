@@ -20,6 +20,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - New setting, off by default: open a browser split beside the terminal whenever a new agent workspace is created (⌘⇧C, `programa` helper agents, and `race`). Also `automation.openBrowserWithAgentSplits` in settings.json.
 
 ### Fixed
+- Release publishing accepts the previous ten-asset candidate manifests again, so the first ship after the remote daemon removal no longer fails.
 - Remote and local CLI clients now share the v2 JSON-RPC and `programa-relay-auth` contracts, password-protected sockets work through MCP, and remote bootstrap files, tmux wait signals, relay diagnostics, and downloaded daemon artifacts have bounded ownership and lifetime.
 - Session recovery now rejects oversized or structurally invalid snapshots before reconstruction, quarantines corrupt primaries, caps history scanning, elects escrow holders without unlinking live or indeterminate sockets, and terminates timed-out subprocess trees without leaving descendants or pipe readers behind.
 - The iOS client now uses device-only Keychain credentials, bounded newline framing, cancellation-safe request and pairing deadlines, settled path selection, server-reconciled CloudKit subscriptions, and a generation-owned reconnect loop. The completed duplicate macOS transport spike has been removed.
