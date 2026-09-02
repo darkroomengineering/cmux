@@ -23,7 +23,6 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     }()
     internal enum DropPlan: Equatable {
         case insertText(String)
-        case uploadFiles([URL])
         case reject
     }
 

@@ -4368,28 +4368,6 @@
         }
       }
     },
-    "clipboard.sshError.item": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld. %@ (%@): %@"
-          }
-        }
-      }
-    },
-    "clipboard.sshError.single": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH error (%@): %@"
-          }
-        }
-      }
-    },
     "command.applyLayout.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -6382,17 +6360,6 @@
         }
       }
     },
-    "contextMenu.copySshError": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Copy SSH Error"
-          }
-        }
-      }
-    },
     "contextMenu.editWorkspaceDescription": {
       "extractionState": "manual",
       "localizations": {
@@ -7893,39 +7860,6 @@
         }
       }
     },
-    "error.remoteDrop.invalidFileURL": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Dropped item is not a file URL."
-          }
-        }
-      }
-    },
-    "error.remoteDrop.unavailable": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Remote drop is unavailable."
-          }
-        }
-      }
-    },
-    "error.remoteDrop.uploadFailed": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Failed to upload dropped file: %@"
-          }
-        }
-      }
-    },
     "markdown.compare.after": {
       "extractionState": "manual",
       "localizations": {
@@ -9066,118 +9000,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Open Folder"
-          }
-        }
-      }
-    },
-    "remote.status.connected": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connected"
-          }
-        }
-      }
-    },
-    "remote.status.connecting": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Connecting"
-          }
-        }
-      }
-    },
-    "remote.status.disconnected": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Disconnected"
-          }
-        }
-      }
-    },
-    "remote.status.error": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Error"
-          }
-        }
-      }
-    },
-    "remoteDaemon.error.goRequired": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Go is required for the development-only programad-remote build fallback."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "開発専用のprogramad-remoteビルドフォールバックにはGoが必要です。"
-          }
-        }
-      }
-    },
-    "remoteDaemon.error.missingDaemonModule": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Missing daemon module at %@."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%@にデーモンモジュールがありません。"
-          }
-        }
-      }
-    },
-    "remoteDaemon.error.missingVerifiedManifest": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "This build does not include a verified programad-remote manifest for %@-%@. Use a release build, or set PROGRAMA_REMOTE_DAEMON_ALLOW_LOCAL_BUILD=1 for a dev-only fallback."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "このビルドには%@-%@用の検証済みprogramad-remoteマニフェストが含まれていません。リリースビルドを使用するか、開発専用のフォールバックとしてPROGRAMA_REMOTE_DAEMON_ALLOW_LOCAL_BUILD=1を設定してください。"
-          }
-        }
-      }
-    },
-    "remoteDaemon.error.repoRootNotFound": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cannot locate the Programa repository root for the development-only programad-remote build fallback."
-          }
-        },
-        "ja": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "開発専用のprogramad-remoteビルドフォールバック用のProgramaリポジトリルートが見つかりません。"
           }
         }
       }
@@ -12887,83 +12709,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$@、%2$@使用、%3$@後にリセット"
-          }
-        }
-      }
-    },
-    "sidebar.remote.help.connected": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH connected to %@"
-          }
-        }
-      }
-    },
-    "sidebar.remote.help.connecting": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH connecting to %@"
-          }
-        }
-      }
-    },
-    "sidebar.remote.help.disconnected": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH disconnected from %@"
-          }
-        }
-      }
-    },
-    "sidebar.remote.help.error": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH error for %@"
-          }
-        }
-      }
-    },
-    "sidebar.remote.help.errorWithDetail": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH error for %@: %@"
-          }
-        }
-      }
-    },
-    "sidebar.remote.help.targetFallback": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "remote host"
-          }
-        }
-      }
-    },
-    "sidebar.remote.subtitleFallback": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "SSH workspace"
           }
         }
       }

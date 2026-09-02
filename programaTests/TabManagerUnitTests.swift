@@ -182,89 +182,6 @@ final class TabManagerChildExitCloseTests: XCTestCase {
         )
     }
 
-    func testChildExitOnLastRemotePanelKeepsWorkspaceAndDemotesToLocal() throws {
-        let manager = TabManager()
-        guard let workspace = manager.selectedWorkspace,
-              let remotePanelId = workspace.focusedPanelId else {
-            XCTFail("Expected selected workspace with focused panel")
-            return
-        }
-
-        workspace.configureRemoteConnection(
-            WorkspaceRemoteConfiguration(
-                destination: "cmux-macmini",
-                port: nil,
-                identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64015,
-                relayID: String(repeating: "a", count: 16),
-                relayToken: String(repeating: "b", count: 64),
-                localSocketPath: "/tmp/programa-debug-test.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
-            ),
-            autoConnect: false
-        )
-
-        XCTAssertTrue(workspace.isRemoteWorkspace)
-        XCTAssertTrue(workspace.isRemoteTerminalSurface(remotePanelId))
-
-        manager.closePanelAfterChildExited(tabId: workspace.id, surfaceId: remotePanelId)
-        drainMainQueue()
-        drainMainQueue()
-
-        XCTAssertEqual(manager.tabs.count, 1)
-        XCTAssertEqual(manager.selectedTabId, workspace.id)
-        XCTAssertEqual(manager.tabs.first?.id, workspace.id)
-        XCTAssertFalse(workspace.isRemoteWorkspace)
-        XCTAssertNil(workspace.panels[remotePanelId])
-        XCTAssertEqual(workspace.panels.count, 1)
-        XCTAssertNotEqual(workspace.focusedPanelId, remotePanelId)
-        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 0)
-    }
-
-    func testChildExitAfterRemoteSessionEndKeepsWorkspaceAndDemotesToLocal() throws {
-        let manager = TabManager()
-        guard let workspace = manager.selectedWorkspace,
-              let remotePanelId = workspace.focusedPanelId else {
-            XCTFail("Expected selected workspace with focused panel")
-            return
-        }
-
-        workspace.configureRemoteConnection(
-            WorkspaceRemoteConfiguration(
-                destination: "cmux-macmini",
-                port: nil,
-                identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64016,
-                relayID: String(repeating: "a", count: 16),
-                relayToken: String(repeating: "b", count: 64),
-                localSocketPath: "/tmp/programa-debug-test.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
-            ),
-            autoConnect: false
-        )
-
-        workspace.markRemoteTerminalSessionEnded(surfaceId: remotePanelId, relayPort: 64016)
-
-        XCTAssertFalse(workspace.isRemoteWorkspace)
-
-        manager.closePanelAfterChildExited(tabId: workspace.id, surfaceId: remotePanelId)
-        drainMainQueue()
-        drainMainQueue()
-
-        XCTAssertEqual(manager.tabs.count, 1)
-        XCTAssertEqual(manager.selectedTabId, workspace.id)
-        XCTAssertEqual(manager.tabs.first?.id, workspace.id)
-        XCTAssertFalse(workspace.isRemoteWorkspace)
-        XCTAssertNil(workspace.panels[remotePanelId])
-        XCTAssertEqual(workspace.panels.count, 1)
-        XCTAssertNotEqual(workspace.focusedPanelId, remotePanelId)
-        XCTAssertEqual(workspace.activeRemoteTerminalSessionCount, 0)
-    }
-
     func testChildExitOnNonLastPanelClosesOnlyPanel() {
         let manager = TabManager()
         guard let workspace = manager.selectedWorkspace,
@@ -669,8 +586,7 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
 
         XCTAssertNotEqual(manager.selectedTabId, backgroundWorkspace.id)
         // Real git subprocess + GitMetadataProber round trip, not a fixed dispatch
-        // delay — needs the same headroom as testRemoteSplitSkipsInitialGitMetadataProbe
-        // below under a full serial suite run's CPU contention.
+        // delay — needs headroom under a full serial suite run's CPU contention.
         let branchArrived = waitForCondition(timeout: 12.0) {
             backgroundWorkspace.panelGitBranches[backgroundPanelId]?.branch == "main"
         }
@@ -800,47 +716,6 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
             }
         )
         XCTAssertEqual(workspace.sidebarGitBranchesInDisplayOrder().map(\.branch), ["main"])
-    }
-
-    func testRemoteSplitSkipsInitialGitMetadataProbe() throws {
-        let manager = TabManager()
-        guard let workspace = manager.selectedWorkspace,
-              let panelId = workspace.focusedPanelId else {
-            XCTFail("Expected selected workspace with focused panel")
-            return
-        }
-
-        XCTAssertTrue(
-            waitForCondition(timeout: 12.0) {
-                manager.activeWorkspaceGitProbePanelIdsForTesting(workspaceId: workspace.id).isEmpty
-            }
-        )
-
-        workspace.configureRemoteConnection(
-            WorkspaceRemoteConfiguration(
-                destination: "cmux-macmini",
-                port: nil,
-                identityFile: nil,
-                sshOptions: [],
-                localProxyPort: nil,
-                relayPort: 64017,
-                relayID: String(repeating: "a", count: 16),
-                relayToken: String(repeating: "b", count: 64),
-                localSocketPath: "/tmp/programa-debug-test.sock",
-                terminalStartupCommand: "ssh cmux-macmini"
-            ),
-            autoConnect: false
-        )
-
-        guard let splitPanel = workspace.newTerminalSplit(from: panelId, orientation: .horizontal, focus: false) else {
-            XCTFail("Expected remote split terminal panel to be created")
-            return
-        }
-
-        drainMainQueue()
-        XCTAssertTrue(workspace.isRemoteWorkspace)
-        XCTAssertTrue(workspace.isRemoteTerminalSurface(splitPanel.id))
-        XCTAssertEqual(manager.activeWorkspaceGitProbePanelIdsForTesting(workspaceId: workspace.id), Set<UUID>())
     }
 
     func testResolvedCommandPathFallsBackOutsideAppPATH() throws {

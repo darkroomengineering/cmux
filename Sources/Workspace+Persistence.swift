@@ -11,26 +11,6 @@ import Network
 import CoreText
 
 extension Workspace {
-    nonisolated static let remoteDaemonManifestInfoKey = WorkspaceRemoteSessionController.remoteDaemonManifestInfoKey
-
-    nonisolated static func remoteDaemonManifest(from infoDictionary: [String: Any]?) -> WorkspaceRemoteDaemonManifest? {
-        WorkspaceRemoteSessionController.remoteDaemonManifest(from: infoDictionary)
-    }
-
-    nonisolated static func remoteDaemonCachedBinaryURL(
-        version: String,
-        goOS: String,
-        goArch: String,
-        fileManager: FileManager = .default
-    ) throws -> URL {
-        try WorkspaceRemoteSessionController.remoteDaemonCachedBinaryURL(
-            version: version,
-            goOS: goOS,
-            goArch: goArch,
-            fileManager: fileManager
-        )
-    }
-
     func sessionSnapshot(includeScrollback: Bool) -> SessionWorkspaceSnapshot {
         let tree = bonsplitController.treeSnapshot()
         let layout = sessionLayoutSnapshot(from: tree)
@@ -304,12 +284,7 @@ extension Workspace {
         let branchSnapshot = panelGitBranches[panelId].map {
             SessionGitBranchSnapshot(branch: $0.branch, isDirty: $0.isDirty)
         }
-        let listeningPorts: [Int]
-        if remoteDetectedSurfaceIds.contains(panelId) || isRemoteTerminalSurface(panelId) {
-            listeningPorts = []
-        } else {
-            listeningPorts = (surfaceListeningPorts[panelId] ?? []).sorted()
-        }
+        let listeningPorts = (surfaceListeningPorts[panelId] ?? []).sorted()
         let ttyName = surfaceTTYNames[panelId]
 
         let terminalSnapshot: SessionTerminalPanelSnapshot?
@@ -790,7 +765,6 @@ extension Workspace {
         } else {
             surfaceTTYNames.removeValue(forKey: panelId)
         }
-        syncRemotePortScanTTYs()
 
         if let browserSnapshot = snapshot.browser,
            let browserPanel = browserPanel(for: panelId) {

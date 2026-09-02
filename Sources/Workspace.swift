@@ -150,44 +150,8 @@ final class Workspace: Identifiable, ObservableObject {
     @Published var panelAgentStateSources: [UUID: AgentStateSource] = [:]
     @Published var surfaceListeningPorts: [UUID: [Int]] = [:]
     var agentListeningPorts: [Int] = []
-    @Published var remoteConfiguration: WorkspaceRemoteConfiguration?
-    @Published var remoteConnectionState: WorkspaceRemoteConnectionState = .disconnected
-    @Published var remoteConnectionDetail: String?
-    @Published var remoteDaemonStatus: WorkspaceRemoteDaemonStatus = WorkspaceRemoteDaemonStatus()
-    @Published var remoteDetectedPorts: [Int] = []
-    @Published var remoteForwardedPorts: [Int] = []
-    @Published var remotePortConflicts: [Int] = []
-    @Published var remoteProxyEndpoint: BrowserProxyEndpoint?
-    @Published var remoteHeartbeatCount: Int = 0
-    @Published var remoteLastHeartbeatAt: Date?
     @Published var listeningPorts: [Int] = []
-    // nuclear-review #98: flipped from `private(set)` to internal so Workspace+Remote.swift
-    // (a separate file) can mutate this after the remote-connection functions moved there.
-    @Published var activeRemoteTerminalSessionCount: Int = 0
     var surfaceTTYNames: [UUID: String] = [:]
-    var remoteSessionController: WorkspaceRemoteSessionController?
-    var pendingRemoteForegroundAuthToken: String?
-    var activeRemoteSessionControllerID: UUID?
-    var remoteLastErrorFingerprint: String?
-    var remoteLastDaemonErrorFingerprint: String?
-    var remoteLastPortConflictFingerprint: String?
-    var remoteDetectedSurfaceIds: Set<UUID> = []
-    var activeRemoteTerminalSurfaceIds: Set<UUID> = []
-    var pendingRemoteTerminalChildExitSurfaceIds: Set<UUID> = []
-
-    static let remoteErrorStatusKey = "remote.error"
-    static let remotePortConflictStatusKey = "remote.port_conflicts"
-    static let remoteNotificationCooldown: TimeInterval = 5 * 60
-    static let sshControlMasterCleanupQueue = DispatchQueue(
-        label: "com.cmux.remote-ssh.control-master-cleanup",
-        qos: .utility
-    )
-    static let remoteHeartbeatDateFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-    nonisolated(unsafe) static var runSSHControlMasterCommandOverrideForTesting: (([String]) -> Void)?
     var panelShellActivityStates: [UUID: PanelShellActivityState] = [:]
     /// PIDs associated with agent status entries (e.g. claude_code), keyed by status key.
     /// Used for stale-session detection: if the PID is dead, the status entry is cleared.
@@ -236,9 +200,6 @@ final class Workspace: Identifiable, ObservableObject {
             sidebarObservationSignal($progress),
             sidebarObservationSignal($panelAgentStates),
             sidebarObservationSignal($panelAgentStateSources),
-            sidebarObservationSignal($remoteConnectionState),
-            sidebarObservationSignal($remoteConnectionDetail),
-            sidebarObservationSignal($activeRemoteTerminalSessionCount),
             sidebarObservationSignal($listeningPorts),
         ]
 
@@ -259,7 +220,6 @@ final class Workspace: Identifiable, ObservableObject {
             sidebarObservationSignal($panelGitBranches),
             sidebarObservationSignal($pullRequest),
             sidebarObservationSignal($panelPullRequests),
-            sidebarObservationSignal($remoteConfiguration),
         ]
 
         return Publishers.MergeMany(publishers).eraseToAnyPublisher()
@@ -275,39 +235,6 @@ final class Workspace: Identifiable, ObservableObject {
         )
         .eraseToAnyPublisher()
     }()
-
-    static func isProxyOnlyRemoteError(_ detail: String) -> Bool {
-        let lowered = detail.lowercased()
-        return lowered.contains("remote proxy")
-            || lowered.contains("proxy_unavailable")
-            || lowered.contains("local daemon proxy")
-            || lowered.contains("proxy failure")
-            || lowered.contains("daemon transport")
-    }
-
-    var preservesSSHTerminalConnection: Bool {
-        activeRemoteTerminalSessionCount > 0
-            && remoteConfiguration?.terminalStartupCommand?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-    }
-
-    var hasProxyOnlyRemoteSidebarError: Bool {
-        guard let entry = statusEntries[Self.remoteErrorStatusKey]?.value else { return false }
-        return entry.lowercased().contains("remote proxy unavailable")
-    }
-
-    func remoteNotificationCooldownKey(target: String) -> String? {
-        let rawTarget = (remoteConfiguration?.destination ?? target)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawTarget.isEmpty else { return nil }
-        let normalizedHost = rawTarget
-            .split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
-            .last
-            .map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        guard let normalizedHost, !normalizedHost.isEmpty else { return nil }
-        return "remote-host:\(normalizedHost)"
-    }
 
     var focusedSurfaceId: UUID? { focusedPanelId }
     var surfaceDirectories: [UUID: String] {
@@ -556,11 +483,6 @@ final class Workspace: Identifiable, ObservableObject {
         tmuxLayoutSnapshot = bonsplitController.layoutSnapshot()
     }
 
-    deinit {
-        activeRemoteSessionControllerID = nil
-        remoteSessionController?.stop()
-    }
-
     // MARK: - Surface ID to Panel ID Mapping
 
     /// Mapping from bonsplit TabID (surface ID) to panel UUID
@@ -662,10 +584,6 @@ final class Workspace: Identifiable, ObservableObject {
         let cachedTitle: String?
         let customTitle: String?
         let manuallyUnread: Bool
-        let isRemoteTerminal: Bool
-        let remoteRelayPort: Int?
-        private(set) var remoteConfigurationIdentity: WorkspaceRemoteConfiguration?
-        private(set) var remoteCleanupConfiguration: WorkspaceRemoteConfiguration?
         private var state: State = .pending
 
         init(
@@ -681,10 +599,7 @@ final class Workspace: Identifiable, ObservableObject {
             ttyName: String?,
             cachedTitle: String?,
             customTitle: String?,
-            manuallyUnread: Bool,
-            isRemoteTerminal: Bool,
-            remoteRelayPort: Int?,
-            remoteCleanupConfiguration: WorkspaceRemoteConfiguration?
+            manuallyUnread: Bool
         ) {
             self.panelId = panelId
             self.panel = panel
@@ -699,24 +614,6 @@ final class Workspace: Identifiable, ObservableObject {
             self.cachedTitle = cachedTitle
             self.customTitle = customTitle
             self.manuallyUnread = manuallyUnread
-            self.isRemoteTerminal = isRemoteTerminal
-            self.remoteRelayPort = remoteRelayPort
-            self.remoteConfigurationIdentity = remoteCleanupConfiguration
-            self.remoteCleanupConfiguration = remoteCleanupConfiguration
-        }
-
-        @discardableResult
-        func withRemoteConfigurationIdentity(_ configuration: WorkspaceRemoteConfiguration?) -> Self {
-            guard case .pending = state else { return self }
-            remoteConfigurationIdentity = configuration
-            return self
-        }
-
-        @discardableResult
-        func withRemoteCleanupConfiguration(_ configuration: WorkspaceRemoteConfiguration?) -> Self {
-            guard case .pending = state else { return self }
-            remoteCleanupConfiguration = configuration
-            return self
         }
 
         fileprivate var isPending: Bool {
@@ -759,9 +656,6 @@ final class Workspace: Identifiable, ObservableObject {
         func finalizePermanently() {
             guard case .pending = state else { return }
             state = .finalized
-            if let remoteCleanupConfiguration {
-                Workspace.requestSSHControlMasterCleanupIfNeeded(configuration: remoteCleanupConfiguration)
-            }
             panel.close()
             TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: panelId)
         }
@@ -782,15 +676,6 @@ final class Workspace: Identifiable, ObservableObject {
     /// Fires from `didCloseTab` when a close marked via `pendingUndoStageOriginalIndex` completes.
     /// Wired by `TabManager` to route the still-alive detached panel into `closedTerminalUndoStore`.
     var onTerminalCloseStagedForUndo: ((DetachedSurfaceTransfer, PaneID, Int) -> Void)?
-    var pendingRemoteSurfaceTTYName: String?
-    var pendingRemoteSurfaceTTYSurfaceId: UUID?
-    var pendingRemoteSurfacePortKickReason: WorkspaceRemoteSessionController.PortScanKickReason?
-    var pendingRemoteSurfacePortKickSurfaceId: UUID?
-    // When the last live remote terminal is detached out, the source workspace may be
-    // closed immediately after the move succeeds. That teardown must not shut down the
-    // shared SSH control master that is still serving the moved terminal.
-    var skipControlMasterCleanupAfterDetachedRemoteTransfer = false
-    var transferredRemoteCleanupConfigurationsByPanelId: [UUID: WorkspaceRemoteConfiguration] = [:]
 
 #if DEBUG
     func debugElapsedMs(since start: TimeInterval) -> String {
@@ -943,24 +828,6 @@ final class Workspace: Identifiable, ObservableObject {
         } else {
             terminalPanel.sendText(textToSend)
             terminalPanel.surface.requestBackgroundSurfaceStartIfNeeded()
-        }
-    }
-
-    func browserRemoteWorkspaceStatusSnapshot() -> BrowserRemoteWorkspaceStatus? {
-        guard let target = remoteDisplayTarget else { return nil }
-        return BrowserRemoteWorkspaceStatus(
-            target: target,
-            connectionState: remoteConnectionState,
-            heartbeatCount: remoteHeartbeatCount,
-            lastHeartbeatAt: remoteLastHeartbeatAt
-        )
-    }
-
-    func applyBrowserRemoteWorkspaceStatusToPanels() {
-        let snapshot = browserRemoteWorkspaceStatusSnapshot()
-        for panel in panels.values {
-            guard let browserPanel = panel as? BrowserPanel else { continue }
-            browserPanel.setRemoteWorkspaceStatus(snapshot)
         }
     }
 
@@ -1348,22 +1215,12 @@ final class Workspace: Identifiable, ObservableObject {
         for (panelId, panel) in panelEntries {
             panelSubscriptions.removeValue(forKey: panelId)
             PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)
-            if let cleanupConfiguration = transferredRemoteCleanupConfigurationsByPanelId.removeValue(forKey: panelId) {
-                Self.requestSSHControlMasterCleanupIfNeeded(configuration: cleanupConfiguration)
-            }
             TerminalController.shared.v2BrowserPermanentlyRemoveSurfaceState(surfaceId: panelId)
             panel.close()
         }
-        let residualCleanupConfigurations = Array(transferredRemoteCleanupConfigurationsByPanelId.values)
-        transferredRemoteCleanupConfigurationsByPanelId.removeAll(keepingCapacity: false)
-        for cleanupConfiguration in residualCleanupConfigurations {
-            Self.requestSSHControlMasterCleanupIfNeeded(configuration: cleanupConfiguration)
-        }
-
         panels.removeAll(keepingCapacity: false)
         surfaceIdToPanelId.removeAll(keepingCapacity: false)
         panelSubscriptions.removeAll(keepingCapacity: false)
-        pendingRemoteTerminalChildExitSurfaceIds.removeAll(keepingCapacity: false)
         pruneSurfaceMetadata(validSurfaceIds: [])
         restoredTerminalScrollbackByPanelId.removeAll(keepingCapacity: false)
         terminalInheritanceFontPointsByPanelId.removeAll(keepingCapacity: false)
@@ -1771,9 +1628,6 @@ final class Workspace: Identifiable, ObservableObject {
     func detachSurface(panelId: UUID) -> DetachedSurfaceTransfer? {
         guard let tabId = surfaceIdFromPanelId(panelId) else { return nil }
         guard panels[panelId] != nil else { return nil }
-        let shouldSkipControlMasterCleanupAfterDetach =
-            activeRemoteTerminalSurfaceIds.contains(panelId)
-            && activeRemoteTerminalSurfaceIds.count == 1
 #if DEBUG
         let detachStart = ProcessInfo.processInfo.systemUptime
         dlog(
@@ -1800,16 +1654,7 @@ final class Workspace: Identifiable, ObservableObject {
             return nil
         }
 
-        var detached = pendingDetachedSurfaces.removeValue(forKey: tabId)
-        if let detachedTransfer = detached, detachedTransfer.isRemoteTerminal {
-            detached = detachedTransfer.withRemoteConfigurationIdentity(remoteConfiguration)
-            if shouldSkipControlMasterCleanupAfterDetach {
-                skipControlMasterCleanupAfterDetachedRemoteTransfer = true
-                if detachedTransfer.remoteCleanupConfiguration == nil {
-                    detached = detachedTransfer.withRemoteCleanupConfiguration(remoteConfiguration)
-                }
-            }
-        }
+        let detached = pendingDetachedSurfaces.removeValue(forKey: tabId)
 #if DEBUG
         dlog(
             "split.detach.end ws=\(id.uuidString.prefix(5)) panel=\(panelId.uuidString.prefix(5)) " +
@@ -1858,13 +1703,7 @@ final class Workspace: Identifiable, ObservableObject {
         if let terminalPanel = detached.panel as? TerminalPanel {
             terminalPanel.updateWorkspaceId(id)
         } else if let browserPanel = detached.panel as? BrowserPanel {
-            browserPanel.reattachToWorkspace(
-                id,
-                isRemoteWorkspace: isRemoteWorkspace,
-                remoteWebsiteDataStoreIdentifier: isRemoteWorkspace ? id : nil,
-                proxyEndpoint: remoteProxyEndpoint,
-                remoteStatus: browserRemoteWorkspaceStatusSnapshot()
-            )
+            browserPanel.reattachToWorkspace(id)
             installBrowserPanelSubscription(browserPanel)
         }
 
@@ -1876,7 +1715,6 @@ final class Workspace: Identifiable, ObservableObject {
         } else {
             surfaceTTYNames.removeValue(forKey: detached.panelId)
         }
-        syncRemotePortScanTTYs()
         if let cachedTitle = detached.cachedTitle {
             panelTitles[detached.panelId] = cachedTitle
         }
@@ -1910,7 +1748,6 @@ final class Workspace: Identifiable, ObservableObject {
             panels.removeValue(forKey: detached.panelId)
             panelDirectories.removeValue(forKey: detached.panelId)
             surfaceTTYNames.removeValue(forKey: detached.panelId)
-            syncRemotePortScanTTYs()
             panelTitles.removeValue(forKey: detached.panelId)
             panelCustomTitles.removeValue(forKey: detached.panelId)
             pinnedPanelIds.remove(detached.panelId)
@@ -1927,21 +1764,6 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         surfaceIdToPanelId[newTabId] = detached.panelId
-        let didAdoptWorkspaceRemoteTracking =
-            detached.remoteConfigurationIdentity != nil
-            && detached.remoteConfigurationIdentity == remoteConfiguration
-        if didAdoptWorkspaceRemoteTracking {
-            trackRemoteTerminalSurface(detached.panelId)
-        }
-        if let cleanupConfiguration = detached.remoteCleanupConfiguration {
-            if didAdoptWorkspaceRemoteTracking {
-                transferredRemoteCleanupConfigurationsByPanelId.removeValue(forKey: detached.panelId)
-            } else {
-                transferredRemoteCleanupConfigurationsByPanelId[detached.panelId] = cleanupConfiguration
-            }
-        } else {
-            transferredRemoteCleanupConfigurationsByPanelId.removeValue(forKey: detached.panelId)
-        }
         if let index {
             _ = bonsplitController.reorderTab(newTabId, toIndex: index)
         }

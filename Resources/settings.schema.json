@@ -386,7 +386,7 @@
         "proxy": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Route the embedded browser through a proxy. Applied only when no remote relay endpoint is active (the relay takes precedence). Requires host and port; type defaults to socks5.",
+          "description": "Route the embedded browser through a proxy. Requires host and port; type defaults to socks5.",
           "properties": {
             "host": {
               "type": "string",

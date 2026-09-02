@@ -539,15 +539,13 @@ node - \
   "${STATE_MODULE}" \
   "${SELECTED_MANIFEST}" \
   "${SELECTED_PAYLOAD_DIR}/appcast.xml" \
-  "${SELECTED_PAYLOAD_DIR}/programad-remote-manifest-${SELECTED_BUILD}.json" \
   "${REPOSITORY}" \
   "${SELECTED_TAG}" <<'NODE'
 const fs = require("node:fs");
-const [modulePath, manifestPath, appcastPath, daemonManifestPath, repository, tag] = process.argv.slice(2);
+const [modulePath, manifestPath, appcastPath, repository, tag] = process.argv.slice(2);
 const { validateReleasePayloadReferences } = require(modulePath);
 validateReleasePayloadReferences({
   appcastXml: fs.readFileSync(appcastPath, "utf8"),
-  daemonManifestJson: fs.readFileSync(daemonManifestPath, "utf8"),
   repository,
   tag,
   manifest: require(manifestPath),

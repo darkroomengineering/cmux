@@ -172,7 +172,6 @@ enum ToolCatalog {
     ///   app chrome, not terminal control.
     /// - `app.*`: app-wide test-harness side effects.
     /// - `agent.detection.*`: deferred for MVP scope only (not a risk exclusion).
-    /// - `workspace.remote.*`: the SSH remote-daemon control plane, explicitly out of scope.
     /// - `surface.drag_to_split`: UI gesture simulation.
     static let all: [ProgramaTool] =
         SystemTools.tools

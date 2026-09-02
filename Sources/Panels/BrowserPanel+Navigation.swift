@@ -117,9 +117,9 @@ extension BrowserPanel {
     /// Reload the current page
     func reload() {
         webView.customUserAgent = BrowserUserAgentSettings.safariUserAgent
-        if Self.serializableSessionHistoryURLString(Self.remoteProxyDisplayURL(for: webView.url)) == nil {
+        if Self.serializableSessionHistoryURLString(webView.url) == nil {
             let fallbackURL = resolvedCurrentSessionHistoryURL()
-                ?? Self.remoteProxyDisplayURL(for: navigationDelegate?.lastAttemptedURL)
+                ?? navigationDelegate?.lastAttemptedURL
 
             if let fallbackURL,
                Self.serializableSessionHistoryURLString(fallbackURL) != nil {
@@ -142,7 +142,7 @@ extension BrowserPanel {
     /// Returns the most reliable URL string for omnibar-related matching and UI decisions.
     /// `currentURL` can lag behind navigation changes, so prefer the live WKWebView URL.
     func preferredURLStringForOmnibar() -> String? {
-        if let webViewURL = Self.remoteProxyDisplayURL(for: webView.url)?.absoluteString
+        if let webViewURL = webView.url?.absoluteString
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !webViewURL.isEmpty,
            webViewURL != blankURLString {
@@ -160,7 +160,7 @@ extension BrowserPanel {
     }
 
     private func resolvedCurrentSessionHistoryURL() -> URL? {
-        if let webViewURL = Self.remoteProxyDisplayURL(for: webView.url),
+        if let webViewURL = webView.url,
            Self.serializableSessionHistoryURLString(webViewURL) != nil {
             return webViewURL
         }

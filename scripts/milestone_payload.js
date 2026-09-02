@@ -24,12 +24,6 @@ function payloadNames(build) {
     `programa-dSYMs-${build}.zip`,
     `programa-macos-${build}.dmg`,
     "programa-macos.dmg",
-    `programad-remote-checksums-${build}.txt`,
-    `programad-remote-darwin-amd64-${build}`,
-    `programad-remote-darwin-arm64-${build}`,
-    `programad-remote-linux-amd64-${build}`,
-    `programad-remote-linux-arm64-${build}`,
-    `programad-remote-manifest-${build}.json`,
   ];
 }
 
@@ -167,10 +161,6 @@ function validateMilestonePayloadReferences({ directory, build, repository, tag,
   }));
   return validateReleasePayloadReferences({
     appcastXml: fs.readFileSync(path.join(directory, "appcast.xml"), "utf8"),
-    daemonManifestJson: fs.readFileSync(
-      path.join(directory, `programad-remote-manifest-${build}.json`),
-      "utf8",
-    ),
     repository,
     tag,
     manifest: {

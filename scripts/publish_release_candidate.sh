@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly SEAL_NAME="programa-release-candidate.json"
-readonly EXPECTED_ASSET_COUNT=10
+readonly EXPECTED_ASSET_COUNT=4
 
 die() {
   echo "publish_release_candidate: $*" >&2
@@ -212,15 +212,12 @@ done
 manifest_path="${temp_dir}/${SEAL_NAME}"
 state_module="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rolling_release_state.js"
 appcast_path=""
-daemon_manifest_path=""
 for ((index = 0; index < EXPECTED_ASSET_COUNT; index++)); do
   case "${names[index]}" in
     appcast.xml) appcast_path="${paths[index]}" ;;
-    "programad-remote-manifest-${build}.json") daemon_manifest_path="${paths[index]}" ;;
   esac
 done
 [[ -n "${appcast_path}" ]] || die "payload set is missing appcast.xml"
-[[ -n "${daemon_manifest_path}" ]] || die "payload set is missing programad-remote-manifest-${build}.json"
 
 node - \
   "${state_module}" \
@@ -230,7 +227,6 @@ node - \
   "${version}" \
   "${build}" \
   "${appcast_path}" \
-  "${daemon_manifest_path}" \
   "${GITHUB_REPOSITORY}" \
   "${destination_tag}" <<'NODE'
 "use strict";
@@ -244,7 +240,6 @@ const [
   version,
   build,
   appcastPath,
-  daemonManifestPath,
   repository,
   destinationTag,
 ] = process.argv.slice(2);
@@ -275,7 +270,6 @@ const manifest = createCandidateManifest({
 
 validateReleasePayloadReferences({
   appcastXml: fs.readFileSync(appcastPath, "utf8"),
-  daemonManifestJson: fs.readFileSync(daemonManifestPath, "utf8"),
   repository,
   tag: destinationTag,
   manifest,
@@ -467,12 +461,6 @@ done
 
 # Keep retry progress deterministic. Runtime payloads precede symbols and aliases.
 upload_payload_named "programa-macos-${build}.dmg"
-upload_payload_named "programad-remote-darwin-arm64-${build}"
-upload_payload_named "programad-remote-darwin-amd64-${build}"
-upload_payload_named "programad-remote-linux-arm64-${build}"
-upload_payload_named "programad-remote-linux-amd64-${build}"
-upload_payload_named "programad-remote-checksums-${build}.txt"
-upload_payload_named "programad-remote-manifest-${build}.json"
 upload_payload_named "programa-dSYMs-${build}.zip"
 upload_payload_named "appcast.xml"
 upload_payload_named "programa-macos.dmg"

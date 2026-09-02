@@ -47,12 +47,6 @@ function requiredImmutableNames(build) {
   return [
     `programa-macos-${build}.dmg`,
     `programa-dSYMs-${build}.zip`,
-    `programad-remote-darwin-arm64-${build}`,
-    `programad-remote-darwin-amd64-${build}`,
-    `programad-remote-linux-arm64-${build}`,
-    `programad-remote-linux-amd64-${build}`,
-    `programad-remote-checksums-${build}.txt`,
-    `programad-remote-manifest-${build}.json`,
   ];
 }
 
@@ -135,7 +129,7 @@ function validateCandidateManifest(manifest) {
   }
 
   if (manifest.sealed) {
-    if (assets.length !== 10) throw new TypeError("sealed manifest must contain exactly 10 assets");
+    if (assets.length !== 4) throw new TypeError("sealed manifest must contain exactly 4 assets");
     if (appcast.length !== 1 || stableAliases.length !== 1) {
       throw new TypeError("sealed manifest must contain exactly one appcast and one stable alias");
     }
@@ -192,9 +186,6 @@ function selectPromotionCandidate(candidates) {
 const VERSIONED_ASSET_PATTERNS = [
   /^programa-macos-([1-9][0-9]*)\.dmg$/,
   /^programa-dSYMs-([1-9][0-9]*)\.zip$/,
-  /^programad-remote-(?:darwin-arm64|darwin-amd64|linux-arm64|linux-amd64)-([1-9][0-9]*)$/,
-  /^programad-remote-checksums-([1-9][0-9]*)\.txt$/,
-  /^programad-remote-manifest-([1-9][0-9]*)\.json$/,
 ];
 
 function buildFromAssetName(name) {
@@ -544,13 +535,7 @@ function requireImmutableAsset(assetsByName, name, label) {
   return asset;
 }
 
-function validateReleasePayloadReferences({
-  appcastXml,
-  daemonManifestJson,
-  repository,
-  tag,
-  manifest,
-}) {
+function validateReleasePayloadReferences({ appcastXml, repository, tag, manifest }) {
   const normalizedManifest = validateCandidateManifest(manifest);
   if (!normalizedManifest.sealed) throw new TypeError("release payload manifest must be sealed");
   assertSafeReleaseLocation(repository, tag);
@@ -591,103 +576,9 @@ function validateReleasePayloadReferences({
     );
   }
 
-  if (typeof daemonManifestJson !== "string") {
-    throw new TypeError("daemon manifest JSON must be a string");
-  }
-  let daemonManifest;
-  try {
-    daemonManifest = JSON.parse(daemonManifestJson);
-  } catch (error) {
-    throw new TypeError("daemon manifest contains malformed JSON", { cause: error });
-  }
-  assertPlainObject(daemonManifest, "daemon manifest");
-  assertExactFields(
-    daemonManifest,
-    [
-      "schemaVersion",
-      "appVersion",
-      "releaseTag",
-      "releaseURL",
-      "checksumsAssetName",
-      "checksumsURL",
-      "entries",
-    ],
-    "daemon manifest",
-  );
-  if (daemonManifest.schemaVersion !== 1) {
-    throw new TypeError("daemon manifest schemaVersion must be 1");
-  }
-  if (daemonManifest.appVersion !== normalizedManifest.version) {
-    throw new TypeError("daemon manifest appVersion must equal the candidate marketing version");
-  }
-  if (daemonManifest.releaseTag !== tag) {
-    throw new TypeError("daemon manifest releaseTag must equal the release tag");
-  }
-  assertExactGitHubURL(daemonManifest.releaseURL, releaseURL, "daemon manifest releaseURL");
-
-  const checksumsName = `programad-remote-checksums-${normalizedManifest.build}.txt`;
-  if (daemonManifest.checksumsAssetName !== checksumsName) {
-    throw new TypeError("daemon manifest checksumsAssetName must match the candidate build");
-  }
-  assertExactGitHubURL(
-    daemonManifest.checksumsURL,
-    `${releaseURL}/${checksumsName}`,
-    "daemon manifest checksumsURL",
-  );
-  requireImmutableAsset(assetsByName, checksumsName, "daemon checksums");
-
-  if (!Array.isArray(daemonManifest.entries) || daemonManifest.entries.length !== 4) {
-    throw new TypeError("daemon manifest must contain exactly four platform entries");
-  }
-  const expectedTargets = [
-    ["darwin", "arm64"],
-    ["darwin", "amd64"],
-    ["linux", "arm64"],
-    ["linux", "amd64"],
-  ];
-  const expectedKeys = new Set(expectedTargets.map(([goOS, goArch]) => `${goOS}/${goArch}`));
-  const normalizedEntries = [];
-
-  for (const [index, entry] of daemonManifest.entries.entries()) {
-    const label = `daemon manifest entry ${index}`;
-    assertPlainObject(entry, label);
-    assertExactFields(entry, ["goOS", "goArch", "assetName", "downloadURL", "sha256"], label);
-    const key = `${entry.goOS}/${entry.goArch}`;
-    if (!expectedKeys.delete(key)) {
-      throw new TypeError(`${label} has an unsupported or duplicate platform: ${key}`);
-    }
-
-    const expectedName = `programad-remote-${entry.goOS}-${entry.goArch}-${normalizedManifest.build}`;
-    if (entry.assetName !== expectedName) {
-      throw new TypeError(`${label} assetName must match its platform and candidate build`);
-    }
-    assertExactGitHubURL(entry.downloadURL, `${releaseURL}/${expectedName}`, `${label} downloadURL`);
-    const sealedAsset = requireImmutableAsset(assetsByName, expectedName, label);
-    if (entry.sha256 !== sealedAsset.sha256) {
-      throw new TypeError(`${label} sha256 must equal the sealed asset hash`);
-    }
-    normalizedEntries.push({
-      goOS: entry.goOS,
-      goArch: entry.goArch,
-      assetName: entry.assetName,
-      downloadURL: entry.downloadURL,
-      sha256: entry.sha256,
-    });
-  }
-  if (expectedKeys.size !== 0) throw new TypeError("daemon manifest is missing a platform entry");
-
   return {
     manifest: normalizedManifest,
     appcast: { url: enclosureURL, build: normalizedManifest.build },
-    daemonManifest: {
-      schemaVersion: 1,
-      appVersion: daemonManifest.appVersion,
-      releaseTag: daemonManifest.releaseTag,
-      releaseURL: daemonManifest.releaseURL,
-      checksumsAssetName: daemonManifest.checksumsAssetName,
-      checksumsURL: daemonManifest.checksumsURL,
-      entries: normalizedEntries,
-    },
   };
 }
 

@@ -445,9 +445,6 @@ extension Workspace {
         if didPruneTTYNames {
             surfaceTTYNames = surfaceTTYNames.filter { validSurfaceIds.contains($0.key) }
         }
-        if remoteDetectedSurfaceIds.contains(where: { !validSurfaceIds.contains($0) }) {
-            remoteDetectedSurfaceIds = remoteDetectedSurfaceIds.filter { validSurfaceIds.contains($0) }
-        }
         if panelShellActivityStates.keys.contains(where: { !validSurfaceIds.contains($0) }) {
             panelShellActivityStates = panelShellActivityStates.filter { validSurfaceIds.contains($0.key) }
         }
@@ -460,9 +457,6 @@ extension Workspace {
         if panelAgentStateSources.keys.contains(where: { !validSurfaceIds.contains($0) }) {
             panelAgentStateSources = panelAgentStateSources.filter { validSurfaceIds.contains($0.key) }
         }
-        if didPruneTTYNames {
-            syncRemotePortScanTTYs()
-        }
         if didPruneListeningPorts {
             recomputeListeningPorts()
         }
@@ -471,8 +465,6 @@ extension Workspace {
     func recomputeListeningPorts() {
         let unique = Set(surfaceListeningPorts.values.flatMap { $0 })
             .union(agentListeningPorts)
-            .union(remoteDetectedPorts)
-            .union(remoteForwardedPorts)
         let next = unique.sorted()
         if listeningPorts != next {
             listeningPorts = next
@@ -529,13 +521,7 @@ extension Workspace {
     func sidebarHomeDirectoryForCanonicalization(
         resolvedPanelDirectories: [UUID: String]
     ) -> String? {
-        if isRemoteWorkspace {
-            return SidebarBranchOrdering.inferredRemoteHomeDirectory(
-                from: Array(resolvedPanelDirectories.values),
-                fallbackDirectory: normalizedSidebarDirectory(currentDirectory)
-            )
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.path
+        FileManager.default.homeDirectoryForCurrentUser.path
     }
 
     func sidebarResolvedDirectory(for panelId: UUID) -> String? {

@@ -47,32 +47,6 @@ final class SessionPersistenceTests: XCTestCase {
     }
 
     @MainActor
-    func testSessionSnapshotSkipsTransientRemoteListeningPorts() throws {
-        let workspace = Workspace()
-        let panelId = try XCTUnwrap(workspace.focusedPanelId)
-        let configuration = WorkspaceRemoteConfiguration(
-            destination: "cmux-macmini",
-            port: nil,
-            identityFile: nil,
-            sshOptions: [],
-            localProxyPort: nil,
-            relayPort: 64001,
-            relayID: "relay-test",
-            relayToken: String(repeating: "c", count: 64),
-            localSocketPath: "/tmp/programa-test.sock",
-            terminalStartupCommand: "ssh cmux-macmini"
-        )
-
-        workspace.configureRemoteConnection(configuration, autoConnect: false)
-        workspace.surfaceListeningPorts[panelId] = [6969]
-
-        let snapshot = workspace.sessionSnapshot(includeScrollback: false)
-        let panelSnapshot = try XCTUnwrap(snapshot.panels.first { $0.id == panelId })
-
-        XCTAssertTrue(panelSnapshot.listeningPorts.isEmpty)
-    }
-
-    @MainActor
     func testWorkspaceSessionSnapshotToleratesDuplicatePanelIDs() throws {
         let workspace = Workspace()
         var snapshot = workspace.sessionSnapshot(includeScrollback: false)

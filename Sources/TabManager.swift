@@ -1225,7 +1225,7 @@ class TabManager: ObservableObject {
                 inheritedConfig = config
             }
             // Resolve placement against the pre-creation snapshot before Workspace init
-            // boots terminal state. The ssh/new-workspace path can otherwise crash while
+            // boots terminal state. The new-workspace path can otherwise crash while
             // reading @Published placement state from existing workspaces mid-creation.
             let insertIndex = newTabInsertIndex(snapshot: snapshot, placementOverride: placementOverride)
             let ordinal = Self.nextPortOrdinal
@@ -2030,7 +2030,6 @@ class TabManager: ObservableObject {
     func setTabColor(tabId: UUID, color: String?) {
         guard let tab = workspace(withId: tabId) else { return }
         tab.setCustomColor(color)
-        guard !tab.isRemoteWorkspace else { return }
         WorkspaceTabColorSettings.rememberColor(
             tab.customColor,
             forDirectory: tab.currentDirectory
@@ -2170,7 +2169,7 @@ class TabManager: ObservableObject {
 
     /// Permanently tears down every workspace still owned by a closing window. Context removal,
     /// rather than tab mutation, excludes the window from later session snapshots; no live panel,
-    /// remote session, undo transfer, or callback may outlive the context.
+    /// undo transfer, or callback may outlive the context.
     func teardownForWindowClose(notifyOwner: Bool = true) {
         guard !isStopped else { return }
         isStopped = true
@@ -2218,7 +2217,6 @@ class TabManager: ObservableObject {
         closedTerminalUndoStore.expireAll()
         for workspace in tabs {
             workspace.teardownAllPanels()
-            workspace.teardownRemoteConnection()
             unwireClosedBrowserTracking(for: workspace)
             workspace.owningTabManager = nil
         }
@@ -2233,7 +2231,7 @@ class TabManager: ObservableObject {
     func closeWorkspace(_ workspace: Workspace) {
         // Guard against tearing down a workspace this manager doesn't own (e.g. a
         // stray/external Workspace instance never inserted into `tabs`). Without
-        // this check, teardownAllPanels()/teardownRemoteConnection() below would
+        // this check, teardownAllPanels() below would
         // unconditionally mutate whatever workspace was passed in.
         guard tabs.contains(where: { $0.id == workspace.id }) else { return }
         guard tabs.count > 1 else { return }
@@ -2246,7 +2244,6 @@ class TabManager: ObservableObject {
 
         AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: workspace.id)
         workspace.teardownAllPanels()
-        workspace.teardownRemoteConnection()
         unwireClosedBrowserTracking(for: workspace)
         workspace.owningTabManager = nil
 
@@ -2730,26 +2727,13 @@ class TabManager: ObservableObject {
     func closePanelAfterChildExited(tabId: UUID, surfaceId: UUID) {
         guard let tab = workspace(withId: tabId) else { return }
         guard tab.panels[surfaceId] != nil else { return }
-        let keepsRemoteWorkspaceOpen =
-            tab.panels.count <= 1 && tab.shouldDemoteWorkspaceAfterChildExit(surfaceId: surfaceId)
 
 #if DEBUG
         dlog(
             "surface.close.childExited tab=\(tabId.uuidString.prefix(5)) " +
-            "surface=\(surfaceId.uuidString.prefix(5)) panels=\(tab.panels.count) workspaces=\(tabs.count) " +
-            "remoteWorkspace=\(tab.isRemoteWorkspace ? 1 : 0) keepRemote=\(keepsRemoteWorkspaceOpen ? 1 : 0)"
+            "surface=\(surfaceId.uuidString.prefix(5)) panels=\(tab.panels.count) workspaces=\(tabs.count)"
         )
 #endif
-
-        // Exiting the last SSH surface should demote the workspace back to a local one.
-        // Route through Workspace close handling so remote teardown and replacement-panel
-        // logic run before TabManager considers removing the workspace itself, including
-        // session-end paths where remote configuration was cleared before Ghostty delivered
-        // the child-exit callback.
-        if keepsRemoteWorkspaceOpen {
-            closeRuntimeSurface(tabId: tabId, surfaceId: surfaceId)
-            return
-        }
 
         // Child-exit on the last panel should collapse the workspace, matching explicit close
         // semantics (and close the window when it was the last workspace).

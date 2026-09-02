@@ -204,7 +204,6 @@ extension Workspace {
 
         guard let paneId = sourcePaneId else { return nil }
         let inheritedConfig = inheritedTerminalConfig(preferredPanelId: panelId, inPane: paneId)
-        let remoteTerminalStartupCommand = remoteTerminalStartupCommand()
 
         // Inherit working directory: prefer the source panel's reported cwd,
         // then its requested startup cwd if shell integration has not reported
@@ -235,15 +234,11 @@ extension Workspace {
             context: GHOSTTY_SURFACE_CONTEXT_SPLIT,
             configTemplate: inheritedConfig,
             workingDirectory: splitWorkingDirectory,
-            portOrdinal: portOrdinal,
-            initialCommand: remoteTerminalStartupCommand
+            portOrdinal: portOrdinal
         )
         configureTerminalPanel(newPanel)
         panels[newPanel.id] = newPanel
         panelTitles[newPanel.id] = newPanel.displayTitle
-        if remoteTerminalStartupCommand != nil {
-            trackRemoteTerminalSurface(newPanel.id)
-        }
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)
 
         // Pre-generate the bonsplit tab ID so we can install the panel mapping before bonsplit
@@ -269,9 +264,6 @@ extension Workspace {
             panels.removeValue(forKey: newPanel.id)
             panelTitles.removeValue(forKey: newPanel.id)
             surfaceIdToPanelId.removeValue(forKey: newTab.id)
-            if remoteTerminalStartupCommand != nil {
-                untrackRemoteTerminalSurface(newPanel.id)
-            }
             terminalInheritanceFontPointsByPanelId.removeValue(forKey: newPanel.id)
             return nil
         }
@@ -324,7 +316,6 @@ extension Workspace {
         let previousHostedView = focusedTerminalPanel?.hostedView
 
         let inheritedConfig = inheritedTerminalConfig(inPane: paneId)
-        let remoteTerminalStartupCommand = remoteTerminalStartupCommand()
 
         // Create new terminal panel
         let newPanel = TerminalPanel(
@@ -333,7 +324,6 @@ extension Workspace {
             configTemplate: inheritedConfig,
             workingDirectory: workingDirectory,
             portOrdinal: portOrdinal,
-            initialCommand: remoteTerminalStartupCommand,
             additionalEnvironment: startupEnvironment,
             reviveDescriptor: reviveDescriptor,
             pendingScrollbackSeedText: pendingScrollbackSeedText
@@ -341,9 +331,6 @@ extension Workspace {
         configureTerminalPanel(newPanel)
         panels[newPanel.id] = newPanel
         panelTitles[newPanel.id] = newPanel.displayTitle
-        if remoteTerminalStartupCommand != nil {
-            trackRemoteTerminalSurface(newPanel.id)
-        }
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)
 
         // Create tab in bonsplit
@@ -357,9 +344,6 @@ extension Workspace {
         ) else {
             panels.removeValue(forKey: newPanel.id)
             panelTitles.removeValue(forKey: newPanel.id)
-            if remoteTerminalStartupCommand != nil {
-                untrackRemoteTerminalSurface(newPanel.id)
-            }
             terminalInheritanceFontPointsByPanelId.removeValue(forKey: newPanel.id)
             return nil
         }
@@ -388,15 +372,6 @@ extension Workspace {
             reason: "surfaceCreate"
         )
         return newPanel
-    }
-
-    func remoteTerminalStartupCommand() -> String? {
-        guard let command = remoteConfiguration?.terminalStartupCommand?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !command.isEmpty else {
-            return nil
-        }
-        return command
     }
 
     /// Create a new browser panel split
@@ -429,10 +404,7 @@ extension Workspace {
                 preferredProfileID: preferredProfileID,
                 sourcePanelId: panelId
             ),
-            initialURL: url,
-            proxyEndpoint: remoteProxyEndpoint,
-            isRemoteWorkspace: isRemoteWorkspace,
-            remoteWebsiteDataStoreIdentifier: isRemoteWorkspace ? id : nil
+            initialURL: url
         )
         panels[browserPanel.id] = browserPanel
         panelTitles[browserPanel.id] = browserPanel.displayTitle
@@ -478,7 +450,6 @@ extension Workspace {
         }
 
         installBrowserPanelSubscription(browserPanel)
-        browserPanel.setRemoteWorkspaceStatus(browserRemoteWorkspaceStatusSnapshot())
 
         return browserPanel
     }
@@ -508,10 +479,7 @@ extension Workspace {
                 sourcePanelId: sourcePanelId
             ),
             initialURL: url,
-            bypassInsecureHTTPHostOnce: bypassInsecureHTTPHostOnce,
-            proxyEndpoint: remoteProxyEndpoint,
-            isRemoteWorkspace: isRemoteWorkspace,
-            remoteWebsiteDataStoreIdentifier: isRemoteWorkspace ? id : nil
+            bypassInsecureHTTPHostOnce: bypassInsecureHTTPHostOnce
         )
         panels[browserPanel.id] = browserPanel
         panelTitles[browserPanel.id] = browserPanel.displayTitle
@@ -557,7 +525,6 @@ extension Workspace {
         }
 
         installBrowserPanelSubscription(browserPanel)
-        browserPanel.setRemoteWorkspaceStatus(browserRemoteWorkspaceStatusSnapshot())
 
         return browserPanel
     }

@@ -203,16 +203,6 @@ enum SocketPasswordResolver {
 // docs/plans/mcp-server.md §1.4/§6.
 
 final class SocketClient {
-    private struct RelayEndpoint {
-        let host: String
-        let port: UInt16
-    }
-
-    private struct RelayCredentials {
-        let relayID: String
-        let relayToken: Data
-    }
-
     private let path: String
     private var socketFD: Int32 = -1
     private static let defaultResponseTimeoutSeconds: TimeInterval = 15.0
@@ -235,18 +225,6 @@ final class SocketClient {
 
     var socketPath: String {
         path
-    }
-
-    private var relayEndpoint: RelayEndpoint? {
-        Self.parseRelayEndpoint(path)
-    }
-
-    private static func trimmedEnvValue(_ value: String?) -> String? {
-        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty else {
-            return nil
-        }
-        return trimmed
     }
 
     private static func socketTimeval(for timeout: TimeInterval) -> timeval {
@@ -303,16 +281,7 @@ final class SocketClient {
     ///   `CMUXTERM_CLI_RESPONSE_TIMEOUT_SEC`'s default (e.g. `surface.wait` with a caller-chosen
     ///   `--timeout`). Ignored (falls back to the default) when `nil` or smaller.
     func send(command: String, minimumReceiveTimeout: TimeInterval? = nil) throws -> String {
-        if relayEndpoint != nil, socketFD < 0 {
-            try connect()
-        }
         guard socketFD >= 0 else { throw CLIError(message: "Not connected") }
-        let shouldCloseAfterSend = relayEndpoint != nil
-        defer {
-            if shouldCloseAfterSend {
-                close()
-            }
-        }
 
         let payload = command + "\n"
         try writeAll(
@@ -368,11 +337,6 @@ final class SocketClient {
     }
 
     private func connectOnce() throws {
-        if let relayEndpoint {
-            try connectToRelay(endpoint: relayEndpoint)
-            return
-        }
-
         // Verify socket is owned by the current user to prevent fake-socket attacks.
         var st = stat()
         guard stat(path, &st) == 0 else {
@@ -423,154 +387,6 @@ final class SocketClient {
             errnoValue: connectErrno,
             message: "Failed to connect to socket at \(path) (\(String(cString: strerror(connectErrno))), errno \(connectErrno))"
         )
-    }
-
-    private static func parseRelayEndpoint(_ raw: String) -> RelayEndpoint? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              !trimmed.hasPrefix("/") else {
-            return nil
-        }
-        let components = trimmed.split(separator: ":", omittingEmptySubsequences: false)
-        guard components.count == 2,
-              let port = UInt16(components[1]),
-              port > 0 else {
-            return nil
-        }
-        let host = String(components[0]).lowercased()
-        guard host == "127.0.0.1" || host == "localhost" else {
-            return nil
-        }
-        return RelayEndpoint(host: host == "localhost" ? "127.0.0.1" : host, port: port)
-    }
-
-    private static func relayCredentials(for endpoint: RelayEndpoint) throws -> RelayCredentials {
-        let environment = ProcessInfo.processInfo.environment
-        if let relayID = trimmedEnvValue(environment["PROGRAMA_RELAY_ID"]),
-           let relayTokenHex = trimmedEnvValue(environment["PROGRAMA_RELAY_TOKEN"]),
-           let relayToken = hexData(from: relayTokenHex) {
-            return RelayCredentials(relayID: relayID, relayToken: relayToken)
-        }
-
-        let authURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-            .appendingPathComponent(".programa/relay/\(endpoint.port).auth", isDirectory: false)
-        guard let authData = try? Data(contentsOf: authURL),
-              let authObject = try? JSONSerialization.jsonObject(with: authData) as? [String: Any],
-              let relayID = trimmedEnvValue(authObject["relay_id"] as? String),
-              let relayTokenHex = trimmedEnvValue(authObject["relay_token"] as? String),
-              let relayToken = hexData(from: relayTokenHex) else {
-            throw CLIError(message: "Missing relay auth metadata for \(endpoint.host):\(endpoint.port)")
-        }
-
-        return RelayCredentials(relayID: relayID, relayToken: relayToken)
-    }
-
-    private static func hexData(from string: String) -> Data? {
-        let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty,
-              normalized.count.isMultiple(of: 2) else {
-            return nil
-        }
-
-        var data = Data(capacity: normalized.count / 2)
-        var cursor = normalized.startIndex
-        while cursor < normalized.endIndex {
-            let next = normalized.index(cursor, offsetBy: 2)
-            guard let byte = UInt8(normalized[cursor..<next], radix: 16) else {
-                return nil
-            }
-            data.append(byte)
-            cursor = next
-        }
-        return data
-    }
-
-    private static func hexString(from data: Data) -> String {
-        data.map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func connectToRelay(endpoint: RelayEndpoint) throws {
-        let credentials = try Self.relayCredentials(for: endpoint)
-
-        socketFD = socket(AF_INET, SOCK_STREAM, 0)
-        guard socketFD >= 0 else {
-            throw CLIError(message: "Failed to create relay socket")
-        }
-        do {
-            try configureSocketWriteSafety(Self.responseTimeoutSeconds)
-            try configureReceiveTimeout(Self.responseTimeoutSeconds)
-        } catch {
-            close()
-            throw error
-        }
-
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.stride)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = endpoint.port.bigEndian
-        let parsedAddress = withUnsafeMutablePointer(to: &address.sin_addr) { pointer in
-            endpoint.host.withCString { hostPointer in
-                inet_pton(AF_INET, hostPointer, pointer)
-            }
-        }
-        guard parsedAddress == 1 else {
-            close()
-            throw CLIError(message: "Invalid relay endpoint \(endpoint.host):\(endpoint.port)")
-        }
-
-        let result = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                Darwin.connect(socketFD, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.stride))
-            }
-        }
-        if result != 0 {
-            let connectErrno = errno
-            close()
-            throw CLIError(
-                message: "Failed to connect to relay at \(endpoint.host):\(endpoint.port) (\(String(cString: strerror(connectErrno))), errno \(connectErrno))"
-            )
-        }
-
-        do {
-            try authenticateRelay(credentials: credentials)
-        } catch {
-            close()
-            throw error
-        }
-    }
-
-    private func authenticateRelay(credentials: RelayCredentials) throws {
-        let challengeLine = try readLine()
-        guard let challengeData = challengeLine.data(using: .utf8),
-              let challenge = try JSONSerialization.jsonObject(with: challengeData) as? [String: Any],
-              (challenge["protocol"] as? String) == "programa-relay-auth",
-              let version = challenge["version"] as? Int,
-              let relayID = challenge["relay_id"] as? String,
-              relayID == credentials.relayID,
-              let nonce = challenge["nonce"] as? String,
-              !nonce.isEmpty else {
-            throw CLIError(message: "Invalid relay authentication challenge")
-        }
-
-        let authMessage = Data("relay_id=\(relayID)\nnonce=\(nonce)\nversion=\(version)".utf8)
-        let key = SymmetricKey(data: credentials.relayToken)
-        let mac = Data(HMAC<SHA256>.authenticationCode(for: authMessage, using: key))
-        let authPayload = try JSONSerialization.data(withJSONObject: [
-            "relay_id": relayID,
-            "mac": Self.hexString(from: mac),
-        ])
-        try writeAll(
-            authPayload + Data([0x0A]),
-            timeoutMessage: "Relay command timed out",
-            failureMessage: "Failed to write to relay socket"
-        )
-
-        let authResponseLine = try readLine()
-        guard let authResponseData = authResponseLine.data(using: .utf8),
-              let authResponse = try JSONSerialization.jsonObject(with: authResponseData) as? [String: Any],
-              (authResponse["ok"] as? Bool) == true else {
-            throw CLIError(message: "Relay authentication failed")
-        }
     }
 
     private func writeAll(
@@ -640,41 +456,6 @@ final class SocketClient {
 #endif
     }
 
-    private func readLine(maxBytes: Int = 16 * 1024) throws -> String {
-        var data = Data()
-
-        while data.count < maxBytes {
-            try configureReceiveTimeout(Self.responseTimeoutSeconds)
-
-            var byte: UInt8 = 0
-            let count = Darwin.read(socketFD, &byte, 1)
-            if count < 0 {
-                if errno == EINTR {
-                    continue
-                }
-                if errno == EAGAIN || errno == EWOULDBLOCK {
-                    throw CLIError(message: "Relay command timed out")
-                }
-                throw CLIError(message: "Relay socket read error")
-            }
-            if count == 0 {
-                break
-            }
-            if byte == 0x0A {
-                break
-            }
-            data.append(byte)
-        }
-
-        guard !data.isEmpty else {
-            throw CLIError(message: "Unexpected EOF from relay")
-        }
-        guard let line = String(data: data, encoding: .utf8) else {
-            throw CLIError(message: "Invalid UTF-8 relay response")
-        }
-        return line.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private func configureReceiveTimeout(_ timeout: TimeInterval) throws {
         var interval = Self.socketTimeval(for: timeout)
         let result = withUnsafePointer(to: &interval) { ptr in
@@ -694,9 +475,6 @@ final class SocketClient {
     static func waitForConnectableSocket(path: String, timeout: TimeInterval) throws -> SocketClient {
         let client = SocketClient(path: path)
         if (try? client.connect()) != nil {
-            if client.relayEndpoint != nil {
-                client.close()
-            }
             return client
         }
 
@@ -1980,18 +1758,10 @@ struct ProgramaCLI {
                                 let selected = (ws["selected"] as? Bool) == true
                                 let handle = self.textHandle(ws, idFormat: ctx.idFormat)
                                 let title = (ws["title"] as? String) ?? ""
-                                let remoteTag: String = {
-                                    guard let remote = ws["remote"] as? [String: Any],
-                                          (remote["enabled"] as? Bool) == true else {
-                                        return ""
-                                    }
-                                    let state = (remote["state"] as? String) ?? "unknown"
-                                    return "  [ssh:\(state)]"
-                                }()
                                 let prefix = selected ? "* " : "  "
                                 let selTag = selected ? "  [selected]" : ""
                                 let titlePart = title.isEmpty ? "" : "  \(title)"
-                                print("\(prefix)\(handle)\(titlePart)\(remoteTag)\(selTag)")
+                                print("\(prefix)\(handle)\(titlePart)\(selTag)")
                             }
                         }
                     }
@@ -2051,7 +1821,6 @@ struct ProgramaCLI {
             ),
 
             ]
-        descriptors += self.sshDescriptors()
         descriptors += [
 
             CommandDescriptor(
@@ -6078,40 +5847,6 @@ struct ProgramaCLI {
             windowOverride: windowOverride
         )
     }
-    struct SSHCommandOptions {
-        let destination: String
-        let port: Int?
-        let identityFile: String?
-        let workspaceName: String?
-        let noFocus: Bool
-        let sshOptions: [String]
-        let extraArguments: [String]
-        let localSocketPath: String
-        let remoteRelayPort: Int
-    }
-
-    struct RemoteDaemonManifest: Decodable {
-        struct Entry: Decodable {
-            let goOS: String
-            let goArch: String
-            let assetName: String
-            let downloadURL: String
-            let sha256: String
-        }
-
-        let schemaVersion: Int
-        let appVersion: String
-        let releaseTag: String
-        let releaseURL: String
-        let checksumsAssetName: String
-        let checksumsURL: String
-        let entries: [Entry]
-
-        func entry(goOS: String, goArch: String) -> Entry? {
-            entries.first { $0.goOS == goOS && $0.goArch == goArch }
-        }
-    }
-
     func resolveWorkspaceId(_ raw: String?, client: SocketClient) throws -> String {
         if let raw, isUUID(raw) {
             return raw
@@ -6170,7 +5905,6 @@ struct ProgramaCLI {
     /// Return the help/usage text for a subcommand, or nil if the command is unknown.
     private func subcommandUsage(_ command: String) -> String? {
         if let text = tmuxCompatSubcommandUsage(command) { return text }
-        if let text = sshSubcommandUsage(command) { return text }
         if let text = treeSubcommandUsage(command) { return text }
         if let text = hooksSubcommandUsage(command) { return text }
         if let text = browserSubcommandUsage(command) { return text }
@@ -6658,24 +6392,6 @@ struct ProgramaCLI {
                 throw CLIError(message: "layout: unknown subcommand \(parsed.positional[0])")
             }
 
-        case "ssh":
-            try validateSSHCommandArguments(args)
-
-        case "ssh-session-end":
-            let parsed = try parse(values: ["relay-port", "workspace", "surface"])
-            try require(["relay-port"], in: parsed.options)
-            guard let rawPort = parsed.options["relay-port"], let port = Int(rawPort), port > 0, port <= 65535 else {
-                throw CLIError(message: "ssh-session-end: --relay-port must be 1-65535")
-            }
-            if parsed.options["workspace"] == nil,
-               ProcessInfo.processInfo.environment["PROGRAMA_WORKSPACE_ID"] == nil {
-                throw CLIError(message: "ssh-session-end requires --workspace or PROGRAMA_WORKSPACE_ID")
-            }
-            if parsed.options["surface"] == nil,
-               ProcessInfo.processInfo.environment["PROGRAMA_SURFACE_ID"] == nil {
-                throw CLIError(message: "ssh-session-end requires --surface or PROGRAMA_SURFACE_ID")
-            }
-
         case "claude-hook":
             let parsed = try parse(values: ["workspace", "surface"], maxPositionals: 1)
             if let subcommand = parsed.positional.first?.lowercased(),
@@ -6754,15 +6470,6 @@ struct ProgramaCLI {
             return
         case "codex", "claude", "opencode":
             _ = try parse(booleans: ["yes", "y"], minPositionals: 1, maxPositionals: 1)
-        case "remote-daemon-status":
-            let parsed = try parse(values: ["os", "arch"])
-            if let os = parsed.options["os"], !["darwin", "linux"].contains(os.lowercased()) {
-                throw CLIError(message: "remote-daemon-status: unsupported --os value")
-            }
-            if let arch = parsed.options["arch"], !["arm64", "amd64"].contains(arch.lowercased()) {
-                throw CLIError(message: "remote-daemon-status: unsupported --arch value")
-            }
-
         // Commands with richer bespoke contracts are validated by their
         // dedicated cases in `validateArguments`.
         case "ping", "focus-panel", "read-screen", "wait-surface", "set-progress", "list-log", "watch-events":

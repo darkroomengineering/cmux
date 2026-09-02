@@ -13,8 +13,7 @@ fi
 run_case() {
   local name="$1"
   local expected_app="$2"
-  local expected_daemon="$3"
-  local changed_paths="$4"
+  local changed_paths="$3"
   local output
   local expected
 
@@ -23,10 +22,7 @@ run_case() {
     exit 1
   fi
 
-  printf -v expected \
-    'run_app_jobs=%s\nrun_remote_daemon_jobs=%s' \
-    "${expected_app}" \
-    "${expected_daemon}"
+  printf -v expected 'run_app_jobs=%s' "${expected_app}"
 
   if [[ "${output}" != "${expected}" ]]; then
     echo "FAIL: ${name}: unexpected classifier output" >&2
@@ -37,50 +33,27 @@ run_case() {
 }
 
 run_case \
-  "app path before daemon path" \
-  true \
-  true \
-  $'Sources/TerminalController.swift\ndaemon/remote/cmd/programad-remote/main.go\n'
-
-run_case \
-  "daemon path before app path" \
-  true \
-  true \
-  $'daemon/remote/cmd/programad-remote/main.go\nSources/TerminalController.swift\n'
-
-run_case \
-  "daemon path only" \
-  false \
-  true \
-  $'daemon/remote/cmd/programad-remote/main.go\n'
-
-run_case \
   "app path only" \
   true \
-  false \
   $'Sources/TerminalController.swift\n'
 
 run_case \
   "app icon asset" \
   true \
-  false \
   $'Assets.xcassets/AppIcon.appiconset/icon.png\n'
 
 run_case \
   "non-localization bundled image" \
   true \
-  false \
   $'Resources/ghostty/themes/preview.png\n'
 
 run_case \
   "documentation workflow and localization paths only" \
   false \
-  false \
   $'docs/socket-control.md\nREADME.md\n.github/workflows/ci.yml\nResources/Localizable.xcstrings\nResources/ja.lproj/Localizable.strings\n'
 
 run_case \
   "empty changed path set" \
-  true \
   true \
   ""
 

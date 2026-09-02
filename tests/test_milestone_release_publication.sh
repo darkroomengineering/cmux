@@ -42,12 +42,6 @@ payload_names() {
   printf '%s\n' \
     "programa-macos-${build}.dmg" \
     "programa-dSYMs-${build}.zip" \
-    "programad-remote-darwin-arm64-${build}" \
-    "programad-remote-darwin-amd64-${build}" \
-    "programad-remote-linux-arm64-${build}" \
-    "programad-remote-linux-amd64-${build}" \
-    "programad-remote-checksums-${build}.txt" \
-    "programad-remote-manifest-${build}.json" \
     appcast.xml \
     programa-macos.dmg
 }
@@ -67,25 +61,6 @@ prepare_payload() {
   <sparkle:version>${build}</sparkle:version>
   <enclosure url="${release_url}/programa-macos-${build}.dmg" length="${enclosure_size}" sparkle:edSignature="${ED25519_SIGNATURE}" />
 </item></channel></rss>
-EOF
-  : > "${directory}/programad-remote-checksums-${build}.txt"
-  for name in \
-    "programad-remote-darwin-arm64-${build}" "programad-remote-darwin-amd64-${build}" \
-    "programad-remote-linux-arm64-${build}" "programad-remote-linux-amd64-${build}"; do
-    printf '%s  %s\n' "$(sha256_file "${directory}/${name}")" "${name}" >> "${directory}/programad-remote-checksums-${build}.txt"
-  done
-  cat > "${directory}/programad-remote-manifest-${build}.json" <<EOF
-{
-  "schemaVersion":1,"appVersion":"${TAG#v}","releaseTag":"${TAG}","releaseURL":"${release_url}",
-  "checksumsAssetName":"programad-remote-checksums-${build}.txt",
-  "checksumsURL":"${release_url}/programad-remote-checksums-${build}.txt",
-  "entries":[
-    {"goOS":"darwin","goArch":"arm64","assetName":"programad-remote-darwin-arm64-${build}","downloadURL":"${release_url}/programad-remote-darwin-arm64-${build}","sha256":"$(sha256_file "${directory}/programad-remote-darwin-arm64-${build}")"},
-    {"goOS":"darwin","goArch":"amd64","assetName":"programad-remote-darwin-amd64-${build}","downloadURL":"${release_url}/programad-remote-darwin-amd64-${build}","sha256":"$(sha256_file "${directory}/programad-remote-darwin-amd64-${build}")"},
-    {"goOS":"linux","goArch":"arm64","assetName":"programad-remote-linux-arm64-${build}","downloadURL":"${release_url}/programad-remote-linux-arm64-${build}","sha256":"$(sha256_file "${directory}/programad-remote-linux-arm64-${build}")"},
-    {"goOS":"linux","goArch":"amd64","assetName":"programad-remote-linux-amd64-${build}","downloadURL":"${release_url}/programad-remote-linux-amd64-${build}","sha256":"$(sha256_file "${directory}/programad-remote-linux-amd64-${build}")"}
-  ]
-}
 EOF
   node - "${MODULE}" "${directory}" "${build}" <<'NODE'
 const [modulePath, directory, build] = process.argv.slice(2);
@@ -274,7 +249,7 @@ assert_converged() {
   while IFS= read -r name; do
     cmp -s "${payload_dir}/${name}" "$(asset_dir "${TAG}" "${name}")/bytes" || fail "remote bytes differ for ${name}"
   done < <(payload_names "${BUILD}")
-  [[ "$(find "$(release_dir "${TAG}")/assets" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == 10 ]] || fail "remote asset set is not exact"
+  [[ "$(find "$(release_dir "${TAG}")/assets" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == 4 ]] || fail "remote asset set is not exact"
 }
 
 PAYLOAD="${TMP_DIR}/payload-41"
@@ -294,12 +269,12 @@ grep -Fq "read-tag-ref $(printf '%040x' 42)" "${STATE_DIR}/operations.log" || fa
 reset_state
 write_release "${TAG}" main true false "${TAG}" generated
 write_asset "${TAG}" "programa-macos-${BUILD}.dmg" "${PAYLOAD}/programa-macos-${BUILD}.dmg"
-write_asset "${TAG}" "programad-remote-darwin-arm64-${BUILD}" "${PAYLOAD}/programad-remote-darwin-arm64-${BUILD}"
+write_asset "${TAG}" "programa-dSYMs-${BUILD}.zip" "${PAYLOAD}/programa-dSYMs-${BUILD}.zip"
 : > "${STATE_DIR}/operations.log"
 invoke "${PAYLOAD}"
 assert_converged "${PAYLOAD}" main
 grep -Fq "read-tag-ref ${TARGET_SHA}" "${STATE_DIR}/operations.log" || fail "advisory-main recovery did not authenticate the live tag ref"
-[[ "$(grep -c '^authenticated-download ' "${STATE_DIR}/operations.log")" -ge 10 ]] || fail "advisory-main recovery did not verify exact remote bytes"
+[[ "$(grep -c '^authenticated-download ' "${STATE_DIR}/operations.log")" -ge 4 ]] || fail "advisory-main recovery did not verify exact remote bytes"
 
 # Local manifest verification runs before GitHub mutation.
 reset_state
@@ -309,9 +284,9 @@ if invoke "${TMP_DIR}/tampered-local"; then fail "tampered local payload passed 
 [[ ! -s "${STATE_DIR}/operations.log" ]] || fail "local verification failure mutated GitHub"
 
 # Matching file-manifest hashes cannot bless semantically invalid release
-# payloads. Appcast and daemon references must match the tag, build, signature,
-# enclosure length, checksums, and platform assets before GitHub mutation.
-for semantic_conflict in appcast-url daemon-checksums-url; do
+# payloads. Appcast references must match the tag, build, signature, and
+# enclosure length before GitHub mutation.
+for semantic_conflict in appcast-url; do
   semantic_dir="${TMP_DIR}/semantic-${semantic_conflict}"
   cp -R "${PAYLOAD}" "${semantic_dir}"
   case "${semantic_conflict}" in
@@ -322,15 +297,6 @@ for semantic_conflict in appcast-url daemon-checksums-url; do
   <enclosure url="https://github.com/attacker/programa/releases/download/${TAG}/programa-macos-${BUILD}.dmg" length="$(file_size "${semantic_dir}/programa-macos-${BUILD}.dmg")" sparkle:edSignature="${ED25519_SIGNATURE}" />
 </item></channel></rss>
 EOF
-      ;;
-    daemon-checksums-url)
-      node - "${semantic_dir}/programad-remote-manifest-${BUILD}.json" <<'NODE'
-const fs = require("node:fs");
-const path = process.argv[2];
-const value = JSON.parse(fs.readFileSync(path, "utf8"));
-value.checksumsURL = "https://github.com/attacker/programa/releases/download/v1.2.3/checksums.txt";
-fs.writeFileSync(path, `${JSON.stringify(value)}\n`);
-NODE
       ;;
   esac
   rehash_manifest "${semantic_dir}"
@@ -343,7 +309,7 @@ done
 reset_state; invoke "${PAYLOAD}"; assert_converged "${PAYLOAD}"
 uploads="$(sed -n 's/^mutation upload-asset [^ ]* //p' "${STATE_DIR}/operations.log")"
 [[ "$(printf '%s\n' "${uploads}" | tail -2)" == $'appcast.xml\nprograma-macos.dmg' ]] || fail "appcast and stable alias were not uploaded last"
-[[ "$(grep -c '^authenticated-download ' "${STATE_DIR}/operations.log")" -ge 10 ]] || fail "remote payloads were not authenticated-download verified"
+[[ "$(grep -c '^authenticated-download ' "${STATE_DIR}/operations.log")" -ge 4 ]] || fail "remote payloads were not authenticated-download verified"
 grep -Fq "view-release ${TAG} query=.isImmutable" "${STATE_DIR}/operations.log" || fail "publisher did not require immutable published state"
 
 # A published exact release is idempotent.
@@ -371,11 +337,11 @@ if invoke "${PAYLOAD}" 2; then fail "early hard stop was not propagated"; fi
 [[ "$(cat "$(release_dir "${TAG}")/draft")" == true ]] || fail "early interruption did not preserve draft"
 rm -f "${STATE_DIR}/mutation_count"; invoke "${PAYLOAD}"; assert_converged "${PAYLOAD}"
 
-# Hard stop after all ten uploads but before finalize resumes without clobber.
+# Hard stop after every upload but before finalize resumes without clobber.
 reset_state
-if invoke "${PAYLOAD}" 11; then fail "pre-finalize hard stop was not propagated"; fi
+if invoke "${PAYLOAD}" 5; then fail "pre-finalize hard stop was not propagated"; fi
 [[ "$(cat "$(release_dir "${TAG}")/draft")" == true ]] || fail "complete interrupted release was published"
-[[ "$(find "$(release_dir "${TAG}")/assets" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == 10 ]] || fail "pre-finalize stop did not occur after all uploads"
+[[ "$(find "$(release_dir "${TAG}")/assets" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == 4 ]] || fail "pre-finalize stop did not occur after all uploads"
 : > "${STATE_DIR}/operations.log"; rm -f "${STATE_DIR}/mutation_count"; invoke "${PAYLOAD}"; assert_converged "${PAYLOAD}"
 ! grep -q '^mutation upload-asset ' "${STATE_DIR}/operations.log" || fail "complete draft retry reuploaded assets"
 
