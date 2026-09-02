@@ -238,7 +238,10 @@ build time, never committed. They publish to a single, reused `rolling` GitHub r
 the releases page stays clean (one `rolling` entry plus permanent milestone `v*` tags) and
 `releases/latest/download/*` always resolves to the newest green build. Every ship is
 therefore distinguishable in the about box and on the releases page; only minor/major bumps
-remain manual milestones.
+remain manual milestones. Each ship also promotes one sealed `rolling-candidate-<build>`
+prerelease to become that ship's permanent archive tag, then deletes older promoted
+candidates, keeping only the two newest for rollback so the releases page does not
+accumulate a growing pile of ~110 MB prereleases.
 
 Milestone marketing-version bumps (e.g. `0.15.0` → `0.16.0`) are still done manually and can
 optionally be tagged as a `vX.Y.Z` marker, which the same `release.yml` also builds on tag push:
