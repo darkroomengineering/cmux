@@ -132,7 +132,6 @@
 		A5001500 /* ProgramaWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001510 /* ProgramaWebView.swift */; };
 		A5001501 /* UITestRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001511 /* UITestRecorder.swift */; };
 		A5001226 /* SocketControlSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001225 /* SocketControlSettings.swift */; };
-		A5001621 /* AppleScriptSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001620 /* AppleScriptSupport.swift */; };
 		D1320AA0D1320AA0D1320AA1 /* AppIconDockTilePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1320AA0D1320AA0D1320AA4 /* AppIconDockTilePlugin.swift */; };
 		D1320AA0D1320AA0D1320AA2 /* ProgramaDockTilePlugin.plugin in Copy Dock Tile Plugin */ = {isa = PBXBuildFile; fileRef = D1320AA0D1320AA0D1320AA5 /* ProgramaDockTilePlugin.plugin */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A5001400 /* Panel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001410 /* Panel.swift */; };
@@ -210,7 +209,6 @@
 			NRAD1002 /* TypingProfiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0002 /* TypingProfiler.swift */; };
 			704EC7ED55706CC3099E0ED9 /* DurationSamples.swift in Sources */ = {isa = PBXBuildFile; fileRef = 974E18832220A6E017B9CA2E /* DurationSamples.swift */; };
 			NRAD1003 /* TerminalDirectoryOpener.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0003 /* TerminalDirectoryOpener.swift */; };
-			NRAD1004 /* VSCodeIntegration.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0004 /* VSCodeIntegration.swift */; };
 			NRAD1005 /* WorkspaceShortcutMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0005 /* WorkspaceShortcutMapper.swift */; };
 			NRAD1006 /* CLIInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0006 /* CLIInstaller.swift */; };
 			NRAD1007 /* MenuBarIconRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRAD0007 /* MenuBarIconRenderer.swift */; };
@@ -341,7 +339,6 @@
 					RPVW0002 /* ReviewPanelViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = RPVW0001 /* ReviewPanelViewTests.swift */; };
 		DA7A10CA710E000000000003 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DA7A10CA710E000000000001 /* Localizable.xcstrings */; };
 		DA7A10CA710E000000000004 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DA7A10CA710E000000000002 /* InfoPlist.xcstrings */; };
-		A5001623 /* programa.sdef in Resources */ = {isa = PBXBuildFile; fileRef = A5001622 /* programa.sdef */; };
 		MRMD000003 /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = MRMD000004 /* mermaid.min.js */; };
 						E12E88F82733EC42F32C36A3 /* BrowserConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 970226F3C99D0D937CD00539 /* BrowserConfigTests.swift */; };
 					1F14445B9627DE9D3AF4FD2E /* BrowserPanelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58C7B1B978620BE162CC057E /* BrowserPanelTests.swift */; };
@@ -365,7 +362,6 @@
 					7C135CU00000000000000004 /* ClosedTerminalUndoStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C135CU00000000000000003 /* ClosedTerminalUndoStoreTests.swift */; };
 					7C10SE2A0000000000000002 /* WorkspaceCloseConfirmationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C10SE2A0000000000000001 /* WorkspaceCloseConfirmationTests.swift */; };
 					C1A2B3C4D5E6F70800000001 /* ProgramaConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A2B3C4D5E6F70800000002 /* ProgramaConfigTests.swift */; };
-					C1A2B3C4D5E6F70800000006 /* ServeWebPortStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A2B3C4D5E6F70800000005 /* ServeWebPortStoreTests.swift */; };
 					9EAF4699346282F2171FCDB7 /* ProgramaDirectoryTrustTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CA3597273B50CC0592C0164 /* ProgramaDirectoryTrustTests.swift */; };
 		/* End PBXBuildFile section */
 
@@ -572,7 +568,6 @@
 		NRTC0009 /* TerminalController+SurfaceWait.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+SurfaceWait.swift"; sourceTree = "<group>"; };
 		NRTC0010 /* TerminalController+Subscriptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+Subscriptions.swift"; sourceTree = "<group>"; };
 		NRTC0022 /* TerminalController+AgentPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TerminalController+AgentPrompt.swift"; sourceTree = "<group>"; };
-		A5001620 /* AppleScriptSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleScriptSupport.swift; sourceTree = "<group>"; };
 		D1320AA0D1320AA0D1320AA4 /* AppIconDockTilePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconDockTilePlugin.swift; sourceTree = "<group>"; };
 		A5001510 /* ProgramaWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/ProgramaWebView.swift; sourceTree = "<group>"; };
 			A5001511 /* UITestRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestRecorder.swift; sourceTree = "<group>"; };
@@ -651,7 +646,6 @@
 		NRAD0002 /* TypingProfiler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingProfiler.swift; sourceTree = "<group>"; };
 		974E18832220A6E017B9CA2E /* DurationSamples.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DurationSamples.swift; sourceTree = "<group>"; };
 		NRAD0003 /* TerminalDirectoryOpener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalDirectoryOpener.swift; sourceTree = "<group>"; };
-		NRAD0004 /* VSCodeIntegration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VSCodeIntegration.swift; sourceTree = "<group>"; };
 		NRAD0005 /* WorkspaceShortcutMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceShortcutMapper.swift; sourceTree = "<group>"; };
 		NRAD0006 /* CLIInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIInstaller.swift; sourceTree = "<group>"; };
 		NRAD0007 /* MenuBarIconRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarIconRenderer.swift; sourceTree = "<group>"; };
@@ -776,7 +770,6 @@
 				RPVW0001 /* ReviewPanelViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewPanelViewTests.swift; sourceTree = "<group>"; };
 		DA7A10CA710E000000000001 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		DA7A10CA710E000000000002 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
-		A5001622 /* programa.sdef */ = {isa = PBXFileReference; lastKnownFileType = text.sdef; path = programa.sdef; sourceTree = "<group>"; };
 		MRMD000004 /* mermaid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = mermaid.min.js; sourceTree = "<group>"; };
 				970226F3C99D0D937CD00539 /* BrowserConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserConfigTests.swift; sourceTree = "<group>"; };
 				58C7B1B978620BE162CC057E /* BrowserPanelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserPanelTests.swift; sourceTree = "<group>"; };
@@ -800,7 +793,6 @@
 				7C135CU00000000000000003 /* ClosedTerminalUndoStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClosedTerminalUndoStoreTests.swift; sourceTree = "<group>"; };
 				7C10SE2A0000000000000001 /* WorkspaceCloseConfirmationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCloseConfirmationTests.swift; sourceTree = "<group>"; };
 				C1A2B3C4D5E6F70800000002 /* ProgramaConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramaConfigTests.swift; sourceTree = "<group>"; };
-				C1A2B3C4D5E6F70800000005 /* ServeWebPortStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServeWebPortStoreTests.swift; sourceTree = "<group>"; };
 		3CA3597273B50CC0592C0164 /* ProgramaDirectoryTrustTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramaDirectoryTrustTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -866,7 +858,6 @@
 				AMDT000007 /* AgentDetection in Resources */,
 				DA7A10CA710E000000000003 /* Localizable.xcstrings in Resources */,
 				DA7A10CA710E000000000004 /* InfoPlist.xcstrings in Resources */,
-				A5001623 /* programa.sdef in Resources */,
 				MRMD000003 /* mermaid.min.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1076,7 +1067,6 @@
 				A5001544 /* TerminalImageTransfer.swift */,
 				A5001545 /* TerminalSSHSessionDetector.swift */,
 				A5001225 /* SocketControlSettings.swift */,
-				A5001620 /* AppleScriptSupport.swift */,
 				D1320AA0D1320AA0D1320AA4 /* AppIconDockTilePlugin.swift */,
 				A5001090 /* AppDelegate.swift */,
 				H1AP0001 /* AppLifecycleCoordinator.swift */,
@@ -1086,7 +1076,6 @@
 				NRAD0002 /* TypingProfiler.swift */,
 				974E18832220A6E017B9CA2E /* DurationSamples.swift */,
 				NRAD0003 /* TerminalDirectoryOpener.swift */,
-				NRAD0004 /* VSCodeIntegration.swift */,
 				NRAD0005 /* WorkspaceShortcutMapper.swift */,
 				NRAD0006 /* CLIInstaller.swift */,
 				NRAD0007 /* MenuBarIconRenderer.swift */,
@@ -1252,7 +1241,6 @@
 				C1ADE00001A1B2C3D4E5F719 /* claude */,
 				DA7A10CA710E000000000001 /* Localizable.xcstrings */,
 				DA7A10CA710E000000000002 /* InfoPlist.xcstrings */,
-				A5001622 /* programa.sdef */,
 				MRMD000004 /* mermaid.min.js */,
 			);
 			path = Resources;
@@ -1344,7 +1332,6 @@
 					7C135CU00000000000000003 /* ClosedTerminalUndoStoreTests.swift */,
 					7C10SE2A0000000000000001 /* WorkspaceCloseConfirmationTests.swift */,
 					C1A2B3C4D5E6F70800000002 /* ProgramaConfigTests.swift */,
-					C1A2B3C4D5E6F70800000005 /* ServeWebPortStoreTests.swift */,
 					3CA3597273B50CC0592C0164 /* ProgramaDirectoryTrustTests.swift */,
 					A9A8BC17CBD749D48C344001 /* MCPSocketBridgeTests.swift */,
 				);
@@ -1660,7 +1647,6 @@
 				A5001542 /* TerminalImageTransfer.swift in Sources */,
 				A5001543 /* TerminalSSHSessionDetector.swift in Sources */,
 				A5001226 /* SocketControlSettings.swift in Sources */,
-				A5001621 /* AppleScriptSupport.swift in Sources */,
 				A5001093 /* AppDelegate.swift in Sources */,
 				E3E96C3E34893DE5905D6218 /* SessionAutosaveCoordinator.swift in Sources */,
 				5B5711B8348F309563272B9D /* ShortcutRouting.swift in Sources */,
@@ -1668,7 +1654,6 @@
 				NRAD1002 /* TypingProfiler.swift in Sources */,
 				704EC7ED55706CC3099E0ED9 /* DurationSamples.swift in Sources */,
 				NRAD1003 /* TerminalDirectoryOpener.swift in Sources */,
-				NRAD1004 /* VSCodeIntegration.swift in Sources */,
 				NRAD1005 /* WorkspaceShortcutMapper.swift in Sources */,
 				NRAD1006 /* CLIInstaller.swift in Sources */,
 				NRAD1007 /* MenuBarIconRenderer.swift in Sources */,
@@ -1841,7 +1826,6 @@
 					7C135CU00000000000000004 /* ClosedTerminalUndoStoreTests.swift in Sources */,
 					7C10SE2A0000000000000002 /* WorkspaceCloseConfirmationTests.swift in Sources */,
 					C1A2B3C4D5E6F70800000001 /* ProgramaConfigTests.swift in Sources */,
-					C1A2B3C4D5E6F70800000006 /* ServeWebPortStoreTests.swift in Sources */,
 					9EAF4699346282F2171FCDB7 /* ProgramaDirectoryTrustTests.swift in Sources */,
 					F6D8BDB710C64A444F3DE4F0 /* MCPSocketBridgeTests.swift in Sources */,
 					386AE1E1270DD8B6AA427C61 /* SocketPathResolution.swift in Sources */,

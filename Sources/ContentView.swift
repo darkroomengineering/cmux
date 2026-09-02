@@ -3510,25 +3510,6 @@ struct ContentView: View {
         )
         contributions.append(
             CommandPaletteCommandContribution(
-                commandId: "palette.openFolderInVSCodeInline",
-                title: constant(
-                    String(
-                        localized: "command.openFolderInVSCodeInline.title",
-                        defaultValue: "Open Folder in VS Code (Inline)…"
-                    )
-                ),
-                subtitle: constant(
-                    String(
-                        localized: "command.openFolderInVSCodeInline.subtitle",
-                        defaultValue: "VS Code Inline"
-                    )
-                ),
-                keywords: ["open", "folder", "directory", "project", "vs", "code", "inline", "editor", "browser"],
-                when: { _ in TerminalDirectoryOpenTarget.vscodeInline.isAvailable() }
-            )
-        )
-        contributions.append(
-            CommandPaletteCommandContribution(
                 commandId: "palette.newTerminalTab",
                 title: constant(String(localized: "command.newTerminalTab.title", defaultValue: "New Tab (Terminal)")),
                 subtitle: constant(String(localized: "command.newTerminalTab.subtitle", defaultValue: "Tab")),
@@ -4074,30 +4055,6 @@ struct ContentView: View {
         }
         contributions.append(
             CommandPaletteCommandContribution(
-                commandId: "palette.vscodeServeWebStop",
-                title: constant(String(localized: "command.vscodeServeWebStop.title", defaultValue: "Stop VS Code Inline Server")),
-                subtitle: terminalPanelSubtitle,
-                keywords: ["vscode", "inline", "serve-web", "stop", "server"],
-                when: { context in
-                    context.bool(CommandPaletteContextKeys.panelIsTerminal)
-                        && context.bool(CommandPaletteContextKeys.terminalOpenTargetAvailable(.vscodeInline))
-                }
-            )
-        )
-        contributions.append(
-            CommandPaletteCommandContribution(
-                commandId: "palette.vscodeServeWebRestart",
-                title: constant(String(localized: "command.vscodeServeWebRestart.title", defaultValue: "Restart VS Code Inline Server")),
-                subtitle: terminalPanelSubtitle,
-                keywords: ["vscode", "inline", "serve-web", "restart", "server"],
-                when: { context in
-                    context.bool(CommandPaletteContextKeys.panelIsTerminal)
-                        && context.bool(CommandPaletteContextKeys.terminalOpenTargetAvailable(.vscodeInline))
-                }
-            )
-        )
-        contributions.append(
-            CommandPaletteCommandContribution(
                 commandId: "palette.terminalFind",
                 title: constant(String(localized: "command.terminalFind.title", defaultValue: "Find…")),
                 subtitle: terminalPanelSubtitle,
@@ -4286,11 +4243,6 @@ struct ContentView: View {
                 if panel.runModal() == .OK, let url = panel.url {
                     tabManager.addWorkspace(workingDirectory: url.path)
                 }
-            }
-        }
-        registry.register(commandId: "palette.openFolderInVSCodeInline") {
-            DispatchQueue.main.async {
-                AppDelegate.shared?.showOpenFolderInInlineVSCodePanel(tabManager: tabManager)
             }
         }
         registry.register(commandId: "palette.newWindow") {
@@ -4580,14 +4532,6 @@ struct ContentView: View {
                 if !openFocusedDirectory(in: target) {
                     NSSound.beep()
                 }
-            }
-        }
-        registry.register(commandId: "palette.vscodeServeWebStop") {
-            stopInlineVSCodeServeWeb()
-        }
-        registry.register(commandId: "palette.vscodeServeWebRestart") {
-            if !restartInlineVSCodeServeWeb() {
-                NSSound.beep()
             }
         }
         registry.register(commandId: "palette.terminalFind") {
@@ -5665,34 +5609,12 @@ struct ContentView: View {
         case .finder:
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: directoryURL.path)
             return true
-        case .vscodeInline:
-            return openFocusedDirectoryInInlineVSCode(directoryURL)
         default:
             guard let applicationURL = target.applicationURL() else { return false }
             let configuration = NSWorkspace.OpenConfiguration()
             NSWorkspace.shared.open([directoryURL], withApplicationAt: applicationURL, configuration: configuration)
             return true
         }
-    }
-
-    private func openFocusedDirectoryInInlineVSCode(_ directoryURL: URL) -> Bool {
-        AppDelegate.shared?.openDirectoryInInlineVSCode(directoryURL, tabManager: tabManager) ?? false
-    }
-
-    private func stopInlineVSCodeServeWeb() {
-        VSCodeServeWebController.shared.stop()
-    }
-
-    private func restartInlineVSCodeServeWeb() -> Bool {
-        guard let vscodeApplicationURL = TerminalDirectoryOpenTarget.vscodeInline.applicationURL() else {
-            return false
-        }
-        VSCodeServeWebController.shared.restart(vscodeApplicationURL: vscodeApplicationURL) { serveWebURL in
-            if serveWebURL == nil {
-                NSSound.beep()
-            }
-        }
-        return true
     }
 
     private func focusedTerminalDirectoryURL() -> URL? {

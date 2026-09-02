@@ -2725,127 +2725,6 @@
         }
       }
     },
-    "applescript.error.disabled": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "AppleScript is disabled by the macos-applescript configuration."
-          }
-        }
-      }
-    },
-    "applescript.error.failedToCreateSplit": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Failed to create split."
-          }
-        }
-      }
-    },
-    "applescript.error.failedToCreateWindow": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Failed to create window."
-          }
-        }
-      }
-    },
-    "applescript.error.failedToCreateWorkspace": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Failed to create workspace."
-          }
-        }
-      }
-    },
-    "applescript.error.missingAction": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Missing action string."
-          }
-        }
-      }
-    },
-    "applescript.error.missingInputText": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Missing input text."
-          }
-        }
-      }
-    },
-    "applescript.error.missingSplitDirection": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Missing or unknown split direction."
-          }
-        }
-      }
-    },
-    "applescript.error.missingTerminalTarget": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Missing terminal target."
-          }
-        }
-      }
-    },
-    "applescript.error.terminalUnavailable": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Terminal is no longer available."
-          }
-        }
-      }
-    },
-    "applescript.error.windowUnavailable": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Window is no longer available."
-          }
-        }
-      }
-    },
-    "applescript.error.workspaceUnavailable": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Workspace is no longer available."
-          }
-        }
-      }
-    },
     "barBackground (tab chrome)": {
       "extractionState": "manual",
       "localizations": {
@@ -5141,28 +5020,6 @@
         }
       }
     },
-    "command.openFolderInVSCodeInline.subtitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "VS Code Inline"
-          }
-        }
-      }
-    },
-    "command.openFolderInVSCodeInline.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open Folder in VS Code (Inline)…"
-          }
-        }
-      }
-    },
     "command.openReviewPanel.subtitle": {
       "extractionState": "manual",
       "localizations": {
@@ -5723,28 +5580,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Unpin Workspace"
-          }
-        }
-      }
-    },
-    "command.vscodeServeWebRestart.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Restart VS Code Inline Server"
-          }
-        }
-      }
-    },
-    "command.vscodeServeWebStop.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Stop VS Code Inline Server"
           }
         }
       }
@@ -8237,39 +8072,6 @@
         }
       }
     },
-    "menu.file.openFolderInVSCodeInline": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open Folder in VS Code (Inline)…"
-          }
-        }
-      }
-    },
-    "menu.file.openFolderInVSCodeInline.panelPrompt": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open in VS Code"
-          }
-        }
-      }
-    },
-    "menu.file.openFolderInVSCodeInline.panelTitle": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open Folder in VS Code (Inline)"
-          }
-        }
-      }
-    },
     "menu.file.reopenClosedBrowserPanel": {
       "extractionState": "manual",
       "localizations": {
@@ -8503,17 +8305,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Open Current Directory in Tower"
-          }
-        }
-      }
-    },
-    "menu.openInVSCode": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Open Current Directory in VS Code (Inline)"
           }
         }
       }

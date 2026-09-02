@@ -1459,14 +1459,6 @@ class GhosttyApp {
         return found && enabled
     }
 
-    func appleScriptAutomationEnabled() -> Bool {
-        guard let config else { return false }
-        var enabled = false
-        let key = "macos-applescript"
-        _ = ghostty_config_get(config, &enabled, key, UInt(key.lengthOfBytes(using: .utf8)))
-        return enabled
-    }
-
     func shellIntegrationMode() -> String {
         guard let config else { return "detect" }
         var value: UnsafePointer<Int8>?

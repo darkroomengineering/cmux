@@ -145,14 +145,9 @@
         },
         "sound": {
           "type": "string",
-          "enum": ["default", "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink", "custom_file", "none"],
+          "enum": ["default", "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink", "none"],
           "default": "default",
           "description": "Notification sound preset."
-        },
-        "customSoundFilePath": {
-          "type": "string",
-          "default": "",
-          "description": "Local path to the custom notification sound file."
         },
         "command": {
           "type": "string",
