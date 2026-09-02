@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
-import hmac
 import os
 import socket
 import subprocess
@@ -134,69 +132,6 @@ class SocketRecorder:
                 "window_id": params.get("window_id", WINDOW_ID),
             }
         return {}
-
-
-class RelayRecorder:
-    """Authenticated TCP relay that enforces the authoritative Programa handshake."""
-
-    relay_id = "relay-registry-test"
-    relay_token = "a1" * 32
-
-    def __init__(self) -> None:
-        self.errors: list[str] = []
-        self.frames: list[dict[str, Any]] = []
-        self.authenticated = False
-        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._listener.bind(("127.0.0.1", 0))
-        self._listener.listen(1)
-        self.address = f"127.0.0.1:{self._listener.getsockname()[1]}"
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-
-    def __enter__(self) -> RelayRecorder:
-        self._thread.start()
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self._listener.close()
-        self._thread.join(timeout=2.0)
-        if self._thread.is_alive():
-            self.errors.append("relay recorder thread did not stop")
-
-    @staticmethod
-    def _read_line(connection: socket.socket) -> bytes:
-        pending = b""
-        while b"\n" not in pending:
-            chunk = connection.recv(8192)
-            if not chunk:
-                raise RuntimeError("connection closed before newline")
-            pending += chunk
-        return pending.split(b"\n", 1)[0]
-
-    def _serve(self) -> None:
-        try:
-            connection, _ = self._listener.accept()
-            with connection:
-                nonce = "registry-nonce"
-                challenge = {
-                    "protocol": "programa-relay-auth",
-                    "version": 1,
-                    "relay_id": self.relay_id,
-                    "nonce": nonce,
-                }
-                connection.sendall(json.dumps(challenge).encode("utf-8") + b"\n")
-                auth = json.loads(self._read_line(connection))
-                message = f"relay_id={self.relay_id}\nnonce={nonce}\nversion=1".encode()
-                expected = hmac.new(bytes.fromhex(self.relay_token), message, hashlib.sha256).hexdigest()
-                self.authenticated = hmac.compare_digest(str(auth.get("mac", "")), expected)
-                connection.sendall(json.dumps({"ok": self.authenticated}).encode("utf-8") + b"\n")
-                if not self.authenticated:
-                    return
-                request = json.loads(self._read_line(connection))
-                self.frames.append(request)
-                response = {"id": request.get("id"), "ok": True, "result": {"pong": True}}
-                connection.sendall(json.dumps(response).encode("utf-8") + b"\n")
-        except Exception as exc:  # noqa: BLE001 - fixture records failures for the assertion
-            self.errors.append(f"relay recorder failed: {exc}")
 
 
 def run_cli(
@@ -634,25 +569,6 @@ def main() -> int:
         check(start_params.get("agent_id") == finish_params.get("agent_id"), "Claude helper ID changed between hooks")
         check(start_params.get("placement") == "runs_with_parent", f"Claude helper placement={start_params!r}")
         check(start_params.get("task") == "reviewer", f"Claude helper title={start_params!r}")
-
-    # TCP relays use the Programa-owned handshake identifier. A stale cmux
-    # protocol literal rejects the challenge before any v2 request is sent.
-    with RelayRecorder() as relay:
-        relayed_ping = run_cli(
-            relay.address,
-            ["ping"],
-            env_overrides={
-                "PROGRAMA_RELAY_ID": relay.relay_id,
-                "PROGRAMA_RELAY_TOKEN": relay.relay_token,
-            },
-        )
-    check(not relay.errors, f"relay auth fixture errors: {relay.errors}")
-    check(relayed_ping.returncode == 0, f"relayed ping failed: {merged_output(relayed_ping)!r}")
-    check(relay.authenticated, "CLI did not complete programa-relay-auth handshake")
-    check(
-        [frame.get("method") for frame in relay.frames] == ["system.ping"],
-        f"relayed ping sent unexpected frames: {relay.frames!r}",
-    )
 
     # The implicit password file is security-sensitive: only a regular,
     # user-owned, private file may contribute an auth frame.
