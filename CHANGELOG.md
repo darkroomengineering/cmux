@@ -6,6 +6,13 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 
 ## [Unreleased]
 
+### Removed
+- SSH remote workspaces and the `programa ssh` command. The remote daemon, its release assets, and the browser proxy routing that went with it are gone; workspaces are local only. See `docs/removed/ssh-remote-workspaces.md`.
+- The mobile bridge and the iOS companion app, including the Phone tab in Settings and the iroh transport that shipped inside the app.
+- The browser data import wizard, browser extensions, and the React Grab overlay. Design Mode stays and is reachable through the browser automation API.
+- AppleScript support, the inline VS Code panel, and custom notification sound files. The system sound picker and the plain "Open in VS Code" menu item remain.
+- Every removal is recorded under `docs/removed/`, with the commit to restore from and what we learned while it was in the app.
+
 ### Added
 - Agent Overview now gives one place to see every Programa workspace, worktree, helper, and terminal. Claude helpers appear and finish automatically; terminal output stays hidden until requested. Users can open terminals, send messages, stop work, review changes, and copy output. New helpers open as nested workspaces in the same folder, or use a separate Git worktree only when they explicitly need one.
 - A local Git workspace can now become a persistent worktree folder from its right-click menu. Worktree workspaces created from that menu nest beneath it, can be collapsed, and restore in the same hierarchy without changing or deleting their Git branches.

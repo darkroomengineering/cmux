@@ -9,35 +9,34 @@ import AppKit
 //
 // Flow: TabManager.toggleDesignModeFromCurrentFocus() / the "browser.design_mode.toggle" socket
 // method both call `activateDesignModeRoute(in:)`, which resolves a route via
-// `resolveReactGrabShortcutRoute` below (the focused-panel routing rule is panel-agnostic; the
-// name is inherited from React Grab, which originated this routing rule before it was removed —
-// see docs/removed/browser-react-grab.md), arms a round trip on the target BrowserPanel, and
+// `resolveDesignModeShortcutRoute` below (the focused-panel routing rule is panel-agnostic;
+// it originated in the removed React Grab feature, see docs/removed/browser-react-grab.md),
+// arms a round trip on the target BrowserPanel, and
 // injects/toggles the picker script. When the user clicks an element, the picker posts a `pick`
 // message across the bridge; BrowserPanel crops a screenshot and posts `.designModeDidCapture`,
 // which AppDelegate observes to write the screenshot to disk, compose the text block, and deliver
 // it to the return terminal panel via the shared `sendTextWhenReady` pasteback path.
 
-// MARK: - Shared panel routing (originally from ReactGrab.swift; DesignMode is the only
-// remaining consumer after React Grab was removed).
+// MARK: - Shared panel routing
 
-struct ReactGrabShortcutPanelSnapshot: Equatable {
+struct DesignModeShortcutPanelSnapshot: Equatable {
     let id: UUID
     let panelType: PanelType
     let isFocused: Bool
 }
 
-struct ReactGrabShortcutRoute: Equatable {
+struct DesignModeShortcutRoute: Equatable {
     let browserPanelId: UUID
     let returnTerminalPanelId: UUID?
 }
 
-func resolveReactGrabShortcutRoute(
-    panels: [ReactGrabShortcutPanelSnapshot]
-) -> ReactGrabShortcutRoute? {
+func resolveDesignModeShortcutRoute(
+    panels: [DesignModeShortcutPanelSnapshot]
+) -> DesignModeShortcutRoute? {
     guard let focusedPanel = panels.first(where: \.isFocused) else { return nil }
 
     if focusedPanel.panelType == .browser {
-        return ReactGrabShortcutRoute(
+        return DesignModeShortcutRoute(
             browserPanelId: focusedPanel.id,
             returnTerminalPanelId: nil
         )
@@ -50,7 +49,7 @@ func resolveReactGrabShortcutRoute(
         return nil
     }
 
-    return ReactGrabShortcutRoute(
+    return DesignModeShortcutRoute(
         browserPanelId: browserPanel.id,
         returnTerminalPanelId: focusedPanel.id
     )
@@ -215,7 +214,7 @@ enum DesignModeNotificationKey {
 
 // MARK: - Panel routing (shared by command palette + socket entry points)
 
-/// Resolves a Design Mode route the same way React Grab's keyboard shortcut does (focused
+/// Resolves a Design Mode route from the focused panel (focused
 /// browser panel is the target with no return; focused terminal panel requires exactly one
 /// browser panel in the workspace) and drives the picker's arm/focus/inject sequence.
 /// Returns `false` when no route could be resolved (e.g. no browser panel in the workspace).
@@ -223,13 +222,13 @@ enum DesignModeNotificationKey {
 @MainActor
 func activateDesignModeRoute(in workspace: Workspace) -> Bool {
     let snapshots = workspace.panels.values.map { panel in
-        ReactGrabShortcutPanelSnapshot(
+        DesignModeShortcutPanelSnapshot(
             id: panel.id,
             panelType: panel.panelType,
             isFocused: panel.id == workspace.focusedPanelId
         )
     }
-    guard let route = resolveReactGrabShortcutRoute(panels: snapshots),
+    guard let route = resolveDesignModeShortcutRoute(panels: snapshots),
           let browserPanel = workspace.browserPanel(for: route.browserPanelId) else {
         return false
     }
@@ -503,7 +502,7 @@ extension BrowserPanel {
         case .pick(let payload):
             guard let returnPanelId = pendingDesignModeReturnTargetPanelId else {
                 // No return terminal armed (e.g. focused directly inside the browser panel with
-                // no terminal to return to) -- mirrors React Grab's noReturnTarget drop behavior.
+                // no terminal to return to): drop the capture.
                 return
             }
             clearDesignModeRoundTrip(reason: "pick")

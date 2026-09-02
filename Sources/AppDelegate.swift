@@ -5470,13 +5470,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         preferredPanelId: UUID? = nil,
         beforeSend: (() -> Void)? = nil
     ) {
-        let isReactGrabPasteback = preferredPanelId != nil
+        let isDesignModePasteback = preferredPanelId != nil
 #if DEBUG
         let initialTargetPanel = Self.resolveTerminalPanelForTextSend(
             in: tab,
             preferredPanelId: preferredPanelId
         )
-        if isReactGrabPasteback {
+        if isDesignModePasteback {
             dlog(
                 "reactGrab.pasteback h2.send.start " +
                 "workspace=\(Self.debugShortId(tab.id)) " +
@@ -5494,7 +5494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         ),
            terminalPanel.surface.surface != nil {
 #if DEBUG
-            if isReactGrabPasteback {
+            if isDesignModePasteback {
                 dlog(
                     "reactGrab.pasteback h2.send.immediate " +
                     "workspace=\(Self.debugShortId(tab.id)) " +
@@ -5505,7 +5505,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             beforeSend?()
             terminalPanel.sendText(text)
 #if DEBUG
-            if isReactGrabPasteback {
+            if isDesignModePasteback {
                 dlog(
                     "reactGrab.pasteback h2.send.sent " +
                     "workspace=\(Self.debugShortId(tab.id)) " +
@@ -5541,7 +5541,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                 preferredPanelId: preferredPanelId
             )
 #if DEBUG
-            if isReactGrabPasteback {
+            if isDesignModePasteback {
                 dlog(
                     "reactGrab.pasteback h2.finishIfReady " +
                     "workspace=\(Self.debugShortId(tab.id)) " +
@@ -5560,7 +5560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             beforeSend?()
             terminalPanel.sendText(text)
 #if DEBUG
-            if isReactGrabPasteback {
+            if isDesignModePasteback {
                 dlog(
                     "reactGrab.pasteback h2.send.sent " +
                     "workspace=\(Self.debugShortId(tab.id)) " +
@@ -5574,7 +5574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             .map { _ in () }
             .sink { _ in
 #if DEBUG
-                if isReactGrabPasteback {
+                if isDesignModePasteback {
                     dlog(
                         "reactGrab.pasteback h2.panelsChanged " +
                         "workspace=\(Self.debugShortId(tab.id)) " +
@@ -5584,7 +5584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 #endif
                 finishIfReady()
             }
-        if isReactGrabPasteback {
+        if isDesignModePasteback {
             focusObserver = NotificationCenter.default.addObserver(
                 forName: .ghosttyDidFocusSurface,
                 object: nil,
@@ -5636,7 +5636,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                       workspaceId == tab.id else { return }
                 let surfaceId = note.userInfo?["surfaceId"] as? UUID
 #if DEBUG
-                if isReactGrabPasteback {
+                if isDesignModePasteback {
                     dlog(
                         "reactGrab.pasteback h2.surfaceReadyEvent " +
                         "workspace=\(Self.debugShortId(workspaceId)) " +
@@ -5657,7 +5657,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
             if !resolved {
 #if DEBUG
-                if isReactGrabPasteback {
+                if isDesignModePasteback {
                     dlog(
                         "reactGrab.pasteback h2.send.timeout " +
                         "workspace=\(Self.debugShortId(tab.id)) " +
