@@ -25,8 +25,7 @@ const assert = require("node:assert/strict");
 //
 // `role` is exactly "immutable", "appcast", or "stable-alias". Asset names
 // are safe basenames. A sealed manifest contains the complete rolling payload:
-// one build-suffixed enclosure DMG, one dSYM archive, four build-suffixed daemon
-// binaries, build-suffixed checksum and daemon manifest files, appcast.xml, and
+// one build-suffixed enclosure DMG, one dSYM archive, appcast.xml, and
 // programa-macos.dmg. Asset size is a positive safe integer and sha256 is 64
 // lowercase hexadecimal characters. Marketing `version` and monotonic `build`
 // are independent canonical identifiers. Every immutable filename suffix still
@@ -62,12 +61,6 @@ function requiredAssets(build) {
   const assets = [
     `programa-macos-${build}.dmg`,
     `programa-dSYMs-${build}.zip`,
-    `programad-remote-darwin-arm64-${build}`,
-    `programad-remote-darwin-amd64-${build}`,
-    `programad-remote-linux-arm64-${build}`,
-    `programad-remote-linux-amd64-${build}`,
-    `programad-remote-checksums-${build}.txt`,
-    `programad-remote-manifest-${build}.json`,
   ].map((name, index) => ({
     name,
     role: "immutable",
@@ -129,33 +122,9 @@ function legacyAttributeAppcast(build, enclosureBuild = build) {
     </rss>`;
 }
 
-function daemonManifestFor(manifest, tag = "rolling") {
-  const releaseURL = `https://github.com/darkroomengineering/programa/releases/download/${tag}`;
-  const targets = [["darwin", "arm64"], ["darwin", "amd64"], ["linux", "arm64"], ["linux", "amd64"]];
-  return JSON.stringify({
-    schemaVersion: 1,
-    appVersion: manifest.version,
-    releaseTag: tag,
-    releaseURL,
-    checksumsAssetName: `programad-remote-checksums-${manifest.build}.txt`,
-    checksumsURL: `${releaseURL}/programad-remote-checksums-${manifest.build}.txt`,
-    entries: targets.map(([goOS, goArch]) => {
-      const assetName = `programad-remote-${goOS}-${goArch}-${manifest.build}`;
-      return {
-        goOS,
-        goArch,
-        assetName,
-        downloadURL: `${releaseURL}/${assetName}`,
-        sha256: manifest.assets.find((asset) => asset.name === assetName).sha256,
-      };
-    }),
-  });
-}
-
 function validateReferences(manifest, appcastXml, tag = "rolling") {
   return validateReleasePayloadReferences({
     appcastXml,
-    daemonManifestJson: daemonManifestFor(manifest, tag),
     repository: "darkroomengineering/programa",
     tag,
     manifest,
@@ -242,14 +211,14 @@ test("asset names are safe unique basenames and roles are exact", async (t) => {
   for (const [name, mutate] of mutations) {
     await t.test(name, () => {
       const value = manifestFor("41");
-      mutate(value.assets[8]);
+      mutate(value.assets[2]);
       assert.throws(() => validateCandidateManifest(value), /asset|name|basename|path|role/i);
     });
   }
 
   await t.test("duplicate name", () => {
     const value = manifestFor("41");
-    value.assets[9].name = value.assets[8].name;
+    value.assets[3].name = value.assets[2].name;
     assert.throws(() => validateCandidateManifest(value), /duplicate|asset|name/i);
   });
 });
@@ -371,7 +340,7 @@ test("candidate selection ignores incomplete unsealed drafts", () => {
 test("a corrupt highest sealed candidate fails closed instead of falling back", () => {
   const validLower = manifestFor("41");
   const corruptHigher = manifestFor("42");
-  corruptHigher.assets = corruptHigher.assets.filter((asset) => !asset.name.includes("linux-amd64"));
+  corruptHigher.assets = corruptHigher.assets.filter((asset) => !asset.name.includes("dSYMs"));
 
   assert.throws(
     () => selectPromotionCandidate([validLower, corruptHigher]),
@@ -383,7 +352,7 @@ test("public high-water is the maximum build from rolling assets and readable ap
   const state = {
     rollingAssetNames: [
       "programa-macos-900719925474099312345678901234567891.dmg",
-      "programad-remote-linux-arm64-900719925474099312345678901234567893",
+      "programa-dSYMs-900719925474099312345678901234567893.zip",
       "programa-macos.dmg",
       "appcast.xml",
     ],
@@ -502,8 +471,7 @@ test("an archived candidate binds every build-specific URL to its exact permanen
   ));
   assert.throws(
     () => validateReleasePayloadReferences({
-      appcastXml: appcast("41", "41", 902, VALID_ED25519_SIGNATURE, archiveTag),
-      daemonManifestJson: daemonManifestFor(manifest, "rolling-candidate-40"),
+      appcastXml: appcast("41", "41", 902, VALID_ED25519_SIGNATURE, "rolling-candidate-40"),
       repository: "darkroomengineering/programa",
       tag: archiveTag,
       manifest,
@@ -626,7 +594,7 @@ test("every published milestone appcast contributes even when semantic tag order
 test("noncanonical build fragments in asset names do not become public high-water evidence", () => {
   assert.equal(
     derivePublicHighWater({
-      rollingAssetNames: ["programa-macos-0042.dmg", "programad-remote-linux-arm64-1e3"],
+      rollingAssetNames: ["programa-macos-0042.dmg", "programa-dSYMs-1e3.zip"],
       rollingAppcastXml: null,
       publishedMilestoneAppcastXmls: [],
     }),

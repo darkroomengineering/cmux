@@ -46,9 +46,8 @@ extension MCPSocketBridgeError: CustomStringConvertible {
 /// Mirrors `SocketClient`/`sendV2` in `CLI/programa.swift:386-1039` closely
 /// enough that timeout behavior, the `ERROR:`-prefix pre-JSON case, and the
 /// idle-gap multiline read stay consistent between the CLI and the MCP
-/// sidecar -- see docs/plans/mcp-server.md §1.2-§1.4. Deliberately does not
-/// carry over the CLI's relay-endpoint (SSH `host:port`) support: the MCP
-/// sidecar only ever talks to a local Unix domain socket.
+/// sidecar -- see docs/plans/mcp-server.md §1.2-§1.4. The MCP sidecar only
+/// ever talks to a local Unix domain socket.
 ///
 /// Connects fresh per call and closes afterward -- matches the CLI's
 /// per-invocation connection lifecycle (no pooling / keep-alive), which is

@@ -215,13 +215,6 @@ extension Workspace: @preconcurrency BonsplitDelegate {
             p.unfocus()
         }
 
-        // Web extensions track the active tab through this same selection funnel
-        // (didFocusPane also lands here), so this one hook covers pane focus and
-        // tab selection alike.
-        if #available(macOS 15.4, *), let browserPanel = panel as? BrowserPanel {
-            BrowserExtensionManager.shared.noteTabActivated(browserPanel)
-        }
-
         // Explicitly hide browser portals for deselected tabs in this pane.
         // Bonsplit's keepAllAlive mode hides non-selected tabs via SwiftUI .opacity(0),
         // but portal-hosted WKWebViews render at the window level in AppKit and are not
@@ -588,7 +581,6 @@ extension Workspace: @preconcurrency BonsplitDelegate {
         #endif
 
         let panel = panels[panelId]
-        let transferredRemoteCleanupConfiguration = transferredRemoteCleanupConfigurationsByPanelId.removeValue(forKey: panelId)
 
         if isDetaching, let panel {
             let browserPanel = panel as? BrowserPanel
@@ -608,12 +600,7 @@ extension Workspace: @preconcurrency BonsplitDelegate {
                 ttyName: surfaceTTYNames[panelId],
                 cachedTitle: cachedTitle,
                 customTitle: panelCustomTitles[panelId],
-                manuallyUnread: manualUnreadPanelIds.contains(panelId),
-                isRemoteTerminal: activeRemoteTerminalSurfaceIds.contains(panelId),
-                remoteRelayPort: activeRemoteTerminalSurfaceIds.contains(panelId)
-                    ? remoteConfiguration?.relayPort
-                    : nil,
-                remoteCleanupConfiguration: transferredRemoteCleanupConfiguration
+                manuallyUnread: manualUnreadPanelIds.contains(panelId)
             )
             if isUndoStaging, let originalIndex = undoStageOriginalIndex,
                let staged = pendingDetachedSurfaces.removeValue(forKey: tabId) {
@@ -631,16 +618,9 @@ extension Workspace: @preconcurrency BonsplitDelegate {
         }
 
         panels.removeValue(forKey: panelId)
-        untrackRemoteTerminalSurface(panelId)
-        pendingRemoteTerminalChildExitSurfaceIds.remove(panelId)
         surfaceIdToPanelId.removeValue(forKey: tabId)
         removeSurfaceMetadata(panelId: panelId, isDetaching: isDetaching)
-        syncRemotePortScanTTYs()
         recomputeListeningPorts()
-        clearRemoteConfigurationIfWorkspaceBecameLocal()
-        if !isDetaching, let transferredRemoteCleanupConfiguration {
-            Self.requestSSHControlMasterCleanupIfNeeded(configuration: transferredRemoteCleanupConfiguration)
-        }
 
         // Keep the workspace invariant for normal close paths.
         // Detach/move flows intentionally allow a temporary empty workspace so AppDelegate can
@@ -765,8 +745,8 @@ extension Workspace: @preconcurrency BonsplitDelegate {
     /// Canonical per-panel metadata teardown shared by every close path.
     /// The single-surface and pane-close paths previously hand-copied this
     /// list and drifted (pane close leaked inheritance font points and never
-    /// cleared notifications). Aggregate recomputes (syncRemotePortScanTTYs,
-    /// recomputeListeningPorts) stay at the call sites.
+    /// cleared notifications). Aggregate recomputes (recomputeListeningPorts)
+    /// stay at the call sites.
     private func removeSurfaceMetadata(panelId: UUID, isDetaching: Bool = false) {
         panelDirectories.removeValue(forKey: panelId)
         panelGitBranches.removeValue(forKey: panelId)
@@ -808,16 +788,12 @@ extension Workspace: @preconcurrency BonsplitDelegate {
             for panelId in closedPanelIds {
                 panels[panelId]?.close()
                 panels.removeValue(forKey: panelId)
-                untrackRemoteTerminalSurface(panelId)
-                pendingRemoteTerminalChildExitSurfaceIds.remove(panelId)
                 removeSurfaceMetadata(panelId: panelId)
             }
 
-            syncRemotePortScanTTYs()
             let closedSet = Set(closedPanelIds)
             surfaceIdToPanelId = surfaceIdToPanelId.filter { !closedSet.contains($0.value) }
             recomputeListeningPorts()
-            clearRemoteConfigurationIfWorkspaceBecameLocal()
 
             if let focusedPane = bonsplitController.focusedPaneId,
                let focusedTabId = bonsplitController.selectedTab(inPane: focusedPane)?.id {

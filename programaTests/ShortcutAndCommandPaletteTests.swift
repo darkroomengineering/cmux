@@ -59,21 +59,21 @@ final class SplitShortcutTransientFocusGuardTests: XCTestCase {
     }
 }
 
-final class ReactGrabShortcutRouteTests: XCTestCase {
+final class DesignModeShortcutRouteTests: XCTestCase {
     func testFocusedBrowserRoutesDirectlyWithoutPasteback() {
         let browserId = UUID()
         let terminalId = UUID()
 
-        let route = resolveReactGrabShortcutRoute(
+        let route = resolveDesignModeShortcutRoute(
             panels: [
-                ReactGrabShortcutPanelSnapshot(id: terminalId, panelType: .terminal, isFocused: false),
-                ReactGrabShortcutPanelSnapshot(id: browserId, panelType: .browser, isFocused: true),
+                DesignModeShortcutPanelSnapshot(id: terminalId, panelType: .terminal, isFocused: false),
+                DesignModeShortcutPanelSnapshot(id: browserId, panelType: .browser, isFocused: true),
             ]
         )
 
         XCTAssertEqual(
             route,
-            ReactGrabShortcutRoute(browserPanelId: browserId, returnTerminalPanelId: nil)
+            DesignModeShortcutRoute(browserPanelId: browserId, returnTerminalPanelId: nil)
         )
     }
 
@@ -81,25 +81,25 @@ final class ReactGrabShortcutRouteTests: XCTestCase {
         let browserId = UUID()
         let terminalId = UUID()
 
-        let route = resolveReactGrabShortcutRoute(
+        let route = resolveDesignModeShortcutRoute(
             panels: [
-                ReactGrabShortcutPanelSnapshot(id: terminalId, panelType: .terminal, isFocused: true),
-                ReactGrabShortcutPanelSnapshot(id: browserId, panelType: .browser, isFocused: false),
+                DesignModeShortcutPanelSnapshot(id: terminalId, panelType: .terminal, isFocused: true),
+                DesignModeShortcutPanelSnapshot(id: browserId, panelType: .browser, isFocused: false),
             ]
         )
 
         XCTAssertEqual(
             route,
-            ReactGrabShortcutRoute(browserPanelId: browserId, returnTerminalPanelId: terminalId)
+            DesignModeShortcutRoute(browserPanelId: browserId, returnTerminalPanelId: terminalId)
         )
     }
 
     func testFocusedTerminalDoesNotRouteWhenMultipleBrowsersExist() {
-        let route = resolveReactGrabShortcutRoute(
+        let route = resolveDesignModeShortcutRoute(
             panels: [
-                ReactGrabShortcutPanelSnapshot(id: UUID(), panelType: .terminal, isFocused: true),
-                ReactGrabShortcutPanelSnapshot(id: UUID(), panelType: .browser, isFocused: false),
-                ReactGrabShortcutPanelSnapshot(id: UUID(), panelType: .browser, isFocused: false),
+                DesignModeShortcutPanelSnapshot(id: UUID(), panelType: .terminal, isFocused: true),
+                DesignModeShortcutPanelSnapshot(id: UUID(), panelType: .browser, isFocused: false),
+                DesignModeShortcutPanelSnapshot(id: UUID(), panelType: .browser, isFocused: false),
             ]
         )
 
@@ -107,9 +107,9 @@ final class ReactGrabShortcutRouteTests: XCTestCase {
     }
 
     func testFocusedTerminalDoesNotRouteWithoutBrowser() {
-        let route = resolveReactGrabShortcutRoute(
+        let route = resolveDesignModeShortcutRoute(
             panels: [
-                ReactGrabShortcutPanelSnapshot(id: UUID(), panelType: .terminal, isFocused: true),
+                DesignModeShortcutPanelSnapshot(id: UUID(), panelType: .terminal, isFocused: true),
             ]
         )
 
@@ -119,7 +119,7 @@ final class ReactGrabShortcutRouteTests: XCTestCase {
 
 
 @MainActor
-final class ReactGrabPastebackTargetTests: XCTestCase {
+final class DesignModePastebackTargetTests: XCTestCase {
     func testPrefersExplicitTerminalTargetWhenBrowserPanelIsFocused() {
         let workspace = Workspace(title: "Tests")
         guard let terminalId = workspace.focusedPanelId else {
@@ -167,46 +167,6 @@ final class ReactGrabPastebackTargetTests: XCTestCase {
         )
     }
 
-    func testShortcutStillRoutesTerminalPastebackWhenWebViewFocusIsDeferred() {
-        let manager = TabManager()
-        guard let workspace = manager.selectedWorkspace,
-              let terminalId = workspace.focusedPanelId,
-              let browserPanel = workspace.newBrowserSplit(
-                from: terminalId,
-                orientation: .horizontal
-              ) else {
-            XCTFail("Expected initial workspace with terminal and browser split")
-            return
-        }
-
-        workspace.focusPanel(terminalId)
-
-        XCTAssertTrue(manager.toggleReactGrabFromCurrentFocus())
-        XCTAssertEqual(workspace.focusedPanelId, browserPanel.id)
-        XCTAssertEqual(browserPanel.pendingReactGrabReturnTargetPanelId, terminalId)
-    }
-
-    func testShortcutClearsSplitZoomBeforeRoutingToBrowserPane() {
-        let manager = TabManager()
-        guard let workspace = manager.selectedWorkspace,
-              let terminalId = workspace.focusedPanelId,
-              let browserPanel = workspace.newBrowserSplit(
-                from: terminalId,
-                orientation: .horizontal
-              ) else {
-            XCTFail("Expected initial workspace with terminal and browser split")
-            return
-        }
-
-        workspace.focusPanel(terminalId)
-        XCTAssertTrue(workspace.toggleSplitZoom(panelId: terminalId))
-        XCTAssertTrue(workspace.bonsplitController.isSplitZoomed)
-
-        XCTAssertTrue(manager.toggleReactGrabFromCurrentFocus())
-        XCTAssertFalse(workspace.bonsplitController.isSplitZoomed)
-        XCTAssertEqual(workspace.focusedPanelId, browserPanel.id)
-        XCTAssertEqual(browserPanel.pendingReactGrabReturnTargetPanelId, terminalId)
-    }
 }
 
 

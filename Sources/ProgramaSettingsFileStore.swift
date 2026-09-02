@@ -501,9 +501,6 @@ final class ProgramaSettingsFileStore {
                 logInvalid("notifications.sound", sourcePath: sourcePath)
             }
         }
-        if let raw = jsonString(section["customSoundFilePath"]) {
-            snapshot.managedUserDefaults[NotificationSoundSettings.customFilePathKey] = .string(raw)
-        }
         if let raw = jsonString(section["command"]) {
             snapshot.managedUserDefaults[NotificationSoundSettings.customCommandKey] = .string(raw)
         }
@@ -690,6 +687,9 @@ final class ProgramaSettingsFileStore {
         if let value = jsonBool(section["claudeCodeIntegration"]) {
             snapshot.managedUserDefaults[ClaudeCodeIntegrationSettings.hooksEnabledKey] = .bool(value)
         }
+        if let value = jsonBool(section["openBrowserWithAgentSplits"]) {
+            snapshot.managedUserDefaults[AgentBrowserSplitSettings.key] = .bool(value)
+        }
         if let raw = jsonString(section["claudeBinaryPath"]) {
             snapshot.managedUserDefaults[ClaudeCodeIntegrationSettings.customClaudePathKey] = .string(raw)
         }
@@ -790,9 +790,6 @@ final class ProgramaSettingsFileStore {
             )
         } else if section.keys.contains("insecureHttpHostsAllowedInEmbeddedBrowser") {
             logInvalid("browser.insecureHttpHostsAllowedInEmbeddedBrowser", sourcePath: sourcePath)
-        }
-        if let value = jsonBool(section["showImportHintOnBlankTabs"]) {
-            snapshot.managedUserDefaults[BrowserImportHintSettings.showOnBlankTabsKey] = .bool(value)
         }
         if let proxyRaw = section["proxy"] {
             guard let proxyDict = proxyRaw as? [String: Any] else {
@@ -1574,7 +1571,6 @@ final class ProgramaSettingsFileStore {
                 "notifications": [
                     "showInMenuBar": MenuBarExtraSettings.defaultShowInMenuBar,
                     "sound": NotificationSoundSettings.defaultValue,
-                    "customSoundFilePath": NotificationSoundSettings.defaultCustomFilePath,
                     "command": NotificationSoundSettings.defaultCustomCommand,
                 ],
             ],
@@ -1602,6 +1598,7 @@ final class ProgramaSettingsFileStore {
                     "socketControlMode": SocketControlSettings.defaultMode.rawValue,
                     "socketPassword": "",
                     "claudeCodeIntegration": ClaudeCodeIntegrationSettings.defaultHooksEnabled,
+                    "openBrowserWithAgentSplits": AgentBrowserSplitSettings.defaultValue,
                     "claudeBinaryPath": "",
                     "portBase": 9100,
                     "portRange": 10,
@@ -1622,7 +1619,6 @@ final class ProgramaSettingsFileStore {
                     "hostsToOpenInEmbeddedBrowser": [String](),
                     "urlsToAlwaysOpenExternally": [String](),
                     "insecureHttpHostsAllowedInEmbeddedBrowser": BrowserInsecureHTTPSettings.defaultAllowlistPatterns,
-                    "showImportHintOnBlankTabs": BrowserImportHintSettings.defaultShowOnBlankTabs,
                 ],
             ],
             [

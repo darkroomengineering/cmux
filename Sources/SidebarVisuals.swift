@@ -114,7 +114,6 @@ private struct SidebarUsageButton: View {
 }
 
 private enum SidebarHelpMenuAction {
-    case importBrowserData
     case keyboardShortcuts
     case docs
     case changelog
@@ -194,12 +193,6 @@ private struct SidebarHelpMenuButton: View {
                 title: String(localized: "settings.section.keyboardShortcuts", defaultValue: "Keyboard Shortcuts"),
                 action: .keyboardShortcuts,
                 accessibilityIdentifier: "SidebarHelpMenuOptionKeyboardShortcuts",
-                isExternalLink: false
-            )
-            helpOptionButton(
-                title: String(localized: "menu.view.importFromBrowser", defaultValue: "Import Browser Data…"),
-                action: .importBrowserData,
-                accessibilityIdentifier: "SidebarHelpMenuOptionImportBrowserData",
                 isExternalLink: false
             )
             if docsURL != nil {
@@ -326,11 +319,6 @@ private struct SidebarHelpMenuButton: View {
 
     private func perform(_ action: SidebarHelpMenuAction) {
         switch action {
-        case .importBrowserData:
-            isPopoverPresented = false
-            DispatchQueue.main.async {
-                BrowserDataImportCoordinator.shared.presentImportDialog()
-            }
         case .keyboardShortcuts:
             isPopoverPresented = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {

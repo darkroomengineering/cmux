@@ -42,7 +42,6 @@ struct SettingsView: View {
     @AppStorage(WorkspacePresentationModeSettings.modeKey)
     private var workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
     @AppStorage(SocketControlSettings.appStorageKey) private var socketControlMode = SocketControlSettings.defaultMode.rawValue
-    @AppStorage(MobileBridgeSettings.appStorageKey) private var mobileBridgeMode = MobileBridgeSettings.defaultMode.rawValue
     @AppStorage(ClaudeCodeIntegrationSettings.hooksEnabledKey)
     private var claudeCodeHooksEnabled = ClaudeCodeIntegrationSettings.defaultHooksEnabled
     @AppStorage(ClaudeCodeIntegrationSettings.customClaudePathKey)
@@ -57,8 +56,6 @@ struct SettingsView: View {
     @AppStorage(BrowserSearchSettings.searchEngineKey) private var browserSearchEngine = BrowserSearchSettings.defaultSearchEngine.rawValue
     @AppStorage(BrowserSearchSettings.searchSuggestionsEnabledKey) private var browserSearchSuggestionsEnabled = BrowserSearchSettings.defaultSearchSuggestionsEnabled
     @AppStorage(BrowserThemeSettings.modeKey) private var browserThemeMode = BrowserThemeSettings.defaultMode.rawValue
-    @AppStorage(BrowserImportHintSettings.showOnBlankTabsKey) private var showBrowserImportHintOnBlankTabs = BrowserImportHintSettings.defaultShowOnBlankTabs
-    @AppStorage(BrowserImportHintSettings.dismissedKey) private var isBrowserImportHintDismissed = BrowserImportHintSettings.defaultDismissed
     @AppStorage(BrowserLinkOpenSettings.openTerminalLinksInProgramaBrowserKey) private var openTerminalLinksInProgramaBrowser = BrowserLinkOpenSettings.defaultOpenTerminalLinksInProgramaBrowser
     @AppStorage(BrowserLinkOpenSettings.interceptTerminalOpenCommandInProgramaBrowserKey)
     private var interceptTerminalOpenCommandInProgramaBrowser = BrowserLinkOpenSettings.initialInterceptTerminalOpenCommandInProgramaBrowserValue()
@@ -67,13 +64,12 @@ struct SettingsView: View {
     private var browserExternalOpenPatterns = BrowserLinkOpenSettings.defaultBrowserExternalOpenPatterns
     @AppStorage(BrowserInsecureHTTPSettings.allowlistKey) private var browserInsecureHTTPAllowlist = BrowserInsecureHTTPSettings.defaultAllowlistText
     @AppStorage(NotificationSoundSettings.key) private var notificationSound = NotificationSoundSettings.defaultValue
-    @AppStorage(NotificationSoundSettings.customFilePathKey)
-    private var notificationSoundCustomFilePath = NotificationSoundSettings.defaultCustomFilePath
     @AppStorage(NotificationSoundSettings.customCommandKey) private var notificationCustomCommand = NotificationSoundSettings.defaultCustomCommand
     @AppStorage(MenuBarExtraSettings.showInMenuBarKey) private var showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
     @AppStorage(LongCommandNotificationSettings.thresholdSecondsKey)
     private var longCommandThresholdSeconds = LongCommandNotificationSettings.defaultThresholdSeconds
     @AppStorage(QuitWarningSettings.warnBeforeQuitKey) private var warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
+    @AppStorage(AgentBrowserSplitSettings.key) private var openBrowserWithAgentSplits = AgentBrowserSplitSettings.defaultValue
     @AppStorage(ScrollbackPersistenceSettings.persistScrollbackKey) private var sessionPersistScrollback = ScrollbackPersistenceSettings.defaultPersistScrollback
     @AppStorage(CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey)
     private var commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
@@ -104,24 +100,11 @@ struct SettingsView: View {
     @State private var showOpenAccessConfirmation = false
     @State private var pendingOpenAccessMode: SocketControlMode?
     @State private var browserHistoryEntryCount: Int = 0
-    @State private var detectedImportBrowsers: [InstalledBrowserCandidate] = []
     @State private var browserInsecureHTTPAllowlistDraft = BrowserInsecureHTTPSettings.defaultAllowlistText
     @State private var socketPasswordDraft = ""
     @State private var socketPasswordStatusMessage: String?
     @State private var socketPasswordStatusIsError = false
-    @State private var notificationCustomSoundStatusMessage: String?
-    @State private var notificationCustomSoundStatusIsError = false
-    @State private var showNotificationCustomSoundErrorAlert = false
-    @State private var notificationCustomSoundErrorAlertMessage = ""
     @State private var trustedDirectoriesDraft: String = ProgramaDirectoryTrust.shared.allTrustedPaths.joined(separator: "\n")
-    @State private var mobileBridgePairedDevices: [MobileBridgeTrustedDevice] = []
-    @State private var mobileBridgePairingTicket: String?
-    @State private var mobileBridgePairingToken: String?
-    @State private var mobileBridgePairingExpiresAt: Date?
-    @State private var mobileBridgePairingErrorMessage: String?
-    @State private var mobileBridgeRevocationErrorMessage: String?
-    @State private var mobileBridgeRevocationsInFlight: Set<String> = []
-    @State private var isPairingMobileBridgeDevice = false
 
     private var selectedWorkspacePlacement: NewWorkspacePlacement {
         NewWorkspacePlacement(rawValue: newWorkspacePlacement) ?? WorkspacePlacementSettings.defaultPlacement
@@ -186,25 +169,6 @@ struct SettingsView: View {
         )
     }
 
-    private var browserImportHintPresentation: BrowserImportHintPresentation {
-        BrowserImportHintPresentation(
-            showOnBlankTabs: showBrowserImportHintOnBlankTabs,
-            isDismissed: isBrowserImportHintDismissed
-        )
-    }
-
-    private var browserImportHintVisibilityBinding: Binding<Bool> {
-        Binding(
-            get: { showBrowserImportHintOnBlankTabs },
-            set: { newValue in
-                showBrowserImportHintOnBlankTabs = newValue
-                if newValue {
-                    isBrowserImportHintDismissed = false
-                }
-            }
-        )
-    }
-
     private var socketModeSelection: Binding<String> {
         Binding(
             get: { socketControlMode },
@@ -251,15 +215,6 @@ struct SettingsView: View {
         }
     }
 
-    private var browserImportHintSettingsNote: String {
-        switch browserImportHintPresentation.settingsStatus {
-        case .visible:
-            return String(localized: "settings.browser.import.hint.note.visible", defaultValue: "Blank browser tabs can show this import suggestion. Hide or re-enable it here.")
-        case .hidden:
-            return String(localized: "settings.browser.import.hint.note.hidden", defaultValue: "The blank-tab import hint is hidden. Turn it back on here any time.")
-        }
-    }
-
     private var browserInsecureHTTPAllowlistHasUnsavedChanges: Bool {
         browserInsecureHTTPAllowlistDraft != browserInsecureHTTPAllowlist
     }
@@ -272,29 +227,8 @@ struct SettingsView: View {
         ProgramaDirectoryTrust.shared.replaceAll(with: paths)
     }
 
-    private var hasCustomNotificationSoundFilePath: Bool {
-        !notificationSoundCustomFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var notificationSoundCustomFileDisplayName: String {
-        guard hasCustomNotificationSoundFilePath else {
-            return String(
-                localized: "settings.notifications.sound.custom.file.none",
-                defaultValue: "No file selected"
-            )
-        }
-        return URL(fileURLWithPath: notificationSoundCustomFilePath).lastPathComponent
-    }
-
     private var canPreviewNotificationSound: Bool {
-        switch notificationSound {
-        case "none":
-            return false
-        case NotificationSoundSettings.customFileValue:
-            return hasCustomNotificationSoundFilePath
-        default:
-            return true
-        }
+        notificationSound != "none"
     }
 
     private var notificationPermissionStatusText: String {
@@ -343,120 +277,7 @@ struct SettingsView: View {
     }
 
     private func previewNotificationSound() {
-        if notificationSound == NotificationSoundSettings.customFileValue {
-            NotificationSoundSettings.playCustomFileSound(path: notificationSoundCustomFilePath)
-            return
-        }
         NotificationSoundSettings.previewSound(value: notificationSound)
-    }
-
-    private func notificationCustomSoundIssueMessage(_ issue: NotificationSoundSettings.CustomSoundPreparationIssue) -> String {
-        switch issue {
-        case .emptyPath:
-            return String(
-                localized: "settings.notifications.sound.custom.status.empty",
-                defaultValue: "Choose a custom audio file first."
-            )
-        case .missingFile(let path):
-            let fileName = URL(fileURLWithPath: path).lastPathComponent
-            return String(
-                localized: "settings.notifications.sound.custom.status.missingFilePrefix",
-                defaultValue: "File not found: "
-            ) + fileName
-        case .missingFileExtension(let path):
-            let fileName = URL(fileURLWithPath: path).lastPathComponent
-            return String(
-                localized: "settings.notifications.sound.custom.status.missingExtensionPrefix",
-                defaultValue: "File needs an extension: "
-            ) + fileName
-        case .stagingFailed(_, let details):
-            let prefix = String(
-                localized: "settings.notifications.sound.custom.status.prepareFailed",
-                defaultValue: "Could not prepare this file for notifications. Try WAV, AIFF, or CAF."
-            )
-            return "\(prefix) (\(details))"
-        }
-    }
-
-    private func notificationCustomSoundReadyStatusMessage(for path: String) -> String {
-        let sourceExtension = URL(fileURLWithPath: path).pathExtension
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        let stagedExtension = NotificationSoundSettings.stagedCustomSoundFileExtension(forSourceExtension: sourceExtension)
-        if !sourceExtension.isEmpty, stagedExtension != sourceExtension {
-            return String(
-                localized: "settings.notifications.sound.custom.status.readyConverted",
-                defaultValue: "Prepared for notifications (converted to CAF)."
-            )
-        }
-        return String(
-            localized: "settings.notifications.sound.custom.status.ready",
-            defaultValue: "Ready for notifications."
-        )
-    }
-
-    private func refreshNotificationCustomSoundStatus(showAlertOnFailure: Bool = false) {
-        guard notificationSound == NotificationSoundSettings.customFileValue else {
-            notificationCustomSoundStatusMessage = nil
-            notificationCustomSoundStatusIsError = false
-            return
-        }
-        let pathSnapshot = notificationSoundCustomFilePath
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = NotificationSoundSettings.prepareCustomFileForNotifications(path: pathSnapshot)
-            DispatchQueue.main.async {
-                guard notificationSound == NotificationSoundSettings.customFileValue else {
-                    notificationCustomSoundStatusMessage = nil
-                    notificationCustomSoundStatusIsError = false
-                    return
-                }
-                guard notificationSoundCustomFilePath == pathSnapshot else { return }
-                switch result {
-                case .success:
-                    notificationCustomSoundStatusMessage = notificationCustomSoundReadyStatusMessage(for: pathSnapshot)
-                    notificationCustomSoundStatusIsError = false
-                case .failure(let issue):
-                    let message = notificationCustomSoundIssueMessage(issue)
-                    notificationCustomSoundStatusMessage = message
-                    notificationCustomSoundStatusIsError = true
-                    if showAlertOnFailure {
-                        notificationCustomSoundErrorAlertMessage = message
-                        showNotificationCustomSoundErrorAlert = true
-                    }
-                }
-            }
-        }
-    }
-
-    private func chooseNotificationSoundFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.audio]
-        panel.title = String(
-            localized: "settings.notifications.sound.custom.choose.title",
-            defaultValue: "Choose Notification Sound"
-        )
-        panel.prompt = String(
-            localized: "settings.notifications.sound.custom.choose.prompt",
-            defaultValue: "Choose"
-        )
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let selectedPath = url.path
-        switch NotificationSoundSettings.prepareCustomFileForNotifications(path: selectedPath) {
-        case .success:
-            notificationSoundCustomFilePath = selectedPath
-            notificationSound = NotificationSoundSettings.customFileValue
-            notificationCustomSoundStatusMessage = notificationCustomSoundReadyStatusMessage(for: selectedPath)
-            notificationCustomSoundStatusIsError = false
-            previewNotificationSound()
-        case .failure(let issue):
-            let message = notificationCustomSoundIssueMessage(issue)
-            notificationCustomSoundErrorAlertMessage = message
-            showNotificationCustomSoundErrorAlert = true
-            refreshNotificationCustomSoundStatus()
-        }
     }
 
     private func handleNotificationPermissionAction() {
@@ -523,8 +344,6 @@ struct SettingsView: View {
                         agentsSection
                         portsSection
                         customCommandsSection
-                    case .phone:
-                        phoneSection
                     case .browser:
                         browsingSection
                         browserLinksSection
@@ -633,15 +452,6 @@ struct SettingsView: View {
             browserThemeMode = BrowserThemeSettings.mode(defaults: .standard).rawValue
             browserHistoryEntryCount = BrowserHistoryStore.shared.entries.count
             browserInsecureHTTPAllowlistDraft = browserInsecureHTTPAllowlist
-            refreshDetectedImportBrowsers()
-            refreshNotificationCustomSoundStatus()
-            Task { await refreshMobileBridgePairedDevices() }
-        }
-        .onChange(of: notificationSound) { _, _ in
-            refreshNotificationCustomSoundStatus()
-        }
-        .onChange(of: notificationSoundCustomFilePath) { _, _ in
-            refreshNotificationCustomSoundStatus()
         }
         .onChange(of: browserInsecureHTTPAllowlist) { oldValue, newValue in
             // Keep draft in sync with external changes unless the user has local unsaved edits.
@@ -689,17 +499,6 @@ struct SettingsView: View {
             }
         } message: {
             Text(String(localized: "settings.automation.openAccess.dialog.message", defaultValue: "This disables ancestry and password checks and opens the socket to all local users. Only enable when you understand the risk."))
-        }
-        .alert(
-            String(
-                localized: "settings.notifications.sound.custom.error.title",
-                defaultValue: "Custom Notification Sound Error"
-            ),
-            isPresented: $showNotificationCustomSoundErrorAlert
-        ) {
-            Button(String(localized: "common.ok", defaultValue: "OK"), role: .cancel) {}
-        } message: {
-            Text(notificationCustomSoundErrorAlertMessage)
         }
         }
     }
@@ -836,63 +635,22 @@ struct SettingsView: View {
                 subtitle: String(localized: "settings.notifications.sound.subtitle", defaultValue: "Sound played when a notification arrives."),
                 controlWidth: notificationSoundControlWidth
             ) {
-                VStack(alignment: .trailing, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Picker("", selection: $notificationSound) {
-                            ForEach(NotificationSoundSettings.systemSounds, id: \.value) { sound in
-                                Text(sound.label).tag(sound.value)
-                            }
-                        }
-                        .labelsHidden()
-                        Button {
-                            previewNotificationSound()
-                        } label: {
-                            Image(systemName: "play.fill")
-                                .symbolRasterSize(9)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(!canPreviewNotificationSound)
-                    }
-
-                    if notificationSound == NotificationSoundSettings.customFileValue {
-                        HStack(spacing: 6) {
-                            Text(notificationSoundCustomFileDisplayName)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .frame(width: 170, alignment: .trailing)
-                            Button(
-                                String(
-                                    localized: "settings.notifications.sound.custom.choose.button",
-                                    defaultValue: "Choose..."
-                                )
-                            ) {
-                                chooseNotificationSoundFile()
-                            }
-                            .controlSize(.small)
-                            Button(
-                                String(
-                                    localized: "settings.notifications.sound.custom.clear.button",
-                                    defaultValue: "Clear"
-                                )
-                            ) {
-                                notificationSoundCustomFilePath = NotificationSoundSettings.defaultCustomFilePath
-                                refreshNotificationCustomSoundStatus()
-                            }
-                            .controlSize(.small)
-                            .disabled(!hasCustomNotificationSoundFilePath)
-                        }
-                        if let notificationCustomSoundStatusMessage {
-                            Text(notificationCustomSoundStatusMessage)
-                                .font(.system(size: 11))
-                                .foregroundStyle(notificationCustomSoundStatusIsError ? Color.red : Color.secondary)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.trailing)
-                                .frame(width: 260, alignment: .trailing)
+                HStack(spacing: 6) {
+                    Picker("", selection: $notificationSound) {
+                        ForEach(NotificationSoundSettings.systemSounds, id: \.value) { sound in
+                            Text(sound.label).tag(sound.value)
                         }
                     }
+                    .labelsHidden()
+                    Button {
+                        previewNotificationSound()
+                    } label: {
+                        Image(systemName: "play.fill")
+                            .symbolRasterSize(9)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!canPreviewNotificationSound)
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
@@ -1241,6 +999,20 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardNote(String(localized: "settings.automation.claudeCode.note", defaultValue: "When enabled, Programa wraps the claude command to inject session tracking and notification hooks. Disable if you prefer to manage Claude Code hooks yourself."))
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.agents.browserSplit", defaultValue: "Open a browser beside new agents"),
+                subtitle: openBrowserWithAgentSplits
+                    ? String(localized: "settings.agents.browserSplit.subtitleOn", defaultValue: "New agent workspaces get a browser split next to the terminal.")
+                    : String(localized: "settings.agents.browserSplit.subtitleOff", defaultValue: "New agent workspaces open with a terminal only.")
+            ) {
+                Toggle("", isOn: $openBrowserWithAgentSplits)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .accessibilityIdentifier("SettingsAgentBrowserSplitToggle")
+            }
         }
 
         SettingsCard {
@@ -1328,238 +1100,6 @@ struct SettingsView: View {
                 programaPortRange = value.range
             }
         )
-    }
-
-    private var selectedMobileBridgeMode: MobileBridgeMode {
-        MobileBridgeSettings.mode(for: mobileBridgeMode)
-    }
-
-    private var mobileBridgeModeSelection: Binding<String> {
-        Binding(
-            get: { mobileBridgeMode },
-            set: { mobileBridgeMode = $0 }
-        )
-    }
-
-    private func beginMobileBridgePairing() {
-        isPairingMobileBridgeDevice = true
-        mobileBridgePairingErrorMessage = nil
-        Task {
-            if let pairing = await MobileBridgeListener.shared.beginPairing() {
-                mobileBridgePairingTicket = pairing.ticket
-                mobileBridgePairingToken = pairing.token
-                mobileBridgePairingExpiresAt = pairing.expiresAt
-            } else {
-                mobileBridgePairingTicket = nil
-                mobileBridgePairingToken = nil
-                mobileBridgePairingExpiresAt = nil
-                mobileBridgePairingErrorMessage = String(
-                    localized: "settings.phone.pair.error",
-                    defaultValue: "Could not start pairing. The phone companion may still be connecting — try again in a moment."
-                )
-            }
-            isPairingMobileBridgeDevice = false
-        }
-    }
-
-    private func revokeMobileBridgeDevice(_ device: MobileBridgeTrustedDevice) {
-        guard mobileBridgeRevocationsInFlight.insert(device.endpointId).inserted else { return }
-        mobileBridgeRevocationErrorMessage = nil
-
-        Task {
-            defer { mobileBridgeRevocationsInFlight.remove(device.endpointId) }
-            let outcome = await MobileBridgeListener.shared.revoke(endpointId: device.endpointId)
-            await refreshMobileBridgePairedDevices()
-            if outcome == .persistenceFailed {
-                mobileBridgeRevocationErrorMessage = String(
-                    localized: "settings.phone.devices.revokeFailed",
-                    defaultValue: "Could not remove this device. Its connection remains active. Try again."
-                )
-            }
-        }
-    }
-
-    private func refreshMobileBridgePairedDevices() async {
-        mobileBridgePairedDevices = await MobileBridgeTrustedDeviceStore.shared.allDevices()
-    }
-
-    private func mobileBridgePairedOnSubtitle(_ device: MobileBridgeTrustedDevice) -> String {
-        let formattedDate = device.pairedAt.formatted(date: .abbreviated, time: .shortened)
-        return String(localized: "settings.phone.devices.pairedOn", defaultValue: "Paired \(formattedDate)")
-    }
-
-    /// Renders `string` as a fixed-size QR code using CoreImage's built-in
-    /// generator (no third-party dependency). Regenerated on demand rather
-    /// than cached in `@State` -- this only runs while the pairing card is
-    /// visible in Settings, not on any hot path.
-    private func mobileBridgeQRImage(for string: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(string.utf8)
-        filter.correctionLevel = "M"
-        guard let outputImage = filter.outputImage else { return nil }
-
-        let targetSize: CGFloat = 512
-        let scale = targetSize / outputImage.extent.width
-        let scaled = outputImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-
-        let rep = NSCIImageRep(ciImage: scaled)
-        let image = NSImage(size: rep.size)
-        image.addRepresentation(rep)
-        return image
-    }
-
-    private func mobileBridgePairingRemainingSeconds(at date: Date) -> Int? {
-        guard let expiresAt = mobileBridgePairingExpiresAt else { return nil }
-        return max(0, Int(expiresAt.timeIntervalSince(date).rounded(.up)))
-    }
-
-    private func mobileBridgePairingIsExpired(at date: Date) -> Bool {
-        (mobileBridgePairingRemainingSeconds(at: date) ?? 0) <= 0
-    }
-
-    private func mobileBridgePairingCountdownLabel(at date: Date) -> String {
-        guard let remaining = mobileBridgePairingRemainingSeconds(at: date) else { return "" }
-        if remaining <= 0 {
-            return String(localized: "settings.phone.pair.expired", defaultValue: "Expired. Start a new pairing.")
-        }
-        let timeString = String(format: "%d:%02d", remaining / 60, remaining % 60)
-        return String(localized: "settings.phone.pair.expiresIn", defaultValue: "Single use. Expires in \(timeString).")
-    }
-
-    @ViewBuilder
-    private var phoneSection: some View {
-        SettingsSectionHeader(title: String(localized: "settings.section.phone", defaultValue: "Phone"))
-        SettingsCard {
-            SettingsPickerRow(
-                String(localized: "settings.phone.mode", defaultValue: "Mobile Companion"),
-                subtitle: selectedMobileBridgeMode == .pairedDevicesOnly
-                    ? String(localized: "settings.phone.mode.subtitleOn", defaultValue: "Paired iPhones can reach this Mac over a private peer-to-peer connection.")
-                    : String(localized: "settings.phone.mode.subtitleOff", defaultValue: "The phone companion is off. No device can connect."),
-                controlWidth: pickerColumnWidth,
-                selection: mobileBridgeModeSelection,
-                accessibilityId: "MobileBridgeModePicker"
-            ) {
-                ForEach(MobileBridgeMode.uiCases) { mode in
-                    Text(mode.displayName).tag(mode.rawValue)
-                }
-            }
-
-            if selectedMobileBridgeMode == .pairedDevicesOnly {
-                SettingsCardDivider()
-
-                SettingsCardRow(
-                    String(localized: "settings.phone.pair.title", defaultValue: "Pair a Device"),
-                    subtitle: String(localized: "settings.phone.pair.subtitleV2", defaultValue: "Opens a single-use, 5-minute pairing window. Scan the QR code with the Programa iOS app, or copy the code it shows.")
-                ) {
-                    Button(String(localized: "settings.phone.pair.button", defaultValue: "Pair a Device…")) {
-                        beginMobileBridgePairing()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isPairingMobileBridgeDevice)
-                    .accessibilityIdentifier("MobileBridgePairButton")
-                }
-
-                if let ticket = mobileBridgePairingTicket, let token = mobileBridgePairingToken,
-                   let pairingURL = MobileBridgePairingCode.makeURL(ticket: ticket, token: token) {
-                    SettingsCardDivider()
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .top, spacing: 14) {
-                            if let qrImage = mobileBridgeQRImage(for: pairingURL.absoluteString) {
-                                Image(nsImage: qrImage)
-                                    .interpolation(.none)
-                                    .resizable()
-                                    .frame(width: 168, height: 168)
-                                    .background(Color.white)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                    .accessibilityIdentifier("MobileBridgePairingQRCode")
-                            }
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(String(localized: "settings.phone.pair.scanLabel", defaultValue: "Scan this with the Programa iOS app's \u{201c}Scan QR Code\u{201d} button."))
-                                    .font(.system(size: 12, weight: .semibold))
-
-                                Text(pairingURL.absoluteString)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .textSelection(.enabled)
-                                    .padding(8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                            .fill(Color(nsColor: .controlBackgroundColor))
-                                    )
-
-                                HStack(spacing: 10) {
-                                    Button(String(localized: "settings.phone.pair.copy", defaultValue: "Copy")) {
-                                        let pasteboard = NSPasteboard.general
-                                        pasteboard.clearContents()
-                                        pasteboard.setString(pairingURL.absoluteString, forType: .string)
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-
-                                    TimelineView(.periodic(from: mobileBridgePairingExpiresAt ?? Date(), by: 1)) { context in
-                                        Text(mobileBridgePairingCountdownLabel(at: context.date))
-                                            .font(.caption)
-                                            .foregroundStyle(mobileBridgePairingIsExpired(at: context.date) ? .red : .secondary)
-                                    }
-                                }
-                            }
-                        }
-
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                }
-
-                if let mobileBridgePairingErrorMessage {
-                    SettingsCardDivider()
-                    Text(mobileBridgePairingErrorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                }
-
-                SettingsCardDivider()
-
-                SettingsCardNote(String(localized: "settings.phone.note", defaultValue: "Programa runs no server. Your phone connects directly to this Mac over a private peer-to-peer link, and only a small allow-list of methods can be sent over it."))
-            }
-        }
-
-        if selectedMobileBridgeMode == .pairedDevicesOnly {
-            SettingsCard {
-                SettingsCardRow(String(localized: "settings.phone.devices.title", defaultValue: "Paired Devices")) {
-                    EmptyView()
-                }
-
-                if mobileBridgePairedDevices.isEmpty {
-                    SettingsCardDivider()
-                    SettingsCardNote(String(localized: "settings.phone.devices.empty", defaultValue: "No devices paired yet."))
-                } else {
-                    ForEach(mobileBridgePairedDevices) { device in
-                        SettingsCardDivider()
-                        SettingsCardRow(device.label, subtitle: mobileBridgePairedOnSubtitle(device)) {
-                            Button(String(localized: "settings.phone.devices.revoke", defaultValue: "Remove")) {
-                                revokeMobileBridgeDevice(device)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(mobileBridgeRevocationsInFlight.contains(device.endpointId))
-                        }
-                    }
-                }
-
-                if let mobileBridgeRevocationErrorMessage {
-                    SettingsCardDivider()
-                    Text(mobileBridgeRevocationErrorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                }
-            }
-        }
     }
 
     @ViewBuilder
@@ -1787,53 +1327,6 @@ struct SettingsView: View {
     private var browserDataSection: some View {
         SettingsSectionHeader(title: String(localized: "settings.section.browserData", defaultValue: "Data"))
         SettingsCard {
-            VStack(alignment: .leading, spacing: 12) {
-                // A mock of the blank-tab import hint used to be rendered here,
-                // reusing the hint's own strings -- including its footnote saying
-                // "You can always find this in Settings > Browser", shown inside
-                // Settings. The buttons below do the same job without restating
-                // the hint. The real card still lives in BrowserToolbarViews.
-                Text(String(localized: "settings.browser.import", defaultValue: "Import Browser Data"))
-                    .font(.system(size: 13, weight: .semibold))
-
-                HStack(spacing: 8) {
-                    Button(String(localized: "settings.browser.import.choose", defaultValue: "Choose…")) {
-                        DispatchQueue.main.async {
-                            BrowserDataImportCoordinator.shared.presentImportDialog()
-                            refreshDetectedImportBrowsers()
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .accessibilityIdentifier("SettingsBrowserImportChooseButton")
-
-                    Button(String(localized: "settings.browser.import.refresh", defaultValue: "Refresh")) {
-                        refreshDetectedImportBrowsers()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .accessibilityIdentifier("SettingsBrowserImportActions")
-
-                Toggle(
-                    String(localized: "settings.browser.import.hint.show", defaultValue: "Show import hint on blank browser tabs"),
-                    isOn: browserImportHintVisibilityBinding
-                )
-                .controlSize(.small)
-                .accessibilityIdentifier("SettingsBrowserImportHintToggle")
-
-                Text(browserImportHintSettingsNote)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .id(SettingsNavigationTarget.browserImport)
-            .accessibilityIdentifier("SettingsBrowserImportSection")
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-
-            SettingsCardDivider()
-
             SettingsCardRow(String(localized: "settings.browser.history", defaultValue: "Browsing History"), subtitle: browserHistorySubtitle) {
                 Button(String(localized: "settings.browser.history.clearButton", defaultValue: "Clear History…")) {
                     showClearBrowserHistoryConfirmation = true
@@ -1933,8 +1426,6 @@ struct SettingsView: View {
         browserSearchEngine = BrowserSearchSettings.defaultSearchEngine.rawValue
         browserSearchSuggestionsEnabled = BrowserSearchSettings.defaultSearchSuggestionsEnabled
         browserThemeMode = BrowserThemeSettings.defaultMode.rawValue
-        showBrowserImportHintOnBlankTabs = BrowserImportHintSettings.defaultShowOnBlankTabs
-        isBrowserImportHintDismissed = BrowserImportHintSettings.defaultDismissed
         openTerminalLinksInProgramaBrowser = BrowserLinkOpenSettings.defaultOpenTerminalLinksInProgramaBrowser
         interceptTerminalOpenCommandInProgramaBrowser = BrowserLinkOpenSettings.defaultInterceptTerminalOpenCommandInProgramaBrowser
         browserHostWhitelist = BrowserLinkOpenSettings.defaultBrowserHostWhitelist
@@ -1942,14 +1433,10 @@ struct SettingsView: View {
         browserInsecureHTTPAllowlist = BrowserInsecureHTTPSettings.defaultAllowlistText
         browserInsecureHTTPAllowlistDraft = BrowserInsecureHTTPSettings.defaultAllowlistText
         notificationSound = NotificationSoundSettings.defaultValue
-        notificationSoundCustomFilePath = NotificationSoundSettings.defaultCustomFilePath
-        notificationCustomSoundStatusMessage = nil
-        notificationCustomSoundStatusIsError = false
-        showNotificationCustomSoundErrorAlert = false
-        notificationCustomSoundErrorAlertMessage = ""
         notificationCustomCommand = NotificationSoundSettings.defaultCustomCommand
         showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
         warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
+        openBrowserWithAgentSplits = AgentBrowserSplitSettings.defaultValue
         sessionPersistScrollback = ScrollbackPersistenceSettings.defaultPersistScrollback
         commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
         ShortcutHintDebugSettings.resetVisibilityDefaults()
@@ -1973,7 +1460,6 @@ struct SettingsView: View {
         socketPasswordDraft = ""
         socketPasswordStatusMessage = nil
         socketPasswordStatusIsError = false
-        refreshDetectedImportBrowsers()
         KeyboardShortcutSettings.resetAll()
         WorkspaceTabColorSettings.reset()
         WorkspaceTabColorSettings.resetRememberedFolderColors()
@@ -1984,9 +1470,6 @@ struct SettingsView: View {
         browserInsecureHTTPAllowlist = browserInsecureHTTPAllowlistDraft
     }
 
-    private func refreshDetectedImportBrowsers() {
-        detectedImportBrowsers = InstalledBrowserDetector.detectInstalledBrowsers()
-    }
 }
 
 @MainActor

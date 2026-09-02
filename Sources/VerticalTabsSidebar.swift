@@ -62,7 +62,6 @@ struct SidebarTabItemSettingsSnapshot: Equatable {
     let showsGitBranch: Bool
     let usesVerticalBranchLayout: Bool
     let showsGitBranchIcon: Bool
-    let showsSSH: Bool
     let openPullRequestLinksInProgramaBrowser: Bool
     let openPortLinksInProgramaBrowser: Bool
     let showsNotificationMessage: Bool
@@ -90,7 +89,6 @@ struct SidebarTabItemSettingsSnapshot: Equatable {
         showsGitBranch = Self.bool(defaults: defaults, key: "sidebarShowGitBranch", defaultValue: true)
         usesVerticalBranchLayout = true
         showsGitBranchIcon = Self.bool(defaults: defaults, key: "sidebarShowGitBranchIcon", defaultValue: false)
-        showsSSH = true
         openPullRequestLinksInProgramaBrowser = true
         openPortLinksInProgramaBrowser = true
         showsNotificationMessage = true
@@ -227,12 +225,6 @@ struct VerticalTabsSidebar: View {
         })
         let orderedSelectedTabs = tabs.filter { selectedTabIds.contains($0.id) }
         let selectedContextTargetIds = orderedSelectedTabs.map(\.id)
-        let selectedRemoteContextMenuTargets = orderedSelectedTabs.filter { $0.isRemoteWorkspace }
-        let selectedRemoteContextMenuWorkspaceIds = selectedRemoteContextMenuTargets.map(\.id)
-        let allSelectedRemoteContextMenuTargetsConnecting = !selectedRemoteContextMenuTargets.isEmpty &&
-            selectedRemoteContextMenuTargets.allSatisfy { $0.remoteConnectionState == .connecting }
-        let allSelectedRemoteContextMenuTargetsDisconnected = !selectedRemoteContextMenuTargets.isEmpty &&
-            selectedRemoteContextMenuTargets.allSatisfy { $0.remoteConnectionState == .disconnected }
         let sidebarContent = VStack(spacing: 0) {
             // Single header row shared with the traffic lights (Maps-style): the
             // lights float over its leading side, controls sit trailing, and the
@@ -269,15 +261,6 @@ struct VerticalTabsSidebar: View {
                                 let contextMenuWorkspaceIds = usesSelectedContextMenuTargets
                                     ? selectedContextTargetIds
                                     : [tab.id]
-                                let remoteContextMenuWorkspaceIds = usesSelectedContextMenuTargets
-                                    ? selectedRemoteContextMenuWorkspaceIds
-                                    : (tab.isRemoteWorkspace ? [tab.id] : [])
-                                let allRemoteContextMenuTargetsConnecting = usesSelectedContextMenuTargets
-                                    ? allSelectedRemoteContextMenuTargetsConnecting
-                                    : (tab.isRemoteWorkspace && tab.remoteConnectionState == .connecting)
-                                let allRemoteContextMenuTargetsDisconnected = usesSelectedContextMenuTargets
-                                    ? allSelectedRemoteContextMenuTargetsDisconnected
-                                    : (tab.isRemoteWorkspace && tab.remoteConnectionState == .disconnected)
                                 let showsWorktreeBadge = tab.worktreeParentWorkspaceId != nil
                                 let worktreeChildCount = SidebarWorkspaceHierarchy.childCount(
                                     of: tab.id,
@@ -317,9 +300,6 @@ struct VerticalTabsSidebar: View {
                                     draggedTabId: $draggedTabId,
                                     dropIndicator: $dropIndicator,
                                     contextMenuWorkspaceIds: contextMenuWorkspaceIds,
-                                    remoteContextMenuWorkspaceIds: remoteContextMenuWorkspaceIds,
-                                    allRemoteContextMenuTargetsConnecting: allRemoteContextMenuTargetsConnecting,
-                                    allRemoteContextMenuTargetsDisconnected: allRemoteContextMenuTargetsDisconnected,
                                     settings: tabItemSettings,
                                     showsWorktreeBadge: showsWorktreeBadge,
                                     isWorktreeFolder: tab.isWorktreeFolder,

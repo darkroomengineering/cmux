@@ -134,9 +134,6 @@ struct CLICommandDispatcher {
     case "version":
         print(cli.versionSummary())
         return
-    case "remote-daemon-status":
-        try cli.runRemoteDaemonStatus(commandArgs: commandArgs, jsonOutput: jsonOutput)
-        return
     case "help":
         print(cli.usage())
         return

@@ -721,9 +721,6 @@ private struct BrowserProfilePopoverDebugView: View {
 
             Text(String(localized: "browser.profile.new", defaultValue: "New Profile..."))
                 .font(.system(size: 12))
-
-            Text(String(localized: "menu.view.importFromBrowser", defaultValue: "Import Browser Data…"))
-                .font(.system(size: 12))
         }
         .padding(.horizontal, BrowserProfilePopoverDebugSettings.resolvedHorizontalPadding(horizontalPaddingRaw))
         .padding(.vertical, BrowserProfilePopoverDebugSettings.resolvedVerticalPadding(verticalPaddingRaw))

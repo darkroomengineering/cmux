@@ -269,7 +269,6 @@ extension Workspace {
         // this is the single safe place to fire from.
         AgentStateWaitRegistry.shared.notify(surfaceId: panelId, newState: state, source: source)
         SocketEventBroadcaster.shared.publishAgentState(workspaceId: id, surfaceId: panelId, state: state, source: source)
-        MobileBridgePush.shared.noteAgentStateChanged(workspaceId: id, workspaceTitle: title, changedState: state)
 #if DEBUG
         dlog(
             "surface.agentState workspace=\(id.uuidString.prefix(5)) " +
@@ -284,7 +283,6 @@ extension Workspace {
         panelAgentStateSources.removeValue(forKey: panelId)
         AgentStateWaitRegistry.shared.notify(surfaceId: panelId, newState: nil, source: nil)
         SocketEventBroadcaster.shared.publishAgentState(workspaceId: id, surfaceId: panelId, state: nil, source: nil)
-        MobileBridgePush.shared.noteAgentStateChanged(workspaceId: id, workspaceTitle: title, changedState: nil)
 #if DEBUG
         dlog("surface.agentState.clear workspace=\(id.uuidString.prefix(5)) panel=\(panelId.uuidString.prefix(5))")
 #endif
@@ -318,9 +316,6 @@ extension Workspace {
         for surfaceId in clearedAgentSurfaceIds {
             AgentStateWaitRegistry.shared.notify(surfaceId: surfaceId, newState: nil, source: nil)
             SocketEventBroadcaster.shared.publishAgentState(workspaceId: id, surfaceId: surfaceId, state: nil, source: nil)
-        }
-        if !clearedAgentSurfaceIds.isEmpty {
-            MobileBridgePush.shared.noteAgentStateChanged(workspaceId: id, workspaceTitle: title, changedState: nil)
         }
         surfaceListeningPorts.removeAll()
         listeningPorts.removeAll()
@@ -445,9 +440,6 @@ extension Workspace {
         if didPruneTTYNames {
             surfaceTTYNames = surfaceTTYNames.filter { validSurfaceIds.contains($0.key) }
         }
-        if remoteDetectedSurfaceIds.contains(where: { !validSurfaceIds.contains($0) }) {
-            remoteDetectedSurfaceIds = remoteDetectedSurfaceIds.filter { validSurfaceIds.contains($0) }
-        }
         if panelShellActivityStates.keys.contains(where: { !validSurfaceIds.contains($0) }) {
             panelShellActivityStates = panelShellActivityStates.filter { validSurfaceIds.contains($0.key) }
         }
@@ -460,9 +452,6 @@ extension Workspace {
         if panelAgentStateSources.keys.contains(where: { !validSurfaceIds.contains($0) }) {
             panelAgentStateSources = panelAgentStateSources.filter { validSurfaceIds.contains($0.key) }
         }
-        if didPruneTTYNames {
-            syncRemotePortScanTTYs()
-        }
         if didPruneListeningPorts {
             recomputeListeningPorts()
         }
@@ -471,8 +460,6 @@ extension Workspace {
     func recomputeListeningPorts() {
         let unique = Set(surfaceListeningPorts.values.flatMap { $0 })
             .union(agentListeningPorts)
-            .union(remoteDetectedPorts)
-            .union(remoteForwardedPorts)
         let next = unique.sorted()
         if listeningPorts != next {
             listeningPorts = next
@@ -529,13 +516,7 @@ extension Workspace {
     func sidebarHomeDirectoryForCanonicalization(
         resolvedPanelDirectories: [UUID: String]
     ) -> String? {
-        if isRemoteWorkspace {
-            return SidebarBranchOrdering.inferredRemoteHomeDirectory(
-                from: Array(resolvedPanelDirectories.values),
-                fallbackDirectory: normalizedSidebarDirectory(currentDirectory)
-            )
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.path
+        FileManager.default.homeDirectoryForCurrentUser.path
     }
 
     func sidebarResolvedDirectory(for panelId: UUID) -> String? {

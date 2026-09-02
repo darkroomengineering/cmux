@@ -18,9 +18,7 @@ import Bonsplit
 /// protocol" and "Drain/retrieve coordination" below.
 ///
 /// ## Holder process choice
-/// Nothing is always-running in the normal desktop case --
-/// `daemon/remote/cmd/programad-remote` only bootstraps for the SSH remote
-/// workflow, it is not resident otherwise. Rather than add a second Xcode
+/// Nothing is always-running in the normal desktop case. Rather than add a second Xcode
 /// target/binary (a new `PBXNativeTarget`, code signing, and an
 /// embed-helper build phase -- out of scope for one slice), the holder is
 /// the SAME app binary launched in a hidden mode:

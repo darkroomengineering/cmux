@@ -42,4 +42,4 @@ There's no automated test for "does an agent actually behave correctly" — this
 
 ## Command reference
 
-The skill only covers the commands relevant to agent coordination. For the full CLI surface (SSH workspaces, the in-app browser, tmux-compat commands, hooks) run `programa help`, or see [`docs/v2-api-migration.md`](v2-api-migration.md) for the underlying socket API.
+The skill only covers the commands relevant to agent coordination. For the full CLI surface (the in-app browser, tmux-compat commands, hooks) run `programa help`, or see [`docs/v2-api-migration.md`](v2-api-migration.md) for the underlying socket API.

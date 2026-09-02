@@ -82,7 +82,6 @@ struct programaApp: App {
     @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
     @AppStorage(SocketControlSettings.appStorageKey) private var socketControlMode = SocketControlSettings.defaultMode.rawValue
-    @AppStorage(MobileBridgeSettings.appStorageKey) private var mobileBridgeMode = MobileBridgeSettings.defaultMode.rawValue
     @AppStorage(BrowserToolbarAccessorySpacingDebugSettings.key) private var browserToolbarAccessorySpacingRaw = BrowserToolbarAccessorySpacingDebugSettings.defaultSpacing
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
@@ -103,11 +102,9 @@ struct programaApp: App {
         SessionEscrowHolder.runIfRequested()
 
         // Writing to a socket whose peer has hung up raises SIGPIPE, whose
-        // default disposition kills the process. The mobile bridge relays
-        // bytes to/from a phone that can disconnect at any moment (see
-        // `Sources/MobileBridge/MobileBridgeSession.swift`), so this must be
-        // ignored and surfaced as an EPIPE write error instead (mirrors
-        // `tools/mobile-spike/Sources/iroh-spike/App.swift`).
+        // default disposition kills the process. Programa's socket/CLI
+        // clients can disconnect at any moment, so this must be ignored and
+        // surfaced as an EPIPE write error instead.
         signal(SIGPIPE, SIG_IGN)
 
         UITestLaunchManifest.applyIfPresent()
@@ -280,9 +277,6 @@ struct programaApp: App {
 #endif
                     // Start the Unix socket controller for programmatic access
                     updateSocketController()
-                    // Start the mobile companion bridge (M1) if enabled -- binds
-                    // asynchronously off the main thread, never blocking launch.
-                    updateMobileBridgeController()
                     appDelegate.configure(tabManager: tabManager, notificationStore: notificationStore, sidebarState: sidebarState)
                     programaConfigStore.wireDirectoryTracking(tabManager: tabManager)
                     programaConfigStore.loadAll()
@@ -298,9 +292,6 @@ struct programaApp: App {
                 }
                 .onChange(of: socketControlMode) {
                     updateSocketController()
-                }
-                .onChange(of: mobileBridgeMode) {
-                    updateMobileBridgeController()
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -540,16 +531,6 @@ struct programaApp: App {
 
                 Button(
                     String(
-                        localized: "menu.file.openFolderInVSCodeInline",
-                        defaultValue: "Open Folder in VS Code (Inline)…"
-                    )
-                ) {
-                    AppDelegate.shared?.showOpenFolderInInlineVSCodePanel()
-                }
-                .disabled(!TerminalDirectoryOpenTarget.vscodeInline.isAvailable())
-
-                Button(
-                    String(
                         localized: "menu.file.installClaudeIntegration",
                         defaultValue: "Install Claude Code Integration…"
                     )
@@ -697,12 +678,6 @@ struct programaApp: App {
                     }
                 }
 
-                splitCommandButton(title: String(localized: "menu.view.toggleReactGrab", defaultValue: "Toggle React Grab"), shortcut: menuShortcut(for: .toggleReactGrab)) {
-                    if !activeTabManager.toggleReactGrabFromCurrentFocus() {
-                        NSSound.beep()
-                    }
-                }
-
                 splitCommandButton(title: String(localized: "menu.view.zoomIn", defaultValue: "Zoom In"), shortcut: menuShortcut(for: .browserZoomIn)) {
                     _ = activeTabManager.zoomInFocusedBrowser()
                 }
@@ -717,13 +692,6 @@ struct programaApp: App {
 
                 Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {
                     BrowserHistoryStore.shared.clearHistory()
-                }
-
-                Button(String(localized: "menu.view.importFromBrowser", defaultValue: "Import Browser Data…")) {
-                    // Defer modal presentation until after AppKit finishes menu tracking.
-                    DispatchQueue.main.async {
-                        BrowserDataImportCoordinator.shared.presentImportDialog()
-                    }
                 }
 
                 splitCommandButton(title: String(localized: "menu.view.nextWorkspace", defaultValue: "Next Workspace"), shortcut: menuShortcut(for: .nextSidebarTab)) {
@@ -844,19 +812,6 @@ struct programaApp: App {
 
     private var currentSocketMode: SocketControlMode {
         SocketControlSettings.migrateMode(socketControlMode)
-    }
-
-    /// Starts/stops the mobile companion bridge (M1) to match the persisted
-    /// mode -- mirrors `updateSocketController()`'s shape, but this is a
-    /// wholly separate on/off switch from Programa's Unix control socket
-    /// (see `MobileBridgeListener`).
-    private func updateMobileBridgeController() {
-        let mode = MobileBridgeSettings.mode(for: mobileBridgeMode)
-        if mode == .pairedDevicesOnly {
-            MobileBridgeListener.shared.start(tabManager: tabManager)
-        } else {
-            MobileBridgeListener.shared.stop()
-        }
     }
 
     private func menuShortcut(for action: KeyboardShortcutSettings.Action) -> StoredShortcut {
@@ -1147,7 +1102,6 @@ private let programaAuxiliaryWindowIdentifiers: Set<String> = [
     "programa.browser-popup",
     "programa.settingsAboutTitlebarDebug",
     "programa.debugWindowControls",
-    "programa.browserImportHintDebug",
     "programa.sidebarDebug",
     "programa.menubarDebug",
     "programa.backgroundDebug",
@@ -1704,7 +1658,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
 enum SettingsNavigationTarget: String {
     case browser
-    case browserImport
     case keyboardShortcuts
 }
 

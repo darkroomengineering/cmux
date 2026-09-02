@@ -10,7 +10,6 @@ extension Notification.Name {
     static let terminalSurfaceHostedViewDidMoveToWindow = Notification.Name("programa.terminalSurfaceHostedViewDidMoveToWindow")
     static let mainWindowContextsDidChange = Notification.Name("programa.mainWindowContextsDidChange")
     static let browserDownloadEventDidArrive = Notification.Name("programa.browserDownloadEventDidArrive")
-    static let reactGrabDidCopySelection = Notification.Name("programa.reactGrabDidCopySelection")
     static let designModeDidCapture = Notification.Name("programa.designModeDidCapture")
 }
 
@@ -121,7 +120,6 @@ class TerminalController {
     enum SocketConnectionSource: Sendable {
         case unix(UnixClientPolicy)
         case rejectedUnix
-        case mobileBridge
     }
 
     enum AcceptFailureRecoveryAction: Equatable {
@@ -504,16 +502,6 @@ class TerminalController {
         }
     }
 
-    private nonisolated func mobileBridgeRequestPolicy() -> SocketRequestPolicy {
-        withListenerState {
-            SocketRequestPolicy(
-                socketPath: socketPath,
-                accessMode: accessMode,
-                requiresPasswordAuthentication: false
-            )
-        }
-    }
-
     private nonisolated func socketControlPasswordDidChange() {
         withListenerState {
             authCredentialEpoch &+= 1
@@ -865,14 +853,16 @@ class TerminalController {
         }
     }
 
-    nonisolated static func parseRemotePortScanKickReason(
-        _ rawReason: String
-    ) -> WorkspaceRemoteSessionController.PortScanKickReason? {
+    /// Validates and canonicalizes the optional `reason` argument to `surface.ports_kick`
+    /// so a caller that sends a typo gets `invalid_params` instead of a silent no-op; the
+    /// response echoes back the canonical value. The value is part of the socket contract
+    /// only for that validation and echo — it does not select a scan strategy.
+    nonisolated static func normalizedPortScanKickReason(_ rawReason: String) -> String? {
         switch rawReason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "command", "running", "foreground", "start":
-            return .command
+            return "command"
         case "refresh", "prompt", "idle":
-            return .refresh
+            return "refresh"
         default:
             return nil
         }
@@ -1770,9 +1760,6 @@ class TerminalController {
         case .rejectedUnix:
             closeReason = "listener_stopped"
             return
-        case .mobileBridge:
-            requestPolicy = mobileBridgeRequestPolicy()
-            unixPolicy = nil
         }
         defer {
             if unixPolicy != nil {
@@ -2011,18 +1998,6 @@ class TerminalController {
             return v2Result(id: id, self.v2WorkspaceLast(params: params))
         case "workspace.equalize_splits":
             return v2Result(id: id, self.v2WorkspaceEqualizeSplits(params: params))
-        case "workspace.remote.configure":
-            return v2Result(id: id, self.v2WorkspaceRemoteConfigure(params: params))
-        case "workspace.remote.foreground_auth_ready":
-            return v2Result(id: id, self.v2WorkspaceRemoteForegroundAuthReady(params: params))
-        case "workspace.remote.reconnect":
-            return v2Result(id: id, self.v2WorkspaceRemoteReconnect(params: params))
-        case "workspace.remote.disconnect":
-            return v2Result(id: id, self.v2WorkspaceRemoteDisconnect(params: params))
-        case "workspace.remote.status":
-            return v2Result(id: id, self.v2WorkspaceRemoteStatus(params: params))
-        case "workspace.remote.terminal_session_end":
-            return v2Result(id: id, self.v2WorkspaceRemoteTerminalSessionEnd(params: params))
         case "workspace.set_status":
             return v2Result(id: id, self.v2WorkspaceSetStatus(params: params))
         case "workspace.clear_status":

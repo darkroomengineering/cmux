@@ -1115,34 +1115,6 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
     }
     #endif
 
-    func testMobileBridgePingSucceedsWhileUnixSocketControlIsStopped() throws {
-        TerminalController.shared.stop()
-
-        let response = try sendPingThroughMobileBridgeHandler(id: 1)
-
-        XCTAssertTrue(
-            isSuccessfulV2Ping(response),
-            "Stopping Unix Socket Control must not disable an independently admitted Mobile Bridge session"
-        )
-    }
-
-    func testMobileBridgePingSucceedsWhileUnixSocketControlRequiresPassword() throws {
-        let socketPath = makeSocketPath("mobile-password")
-        TerminalController.shared.start(
-            tabManager: TabManager(),
-            socketPath: socketPath,
-            accessMode: .password
-        )
-        try waitForSocket(at: socketPath)
-
-        let response = try sendPingThroughMobileBridgeHandler(id: 1)
-
-        XCTAssertTrue(
-            isSuccessfulV2Ping(response),
-            "Unix Socket Control password policy must not leak into an independently admitted Mobile Bridge session"
-        )
-    }
-
     func testSocketCommandPolicyDistinguishesFocusIntent() throws {
 #if DEBUG
         // The v1 line protocol was removed: isV2: false is now unreachable from any real
@@ -1217,33 +1189,6 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
 #else
         throw XCTSkip("Socket command policy snapshot helper is debug-only.")
 #endif
-    }
-
-    func testRemoteStatusPayloadOmitsSensitiveSSHConfiguration() {
-        let tabManager = TabManager()
-        let workspace = tabManager.addWorkspace(select: false, eagerLoadTerminal: false)
-
-        workspace.configureRemoteConnection(
-            .init(
-                destination: "example.com",
-                port: 2222,
-                identityFile: "/Users/test/.ssh/id_ed25519",
-                sshOptions: ["ControlMaster=auto", "ControlPersist=600"],
-                localProxyPort: 1080,
-                relayPort: 4444,
-                relayID: "relay-id",
-                relayToken: "relay-token",
-                localSocketPath: "/tmp/programa-test.sock",
-                terminalStartupCommand: "ssh example.com"
-            ),
-            autoConnect: false
-        )
-
-        let payload = workspace.remoteStatusPayload()
-        XCTAssertNil(payload["identity_file"])
-        XCTAssertNil(payload["ssh_options"])
-        XCTAssertEqual(payload["has_identity_file"] as? Bool, true)
-        XCTAssertEqual(payload["has_ssh_options"] as? Bool, true)
     }
 
     func testNotificationCreateUsesExplicitSurfaceIDWhenProvided() async throws {
@@ -2826,17 +2771,6 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
         XCTAssertEqual(workspace.agentPIDs["agent-0"], pid_t.max)
         XCTAssertEqual(workspace.agentPIDs.count, SidebarTelemetryLimits.maxAgentPIDs)
 
-        let exactDiagnostic = String(repeating: "e", count: SidebarTelemetryLimits.maxLogMessageBytes)
-        workspace.applyRemoteConnectionStateUpdate(.connecting, detail: exactDiagnostic, target: "example")
-        XCTAssertEqual(workspace.remoteConnectionDetail, exactDiagnostic)
-        workspace.applyRemoteConnectionStateUpdate(.connecting, detail: exactDiagnostic + "e", target: "example")
-        XCTAssertEqual(workspace.remoteConnectionDetail, exactDiagnostic)
-
-        workspace.applyRemoteDaemonStatusUpdate(
-            WorkspaceRemoteDaemonStatus(state: .ready, detail: exactDiagnostic + "e"),
-            target: "example"
-        )
-        XCTAssertEqual(workspace.remoteDaemonStatus.detail, exactDiagnostic)
     }
 
     func testNewAgentRefreshInvalidatesResultsAlreadyValidatedForPublication() async {
@@ -3154,47 +3088,6 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
               let error = response["error"] as? [String: Any]
         else { return nil }
         return error["code"] as? String
-    }
-
-    private nonisolated func sendPingThroughMobileBridgeHandler(id: Int) throws -> [String: Any] {
-        let method = "system.ping"
-        guard MobileBridgeMethodAllowList.isAllowed(method) else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOTSUP), userInfo: [
-                NSLocalizedDescriptionKey: "system.ping is not admitted by the Mobile Bridge method allow-list"
-            ])
-        }
-
-        var sockets: [Int32] = [-1, -1]
-        let socketPairResult = sockets.withUnsafeMutableBufferPointer { buffer in
-            Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, buffer.baseAddress)
-        }
-        guard socketPairResult == 0 else {
-            throw posixError("socketpair(AF_UNIX)")
-        }
-
-        let localFD = sockets[0]
-        let handlerFD = sockets[1]
-        do {
-            try suppressSIGPIPE(on: localFD)
-        } catch {
-            Darwin.close(localFD)
-            Darwin.close(handlerFD)
-            throw error
-        }
-        defer {
-            _ = Darwin.shutdown(localFD, SHUT_RDWR)
-            Darwin.close(localFD)
-        }
-
-        Thread.detachNewThread {
-            TerminalController.shared.handleClient(
-                handlerFD,
-                peerPid: getpid(),
-                source: .mobileBridge
-            )
-        }
-
-        return try sendV2Ping(to: localFD, id: id)
     }
 
     private nonisolated func writeLine(_ command: String, to fd: Int32) throws {

@@ -4245,10 +4245,10 @@ extension TerminalController {
         return result
     }
 
-    /// Toggles Design Mode using the same focused-panel routing rule as the React Grab keyboard
-    /// shortcut (`resolveReactGrabShortcutRoute` / `activateDesignModeRoute`): no `surface_id`
-    /// required, targets the focused browser panel directly, or the workspace's single browser
-    /// panel when a terminal is focused.
+    /// Toggles Design Mode using the shared focused-panel routing rule
+    /// (`resolveDesignModeShortcutRoute` / `activateDesignModeRoute`): no `surface_id` required, targets the
+    /// focused browser panel directly, or the workspace's single browser panel when a terminal is
+    /// focused.
     func v2BrowserDesignModeToggle(params: [String: Any]) -> V2CallResult {
         guard let tabManager = v2ResolveTabManager(params: params) else {
             return .err(code: "unavailable", message: "TabManager not available", data: nil)

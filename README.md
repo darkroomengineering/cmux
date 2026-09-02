@@ -32,7 +32,7 @@ Run many coding agents in parallel and always know which one needs you.
 - **In-app browser.** Split a scriptable browser next to your terminal; agents can snapshot the page, click, fill forms, and evaluate JS against your dev server.
 - **Native and fast.** Swift/AppKit with libghostty rendering, no Electron. Reads your existing `~/.config/ghostty/config` for themes, fonts, and colors.
 
-More: named layouts (`programa layout save/apply`), SSH workspaces where browser panes route through the remote network, a markdown viewer panel, instant agent splits (⌘D / ⌘⇧D, ⌘⇧C for Claude Code), the command palette (⌘⇧P), and a CLI plus Unix-socket JSON-RPC API scriptable end to end.
+More: named layouts (`programa layout save/apply`), a markdown viewer panel, instant agent splits (⌘D / ⌘⇧D, ⌘⇧C for Claude Code), the command palette (⌘⇧P), and a CLI plus Unix-socket JSON-RPC API scriptable end to end.
 
 ## Install
 
@@ -47,7 +47,7 @@ brew tap darkroomengineering/programa
 brew install --cask programa
 ```
 
-Programa auto-updates: every commit on `main` that passes CI ships automatically as the latest release. On relaunch it restores layout, directories, scrollback, and browser state. Live processes don't survive a relaunch yet.
+Programa auto-updates: every commit on `main` that passes CI ships automatically as the latest release. On relaunch it restores layout, directories, scrollback, and browser state. Terminal processes survive Programa quitting or crashing, and the app reattaches to them live on the next launch.
 
 ## Why
 
@@ -57,7 +57,7 @@ Programa is a terminal, a browser, notifications, workspaces, and a CLI to contr
 
 ## Shortcuts
 
-⌘⇧P opens the command palette, which lists every action. Full reference: [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md). Everything is editable in `Settings → Keyboard Shortcuts`.
+⌘⇧P opens the command palette, which lists every action. Full reference: [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md). Everything is editable in `Settings → Keyboard Shortcuts`. Every other preference has a key in `~/.config/programa/settings.json`, documented in [docs/settings-json.md](docs/settings-json.md).
 
 ## Terminal themes
 

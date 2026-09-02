@@ -254,9 +254,7 @@ extension TabManager {
         panelId: UUID,
         reason: String = "initial"
     ) {
-        guard !isStopped,
-              let workspace = workspace(withId: workspaceId),
-              !workspace.isRemoteWorkspace else {
+        guard !isStopped, workspace(withId: workspaceId) != nil else {
             return
         }
         scheduleWorkspaceGitMetadataRefreshIfPossible(

@@ -44,6 +44,29 @@ extension TabManager {
         )?.id
     }
 
+    /// Opens a browser split to the right of `workspace`'s focused terminal when the
+    /// "open a browser beside new agents" setting is on. No-op (returns nil) when the
+    /// setting is off or the workspace has no focused terminal. Never steals focus: the
+    /// split is created with `focus: false`, which leaves the terminal focused.
+    @discardableResult
+    func openCompanionBrowserSplitIfEnabled(
+        for workspace: Workspace,
+        defaults: UserDefaults = .standard
+    ) -> UUID? {
+        guard AgentBrowserSplitSettings.isEnabled(defaults: defaults),
+              let terminal = workspace.focusedTerminalPanel else {
+            return nil
+        }
+        return workspace.newBrowserSplit(
+            from: terminal.id,
+            orientation: SplitDirection.right.orientation,
+            insertFirst: SplitDirection.right.insertFirst,
+            url: nil,
+            preferredProfileID: nil,
+            focus: false
+        )?.id
+    }
+
     /// Get a browser panel by ID
     func browserPanel(tabId: UUID, panelId: UUID) -> BrowserPanel? {
         guard let tab = workspace(withId: tabId) else { return nil }

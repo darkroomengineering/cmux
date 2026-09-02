@@ -145,14 +145,9 @@
         },
         "sound": {
           "type": "string",
-          "enum": ["default", "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink", "custom_file", "none"],
+          "enum": ["default", "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink", "none"],
           "default": "default",
           "description": "Notification sound preset."
-        },
-        "customSoundFilePath": {
-          "type": "string",
-          "default": "",
-          "description": "Local path to the custom notification sound file."
         },
         "command": {
           "type": "string",
@@ -284,6 +279,11 @@
           "default": true,
           "description": "Enable Programa integration hooks for Claude Code."
         },
+        "openBrowserWithAgentSplits": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open a browser split beside the terminal when a new agent workspace is created."
+        },
         "claudeBinaryPath": {
           "type": "string",
           "default": "",
@@ -378,15 +378,10 @@
           "default": ["localhost", "127.0.0.1", "::1", "0.0.0.0", "*.localtest.me"],
           "description": "HTTP hosts allowed in the embedded browser without a warning prompt."
         },
-        "showImportHintOnBlankTabs": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show the browser import hint on blank tabs."
-        },
         "proxy": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Route the embedded browser through a proxy. Applied only when no remote relay endpoint is active (the relay takes precedence). Requires host and port; type defaults to socks5.",
+          "description": "Route the embedded browser through a proxy. Requires host and port; type defaults to socks5.",
           "properties": {
             "host": {
               "type": "string",
@@ -489,8 +484,7 @@
               "hideFind",
               "useSelectionForFind",
               "toggleBrowserDeveloperTools",
-              "showBrowserJavaScriptConsole",
-              "toggleReactGrab"
+              "showBrowserJavaScriptConsole"
             ]
           },
           "additionalProperties": {
