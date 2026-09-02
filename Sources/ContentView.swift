@@ -3979,15 +3979,6 @@ struct ContentView: View {
         )
         contributions.append(
             CommandPaletteCommandContribution(
-                commandId: "palette.browserReactGrab",
-                title: constant(String(localized: "command.browserReactGrab.title", defaultValue: "Toggle React Grab")),
-                subtitle: browserPanelSubtitle,
-                keywords: ["browser", "react", "grab", "inspect", "element"],
-                when: { $0.bool(CommandPaletteContextKeys.panelIsBrowser) }
-            )
-        )
-        contributions.append(
-            CommandPaletteCommandContribution(
                 commandId: "palette.browserDesignMode",
                 title: constant(String(localized: "command.browserDesignMode.title", defaultValue: "Toggle Design Mode")),
                 subtitle: browserPanelSubtitle,
@@ -4533,11 +4524,6 @@ struct ContentView: View {
         }
         registry.register(commandId: "palette.browserConsole") {
             if !tabManager.showJavaScriptConsoleFocusedBrowser() {
-                NSSound.beep()
-            }
-        }
-        registry.register(commandId: "palette.browserReactGrab") {
-            if !tabManager.toggleReactGrabFromCurrentFocus() {
                 NSSound.beep()
             }
         }

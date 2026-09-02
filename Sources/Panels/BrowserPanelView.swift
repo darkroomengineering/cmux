@@ -138,8 +138,6 @@ struct BrowserPanelView: View {
     @AppStorage(BrowserProfilePopoverDebugSettings.verticalPaddingKey)
     private var browserProfilePopoverVerticalPaddingRaw = BrowserProfilePopoverDebugSettings.defaultVerticalPadding
     @AppStorage(BrowserThemeSettings.modeKey) private var browserThemeModeRaw = BrowserThemeSettings.defaultMode.rawValue
-    @AppStorage(BrowserImportHintSettings.showOnBlankTabsKey) private var showBrowserImportHintOnBlankTabs = BrowserImportHintSettings.defaultShowOnBlankTabs
-    @AppStorage(BrowserImportHintSettings.dismissedKey) private var isBrowserImportHintDismissed = BrowserImportHintSettings.defaultDismissed
     @AppStorage(ProgramaGlassSettings.browserToolbarEnabledKey)
     private var browserToolbarLiquidGlassEnabled = false
     @ObservedObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
@@ -147,16 +145,12 @@ struct BrowserPanelView: View {
     @State private var isLoadingRemoteSuggestions: Bool = false
     @State private var latestRemoteSuggestionQuery: String = ""
     @State private var latestRemoteSuggestions: [String] = []
-    @State private var emptyStateImportBrowsers: [InstalledBrowserCandidate] = []
-    @State private var emptyStateImportBrowserRefreshTask: Task<Void, Never>?
-    @State private var emptyStateImportBrowserRefreshGeneration: UInt64 = 0
     @State private var inlineCompletion: OmnibarInlineCompletion?
     @State private var omnibarSelectionRange: NSRange = NSRange(location: NSNotFound, length: 0)
     @State private var omnibarHasMarkedText: Bool = false
     @State private var suppressNextFocusLostRevert: Bool = false
     @State private var omnibarPillFrame: CGRect = .zero
     @State private var addressBarHeight: CGFloat = 0
-    @State private var isBrowserImportHintPopoverPresented = false
     @State private var lastHandledAddressBarFocusRequestId: UUID?
     @State private var pendingAddressBarFocusRetryRequestId: UUID?
     @State private var pendingAddressBarFocusRetryGeneration: UInt64 = 0
@@ -209,13 +203,6 @@ struct BrowserPanelView: View {
         BrowserThemeSettings.mode(for: browserThemeModeRaw)
     }
 
-    private var browserImportHintPresentation: BrowserImportHintPresentation {
-        BrowserImportHintPresentation(
-            showOnBlankTabs: showBrowserImportHintOnBlankTabs,
-            isDismissed: isBrowserImportHintDismissed
-        )
-    }
-
     private var browserToolbarAccessorySpacing: CGFloat {
         CGFloat(BrowserToolbarAccessorySpacingDebugSettings.resolved(browserToolbarAccessorySpacingRaw))
     }
@@ -265,14 +252,6 @@ struct BrowserPanelView: View {
         let base = String(localized: "browser.toggleDevTools", defaultValue: "Toggle Developer Tools")
         let _ = keyboardShortcutSettingsObserver.revision
         return "\(base) (\(KeyboardShortcutSettings.shortcut(for: .toggleBrowserDeveloperTools).displayString))"
-    }
-
-    private var browserImportHintSummary: String {
-        InstalledBrowserDetector.summaryText(for: emptyStateImportBrowsers)
-    }
-
-    private var shouldShowToolbarImportHintChip: Bool {
-        shouldShowEmptyStateImportOverlay && browserImportHintPresentation.blankTabPlacement == .toolbarChip
     }
 
     private var owningWorkspace: Workspace? {
@@ -423,7 +402,6 @@ struct BrowserPanelView: View {
             // If the browser surface is focused but has no URL loaded yet, auto-focus the omnibar.
             autoFocusOmnibarIfBlank()
             syncWebViewResponderPolicyWithViewState(reason: "onAppear")
-            refreshEmptyStateImportBrowsers()
             panel.historyStore.loadIfNeeded()
 #if DEBUG
             logBrowserFocusState(event: "view.onAppear")
@@ -440,13 +418,6 @@ struct BrowserPanelView: View {
                !isWebViewBlank() {
                 setAddressBarFocused(false, reason: "panel.currentURL.loaded")
             }
-            if isWebViewBlank() {
-                refreshEmptyStateImportBrowsers()
-            }
-            panel.resetReactGrabState(
-                preserveRoundTrip: true,
-                reason: "panel.currentURL.changed"
-            )
         }
         .onChange(of: browserThemeModeRaw) {
             let normalizedMode = BrowserThemeSettings.mode(for: browserThemeModeRaw)
@@ -620,10 +591,6 @@ struct BrowserPanelView: View {
                 .accessibilityLabel(String(localized: "browser.omnibar.accessibilityLabel", defaultValue: "Browser omnibar"))
 
             HStack(spacing: browserToolbarAccessorySpacing) {
-                if shouldShowToolbarImportHintChip {
-                    browserImportHintToolbarChip
-                }
-                reactGrabButton
                 BrowserProfileMenuView(
                     panel: panel,
                     iconColor: devToolsColorOption.color,
@@ -634,8 +601,6 @@ struct BrowserPanelView: View {
                         switch action {
                         case .newProfile:
                             presentCreateBrowserProfilePrompt()
-                        case .importBrowserData:
-                            presentImportDialogFromProfileMenu()
                         case .renameProfile:
                             presentRenameBrowserProfilePrompt()
                         }
@@ -647,9 +612,6 @@ struct BrowserPanelView: View {
                     isPresented: $isBrowserThemeMenuPresented,
                     onSelectMode: applyBrowserThemeModeSelection
                 )
-                if #available(macOS 15.4, *) {
-                    browserExtensionsButton
-                }
                 developerToolsButton
             }
         }
@@ -676,44 +638,6 @@ struct BrowserPanelView: View {
         }
     }
 
-    private var reactGrabButton: some View {
-        Button(action: {
-            panel.clearReactGrabRoundTrip(reason: "toolbarButton.manualStart")
-            Task { await panel.toggleOrInjectReactGrab() }
-        }) {
-            Image(systemName: "cursorarrow.click.2")
-                .symbolRenderingMode(.monochrome)
-                .programaFlatSymbolColorRendering()
-                .font(.system(size: devToolsButtonIconSize, weight: .medium))
-                .foregroundStyle(panel.isReactGrabActive ? Color.accentColor : Color.secondary)
-                .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
-        }
-        .buttonStyle(OmnibarAddressButtonStyle())
-        .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
-        .safeHelp(String(localized: "browser.reactGrab", defaultValue: "Inject React Grab"))
-        .accessibilityIdentifier("BrowserReactGrabButton")
-    }
-
-    @available(macOS 15.4, *)
-    private var browserExtensionsButton: some View {
-        let label = String(localized: "browser.extensions.manage", defaultValue: "Manage Browser Extensions")
-        return Button {
-            BrowserExtensionManager.shared.presentManagementUI()
-        } label: {
-            Image(systemName: "puzzlepiece.extension")
-                .symbolRenderingMode(.monochrome)
-                .programaFlatSymbolColorRendering()
-                .font(.system(size: devToolsButtonIconSize, weight: .medium))
-                .foregroundStyle(devToolsColorOption.color)
-                .frame(width: 44, height: 44, alignment: .center)
-        }
-        .buttonStyle(OmnibarAddressButtonStyle())
-        .frame(width: 44, height: 44, alignment: .center)
-        .accessibilityLabel(label)
-        .safeHelp(label)
-        .accessibilityIdentifier("BrowserManageExtensionsButton")
-    }
-
     private var developerToolsButton: some View {
         Button(action: {
             openDevTools()
@@ -731,40 +655,8 @@ struct BrowserPanelView: View {
         .accessibilityIdentifier("BrowserToggleDevToolsButton")
     }
 
-    private var browserImportHintToolbarChip: some View {
-        Button(action: {
-            isBrowserImportHintPopoverPresented.toggle()
-        }) {
-            HStack(spacing: 4) {
-                Image(systemName: "square.and.arrow.down.on.square")
-                    .symbolRasterSize(10, weight: .medium)
-                Text(String(localized: "browser.import.hint.toolbar", defaultValue: "Import"))
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-            }
-            .foregroundStyle(devToolsColorOption.color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-        }
-        .buttonStyle(OmnibarAddressButtonStyle())
-        .popover(isPresented: $isBrowserImportHintPopoverPresented, arrowEdge: .bottom) {
-            browserImportHintContent.popover
-        }
-        .safeHelp(String(localized: "browser.import.hint.toolbar.help", defaultValue: "Import browser data"))
-        .accessibilityIdentifier("BrowserImportHintToolbarChip")
-    }
-
     private var browserThemeModeIconColor: Color {
         devToolsColorOption.color
-    }
-
-    private var browserImportHintContent: BrowserImportHintContentView {
-        BrowserImportHintContentView(
-            summary: browserImportHintSummary,
-            onImport: presentImportDialogFromHint,
-            onOpenSettings: openBrowserImportSettings,
-            onDismiss: dismissBrowserImportHint
-        )
     }
 
     private var omnibarField: some View {
@@ -1150,40 +1042,6 @@ struct BrowserPanelView: View {
 #endif
     }
 
-    private var shouldShowEmptyStateImportOverlay: Bool {
-        !panel.shouldRenderWebView && isWebViewBlank()
-    }
-
-    private func presentImportDialogFromHint() {
-        isBrowserImportHintPopoverPresented = false
-        // Let the popover fully dismiss before entering the modal import flow.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            BrowserDataImportCoordinator.shared.presentImportDialog(
-                defaultDestinationProfileID: panel.profileID
-            )
-        }
-    }
-
-    private func presentImportDialogFromProfileMenu() {
-        isBrowserProfileMenuPresented = false
-        DispatchQueue.main.async {
-            BrowserDataImportCoordinator.shared.presentImportDialog(
-                defaultDestinationProfileID: panel.profileID
-            )
-        }
-    }
-
-    private func openBrowserImportSettings() {
-        isBrowserImportHintPopoverPresented = false
-        AppDelegate.presentPreferencesWindow(navigationTarget: .browserImport)
-    }
-
-    private func dismissBrowserImportHint() {
-        showBrowserImportHintOnBlankTabs = false
-        isBrowserImportHintDismissed = true
-        isBrowserImportHintPopoverPresented = false
-    }
-
     /// Treat a WebView with no URL (or about:blank) as "blank" for UX purposes.
     private func isWebViewBlank() -> Bool {
         guard let url = panel.webView.url else { return true }
@@ -1233,31 +1091,6 @@ struct BrowserPanelView: View {
 #if DEBUG
         logBrowserFocusState(event: "addressBarFocus.autoFocus.apply")
 #endif
-    }
-
-    private func refreshEmptyStateImportBrowsers() {
-        emptyStateImportBrowserRefreshTask?.cancel()
-        emptyStateImportBrowserRefreshGeneration &+= 1
-        let generation = emptyStateImportBrowserRefreshGeneration
-
-        guard shouldShowEmptyStateImportOverlay else {
-            emptyStateImportBrowsers = []
-            emptyStateImportBrowserRefreshTask = nil
-            return
-        }
-
-        emptyStateImportBrowserRefreshTask = Task {
-            let browsers = await Task.detached(priority: .utility) {
-                InstalledBrowserDetector.detectInstalledBrowsers()
-            }.value
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                guard emptyStateImportBrowserRefreshGeneration == generation,
-                      shouldShowEmptyStateImportOverlay else { return }
-                emptyStateImportBrowsers = browsers
-                emptyStateImportBrowserRefreshTask = nil
-            }
-        }
     }
 
     private func openDevTools() {

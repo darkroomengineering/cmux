@@ -212,68 +212,6 @@ enum BrowserThemeSettings {
     }
 }
 
-enum BrowserImportHintBlankTabPlacement: Equatable {
-    case hidden
-    case toolbarChip
-}
-
-enum BrowserImportHintSettingsStatus: Equatable {
-    case visible
-    case hidden
-}
-
-struct BrowserImportHintPresentation: Equatable {
-    let blankTabPlacement: BrowserImportHintBlankTabPlacement
-    let settingsStatus: BrowserImportHintSettingsStatus
-
-    init(
-        showOnBlankTabs: Bool,
-        isDismissed: Bool
-    ) {
-        if !showOnBlankTabs || isDismissed {
-            blankTabPlacement = .hidden
-            settingsStatus = .hidden
-            return
-        }
-
-        blankTabPlacement = .toolbarChip
-        settingsStatus = .visible
-    }
-}
-
-enum BrowserImportHintSettings {
-    static let showOnBlankTabsKey = "browserImportHintShowOnBlankTabs"
-    static let dismissedKey = "browserImportHintDismissed"
-    static let defaultShowOnBlankTabs = true
-    static let defaultDismissed = false
-
-    static func showOnBlankTabs(defaults: UserDefaults = .standard) -> Bool {
-        if defaults.object(forKey: showOnBlankTabsKey) == nil {
-            return defaultShowOnBlankTabs
-        }
-        return defaults.bool(forKey: showOnBlankTabsKey)
-    }
-
-    static func isDismissed(defaults: UserDefaults = .standard) -> Bool {
-        if defaults.object(forKey: dismissedKey) == nil {
-            return defaultDismissed
-        }
-        return defaults.bool(forKey: dismissedKey)
-    }
-
-    static func presentation(defaults: UserDefaults = .standard) -> BrowserImportHintPresentation {
-        BrowserImportHintPresentation(
-            showOnBlankTabs: showOnBlankTabs(defaults: defaults),
-            isDismissed: isDismissed(defaults: defaults)
-        )
-    }
-
-    static func reset(defaults: UserDefaults = .standard) {
-        defaults.set(defaultShowOnBlankTabs, forKey: showOnBlankTabsKey)
-        defaults.set(defaultDismissed, forKey: dismissedKey)
-    }
-}
-
 enum BrowserLinkOpenSettings {
     static let openTerminalLinksInProgramaBrowserKey = "browserOpenTerminalLinksInProgramaBrowser"
     static let defaultOpenTerminalLinksInProgramaBrowser: Bool = true

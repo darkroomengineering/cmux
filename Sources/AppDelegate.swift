@@ -1128,12 +1128,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(handleReactGrabDidCopySelection(_:)),
-            name: .reactGrabDidCopySelection,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
             selector: #selector(handleDesignModeDidCapture(_:)),
             name: .designModeDidCapture,
             object: nil
@@ -1223,18 +1217,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         // windows explicitly per test and never want a phantom default window lingering in
         // `mainWindowContexts` for the lifetime of the test run, so exclude that case here.
         if isRunningUnderXCTest, !isEmbeddedUnitTestHost(env) {
-            if let rawShow = env["PROGRAMA_UI_TEST_BROWSER_IMPORT_HINT_SHOW"] {
-                UserDefaults.standard.set(
-                    rawShow == "1",
-                    forKey: BrowserImportHintSettings.showOnBlankTabsKey
-                )
-            }
-            if let rawDismissed = env["PROGRAMA_UI_TEST_BROWSER_IMPORT_HINT_DISMISSED"] {
-                UserDefaults.standard.set(
-                    rawDismissed == "1",
-                    forKey: BrowserImportHintSettings.dismissedKey
-                )
-            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
                 guard let self else { return }
                 if NSApp.windows.isEmpty {
@@ -1248,25 +1230,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
                     window.orderFrontRegardless()
                 }
                 self.writeUITestDiagnosticsIfNeeded(stage: "afterForceWindow")
-            }
-            if env["PROGRAMA_UI_TEST_BROWSER_IMPORT_HINT_OPEN_BLANK_BROWSER"] == "1" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
-                    guard let self else { return }
-                    _ = self.openBrowserAndFocusAddressBar(insertAtEnd: true)
-                }
-            }
-            if env["PROGRAMA_UI_TEST_BROWSER_IMPORT_HINT_OPEN_SETTINGS"] == "1" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
-                    self?.openPreferencesWindow(
-                        debugSource: "uiTest.browserImportHint",
-                        navigationTarget: .browser
-                    )
-                }
-            }
-            if env["PROGRAMA_UI_TEST_BROWSER_IMPORT_AUTO_OPEN"] == "1" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    BrowserDataImportCoordinator.shared.presentImportDialog()
-                }
             }
         }
 #endif
@@ -5543,68 +5506,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         pasteboard.setString(payload, forType: .string)
     }
 
-    @objc private func handleReactGrabDidCopySelection(_ notification: Notification) {
-        let browserPanelId = notification.userInfo?[ReactGrabPastebackNotificationKey.browserPanelId] as? UUID
-        guard let workspaceId = notification.userInfo?[ReactGrabPastebackNotificationKey.workspaceId] as? UUID,
-              let returnPanelId = notification.userInfo?[ReactGrabPastebackNotificationKey.returnPanelId] as? UUID,
-              let content = notification.userInfo?[ReactGrabPastebackNotificationKey.content] as? String else {
-#if DEBUG
-            dlog(
-                "reactGrab.pasteback h3.didCopy.drop " +
-                "reason=missingNotificationFields " +
-                "workspace=\(Self.debugShortId(notification.userInfo?[ReactGrabPastebackNotificationKey.workspaceId] as? UUID)) " +
-                "browser=\(Self.debugShortId(browserPanelId)) " +
-                "return=\(Self.debugShortId(notification.userInfo?[ReactGrabPastebackNotificationKey.returnPanelId] as? UUID)) " +
-                "hasContent=\((notification.userInfo?[ReactGrabPastebackNotificationKey.content] as? String) != nil ? 1 : 0)"
-            )
-#endif
-            return
-        }
-
-        guard let manager = tabManagerFor(tabId: workspaceId),
-              let workspace = manager.tabs.first(where: { $0.id == workspaceId }) else {
-#if DEBUG
-            dlog(
-                "reactGrab.pasteback h3.didCopy.drop " +
-                "reason=missingWorkspace workspace=\(Self.debugShortId(workspaceId)) " +
-                "browser=\(Self.debugShortId(browserPanelId)) return=\(Self.debugShortId(returnPanelId))"
-            )
-#endif
-            return
-        }
-
-        guard workspace.terminalPanel(for: returnPanelId) != nil else {
-#if DEBUG
-            dlog(
-                "reactGrab.pasteback h3.didCopy.drop " +
-                "reason=missingReturnTerminal workspace=\(Self.debugShortId(workspaceId)) " +
-                "browser=\(Self.debugShortId(browserPanelId)) return=\(Self.debugShortId(returnPanelId)) " +
-                "focused=\(Self.debugShortId(workspace.focusedPanelId))"
-            )
-#endif
-            return
-        }
-
-#if DEBUG
-        dlog(
-            "reactGrab.pasteback h3.didCopy " +
-            "workspace=\(Self.debugShortId(workspaceId)) " +
-            "browser=\(Self.debugShortId(browserPanelId)) " +
-            "return=\(Self.debugShortId(returnPanelId)) " +
-            "focusedBefore=\(Self.debugShortId(workspace.focusedPanelId)) len=\(content.count)"
-        )
-#endif
-        manager.focusTab(workspaceId, surfaceId: returnPanelId, suppressFlash: true)
-#if DEBUG
-        dlog(
-            "reactGrab.pasteback h1.focusRequested " +
-            "workspace=\(Self.debugShortId(workspaceId)) " +
-            "return=\(Self.debugShortId(returnPanelId)) " +
-            "focusedAfterRequest=\(Self.debugShortId(workspace.focusedPanelId))"
-        )
-#endif
-        sendTextWhenReady(content, to: workspace, preferredPanelId: returnPanelId)
-    }
 
     @objc private func handleDesignModeDidCapture(_ notification: Notification) {
         guard let workspaceId = notification.userInfo?[DesignModeNotificationKey.workspaceId] as? UUID,
@@ -6861,7 +6762,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
 
     private static let appShortcutPrecedenceOrderAfterLegacyTabNavigation: [KeyboardShortcutSettings.Action] = [
         .newSurface, .openBrowser, .openReview, .focusBrowserAddressBar, .browserBack, .browserForward, .browserReload,
-        .toggleBrowserDeveloperTools, .showBrowserJavaScriptConsole, .toggleReactGrab, .browserZoomIn,
+        .toggleBrowserDeveloperTools, .showBrowserJavaScriptConsole, .browserZoomIn,
         .browserZoomOut, .browserZoomReset, .find, .findNext, .findPrevious, .hideFind, .useSelectionForFind,
         .reopenClosedBrowserPanel,
     ]
@@ -7021,8 +6922,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             return handleToggleBrowserDeveloperToolsShortcutAction(event: event)
         case .showBrowserJavaScriptConsole:
             return handleShowBrowserJavaScriptConsoleShortcutAction(event: event)
-        case .toggleReactGrab:
-            return handleToggleReactGrabShortcutAction(event: event)
         case .browserZoomIn:
             return handleBrowserZoomInShortcutAction(event: event)
         case .browserZoomOut:
@@ -7622,13 +7521,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             self?.logDeveloperToolsShortcutSnapshot(phase: "console.tick", didHandle: didHandle)
         }
 #endif
-        if !didHandle { NSSound.beep() }
-        return true
-    }
-
-    private func handleToggleReactGrabShortcutAction(event: NSEvent) -> Bool? {
-        guard matchConfiguredShortcut(event: event, action: .toggleReactGrab) else { return nil }
-        let didHandle = tabManager?.toggleReactGrabFromCurrentFocus() ?? false
         if !didHandle { NSSound.beep() }
         return true
     }

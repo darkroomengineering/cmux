@@ -701,11 +701,6 @@ final class BrowserPanel: Panel, ObservableObject {
     var insecureHTTPAlertWindowProvider: () -> NSWindow? = { NSApp.keyWindow ?? NSApp.mainWindow }
     // Persist user intent across WebKit detach/reattach churn (split/layout updates).
     @Published var preferredDeveloperToolsVisible: Bool = false
-    @Published var isReactGrabActive: Bool = false
-    var reactGrabMessageHandler: ReactGrabMessageHandler?
-    var pendingReactGrabReturnTargetPanelId: UUID?
-    var pendingReactGrabRoundTripToken: String?
-    let reactGrabBridgeSessionUpdaterName = "__programaReactGrabBridgeSync_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
     @Published var isDesignModeActive: Bool = false
     var designModeMessageHandler: DesignModeMessageHandler?
     var pendingDesignModeReturnTargetPanelId: UUID?
@@ -971,13 +966,6 @@ final class BrowserPanel: Panel, ObservableObject {
         // This reduces repeated consent/bot-challenge flows on sites like Google.
         configuration.websiteDataStore = websiteDataStore
 
-        // Web extension support (proof of concept — see BrowserExtensionManager). Popups
-        // inherit this through the same shared-configuration path as everything else here.
-        if #available(macOS 15.4, *) {
-            configuration.webExtensionController = BrowserExtensionManager.shared.controller
-            BrowserExtensionManager.shared.loadInstalledExtensionsIfNeeded()
-        }
-
         // Enable developer extras (DevTools)
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
         configuration.preferences.isElementFullscreenEnabled = true
@@ -1043,13 +1031,9 @@ final class BrowserPanel: Panel, ObservableObject {
         webView.navigationDelegate = navigationDelegate
         webView.uiDelegate = uiDelegate
         setupObservers(for: webView)
-        setupReactGrabMessageHandler(for: webView)
         setupDesignModeMessageHandler(for: webView)
         setupIMECompositionTracking(for: webView)
         setupPasskeyHandoffTracking(for: webView)
-        if #available(macOS 15.4, *) {
-            BrowserExtensionManager.shared.registerTab(for: self)
-        }
     }
 
     private func configureNavigationDelegateCallbacks() {
@@ -1223,7 +1207,6 @@ final class BrowserPanel: Panel, ObservableObject {
         bindWebView(webView)
         installDetachedDeveloperToolsWindowCloseObserver()
         applyBrowserThemeModeIfNeeded()
-        ReactGrabScriptLoader.prefetch()
         insecureHTTPAlertWindowProvider = { [weak self] in
             self?.webView.window ?? NSApp.keyWindow ?? NSApp.mainWindow
         }
@@ -1862,10 +1845,6 @@ final class BrowserPanel: Panel, ObservableObject {
         // bonsplit/SwiftUI reshuffles views during close.
         unfocus()
         invalidateBrowserStateRestore(with: .cancelled)
-
-        if #available(macOS 15.4, *) {
-            BrowserExtensionManager.shared.unregisterTab(for: self)
-        }
 
         // Snapshot first: popup close unregisters itself from popupControllers.
         let popupsToClose = popupControllers

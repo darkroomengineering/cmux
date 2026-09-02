@@ -15,58 +15,6 @@ import os
 @testable import Programa
 #endif
 
-final class BrowserExtensionConsentStoreTests: XCTestCase {
-    func testAuthorityFingerprintIsOrderIndependentButChangesWithManifestAuthority() {
-        let baseline = BrowserExtensionConsentStore.fingerprint(
-            candidateID: "/extensions/password-manager",
-            version: "1.0",
-            permissions: ["tabs", "storage"],
-            hostPatterns: ["https://example.com/*", "https://login.example/*"]
-        )
-        XCTAssertEqual(
-            baseline,
-            BrowserExtensionConsentStore.fingerprint(
-                candidateID: "/extensions/password-manager",
-                version: "1.0",
-                permissions: ["storage", "tabs"],
-                hostPatterns: ["https://login.example/*", "https://example.com/*"]
-            )
-        )
-        XCTAssertNotEqual(
-            baseline,
-            BrowserExtensionConsentStore.fingerprint(
-                candidateID: "/extensions/password-manager",
-                version: "1.1",
-                permissions: ["storage", "tabs"],
-                hostPatterns: ["https://login.example/*", "https://example.com/*"]
-            )
-        )
-        XCTAssertNotEqual(
-            baseline,
-            BrowserExtensionConsentStore.fingerprint(
-                candidateID: "/extensions/password-manager",
-                version: "1.0",
-                permissions: ["storage", "tabs"],
-                hostPatterns: ["<all_urls>"]
-            )
-        )
-    }
-
-    func testChangedManifestDoesNotInheritApprovalAndRevocationPersistsDenial() throws {
-        let suiteName = "BrowserExtensionConsentStoreTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        let store = BrowserExtensionConsentStore(defaults: defaults, defaultsKey: "decisions")
-
-        store.setDecision(.approved, candidateID: "candidate", fingerprint: "manifest-a")
-        XCTAssertEqual(store.decision(candidateID: "candidate", fingerprint: "manifest-a"), .approved)
-        XCTAssertNil(store.decision(candidateID: "candidate", fingerprint: "manifest-b"))
-
-        store.setDecision(.denied, candidateID: "candidate", fingerprint: "manifest-a")
-        XCTAssertEqual(store.decision(candidateID: "candidate", fingerprint: "manifest-a"), .denied)
-    }
-}
-
 private actor BrowserSuggestionRequestRecorder {
     private(set) var requestedHosts: [String] = []
 
@@ -1451,14 +1399,6 @@ final class BrowserDeveloperToolsShortcutDefaultsTests: XCTestCase {
         XCTAssertFalse(shortcut.control)
     }
 
-    func testDefaultShortcutForToggleReactGrabUsesCommandShiftG() {
-        let shortcut = KeyboardShortcutSettings.Action.toggleReactGrab.defaultShortcut
-        XCTAssertEqual(shortcut.key, "g")
-        XCTAssertTrue(shortcut.command)
-        XCTAssertFalse(shortcut.option)
-        XCTAssertTrue(shortcut.shift)
-        XCTAssertFalse(shortcut.control)
-    }
 }
 
 

@@ -3072,90 +3072,6 @@
         }
       }
     },
-    "browser.extensions.change": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Change Access" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "アクセスを変更" } }
-      }
-    },
-    "browser.extensions.consent.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Version: %@\n\nPermissions:\n• %@\n\nWebsite access:\n• %@" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "バージョン：%@\n\n権限：\n• %@\n\nWebサイトへのアクセス：\n• %@" } }
-      }
-    },
-    "browser.extensions.consent.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Enable %@?" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "%@を有効にしますか？" } }
-      }
-    },
-    "browser.extensions.disabled": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Disabled" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "無効" } }
-      }
-    },
-    "browser.extensions.enable": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Enable" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "有効にする" } }
-      }
-    },
-    "browser.extensions.enabled": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Enabled" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "有効" } }
-      }
-    },
-    "browser.extensions.manage": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Manage Browser Extensions" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "ブラウザ拡張機能を管理" } }
-      }
-    },
-    "browser.extensions.manage.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Select an extension to enable it or revoke its access." } },
-        "ja": { "stringUnit": { "state": "translated", "value": "有効化またはアクセス権を取り消す拡張機能を選択してください。" } }
-      }
-    },
-    "browser.extensions.manage.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Manage Browser Extensions" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "ブラウザ拡張機能を管理" } }
-      }
-    },
-    "browser.extensions.none.message": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Add an unpacked extension or ZIP archive to ~/.config/programa/extensions/." } },
-        "ja": { "stringUnit": { "state": "translated", "value": "展開済みの拡張機能またはZIPアーカイブを ~/.config/programa/extensions/ に追加してください。" } }
-      }
-    },
-    "browser.extensions.none.title": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "No Browser Extensions" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "ブラウザ拡張機能がありません" } }
-      }
-    },
-    "browser.extensions.noneRequested": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "None" } },
-        "ja": { "stringUnit": { "state": "translated", "value": "なし" } }
-      }
-    },
     "browser.goBack": {
       "extractionState": "manual",
       "localizations": {
@@ -4171,17 +4087,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Rename Browser Profile"
-          }
-        }
-      }
-    },
-    "browser.reactGrab": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Inject React Grab"
           }
         }
       }
@@ -8826,17 +8731,6 @@
         }
       }
     },
-    "menu.view.toggleReactGrab": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Toggle React Grab"
-          }
-        }
-      }
-    },
     "menu.view.toggleSidebar": {
       "extractionState": "manual",
       "localizations": {
@@ -12096,17 +11990,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Toggle Pane Zoom"
-          }
-        }
-      }
-    },
-    "shortcut.toggleReactGrab.label": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Toggle React Grab"
           }
         }
       }

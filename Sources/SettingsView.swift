@@ -57,8 +57,6 @@ struct SettingsView: View {
     @AppStorage(BrowserSearchSettings.searchEngineKey) private var browserSearchEngine = BrowserSearchSettings.defaultSearchEngine.rawValue
     @AppStorage(BrowserSearchSettings.searchSuggestionsEnabledKey) private var browserSearchSuggestionsEnabled = BrowserSearchSettings.defaultSearchSuggestionsEnabled
     @AppStorage(BrowserThemeSettings.modeKey) private var browserThemeMode = BrowserThemeSettings.defaultMode.rawValue
-    @AppStorage(BrowserImportHintSettings.showOnBlankTabsKey) private var showBrowserImportHintOnBlankTabs = BrowserImportHintSettings.defaultShowOnBlankTabs
-    @AppStorage(BrowserImportHintSettings.dismissedKey) private var isBrowserImportHintDismissed = BrowserImportHintSettings.defaultDismissed
     @AppStorage(BrowserLinkOpenSettings.openTerminalLinksInProgramaBrowserKey) private var openTerminalLinksInProgramaBrowser = BrowserLinkOpenSettings.defaultOpenTerminalLinksInProgramaBrowser
     @AppStorage(BrowserLinkOpenSettings.interceptTerminalOpenCommandInProgramaBrowserKey)
     private var interceptTerminalOpenCommandInProgramaBrowser = BrowserLinkOpenSettings.initialInterceptTerminalOpenCommandInProgramaBrowserValue()
@@ -104,7 +102,6 @@ struct SettingsView: View {
     @State private var showOpenAccessConfirmation = false
     @State private var pendingOpenAccessMode: SocketControlMode?
     @State private var browserHistoryEntryCount: Int = 0
-    @State private var detectedImportBrowsers: [InstalledBrowserCandidate] = []
     @State private var browserInsecureHTTPAllowlistDraft = BrowserInsecureHTTPSettings.defaultAllowlistText
     @State private var socketPasswordDraft = ""
     @State private var socketPasswordStatusMessage: String?
@@ -186,25 +183,6 @@ struct SettingsView: View {
         )
     }
 
-    private var browserImportHintPresentation: BrowserImportHintPresentation {
-        BrowserImportHintPresentation(
-            showOnBlankTabs: showBrowserImportHintOnBlankTabs,
-            isDismissed: isBrowserImportHintDismissed
-        )
-    }
-
-    private var browserImportHintVisibilityBinding: Binding<Bool> {
-        Binding(
-            get: { showBrowserImportHintOnBlankTabs },
-            set: { newValue in
-                showBrowserImportHintOnBlankTabs = newValue
-                if newValue {
-                    isBrowserImportHintDismissed = false
-                }
-            }
-        )
-    }
-
     private var socketModeSelection: Binding<String> {
         Binding(
             get: { socketControlMode },
@@ -248,15 +226,6 @@ struct SettingsView: View {
             return String(localized: "settings.browser.history.subtitleOne", defaultValue: "1 saved page appears in omnibar suggestions.")
         default:
             return String(localized: "settings.browser.history.subtitleMany", defaultValue: "\(browserHistoryEntryCount) saved pages appear in omnibar suggestions.")
-        }
-    }
-
-    private var browserImportHintSettingsNote: String {
-        switch browserImportHintPresentation.settingsStatus {
-        case .visible:
-            return String(localized: "settings.browser.import.hint.note.visible", defaultValue: "Blank browser tabs can show this import suggestion. Hide or re-enable it here.")
-        case .hidden:
-            return String(localized: "settings.browser.import.hint.note.hidden", defaultValue: "The blank-tab import hint is hidden. Turn it back on here any time.")
         }
     }
 
@@ -633,7 +602,6 @@ struct SettingsView: View {
             browserThemeMode = BrowserThemeSettings.mode(defaults: .standard).rawValue
             browserHistoryEntryCount = BrowserHistoryStore.shared.entries.count
             browserInsecureHTTPAllowlistDraft = browserInsecureHTTPAllowlist
-            refreshDetectedImportBrowsers()
             refreshNotificationCustomSoundStatus()
             Task { await refreshMobileBridgePairedDevices() }
         }
@@ -1787,53 +1755,6 @@ struct SettingsView: View {
     private var browserDataSection: some View {
         SettingsSectionHeader(title: String(localized: "settings.section.browserData", defaultValue: "Data"))
         SettingsCard {
-            VStack(alignment: .leading, spacing: 12) {
-                // A mock of the blank-tab import hint used to be rendered here,
-                // reusing the hint's own strings -- including its footnote saying
-                // "You can always find this in Settings > Browser", shown inside
-                // Settings. The buttons below do the same job without restating
-                // the hint. The real card still lives in BrowserToolbarViews.
-                Text(String(localized: "settings.browser.import", defaultValue: "Import Browser Data"))
-                    .font(.system(size: 13, weight: .semibold))
-
-                HStack(spacing: 8) {
-                    Button(String(localized: "settings.browser.import.choose", defaultValue: "Choose…")) {
-                        DispatchQueue.main.async {
-                            BrowserDataImportCoordinator.shared.presentImportDialog()
-                            refreshDetectedImportBrowsers()
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .accessibilityIdentifier("SettingsBrowserImportChooseButton")
-
-                    Button(String(localized: "settings.browser.import.refresh", defaultValue: "Refresh")) {
-                        refreshDetectedImportBrowsers()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .accessibilityIdentifier("SettingsBrowserImportActions")
-
-                Toggle(
-                    String(localized: "settings.browser.import.hint.show", defaultValue: "Show import hint on blank browser tabs"),
-                    isOn: browserImportHintVisibilityBinding
-                )
-                .controlSize(.small)
-                .accessibilityIdentifier("SettingsBrowserImportHintToggle")
-
-                Text(browserImportHintSettingsNote)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .id(SettingsNavigationTarget.browserImport)
-            .accessibilityIdentifier("SettingsBrowserImportSection")
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-
-            SettingsCardDivider()
-
             SettingsCardRow(String(localized: "settings.browser.history", defaultValue: "Browsing History"), subtitle: browserHistorySubtitle) {
                 Button(String(localized: "settings.browser.history.clearButton", defaultValue: "Clear History…")) {
                     showClearBrowserHistoryConfirmation = true
@@ -1933,8 +1854,6 @@ struct SettingsView: View {
         browserSearchEngine = BrowserSearchSettings.defaultSearchEngine.rawValue
         browserSearchSuggestionsEnabled = BrowserSearchSettings.defaultSearchSuggestionsEnabled
         browserThemeMode = BrowserThemeSettings.defaultMode.rawValue
-        showBrowserImportHintOnBlankTabs = BrowserImportHintSettings.defaultShowOnBlankTabs
-        isBrowserImportHintDismissed = BrowserImportHintSettings.defaultDismissed
         openTerminalLinksInProgramaBrowser = BrowserLinkOpenSettings.defaultOpenTerminalLinksInProgramaBrowser
         interceptTerminalOpenCommandInProgramaBrowser = BrowserLinkOpenSettings.defaultInterceptTerminalOpenCommandInProgramaBrowser
         browserHostWhitelist = BrowserLinkOpenSettings.defaultBrowserHostWhitelist
@@ -1973,7 +1892,6 @@ struct SettingsView: View {
         socketPasswordDraft = ""
         socketPasswordStatusMessage = nil
         socketPasswordStatusIsError = false
-        refreshDetectedImportBrowsers()
         KeyboardShortcutSettings.resetAll()
         WorkspaceTabColorSettings.reset()
         WorkspaceTabColorSettings.resetRememberedFolderColors()
@@ -1984,9 +1902,6 @@ struct SettingsView: View {
         browserInsecureHTTPAllowlist = browserInsecureHTTPAllowlistDraft
     }
 
-    private func refreshDetectedImportBrowsers() {
-        detectedImportBrowsers = InstalledBrowserDetector.detectInstalledBrowsers()
-    }
 }
 
 @MainActor
