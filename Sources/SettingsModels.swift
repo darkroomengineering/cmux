@@ -224,7 +224,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case appearance
     case automation
-    case phone
     case browser
     case shortcuts
 
@@ -235,7 +234,6 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .general: String(localized: "settings.tab.general", defaultValue: "General")
         case .appearance: String(localized: "settings.tab.appearance", defaultValue: "Appearance")
         case .automation: String(localized: "settings.tab.automation", defaultValue: "Automation")
-        case .phone: String(localized: "settings.tab.phone", defaultValue: "Phone")
         case .browser: String(localized: "settings.tab.browser", defaultValue: "Browser")
         case .shortcuts: String(localized: "settings.tab.shortcuts", defaultValue: "Shortcuts")
         }

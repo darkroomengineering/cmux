@@ -247,15 +247,8 @@
 		NRPA00001 /* FileWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = NRPA00002 /* FileWatcher.swift */; };
 		A5001654 /* ProgramaDirectoryTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001655 /* ProgramaDirectoryTrust.swift */; };
 		A5001660 /* JSONCParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001661 /* JSONCParser.swift */; };
-		MOBB0001 /* MobileBridgeSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0002 /* MobileBridgeSettings.swift */; };
-		MOBB0003 /* MobileBridgeStreamSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0004 /* MobileBridgeStreamSupport.swift */; };
-		MOBB0005 /* MobileBridgeListener.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0006 /* MobileBridgeListener.swift */; };
-		MOBB0007 /* MobileBridgeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0008 /* MobileBridgeSession.swift */; };
-		MOBB0009 /* MobileBridgePush.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0010 /* MobileBridgePush.swift */; };
-		MOBB0011 /* MobileBridgePairingCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = MOBB0012 /* MobileBridgePairingCode.swift */; };
 		A5001100 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A5001101 /* Assets.xcassets */; };
 		A5001230 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = A5001231 /* Sparkle */; };
-		MOBB1003 /* IrohLib in Frameworks */ = {isa = PBXBuildFile; productRef = MOBB1002 /* IrohLib */; };
 		B9000002A1B2C3D4E5F60719 /* programa.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000001A1B2C3D4E5F60719 /* programa.swift */; };
 		BA930A082EE6778208DFF1D5 /* programa-mcp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34A6F1F29768816E717790E5 /* programa-mcp.swift */; };
 		21C3DEC154B0CB6666377FEC /* MCPServer+Capabilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5780162BC419AEE022390A45 /* MCPServer+Capabilities.swift */; };
@@ -328,7 +321,6 @@
 					F6000000A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6000001A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift */; };
 				E57B23C339CE9F1226BC4478 /* ShortcutRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C838E51ABC8DBDCC2040D56 /* ShortcutRoutingTests.swift */; };
 					F6100000A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6100001A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift */; };
-					A9D4C7E2B16F4830C5A70212 /* MobileBridgeConnectionRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D4C7E2B16F4830C5A70211 /* MobileBridgeConnectionRegistryTests.swift */; };
 					F7000000A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7000001A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift */; };
 					F8000000A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8000001A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift */; };
 					F9000000A1B2C3D4E5F60718 /* GhosttyEnsureFocusWindowActivationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9000001A1B2C3D4E5F60718 /* GhosttyEnsureFocusWindowActivationTests.swift */; };
@@ -682,12 +674,6 @@
 		A5001653 /* ProgramaConfigExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramaConfigExecutor.swift; sourceTree = "<group>"; };
 		NRPA00002 /* FileWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileWatcher.swift; sourceTree = "<group>"; };
 		A5001655 /* ProgramaDirectoryTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgramaDirectoryTrust.swift; sourceTree = "<group>"; };
-		MOBB0002 /* MobileBridgeSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeSettings.swift; sourceTree = "<group>"; };
-		MOBB0004 /* MobileBridgeStreamSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeStreamSupport.swift; sourceTree = "<group>"; };
-		MOBB0006 /* MobileBridgeListener.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeListener.swift; sourceTree = "<group>"; };
-		MOBB0008 /* MobileBridgeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgeSession.swift; sourceTree = "<group>"; };
-		MOBB0010 /* MobileBridgePush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgePush.swift; sourceTree = "<group>"; };
-		MOBB0012 /* MobileBridgePairingCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridge/MobileBridgePairingCode.swift; sourceTree = "<group>"; };
 		A5001661 /* JSONCParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONCParser.swift; sourceTree = "<group>"; };
 		A5001641 /* RemoteRelayZshBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteRelayZshBootstrap.swift; sourceTree = "<group>"; };
 		818DBCD4AB69EB72573E8138 /* SidebarResizeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarResizeUITests.swift; sourceTree = "<group>"; };
@@ -759,7 +745,6 @@
 				F6000001A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegateShortcutRoutingTests.swift; sourceTree = "<group>"; };
 				6C838E51ABC8DBDCC2040D56 /* ShortcutRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutRoutingTests.swift; sourceTree = "<group>"; };
 				F6100001A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceRemoteConnectionTests.swift; sourceTree = "<group>"; };
-				A9D4C7E2B16F4830C5A70211 /* MobileBridgeConnectionRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileBridgeConnectionRegistryTests.swift; sourceTree = "<group>"; };
 				F7000001A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceContentViewVisibilityTests.swift; sourceTree = "<group>"; };
 					F8000001A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketControlPasswordStoreTests.swift; sourceTree = "<group>"; };
 					F9000001A1B2C3D4E5F60718 /* GhosttyEnsureFocusWindowActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyEnsureFocusWindowActivationTests.swift; sourceTree = "<group>"; };
@@ -804,7 +789,6 @@
 					A5001006 /* GhosttyKit.xcframework in Frameworks */,
 					A5001230 /* Sparkle in Frameworks */,
 					A5001290 /* MarkdownUI in Frameworks */,
-					MOBB1003 /* IrohLib in Frameworks */,
 				);
 				runOnlyForDeploymentPostprocessing = 0;
 			};
@@ -1150,12 +1134,6 @@
 				NRPA00002 /* FileWatcher.swift */,
 				A5001655 /* ProgramaDirectoryTrust.swift */,
 				A5001661 /* JSONCParser.swift */,
-				MOBB0002 /* MobileBridgeSettings.swift */,
-				MOBB0004 /* MobileBridgeStreamSupport.swift */,
-				MOBB0006 /* MobileBridgeListener.swift */,
-				MOBB0008 /* MobileBridgeSession.swift */,
-				MOBB0010 /* MobileBridgePush.swift */,
-				MOBB0012 /* MobileBridgePairingCode.swift */,
 				RVPN00000000000000000001 /* ReviewComment.swift */,
 				RVPN00000000000000000003 /* ReviewCommentSerializer.swift */,
 				RVPN00000000000000000005 /* ReviewDiffParser.swift */,
@@ -1297,7 +1275,6 @@
 					F6000001A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift */,
 					6C838E51ABC8DBDCC2040D56 /* ShortcutRoutingTests.swift */,
 					F6100001A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift */,
-					A9D4C7E2B16F4830C5A70211 /* MobileBridgeConnectionRegistryTests.swift */,
 					F7000001A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift */,
 					F8000001A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift */,
 					F9000001A1B2C3D4E5F60718 /* GhosttyEnsureFocusWindowActivationTests.swift */,
@@ -1364,7 +1341,6 @@
 					A5001231 /* Sparkle */,
 					A5001261 /* Bonsplit */,
 					A5001291 /* MarkdownUI */,
-					MOBB1002 /* IrohLib */,
 				);
 			name = GhosttyTabs;
 			productName = GhosttyTabs;
@@ -1485,7 +1461,6 @@
 				A5001232 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				A5001292 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 				A5001260 /* XCLocalSwiftPackageReference "bonsplit" */,
-				MOBB1001 /* XCRemoteSwiftPackageReference "iroh-ffi" */,
 				05A57C4D24BA3C92ED8757AB /* XCRemoteSwiftPackageReference "swift-sdk" */,
 				TOML0001 /* XCRemoteSwiftPackageReference "swift-toml" */,
 			);
@@ -1735,12 +1710,6 @@
 				NRPA00001 /* FileWatcher.swift in Sources */,
 			A5001654 /* ProgramaDirectoryTrust.swift in Sources */,
 				A5001660 /* JSONCParser.swift in Sources */,
-				MOBB0001 /* MobileBridgeSettings.swift in Sources */,
-				MOBB0003 /* MobileBridgeStreamSupport.swift in Sources */,
-				MOBB0005 /* MobileBridgeListener.swift in Sources */,
-				MOBB0007 /* MobileBridgeSession.swift in Sources */,
-				MOBB0009 /* MobileBridgePush.swift in Sources */,
-				MOBB0011 /* MobileBridgePairingCode.swift in Sources */,
 		);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1791,7 +1760,6 @@
 					F6000000A1B2C3D4E5F60718 /* AppDelegateShortcutRoutingTests.swift in Sources */,
 					E57B23C339CE9F1226BC4478 /* ShortcutRoutingTests.swift in Sources */,
 					F6100000A1B2C3D4E5F60718 /* WorkspaceRemoteConnectionTests.swift in Sources */,
-					A9D4C7E2B16F4830C5A70212 /* MobileBridgeConnectionRegistryTests.swift in Sources */,
 					F7000000A1B2C3D4E5F60718 /* WorkspaceContentViewVisibilityTests.swift in Sources */,
 					F8000000A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift in Sources */,
 					F9000000A1B2C3D4E5F60718 /* GhosttyEnsureFocusWindowActivationTests.swift in Sources */,
@@ -2281,14 +2249,6 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = vendor/bonsplit;
 		};
-		MOBB1001 /* XCRemoteSwiftPackageReference "iroh-ffi" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/manaflow-ai/iroh-ffi.git";
-			requirement = {
-				kind = exactVersion;
-				version = "1.0.2-cmux.3";
-			};
-		};
 		05A57C4D24BA3C92ED8757AB /* XCRemoteSwiftPackageReference "swift-sdk" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/modelcontextprotocol/swift-sdk";
@@ -2322,11 +2282,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A5001292 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
-		};
-		MOBB1002 /* IrohLib */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = MOBB1001 /* XCRemoteSwiftPackageReference "iroh-ffi" */;
-			productName = IrohLib;
 		};
 		8B642EDBCCB415DF7E33F5C4 /* MCP */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -269,7 +269,6 @@ extension Workspace {
         // this is the single safe place to fire from.
         AgentStateWaitRegistry.shared.notify(surfaceId: panelId, newState: state, source: source)
         SocketEventBroadcaster.shared.publishAgentState(workspaceId: id, surfaceId: panelId, state: state, source: source)
-        MobileBridgePush.shared.noteAgentStateChanged(workspaceId: id, workspaceTitle: title, changedState: state)
 #if DEBUG
         dlog(
             "surface.agentState workspace=\(id.uuidString.prefix(5)) " +
@@ -284,7 +283,6 @@ extension Workspace {
         panelAgentStateSources.removeValue(forKey: panelId)
         AgentStateWaitRegistry.shared.notify(surfaceId: panelId, newState: nil, source: nil)
         SocketEventBroadcaster.shared.publishAgentState(workspaceId: id, surfaceId: panelId, state: nil, source: nil)
-        MobileBridgePush.shared.noteAgentStateChanged(workspaceId: id, workspaceTitle: title, changedState: nil)
 #if DEBUG
         dlog("surface.agentState.clear workspace=\(id.uuidString.prefix(5)) panel=\(panelId.uuidString.prefix(5))")
 #endif
@@ -318,9 +316,6 @@ extension Workspace {
         for surfaceId in clearedAgentSurfaceIds {
             AgentStateWaitRegistry.shared.notify(surfaceId: surfaceId, newState: nil, source: nil)
             SocketEventBroadcaster.shared.publishAgentState(workspaceId: id, surfaceId: surfaceId, state: nil, source: nil)
-        }
-        if !clearedAgentSurfaceIds.isEmpty {
-            MobileBridgePush.shared.noteAgentStateChanged(workspaceId: id, workspaceTitle: title, changedState: nil)
         }
         surfaceListeningPorts.removeAll()
         listeningPorts.removeAll()

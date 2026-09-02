@@ -121,7 +121,6 @@ class TerminalController {
     enum SocketConnectionSource: Sendable {
         case unix(UnixClientPolicy)
         case rejectedUnix
-        case mobileBridge
     }
 
     enum AcceptFailureRecoveryAction: Equatable {
@@ -501,16 +500,6 @@ class TerminalController {
                 return false
             }
             return !policy.request.requiresPasswordAuthentication || policy.authEpoch == authCredentialEpoch
-        }
-    }
-
-    private nonisolated func mobileBridgeRequestPolicy() -> SocketRequestPolicy {
-        withListenerState {
-            SocketRequestPolicy(
-                socketPath: socketPath,
-                accessMode: accessMode,
-                requiresPasswordAuthentication: false
-            )
         }
     }
 
@@ -1770,9 +1759,6 @@ class TerminalController {
         case .rejectedUnix:
             closeReason = "listener_stopped"
             return
-        case .mobileBridge:
-            requestPolicy = mobileBridgeRequestPolicy()
-            unixPolicy = nil
         }
         defer {
             if unixPolicy != nil {

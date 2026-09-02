@@ -1569,7 +1569,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         }
         sessionAutosave.stopSessionAutosaveTimer()
         TerminalController.shared.stop()
-        MobileBridgeListener.shared.stop()
         BrowserProfileStore.shared.flushPendingSaves()
         notificationStore?.clearAll()
         enableSuddenTerminationIfNeeded()
