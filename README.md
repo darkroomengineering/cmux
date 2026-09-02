@@ -57,7 +57,7 @@ Programa is a terminal, a browser, notifications, workspaces, and a CLI to contr
 
 ## Shortcuts
 
-⌘⇧P opens the command palette, which lists every action. Full reference: [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md). Everything is editable in `Settings → Keyboard Shortcuts`.
+⌘⇧P opens the command palette, which lists every action. Full reference: [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md). Everything is editable in `Settings → Keyboard Shortcuts`. Every other preference has a key in `~/.config/programa/settings.json`, documented in [docs/settings-json.md](docs/settings-json.md).
 
 ## Terminal themes
 

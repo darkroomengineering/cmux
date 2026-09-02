@@ -17,6 +17,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - Agent Overview now gives one place to see every Programa workspace, worktree, helper, and terminal. Claude helpers appear and finish automatically; terminal output stays hidden until requested. Users can open terminals, send messages, stop work, review changes, and copy output. New helpers open as nested workspaces in the same folder, or use a separate Git worktree only when they explicitly need one.
 - A local Git workspace can now become a persistent worktree folder from its right-click menu. Worktree workspaces created from that menu nest beneath it, can be collapsed, and restore in the same hierarchy without changing or deleting their Git branches.
 - Workspace colors are now remembered by local folder and automatically reused when that folder opens in a new workspace.
+- New setting, off by default: open a browser split beside the terminal whenever a new agent workspace is created (⌘⇧C, `programa` helper agents, and `race`). Also `automation.openBrowserWithAgentSplits` in settings.json.
 
 ### Fixed
 - Remote and local CLI clients now share the v2 JSON-RPC and `programa-relay-auth` contracts, password-protected sockets work through MCP, and remote bootstrap files, tmux wait signals, relay diagnostics, and downloaded daemon artifacts have bounded ownership and lifetime.

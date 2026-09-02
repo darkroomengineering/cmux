@@ -279,6 +279,11 @@
           "default": true,
           "description": "Enable Programa integration hooks for Claude Code."
         },
+        "openBrowserWithAgentSplits": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open a browser split beside the terminal when a new agent workspace is created."
+        },
         "claudeBinaryPath": {
           "type": "string",
           "default": "",

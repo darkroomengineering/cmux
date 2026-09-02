@@ -687,6 +687,9 @@ final class ProgramaSettingsFileStore {
         if let value = jsonBool(section["claudeCodeIntegration"]) {
             snapshot.managedUserDefaults[ClaudeCodeIntegrationSettings.hooksEnabledKey] = .bool(value)
         }
+        if let value = jsonBool(section["openBrowserWithAgentSplits"]) {
+            snapshot.managedUserDefaults[AgentBrowserSplitSettings.key] = .bool(value)
+        }
         if let raw = jsonString(section["claudeBinaryPath"]) {
             snapshot.managedUserDefaults[ClaudeCodeIntegrationSettings.customClaudePathKey] = .string(raw)
         }
@@ -1595,6 +1598,7 @@ final class ProgramaSettingsFileStore {
                     "socketControlMode": SocketControlSettings.defaultMode.rawValue,
                     "socketPassword": "",
                     "claudeCodeIntegration": ClaudeCodeIntegrationSettings.defaultHooksEnabled,
+                    "openBrowserWithAgentSplits": AgentBrowserSplitSettings.defaultValue,
                     "claudeBinaryPath": "",
                     "portBase": 9100,
                     "portRange": 10,

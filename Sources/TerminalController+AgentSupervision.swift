@@ -374,7 +374,7 @@ extension TerminalController {
                 }
 
                 let setupResult: V2CallResult = v2MainSync {
-                    guard let (_, workspace) = agentWorkspace(id: workspaceId) else {
+                    guard let (tabManager, workspace) = agentWorkspace(id: workspaceId) else {
                         AgentSupervisionRegistry.shared.discard(id: agentId)
                         return .err(
                             code: "internal_error",
@@ -397,6 +397,7 @@ extension TerminalController {
                         if let initialCommand, let terminal = workspace.focusedTerminalPanel {
                             terminal.sendInput(initialCommand + "\n")
                         }
+                        tabManager.openCompanionBrowserSplitIfEnabled(for: workspace)
                         var result = payload
                         result["agent_id"] = agentId.uuidString
                         result["surface_id"] = v2OrNull(surfaceId?.uuidString)
@@ -469,6 +470,7 @@ extension TerminalController {
                 workspace.automaticAgentTitle = automaticTitle
                 workspace.agentParentWorkspaceId = parentWorkspaceId
                 let surfaceId = workspace.focusedTerminalPanel?.id
+                tabManager.openCompanionBrowserSplitIfEnabled(for: workspace)
 
                 do {
                     let record = try AgentSupervisionRegistry.shared.update(

@@ -95,6 +95,20 @@ enum QuitWarningSettings {
     }
 }
 
+enum AgentBrowserSplitSettings {
+    static let key = "openBrowserWithAgentSplits"
+    static let defaultValue = false
+    private static let flag = UserDefaultsFlag(key: key, defaultValue: defaultValue)
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        flag.isEnabled(defaults: defaults)
+    }
+
+    static func setEnabled(_ isEnabled: Bool, defaults: UserDefaults = .standard) {
+        flag.setEnabled(isEnabled, defaults: defaults)
+    }
+}
+
 enum ScrollbackPersistenceSettings {
     static let persistScrollbackKey = "sessionPersistScrollback"
     static let defaultPersistScrollback = true

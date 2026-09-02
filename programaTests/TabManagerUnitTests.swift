@@ -2158,6 +2158,60 @@ final class TabManagerReopenClosedBrowserFocusTests: XCTestCase {
         XCTAssertTrue(workspace.panels[reopenedPanelId] is BrowserPanel)
     }
 
+    func testOpenCompanionBrowserSplitIfEnabledCreatesUnfocusedSplitWhenSettingOn() {
+        let suiteName = "AgentBrowserSplitTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        AgentBrowserSplitSettings.setEnabled(true, defaults: defaults)
+
+        let manager = TabManager()
+        guard let workspace = manager.selectedWorkspace,
+              let terminalPanelId = workspace.focusedTerminalPanel?.id else {
+            XCTFail("Expected initial workspace with a focused terminal panel")
+            return
+        }
+
+        let splitPanelId = manager.openCompanionBrowserSplitIfEnabled(for: workspace, defaults: defaults)
+        drainMainQueue()
+
+        XCTAssertNotNil(splitPanelId)
+        if let splitPanelId {
+            XCTAssertTrue(workspace.panels[splitPanelId] is BrowserPanel)
+        }
+        XCTAssertEqual(workspace.focusedPanelId, terminalPanelId)
+    }
+
+    func testOpenCompanionBrowserSplitIfEnabledReturnsNilWhenSettingOff() {
+        let suiteName = "AgentBrowserSplitTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        AgentBrowserSplitSettings.setEnabled(false, defaults: defaults)
+
+        let manager = TabManager()
+        guard let workspace = manager.selectedWorkspace else {
+            XCTFail("Expected initial workspace")
+            return
+        }
+        let previousPanelIds = Set(workspace.panels.keys)
+
+        let splitPanelId = manager.openCompanionBrowserSplitIfEnabled(for: workspace, defaults: defaults)
+        drainMainQueue()
+
+        XCTAssertNil(splitPanelId)
+        XCTAssertEqual(Set(workspace.panels.keys), previousPanelIds)
+        XCTAssertFalse(workspace.panels.values.contains { $0 is BrowserPanel })
+    }
+
     private func isFocusedPanelBrowser(in workspace: Workspace) -> Bool {
         guard let focusedPanelId = workspace.focusedPanelId else { return false }
         return workspace.panels[focusedPanelId] is BrowserPanel

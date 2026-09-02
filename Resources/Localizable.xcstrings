@@ -7897,6 +7897,39 @@
         }
       }
     },
+    "settings.agents.browserSplit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open a browser beside new agents"
+          }
+        }
+      }
+    },
+    "settings.agents.browserSplit.subtitleOff": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New agent workspaces open with a terminal only."
+          }
+        }
+      }
+    },
+    "settings.agents.browserSplit.subtitleOn": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "New agent workspaces get a browser split next to the terminal."
+          }
+        }
+      }
+    },
     "settings.app.commandPaletteSearchAllSurfaces": {
       "extractionState": "manual",
       "localizations": {

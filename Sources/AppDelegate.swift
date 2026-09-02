@@ -4679,6 +4679,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             initialTerminalInput: "claude\n",
             select: true
         )
+        context.tabManager.openCompanionBrowserSplitIfEnabled(for: workspace)
         return workspace.id
     }
 

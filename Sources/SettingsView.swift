@@ -69,6 +69,7 @@ struct SettingsView: View {
     @AppStorage(LongCommandNotificationSettings.thresholdSecondsKey)
     private var longCommandThresholdSeconds = LongCommandNotificationSettings.defaultThresholdSeconds
     @AppStorage(QuitWarningSettings.warnBeforeQuitKey) private var warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
+    @AppStorage(AgentBrowserSplitSettings.key) private var openBrowserWithAgentSplits = AgentBrowserSplitSettings.defaultValue
     @AppStorage(ScrollbackPersistenceSettings.persistScrollbackKey) private var sessionPersistScrollback = ScrollbackPersistenceSettings.defaultPersistScrollback
     @AppStorage(CommandPaletteSwitcherSearchSettings.searchAllSurfacesKey)
     private var commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
@@ -998,6 +999,20 @@ struct SettingsView: View {
             SettingsCardDivider()
 
             SettingsCardNote(String(localized: "settings.automation.claudeCode.note", defaultValue: "When enabled, Programa wraps the claude command to inject session tracking and notification hooks. Disable if you prefer to manage Claude Code hooks yourself."))
+
+            SettingsCardDivider()
+
+            SettingsCardRow(
+                String(localized: "settings.agents.browserSplit", defaultValue: "Open a browser beside new agents"),
+                subtitle: openBrowserWithAgentSplits
+                    ? String(localized: "settings.agents.browserSplit.subtitleOn", defaultValue: "New agent workspaces get a browser split next to the terminal.")
+                    : String(localized: "settings.agents.browserSplit.subtitleOff", defaultValue: "New agent workspaces open with a terminal only.")
+            ) {
+                Toggle("", isOn: $openBrowserWithAgentSplits)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .accessibilityIdentifier("SettingsAgentBrowserSplitToggle")
+            }
         }
 
         SettingsCard {
@@ -1421,6 +1436,7 @@ struct SettingsView: View {
         notificationCustomCommand = NotificationSoundSettings.defaultCustomCommand
         showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
         warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
+        openBrowserWithAgentSplits = AgentBrowserSplitSettings.defaultValue
         sessionPersistScrollback = ScrollbackPersistenceSettings.defaultPersistScrollback
         commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces
         ShortcutHintDebugSettings.resetVisibilityDefaults()
