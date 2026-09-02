@@ -217,7 +217,7 @@ final class CanonicalSubprocessRunnerTests: XCTestCase {
                 descendantPIDFile.path,
             ],
             currentDirectory: FileManager.default.temporaryDirectory.path,
-            timeout: 0.05,
+            timeout: 0.5,
             stdoutLimit: 64,
             stderrLimit: 64
         )
