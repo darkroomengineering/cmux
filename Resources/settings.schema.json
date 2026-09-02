@@ -373,11 +373,6 @@
           "default": ["localhost", "127.0.0.1", "::1", "0.0.0.0", "*.localtest.me"],
           "description": "HTTP hosts allowed in the embedded browser without a warning prompt."
         },
-        "showImportHintOnBlankTabs": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show the browser import hint on blank tabs."
-        },
         "proxy": {
           "type": "object",
           "additionalProperties": false,
@@ -484,8 +479,7 @@
               "hideFind",
               "useSelectionForFind",
               "toggleBrowserDeveloperTools",
-              "showBrowserJavaScriptConsole",
-              "toggleReactGrab"
+              "showBrowserJavaScriptConsole"
             ]
           },
           "additionalProperties": {

@@ -633,8 +633,6 @@ extension ContentView {
             return .toggleBrowserDeveloperTools
         case "palette.browserConsole":
             return .showBrowserJavaScriptConsole
-        case "palette.browserReactGrab":
-            return .toggleReactGrab
         case "palette.browserSplitRight", "palette.terminalSplitBrowserRight":
             return .splitBrowserRight
         case "palette.browserSplitDown", "palette.terminalSplitBrowserDown":

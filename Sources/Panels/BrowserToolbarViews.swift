@@ -298,7 +298,6 @@ struct BrowserNavigationButtonsView: View {
 struct BrowserProfileMenuView: View {
     enum Action {
         case newProfile
-        case importBrowserData
         case renameProfile
     }
 
@@ -380,14 +379,6 @@ struct BrowserProfileMenuView: View {
                 onAction(.newProfile)
             } label: {
                 Text(String(localized: "browser.profile.new", defaultValue: "New Profile..."))
-                    .font(.system(size: 12))
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                onAction(.importBrowserData)
-            } label: {
-                Text(String(localized: "menu.view.importFromBrowser", defaultValue: "Import Browser Data…"))
                     .font(.system(size: 12))
             }
             .buttonStyle(.plain)
@@ -480,79 +471,3 @@ struct BrowserThemeModeMenuView: View {
     }
 }
 
-/// Groups the browser-data import hint content shared by the blank-tab
-/// overlays (floating card / inline strip) and the toolbar-chip popover.
-/// All three presentations render the same hint body and action buttons.
-struct BrowserImportHintContentView {
-    let summary: String
-    let onImport: () -> Void
-    let onOpenSettings: () -> Void
-    let onDismiss: () -> Void
-
-    var popover: some View {
-        hintBody
-            .padding(12)
-            .frame(width: 300, alignment: .leading)
-    }
-
-    private var hintBody: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(String(localized: "browser.import.hint.title", defaultValue: "Import browser data"))
-                .font(.system(size: 12.5, weight: .semibold))
-
-            Text(summary)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(String(localized: "browser.import.hint.settingsFootnote", defaultValue: "You can always find this in Settings > Browser."))
-                .font(.system(size: 10.5))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    primaryButton
-                    settingsButton
-                    dismissButton
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    primaryButton
-                    HStack(spacing: 10) {
-                        settingsButton
-                        dismissButton
-                    }
-                }
-            }
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private var primaryButton: some View {
-        Button(String(localized: "browser.import.hint.import", defaultValue: "Import…")) {
-            onImport()
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .accessibilityIdentifier("BrowserImportHintImportButton")
-    }
-
-    private var settingsButton: some View {
-        Button(String(localized: "browser.import.hint.settings", defaultValue: "Browser Settings")) {
-            onOpenSettings()
-        }
-        .buttonStyle(.plain)
-        .controlSize(.small)
-        .accessibilityIdentifier("BrowserImportHintSettingsButton")
-    }
-
-    private var dismissButton: some View {
-        Button(String(localized: "browser.import.hint.dismiss", defaultValue: "Hide Hint")) {
-            onDismiss()
-        }
-        .buttonStyle(.plain)
-        .controlSize(.small)
-        .accessibilityIdentifier("BrowserImportHintDismissButton")
-    }
-}

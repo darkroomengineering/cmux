@@ -678,12 +678,6 @@ struct programaApp: App {
                     }
                 }
 
-                splitCommandButton(title: String(localized: "menu.view.toggleReactGrab", defaultValue: "Toggle React Grab"), shortcut: menuShortcut(for: .toggleReactGrab)) {
-                    if !activeTabManager.toggleReactGrabFromCurrentFocus() {
-                        NSSound.beep()
-                    }
-                }
-
                 splitCommandButton(title: String(localized: "menu.view.zoomIn", defaultValue: "Zoom In"), shortcut: menuShortcut(for: .browserZoomIn)) {
                     _ = activeTabManager.zoomInFocusedBrowser()
                 }
@@ -698,13 +692,6 @@ struct programaApp: App {
 
                 Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {
                     BrowserHistoryStore.shared.clearHistory()
-                }
-
-                Button(String(localized: "menu.view.importFromBrowser", defaultValue: "Import Browser Data…")) {
-                    // Defer modal presentation until after AppKit finishes menu tracking.
-                    DispatchQueue.main.async {
-                        BrowserDataImportCoordinator.shared.presentImportDialog()
-                    }
                 }
 
                 splitCommandButton(title: String(localized: "menu.view.nextWorkspace", defaultValue: "Next Workspace"), shortcut: menuShortcut(for: .nextSidebarTab)) {
@@ -1115,7 +1102,6 @@ private let programaAuxiliaryWindowIdentifiers: Set<String> = [
     "programa.browser-popup",
     "programa.settingsAboutTitlebarDebug",
     "programa.debugWindowControls",
-    "programa.browserImportHintDebug",
     "programa.sidebarDebug",
     "programa.menubarDebug",
     "programa.backgroundDebug",
@@ -1672,7 +1658,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
 enum SettingsNavigationTarget: String {
     case browser
-    case browserImport
     case keyboardShortcuts
 }
 

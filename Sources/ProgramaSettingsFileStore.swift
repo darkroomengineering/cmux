@@ -788,9 +788,6 @@ final class ProgramaSettingsFileStore {
         } else if section.keys.contains("insecureHttpHostsAllowedInEmbeddedBrowser") {
             logInvalid("browser.insecureHttpHostsAllowedInEmbeddedBrowser", sourcePath: sourcePath)
         }
-        if let value = jsonBool(section["showImportHintOnBlankTabs"]) {
-            snapshot.managedUserDefaults[BrowserImportHintSettings.showOnBlankTabsKey] = .bool(value)
-        }
         if let proxyRaw = section["proxy"] {
             guard let proxyDict = proxyRaw as? [String: Any] else {
                 logInvalid("browser.proxy", sourcePath: sourcePath)
@@ -1618,7 +1615,6 @@ final class ProgramaSettingsFileStore {
                     "hostsToOpenInEmbeddedBrowser": [String](),
                     "urlsToAlwaysOpenExternally": [String](),
                     "insecureHttpHostsAllowedInEmbeddedBrowser": BrowserInsecureHTTPSettings.defaultAllowlistPatterns,
-                    "showImportHintOnBlankTabs": BrowserImportHintSettings.defaultShowOnBlankTabs,
                 ],
             ],
             [

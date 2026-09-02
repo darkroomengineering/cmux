@@ -243,7 +243,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     /// still lands on the right content now that it is not all one scroll.
     static func owning(_ target: SettingsNavigationTarget) -> SettingsTab {
         switch target {
-        case .browser, .browserImport: .browser
+        case .browser: .browser
         case .keyboardShortcuts: .shortcuts
         }
     }

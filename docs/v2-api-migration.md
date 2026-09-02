@@ -571,12 +571,11 @@ to guess: the `app.browsers` socket command, and two env vars set on every spawn
 `{}` -> `{"default": "chrome", "browsers": [{"key": "chrome", "name": "Google Chrome", "bundle_id": "com.google.Chrome", "path": "/Applications/Google Chrome.app", "installed": true, "running": false}, ...]}`.
 
 Read-only; no arguments. `browsers` covers the browsers `BrowserAvailability.knownBrowsers`
-tracks in `Sources/Panels/BrowserDataImport.swift` (Safari, Chrome, Firefox, Arc, Brave, Edge,
+tracks in `Sources/Panels/BrowserAvailability.swift` (Safari, Chrome, Firefox, Arc, Brave, Edge,
 Zen, Vivaldi, Opera, Opera GX, Orion, Dia, Perplexity Comet, Floorp, Waterfox, SigmaOS,
 Sidekick, Helium, Atlas, Ladybird, Chromium, Ungoogled Chromium, Aside). `installed` is true
 only when the app itself resolves (by bundle identifier via `NSWorkspace`, falling back to an
-`/Applications`-style path scan) -- separate from, and does not affect, the leftover-profile-data
-detection the browser data-import wizard uses to offer cookie/history import. `running` matches
+`/Applications`-style path scan). `running` matches
 against `NSWorkspace.shared.runningApplications`. `default` is the short key of the system
 default browser (`nil` if Launch Services can't resolve one), same resolution as
 `PROGRAMA_DEFAULT_BROWSER` below.

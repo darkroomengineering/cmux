@@ -10,7 +10,6 @@ extension Notification.Name {
     static let terminalSurfaceHostedViewDidMoveToWindow = Notification.Name("programa.terminalSurfaceHostedViewDidMoveToWindow")
     static let mainWindowContextsDidChange = Notification.Name("programa.mainWindowContextsDidChange")
     static let browserDownloadEventDidArrive = Notification.Name("programa.browserDownloadEventDidArrive")
-    static let reactGrabDidCopySelection = Notification.Name("programa.reactGrabDidCopySelection")
     static let designModeDidCapture = Notification.Name("programa.designModeDidCapture")
 }
 
