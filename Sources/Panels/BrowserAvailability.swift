@@ -1,32 +1,9 @@
-// Extracted from BrowserDataImport.swift when the browser data import
-// wizard was removed (2026-09-02). This file holds only the general
-// "which browsers exist on this system" utilities that other features
-// depend on: PROGRAMA_DEFAULT_BROWSER / PROGRAMA_DEFAULT_BROWSER_BUNDLE_ID
-// (TerminalSurface.swift) and the app.browsers socket command
-// (TerminalController+System.swift). Deliberately independent of any
-// import-wizard leftover-profile-data detection (removed; see
-// docs/removed/browser-data-import.md).
+// Which browsers exist on this machine: backs PROGRAMA_DEFAULT_BROWSER /
+// PROGRAMA_DEFAULT_BROWSER_BUNDLE_ID (TerminalSurface.swift) and the
+// app.browsers socket command (TerminalController+System.swift).
 
 import Foundation
 import AppKit
-
-enum BrowserImportEngineFamily: String, Hashable {
-    case chromium
-    case firefox
-    case webkit
-}
-
-struct BrowserImportBrowserDescriptor: Hashable {
-    let id: String
-    let displayName: String
-    let family: BrowserImportEngineFamily
-    let tier: Int
-    let bundleIdentifiers: [String]
-    let appNames: [String]
-    let dataRootRelativePaths: [String]
-    let dataArtifactRelativePaths: [String]
-    let supportsDataOnlyDetection: Bool
-}
 
 struct BrowserAvailabilityDescriptor {
     let shortKey: String
@@ -79,27 +56,146 @@ enum BrowserAvailability {
         shortKeysByBundleIdentifier[bundleIdentifier] ?? bundleIdentifier
     }
 
-    /// Browsers `app.browsers` reports on: mirrored from
-    /// `InstalledBrowserDetector.allBrowserDescriptors` (bundle ids and app
-    /// names only -- never that list's data-directory paths or scoring), plus
-    /// Aside, which the import wizard does not know about.
-    static let knownBrowsers: [BrowserAvailabilityDescriptor] = {
-        let mirrored = InstalledBrowserDetector.allBrowserDescriptors.map { descriptor in
-            BrowserAvailabilityDescriptor(
-                shortKey: shortKey(forBundleIdentifier: descriptor.bundleIdentifiers.first ?? descriptor.id),
-                displayName: descriptor.displayName,
-                bundleIdentifiers: descriptor.bundleIdentifiers,
-                appNames: descriptor.appNames
-            )
-        }
-        let aside = BrowserAvailabilityDescriptor(
+    static let knownBrowsers: [BrowserAvailabilityDescriptor] = [
+        BrowserAvailabilityDescriptor(
+            shortKey: "safari",
+            displayName: "Safari",
+            bundleIdentifiers: ["com.apple.Safari"],
+            appNames: ["Safari.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "chrome",
+            displayName: "Google Chrome",
+            bundleIdentifiers: ["com.google.Chrome"],
+            appNames: ["Google Chrome.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "firefox",
+            displayName: "Firefox",
+            bundleIdentifiers: ["org.mozilla.firefox"],
+            appNames: ["Firefox.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "arc",
+            displayName: "Arc",
+            bundleIdentifiers: ["company.thebrowser.Browser", "company.thebrowser.arc"],
+            appNames: ["Arc.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "brave",
+            displayName: "Brave",
+            bundleIdentifiers: ["com.brave.Browser"],
+            appNames: ["Brave Browser.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "edge",
+            displayName: "Microsoft Edge",
+            bundleIdentifiers: ["com.microsoft.edgemac", "com.microsoft.Edge"],
+            appNames: ["Microsoft Edge.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "zen",
+            displayName: "Zen Browser",
+            bundleIdentifiers: ["app.zen-browser.zen", "app.zen-browser.Zen"],
+            appNames: ["Zen Browser.app", "Zen.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "vivaldi",
+            displayName: "Vivaldi",
+            bundleIdentifiers: ["com.vivaldi.Vivaldi"],
+            appNames: ["Vivaldi.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "opera",
+            displayName: "Opera",
+            bundleIdentifiers: ["com.operasoftware.Opera"],
+            appNames: ["Opera.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "opera-gx",
+            displayName: "Opera GX",
+            bundleIdentifiers: ["com.operasoftware.OperaGX"],
+            appNames: ["Opera GX.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "orion",
+            displayName: "Orion",
+            bundleIdentifiers: ["com.kagi.kagimacOS", "com.kagi.kagimacos", "com.kagi.orion"],
+            appNames: ["Orion.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "dia",
+            displayName: "Dia",
+            bundleIdentifiers: ["company.thebrowser.Dia", "company.thebrowser.dia"],
+            appNames: ["Dia.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "comet",
+            displayName: "Perplexity Comet",
+            bundleIdentifiers: ["ai.perplexity.comet"],
+            appNames: ["Perplexity Comet.app", "Comet.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "floorp",
+            displayName: "Floorp",
+            bundleIdentifiers: ["one.ablaze.floorp"],
+            appNames: ["Floorp.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "waterfox",
+            displayName: "Waterfox",
+            bundleIdentifiers: ["net.waterfox.waterfox"],
+            appNames: ["Waterfox.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "sigmaos",
+            displayName: "SigmaOS",
+            bundleIdentifiers: ["com.feralcat.sigmaos"],
+            appNames: ["SigmaOS.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "sidekick",
+            displayName: "Sidekick",
+            bundleIdentifiers: ["com.meetsidekick.Sidekick", "com.pushplaylabs.sidekick"],
+            appNames: ["Sidekick.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "helium",
+            displayName: "Helium",
+            bundleIdentifiers: ["net.imput.helium", "com.jadenGeller.Helium", "com.jaden.geller.helium"],
+            appNames: ["Helium.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "atlas",
+            displayName: "Atlas",
+            bundleIdentifiers: ["com.atlas.browser"],
+            appNames: ["Atlas.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "ladybird",
+            displayName: "Ladybird",
+            bundleIdentifiers: ["org.ladybird.Browser", "org.serenityos.ladybird"],
+            appNames: ["Ladybird.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "chromium",
+            displayName: "Chromium",
+            bundleIdentifiers: ["org.chromium.Chromium"],
+            appNames: ["Chromium.app"]
+        ),
+        BrowserAvailabilityDescriptor(
+            shortKey: "ungoogled-chromium",
+            displayName: "Ungoogled Chromium",
+            bundleIdentifiers: ["org.chromium.ungoogled"],
+            appNames: ["Ungoogled Chromium.app"]
+        ),
+        BrowserAvailabilityDescriptor(
             shortKey: "aside",
             displayName: "Aside",
             bundleIdentifiers: ["at.studio.AsideBrowser"],
             appNames: ["Aside.app"]
-        )
-        return mirrored + [aside]
-    }()
+        ),
+    ]
 
     struct BrowserStatus {
         let key: String
@@ -121,7 +217,7 @@ enum BrowserAvailability {
             runningByBundleId[bundleId] = app
         }
         return knownBrowsers.map { descriptor in
-            let resolved = InstalledBrowserDetector.resolveApplicationPresence(
+            let resolved = resolveApplicationPresence(
                 bundleIdentifiers: descriptor.bundleIdentifiers,
                 appNames: descriptor.appNames
             )
@@ -155,293 +251,25 @@ enum BrowserAvailability {
         }
         return (shortKey(forBundleIdentifier: bundleIdentifier), bundleIdentifier)
     }
-}
-
-
-enum InstalledBrowserDetector {
-    typealias BundleLookup = (String) -> URL?
-
-    static let allBrowserDescriptors: [BrowserImportBrowserDescriptor] = [
-        BrowserImportBrowserDescriptor(
-            id: "safari",
-            displayName: "Safari",
-            family: .webkit,
-            tier: 1,
-            bundleIdentifiers: ["com.apple.Safari"],
-            appNames: ["Safari.app"],
-            dataRootRelativePaths: ["Library/Safari"],
-            dataArtifactRelativePaths: [
-                "Library/Safari/History.db",
-                "Library/Cookies/Cookies.binarycookies",
-            ],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "google-chrome",
-            displayName: "Google Chrome",
-            family: .chromium,
-            tier: 1,
-            bundleIdentifiers: ["com.google.Chrome"],
-            appNames: ["Google Chrome.app"],
-            dataRootRelativePaths: ["Library/Application Support/Google/Chrome"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "firefox",
-            displayName: "Firefox",
-            family: .firefox,
-            tier: 1,
-            bundleIdentifiers: ["org.mozilla.firefox"],
-            appNames: ["Firefox.app"],
-            dataRootRelativePaths: ["Library/Application Support/Firefox"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "arc",
-            displayName: "Arc",
-            family: .chromium,
-            tier: 1,
-            bundleIdentifiers: ["company.thebrowser.Browser", "company.thebrowser.arc"],
-            appNames: ["Arc.app"],
-            dataRootRelativePaths: ["Library/Application Support/Arc"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "brave",
-            displayName: "Brave",
-            family: .chromium,
-            tier: 1,
-            bundleIdentifiers: ["com.brave.Browser"],
-            appNames: ["Brave Browser.app"],
-            dataRootRelativePaths: ["Library/Application Support/BraveSoftware/Brave-Browser"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "microsoft-edge",
-            displayName: "Microsoft Edge",
-            family: .chromium,
-            tier: 1,
-            bundleIdentifiers: ["com.microsoft.edgemac", "com.microsoft.Edge"],
-            appNames: ["Microsoft Edge.app"],
-            dataRootRelativePaths: ["Library/Application Support/Microsoft Edge"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "zen",
-            displayName: "Zen Browser",
-            family: .firefox,
-            tier: 2,
-            bundleIdentifiers: ["app.zen-browser.zen", "app.zen-browser.Zen"],
-            appNames: ["Zen Browser.app", "Zen.app"],
-            dataRootRelativePaths: ["Library/Application Support/Zen", "Library/Application Support/zen"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "vivaldi",
-            displayName: "Vivaldi",
-            family: .chromium,
-            tier: 2,
-            bundleIdentifiers: ["com.vivaldi.Vivaldi"],
-            appNames: ["Vivaldi.app"],
-            dataRootRelativePaths: ["Library/Application Support/Vivaldi"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "opera",
-            displayName: "Opera",
-            family: .chromium,
-            tier: 2,
-            bundleIdentifiers: ["com.operasoftware.Opera"],
-            appNames: ["Opera.app"],
-            dataRootRelativePaths: [
-                "Library/Application Support/com.operasoftware.Opera",
-                "Library/Application Support/Opera",
-            ],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "opera-gx",
-            displayName: "Opera GX",
-            family: .chromium,
-            tier: 2,
-            bundleIdentifiers: ["com.operasoftware.OperaGX"],
-            appNames: ["Opera GX.app"],
-            dataRootRelativePaths: [
-                "Library/Application Support/com.operasoftware.OperaGX",
-                "Library/Application Support/Opera GX Stable",
-            ],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "orion",
-            displayName: "Orion",
-            family: .webkit,
-            tier: 2,
-            bundleIdentifiers: ["com.kagi.kagimacOS", "com.kagi.kagimacos", "com.kagi.orion"],
-            appNames: ["Orion.app"],
-            dataRootRelativePaths: ["Library/Application Support/Orion"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "dia",
-            displayName: "Dia",
-            family: .chromium,
-            tier: 2,
-            bundleIdentifiers: ["company.thebrowser.Dia", "company.thebrowser.dia"],
-            appNames: ["Dia.app"],
-            dataRootRelativePaths: ["Library/Application Support/Dia"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "perplexity-comet",
-            displayName: "Perplexity Comet",
-            family: .chromium,
-            tier: 3,
-            bundleIdentifiers: ["ai.perplexity.comet"],
-            appNames: ["Perplexity Comet.app", "Comet.app"],
-            dataRootRelativePaths: ["Library/Application Support/Comet"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "floorp",
-            displayName: "Floorp",
-            family: .firefox,
-            tier: 3,
-            bundleIdentifiers: ["one.ablaze.floorp"],
-            appNames: ["Floorp.app"],
-            dataRootRelativePaths: ["Library/Application Support/Floorp"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "waterfox",
-            displayName: "Waterfox",
-            family: .firefox,
-            tier: 3,
-            bundleIdentifiers: ["net.waterfox.waterfox"],
-            appNames: ["Waterfox.app"],
-            dataRootRelativePaths: ["Library/Application Support/Waterfox"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "sigmaos",
-            displayName: "SigmaOS",
-            family: .chromium,
-            tier: 3,
-            bundleIdentifiers: ["com.feralcat.sigmaos"],
-            appNames: ["SigmaOS.app"],
-            dataRootRelativePaths: ["Library/Application Support/SigmaOS"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "sidekick",
-            displayName: "Sidekick",
-            family: .chromium,
-            tier: 3,
-            bundleIdentifiers: ["com.meetsidekick.Sidekick", "com.pushplaylabs.sidekick"],
-            appNames: ["Sidekick.app"],
-            dataRootRelativePaths: ["Library/Application Support/Sidekick"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "helium",
-            displayName: "Helium",
-            family: .chromium,
-            tier: 3,
-            bundleIdentifiers: ["net.imput.helium", "com.jadenGeller.Helium", "com.jaden.geller.helium"],
-            appNames: ["Helium.app"],
-            dataRootRelativePaths: [
-                "Library/Application Support/net.imput.helium",
-                "Library/Application Support/Helium",
-            ],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "atlas",
-            displayName: "Atlas",
-            family: .chromium,
-            tier: 3,
-            bundleIdentifiers: ["com.atlas.browser"],
-            appNames: ["Atlas.app"],
-            dataRootRelativePaths: ["Library/Application Support/Atlas"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "ladybird",
-            displayName: "Ladybird",
-            family: .webkit,
-            tier: 3,
-            bundleIdentifiers: ["org.ladybird.Browser", "org.serenityos.ladybird"],
-            appNames: ["Ladybird.app"],
-            dataRootRelativePaths: ["Library/Application Support/Ladybird"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "chromium",
-            displayName: "Chromium",
-            family: .chromium,
-            tier: 3,
-            bundleIdentifiers: ["org.chromium.Chromium"],
-            appNames: ["Chromium.app"],
-            dataRootRelativePaths: ["Library/Application Support/Chromium"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: true
-        ),
-        BrowserImportBrowserDescriptor(
-            id: "ungoogled-chromium",
-            displayName: "Ungoogled Chromium",
-            family: .chromium,
-            tier: 3,
-            bundleIdentifiers: ["org.chromium.ungoogled"],
-            appNames: ["Ungoogled Chromium.app"],
-            dataRootRelativePaths: ["Library/Application Support/Chromium"],
-            dataArtifactRelativePaths: [],
-            supportsDataOnlyDetection: false
-        ),
-    ]
 
     private static func bundleIdentifier(for appURL: URL) -> String? {
         Bundle(url: appURL)?.bundleIdentifier
     }
 
-    static func resolveApplicationPresence(
+    private static func resolveApplicationPresence(
         bundleIdentifiers: [String],
-        appNames: [String],
-        homeDirectoryURL: URL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true),
-        bundleLookup: BundleLookup? = nil,
-        fileManager: FileManager = .default
+        appNames: [String]
     ) -> (url: URL?, bundleIdentifier: String?) {
-        let lookup = bundleLookup ?? { bundleIdentifier in
-            NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
-        }
         for knownBundleIdentifier in bundleIdentifiers {
-            if let appURL = lookup(knownBundleIdentifier) {
+            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: knownBundleIdentifier) {
                 return (appURL, bundleIdentifier(for: appURL) ?? knownBundleIdentifier)
             }
         }
-        let searchDirectories = defaultApplicationSearchDirectories(homeDirectoryURL: homeDirectoryURL)
+        let searchDirectories = defaultApplicationSearchDirectories()
         for appName in appNames {
             for directory in searchDirectories {
                 let appURL = directory.appendingPathComponent(appName, isDirectory: true)
-                if fileManager.fileExists(atPath: appURL.path) {
+                if FileManager.default.fileExists(atPath: appURL.path) {
                     return (appURL, bundleIdentifier(for: appURL))
                 }
             }
@@ -449,8 +277,9 @@ enum InstalledBrowserDetector {
         return (nil, nil)
     }
 
-    private static func defaultApplicationSearchDirectories(homeDirectoryURL: URL) -> [URL] {
-        [
+    private static func defaultApplicationSearchDirectories() -> [URL] {
+        let homeDirectoryURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        return [
             URL(fileURLWithPath: "/Applications", isDirectory: true),
             homeDirectoryURL.appendingPathComponent("Applications", isDirectory: true),
             URL(fileURLWithPath: "/Applications/Setapp", isDirectory: true),

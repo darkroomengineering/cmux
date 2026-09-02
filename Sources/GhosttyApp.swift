@@ -312,23 +312,11 @@ class GhosttyApp {
                     return
                 }
 
-                let preparedContent = TerminalImageTransferPlanner.prepare(
-                    pasteboard: pasteboard,
-                    mode: .paste
-                )
-
-                switch preparedContent {
+                switch TerminalPasteboardPlanner.plan(pasteboard: pasteboard, mode: .paste) {
                 case .reject:
                     completeClipboardRequest(with: "")
                 case .insertText(let text):
                     completeClipboardRequest(with: text)
-                case .fileURLs(let fileURLs):
-                    switch TerminalImageTransferPlanner.plan(fileURLs: fileURLs) {
-                    case .insertText(let text):
-                        completeClipboardRequest(with: text)
-                    case .reject:
-                        completeClipboardRequest(with: "")
-                    }
                 }
             }
         }

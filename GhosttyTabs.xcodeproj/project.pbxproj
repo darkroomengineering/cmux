@@ -105,7 +105,7 @@
 			A5001534 /* BrowserWindowPortal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001533 /* BrowserWindowPortal.swift */; };
 			A5FF0008 /* HostedViewPortalRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5FF0018 /* HostedViewPortalRegistry.swift */; };
 		A5001540 /* PortScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001541 /* PortScanner.swift */; };
-		A5001542 /* TerminalImageTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001544 /* TerminalImageTransfer.swift */; };
+		A5001542 /* TerminalPasteboardPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001544 /* TerminalPasteboardPlanner.swift */; };
 			A5001006 /* GhosttyKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = A5001016 /* GhosttyKit.xcframework */; };
 		A5001007 /* TerminalController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001019 /* TerminalController.swift */; };
 		H1AP0002 /* AppLifecycleCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = H1AP0001 /* AppLifecycleCoordinator.swift */; };
@@ -504,7 +504,7 @@
 			A5001533 /* BrowserWindowPortal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserWindowPortal.swift; sourceTree = "<group>"; };
 			A5FF0018 /* HostedViewPortalRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostedViewPortalRegistry.swift; sourceTree = "<group>"; };
 		A5001541 /* PortScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PortScanner.swift; sourceTree = "<group>"; };
-		A5001544 /* TerminalImageTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalImageTransfer.swift; sourceTree = "<group>"; };
+		A5001544 /* TerminalPasteboardPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPasteboardPlanner.swift; sourceTree = "<group>"; };
 			A5001016 /* GhosttyKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = GhosttyKit.xcframework; sourceTree = "<group>"; };
 		A5001017 /* ghostty.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ghostty.h; sourceTree = "<group>"; };
 		A5001018 /* programa-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "programa-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -976,7 +976,7 @@
 				NRTC0010 /* TerminalController+Subscriptions.swift */,
 				NRTC0022 /* TerminalController+AgentPrompt.swift */,
 				A5001541 /* PortScanner.swift */,
-				A5001544 /* TerminalImageTransfer.swift */,
+				A5001544 /* TerminalPasteboardPlanner.swift */,
 				A5001225 /* SocketControlSettings.swift */,
 				D1320AA0D1320AA0D1320AA4 /* AppIconDockTilePlugin.swift */,
 				A5001090 /* AppDelegate.swift */,
@@ -1520,7 +1520,7 @@
 				NRTC0020 /* TerminalController+Subscriptions.swift in Sources */,
 				NRTC0023 /* TerminalController+AgentPrompt.swift in Sources */,
 				A5001540 /* PortScanner.swift in Sources */,
-				A5001542 /* TerminalImageTransfer.swift in Sources */,
+				A5001542 /* TerminalPasteboardPlanner.swift in Sources */,
 				A5001226 /* SocketControlSettings.swift in Sources */,
 				A5001093 /* AppDelegate.swift in Sources */,
 				E3E96C3E34893DE5905D6218 /* SessionAutosaveCoordinator.swift in Sources */,

@@ -327,7 +327,7 @@ final class GhosttyPasteboardHelperTests: XCTestCase {
         pasteboard.clearContents()
         pasteboard.setData(try make1x1PNG(color: .magenta), forType: .png)
 
-        let plan = TerminalImageTransferPlanner.plan(
+        let plan = TerminalPasteboardPlanner.plan(
             pasteboard: pasteboard,
             mode: .paste
         )
@@ -345,12 +345,12 @@ final class GhosttyPasteboardHelperTests: XCTestCase {
     }
 
     func testInsertedPathEscapesSpacesBeforePaste() {
-        let escaped = TerminalImageTransferPlanner.escapeForShell("/tmp/Screen Shot.png")
+        let escaped = TerminalPasteboardPlanner.escapeForShell("/tmp/Screen Shot.png")
         XCTAssertEqual(escaped, "/tmp/Screen\\ Shot.png")
     }
 
     func testInsertedPathSingleQuotesEmbeddedNewlinesBeforePaste() {
-        let escaped = TerminalImageTransferPlanner.escapeForShell("/tmp/Screen\nShot\r.png")
+        let escaped = TerminalPasteboardPlanner.escapeForShell("/tmp/Screen\nShot\r.png")
         XCTAssertEqual(escaped, "'/tmp/Screen\nShot\r.png'")
     }
 }
@@ -986,7 +986,6 @@ final class TerminalDirectoryOpenTargetAvailabilityTests: XCTestCase {
         TerminalDirectoryOpenTarget.DetectionEnvironment(
             homeDirectoryPath: homeDirectoryPath,
             fileExistsAtPath: { existingPaths.contains($0) },
-            isExecutableFileAtPath: { existingPaths.contains($0) },
             applicationPathForBundleIdentifier: { applicationPathsByBundleIdentifier[$0] }
         )
     }

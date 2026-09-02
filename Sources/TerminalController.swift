@@ -853,10 +853,10 @@ class TerminalController {
         }
     }
 
-    /// `surface.ports_kick` still validates and canonicalizes its optional `reason`
-    /// argument so callers that send a typo get `invalid_params` instead of a silent
-    /// no-op, and the response echoes the same canonical value it always did. The value
-    /// no longer selects a scan strategy.
+    /// Validates and canonicalizes the optional `reason` argument to `surface.ports_kick`
+    /// so a caller that sends a typo gets `invalid_params` instead of a silent no-op; the
+    /// response echoes back the canonical value. The value is part of the socket contract
+    /// only for that validation and echo — it does not select a scan strategy.
     nonisolated static func normalizedPortScanKickReason(_ rawReason: String) -> String? {
         switch rawReason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "command", "running", "foreground", "start":

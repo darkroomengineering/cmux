@@ -23,11 +23,11 @@ import UniformTypeIdentifiers
 
 extension GhosttyNSView {
     fileprivate static func escapeDropForShell(_ value: String) -> String {
-        TerminalImageTransferPlanner.escapeForShell(value)
+        TerminalPasteboardPlanner.escapeForShell(value)
     }
 
     static func dropPlanForTesting(pasteboard: NSPasteboard) -> DropPlan {
-        switch TerminalImageTransferPlanner.plan(pasteboard: pasteboard, mode: .drop) {
+        switch TerminalPasteboardPlanner.plan(pasteboard: pasteboard, mode: .drop) {
         case .insertText(let text):
             return .insertText(text)
         case .reject:
@@ -36,37 +36,26 @@ extension GhosttyNSView {
     }
 
     func handleDroppedFileURLs(_ urls: [URL]) -> Bool {
-        executePreparedImageTransfer(.fileURLs(urls))
+        insertPlannedTransfer(TerminalPasteboardPlanner.plan(fileURLs: urls))
     }
 
     @discardableResult
     func insertDroppedPasteboard(_ pasteboard: NSPasteboard) -> Bool {
-        executePreparedImageTransfer(
-            TerminalImageTransferPlanner.prepare(
-                pasteboard: pasteboard,
-                mode: .drop
-            )
+        insertPlannedTransfer(
+            TerminalPasteboardPlanner.plan(pasteboard: pasteboard, mode: .drop)
         )
     }
 
     @discardableResult
-    private func executePreparedImageTransfer(
-        _ preparedContent: TerminalImageTransferPreparedContent
+    private func insertPlannedTransfer(
+        _ insertion: TerminalPasteboardInsertion
     ) -> Bool {
-        switch preparedContent {
+        switch insertion {
         case .reject:
             return false
         case .insertText(let text):
             terminalSurface?.sendText(text)
             return true
-        case .fileURLs(let fileURLs):
-            switch TerminalImageTransferPlanner.plan(fileURLs: fileURLs) {
-            case .insertText(let text):
-                terminalSurface?.sendText(text)
-                return true
-            case .reject:
-                return false
-            }
         }
     }
 
