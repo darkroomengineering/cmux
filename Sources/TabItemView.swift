@@ -1478,11 +1478,11 @@ struct TabItemView: View, Equatable {
                 preferSplitRight: true,
                 insertAtEnd: true
             ) == nil {
-                NSWorkspace.shared.open(url)
+                BrowserLinkOpenSettings.openExternally(url)
             }
             return
         }
-        NSWorkspace.shared.open(url)
+        BrowserLinkOpenSettings.openExternally(url)
     }
 
     private func openPortLink(_ port: Int) {
@@ -1495,11 +1495,11 @@ struct TabItemView: View, Equatable {
                 preferSplitRight: true,
                 insertAtEnd: true
             ) == nil {
-                NSWorkspace.shared.open(url)
+                BrowserLinkOpenSettings.openExternally(url)
             }
             return
         }
-        NSWorkspace.shared.open(url)
+        BrowserLinkOpenSettings.openExternally(url)
     }
 
     private func pullRequestStatusLabel(
@@ -1982,7 +1982,7 @@ private struct SidebarMetadataEntryRow: View {
             if let url = entry.url {
                 Button {
                     onFocus()
-                    NSWorkspace.shared.open(url)
+                    BrowserLinkOpenSettings.openExternally(url)
                 } label: {
                     rowContent(underlined: true)
                 }

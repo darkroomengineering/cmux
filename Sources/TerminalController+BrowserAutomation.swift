@@ -2071,7 +2071,7 @@ extension TerminalController {
             if let url,
                respectExternalOpenRules,
                BrowserLinkOpenSettings.shouldOpenExternally(url) {
-                guard NSWorkspace.shared.open(url) else {
+                guard BrowserLinkOpenSettings.openExternally(url) else {
                     result = .err(
                         code: "external_open_failed",
                         message: "Failed to open URL externally",

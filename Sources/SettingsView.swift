@@ -62,6 +62,8 @@ struct SettingsView: View {
     @AppStorage(BrowserLinkOpenSettings.browserHostWhitelistKey) private var browserHostWhitelist = BrowserLinkOpenSettings.defaultBrowserHostWhitelist
     @AppStorage(BrowserLinkOpenSettings.browserExternalOpenPatternsKey)
     private var browserExternalOpenPatterns = BrowserLinkOpenSettings.defaultBrowserExternalOpenPatterns
+    @AppStorage(BrowserLinkOpenSettings.externalBrowserBundleIdentifierKey)
+    private var externalBrowserBundleIdentifier = BrowserLinkOpenSettings.defaultExternalBrowserBundleIdentifier
     @AppStorage(BrowserInsecureHTTPSettings.allowlistKey) private var browserInsecureHTTPAllowlist = BrowserInsecureHTTPSettings.defaultAllowlistText
     @AppStorage(NotificationSoundSettings.key) private var notificationSound = NotificationSoundSettings.defaultValue
     @AppStorage(NotificationSoundSettings.customCommandKey) private var notificationCustomCommand = NotificationSoundSettings.defaultCustomCommand
@@ -105,6 +107,7 @@ struct SettingsView: View {
     @State private var socketPasswordStatusMessage: String?
     @State private var socketPasswordStatusIsError = false
     @State private var trustedDirectoriesDraft: String = ProgramaDirectoryTrust.shared.allTrustedPaths.joined(separator: "\n")
+    @State private var installedExternalBrowsers: [(bundleIdentifier: String, name: String)] = []
 
     private var selectedWorkspacePlacement: NewWorkspacePlacement {
         NewWorkspacePlacement(rawValue: newWorkspacePlacement) ?? WorkspacePlacementSettings.defaultPlacement
@@ -1205,6 +1208,23 @@ struct SettingsView: View {
                     .controlSize(.small)
             }
 
+            SettingsCardDivider()
+
+            SettingsPickerRow(
+                String(localized: "settings.browser.externalBrowser", defaultValue: "Open External Links With"),
+                subtitle: String(localized: "settings.browser.externalBrowser.subtitle", defaultValue: "Used for terminal links and browser links that open outside Programa."),
+                controlWidth: pickerColumnWidth,
+                selection: $externalBrowserBundleIdentifier
+            ) {
+                Text(String(localized: "settings.browser.externalBrowser.systemDefault", defaultValue: "System Default")).tag("")
+                ForEach(installedExternalBrowsers, id: \.bundleIdentifier) { browser in
+                    Text(browser.name).tag(browser.bundleIdentifier)
+                }
+            }
+            .onAppear {
+                installedExternalBrowsers = BrowserLinkOpenSettings.installedBrowsers()
+            }
+
             if openTerminalLinksInProgramaBrowser || interceptTerminalOpenCommandInProgramaBrowser {
                 SettingsCardDivider()
 
@@ -1430,6 +1450,7 @@ struct SettingsView: View {
         interceptTerminalOpenCommandInProgramaBrowser = BrowserLinkOpenSettings.defaultInterceptTerminalOpenCommandInProgramaBrowser
         browserHostWhitelist = BrowserLinkOpenSettings.defaultBrowserHostWhitelist
         browserExternalOpenPatterns = BrowserLinkOpenSettings.defaultBrowserExternalOpenPatterns
+        externalBrowserBundleIdentifier = BrowserLinkOpenSettings.defaultExternalBrowserBundleIdentifier
         browserInsecureHTTPAllowlist = BrowserInsecureHTTPSettings.defaultAllowlistText
         browserInsecureHTTPAllowlistDraft = BrowserInsecureHTTPSettings.defaultAllowlistText
         notificationSound = NotificationSoundSettings.defaultValue

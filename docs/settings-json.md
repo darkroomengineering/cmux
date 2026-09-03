@@ -92,6 +92,7 @@ Embedded browser settings from Settings > Browser.
 | `interceptTerminalOpenCommandInProgramaBrowser` | boolean | `true` | Intercept terminal open http(s) commands and route them through the embedded browser. |
 | `hostsToOpenInEmbeddedBrowser` | array | `[]` | Allowlist of hosts that should stay inside the embedded browser. |
 | `urlsToAlwaysOpenExternally` | array | `[]` | Rules that always open matching URLs in the system browser. |
+| `externalBrowser` | string | `""` | Bundle identifier of the browser used for links that open outside Programa (for example `at.studio.AsideBrowser`, replace with the real Aside bundle id you discovered). Empty uses the macOS default browser. |
 | `insecureHttpHostsAllowedInEmbeddedBrowser` | array | `["localhost", "127.0.0.1", "::1", "0.0.0.0", "*.localtest.me"]` | HTTP hosts allowed in the embedded browser without a warning prompt. |
 | `proxy` | object |  | Route the embedded browser through a proxy. Requires host and port; type defaults to socks5. |
 

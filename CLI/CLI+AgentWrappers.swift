@@ -16,7 +16,7 @@ extension ProgramaCLI {
         return prefix.contains("cmux claude wrapper - injects hooks and session tracking")
     }
 
-    private func resolveExecutableInSearchPath(
+    func resolveExecutableInSearchPath(
         _ name: String,
         searchPath: String?,
         skip: ((String) -> Bool)? = nil
@@ -33,12 +33,18 @@ extension ProgramaCLI {
         return nil
     }
 
-    private func resolveClaudeExecutable(searchPath: String?) -> String? {
+    func resolveClaudeExecutable(searchPath: String?) -> String? {
         resolveExecutableInSearchPath(
             "claude",
             searchPath: searchPath,
             skip: { self.isProgramaClaudeWrapper(at: $0) }
         )
+    }
+
+    /// Resolves the `codex` CLI executable from PATH. Unlike Claude, Programa does not
+    /// ship a codex wrapper, so no skip predicate is needed.
+    func resolveCodexExecutable(searchPath: String?) -> String? {
+        resolveExecutableInSearchPath("codex", searchPath: searchPath)
     }
 
     private func claudeTeamsHasExplicitTeammateMode(commandArgs: [String]) -> Bool {

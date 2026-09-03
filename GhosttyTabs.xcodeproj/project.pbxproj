@@ -256,6 +256,7 @@
 		6C9DA4528D8FCFF501A5FA8C /* programa-mcp in Copy CLI */ = {isa = PBXBuildFile; fileRef = 0AC9A9E0A68EF163F87A0C83 /* programa-mcp */; };
 		B9000031A1B2C3D4E5F60719 /* CLI+Markdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000030A1B2C3D4E5F60719 /* CLI+Markdown.swift */; };
 		B9000035A1B2C3D4E5F60719 /* CLI+Browser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000034A1B2C3D4E5F60719 /* CLI+Browser.swift */; };
+		A51DE0700000000000000001 /* CLI+Aside.swift in Sources */ = {isa = PBXBuildFile; fileRef = A51DE0700000000000000002 /* CLI+Aside.swift */; };
 		B9000037A1B2C3D4E5F60719 /* CLI+Themes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000036A1B2C3D4E5F60719 /* CLI+Themes.swift */; };
 		B9000039A1B2C3D4E5F60719 /* CLI+Tree.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000038A1B2C3D4E5F60719 /* CLI+Tree.swift */; };
 		B900003BA1B2C3D4E5F60719 /* CLI+TmuxCompat.swift in Sources */ = {isa = PBXBuildFile; fileRef = B900003AA1B2C3D4E5F60719 /* CLI+TmuxCompat.swift */; };
@@ -661,6 +662,7 @@
 		30DC1E7B0A701824297403A5 /* FocusTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FocusTools.swift"; sourceTree = "<group>"; };
 		B9000030A1B2C3D4E5F60719 /* CLI+Markdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+Markdown.swift"; sourceTree = "<group>"; };
 		B9000034A1B2C3D4E5F60719 /* CLI+Browser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+Browser.swift"; sourceTree = "<group>"; };
+		A51DE0700000000000000002 /* CLI+Aside.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+Aside.swift"; sourceTree = "<group>"; };
 		B9000036A1B2C3D4E5F60719 /* CLI+Themes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+Themes.swift"; sourceTree = "<group>"; };
 		B9000038A1B2C3D4E5F60719 /* CLI+Tree.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+Tree.swift"; sourceTree = "<group>"; };
 		B900003AA1B2C3D4E5F60719 /* CLI+TmuxCompat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CLI+TmuxCompat.swift"; sourceTree = "<group>"; };
@@ -1075,6 +1077,7 @@
 				B9000001A1B2C3D4E5F60719 /* programa.swift */,
 				B9000030A1B2C3D4E5F60719 /* CLI+Markdown.swift */,
 				B9000034A1B2C3D4E5F60719 /* CLI+Browser.swift */,
+				A51DE0700000000000000002 /* CLI+Aside.swift */,
 				B9000036A1B2C3D4E5F60719 /* CLI+Themes.swift */,
 				B9000038A1B2C3D4E5F60719 /* CLI+Tree.swift */,
 				B900003AA1B2C3D4E5F60719 /* CLI+TmuxCompat.swift */,
@@ -1705,6 +1708,7 @@
 				RVPN00000000000000000010 /* CLI+Review.swift in Sources */,
 				RCAP000001 /* CLI+Recap.swift in Sources */,
 				B9000035A1B2C3D4E5F60719 /* CLI+Browser.swift in Sources */,
+				A51DE0700000000000000001 /* CLI+Aside.swift in Sources */,
 					B9000037A1B2C3D4E5F60719 /* CLI+Themes.swift in Sources */,
 					THTM0003 /* TerminalThemeStore.swift in Sources */,
 				B9000039A1B2C3D4E5F60719 /* CLI+Tree.swift in Sources */,

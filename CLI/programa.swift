@@ -1153,6 +1153,23 @@ struct ProgramaCLI {
                 """,
                 execute: nil
             ),
+            CommandDescriptor(
+                names: ["aside"],
+                helpLines: ["aside <status|install-mcp|uninstall-mcp> [--with-devtools] [--yes]"],
+                connectionPolicy: .local,
+                detailedUsage: """
+                Usage: programa aside <status|install-mcp|uninstall-mcp> [--with-devtools] [--yes]
+
+                Detect the Aside agent browser CLI and register its MCP server with
+                Claude Code and Codex. `status` reports the detected aside binary,
+                the DevTools endpoint if Aside is running, and each client's
+                registration state. `install-mcp` runs `claude mcp add` / `codex mcp add`
+                for each detected client; `--with-devtools` also registers a
+                chrome-devtools-mcp server pointed at Aside's DevTools port.
+                `uninstall-mcp` removes both. `--yes`/`-y` skips the confirmation prompt.
+                """,
+                execute: nil
+            ),
 
             CommandDescriptor(
                 names: ["ping"],
@@ -6470,6 +6487,8 @@ struct ProgramaCLI {
             return
         case "codex", "claude", "opencode":
             _ = try parse(booleans: ["yes", "y"], minPositionals: 1, maxPositionals: 1)
+        case "aside":
+            _ = try parse(booleans: ["yes", "y", "with-devtools"], minPositionals: 1, maxPositionals: 1)
         // Commands with richer bespoke contracts are validated by their
         // dedicated cases in `validateArguments`.
         case "ping", "focus-panel", "read-screen", "wait-surface", "set-progress", "list-log", "watch-events":

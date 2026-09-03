@@ -781,6 +781,14 @@ final class ProgramaSettingsFileStore {
         } else if section.keys.contains("urlsToAlwaysOpenExternally") {
             logInvalid("browser.urlsToAlwaysOpenExternally", sourcePath: sourcePath)
         }
+        if let raw = section["externalBrowser"] {
+            if let value = jsonString(raw) {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                snapshot.managedUserDefaults[BrowserLinkOpenSettings.externalBrowserBundleIdentifierKey] = .string(trimmed)
+            } else {
+                logInvalid("browser.externalBrowser", sourcePath: sourcePath)
+            }
+        }
         if let values = jsonStringArray(section["insecureHttpHostsAllowedInEmbeddedBrowser"]) {
             let normalized = values
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1618,6 +1626,7 @@ final class ProgramaSettingsFileStore {
                     "interceptTerminalOpenCommandInProgramaBrowser": BrowserLinkOpenSettings.defaultInterceptTerminalOpenCommandInProgramaBrowser,
                     "hostsToOpenInEmbeddedBrowser": [String](),
                     "urlsToAlwaysOpenExternally": [String](),
+                    "externalBrowser": BrowserLinkOpenSettings.defaultExternalBrowserBundleIdentifier,
                     "insecureHttpHostsAllowedInEmbeddedBrowser": BrowserInsecureHTTPSettings.defaultAllowlistPatterns,
                 ],
             ],

@@ -240,7 +240,7 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
             if let opener = self?.openerPanel {
                 opener.openLinkInNewTab(url: url)
             } else {
-                NSWorkspace.shared.open(url)
+                BrowserLinkOpenSettings.openExternally(url)
             }
         }
 
@@ -369,7 +369,7 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
         if let openerPanel {
             openerPanel.openLinkInNewTab(url: url)
         } else {
-            NSWorkspace.shared.open(url)
+            BrowserLinkOpenSettings.openExternally(url)
         }
     }
 
@@ -384,7 +384,7 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
         let alert = BrowserPasskeyHandoffAlertBuilder.makeAlert()
         let handleResponse: @MainActor @Sendable (NSApplication.ModalResponse) -> Void = { response in
             guard response == .alertFirstButtonReturn else { return }
-            NSWorkspace.shared.open(url)
+            BrowserLinkOpenSettings.openExternally(url)
         }
         alert.beginSheetModal(for: panel, completionHandler: handleResponse)
     }
@@ -414,8 +414,8 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
             }
             switch response {
             case .alertFirstButtonReturn:
-                // Open in default browser, cancel popup navigation
-                NSWorkspace.shared.open(url)
+                // Open outside Programa, cancel popup navigation
+                BrowserLinkOpenSettings.openExternally(url)
                 decisionHandler(.cancel)
             case .alertSecondButtonReturn:
                 // Proceed in popup
@@ -454,7 +454,7 @@ private class PopupUIDelegate: NSObject, WKUIDelegate {
         // External URL check
         if let url = navigationAction.request.url,
            browserShouldOpenURLExternally(url) {
-            NSWorkspace.shared.open(url)
+            BrowserLinkOpenSettings.openExternally(url)
             return nil
         }
 
