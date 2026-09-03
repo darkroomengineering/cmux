@@ -52,7 +52,7 @@ struct ProgramaTool {
 }
 
 /// JSON Schema building blocks shared by every `*Tools.swift` file. Kept minimal on purpose --
-/// only the shapes this catalog's 96 tools actually need (see the escape hatch in the Phase 3
+/// only the shapes this catalog's 187 tools actually need (see the escape hatch in the Phase 3
 /// briefing for what to do if a handler needs something richer).
 enum ProgramaToolSchema {
     static func string(_ description: String) -> Value {
@@ -161,11 +161,13 @@ enum ToolCatalog {
     /// The full, ordered tool catalog. `ListTools` and `CallTool` are both driven off this one
     /// table (see `register(on:)`), so they cannot drift apart.
     ///
+    /// `browser.*` (85 methods) is exposed via `BrowserTools.swift` (82 tools) plus the three
+    /// focus-stealing browser methods in `FocusTools.swift` (`browser.focus_webview`,
+    /// `browser.focus`, `browser.tab.switch`).
+    ///
     /// Deliberately excludes (see `docs/plans/mcp-server.md` §3 and the Phase 3 briefing for
     /// the authoritative rationale, restated here so a future reader doesn't mistake these for
     /// oversights):
-    /// - `browser.*` (85 methods): a separate Playwright-style browser-automation surface,
-    ///   deferred to a future tranche.
     /// - `debug.*`: DEBUG-build-only test-harness hooks that can simulate keystrokes and
     ///   activate the app.
     /// - `auth.login`, `settings.open`, `feedback.open`, `feedback.submit`, `markdown.open`:
@@ -185,6 +187,7 @@ enum ToolCatalog {
         + NotificationTools.tools
         + ReviewTools.tools
         + FocusTools.tools
+        + BrowserTools.tools
 
     /// Installs both the `ListTools` and `CallTool` method handlers, dispatching every call
     /// through `MCPSocketBridge` by tool name. Both handlers close over the same `all` table

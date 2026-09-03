@@ -5,8 +5,8 @@ import MCP
 /// prefix instead of the usual dot-to-underscore method name -- exists for the same reason:
 /// the tool name alone should warn an agent before it calls one).
 ///
-/// This is the authoritative `focusIntentV2Methods` set (`Sources/TerminalController.swift:120-
-/// 138`) filtered to the 96-method in-scope catalog -- exactly 10 methods. `worktree.create` is
+/// This is the authoritative `focusIntentV2Methods` set (`Sources/TerminalController.swift:157-
+/// 175`) filtered to the 187-method in-scope catalog -- exactly 13 methods. `worktree.create` is
 /// also in `focusIntentV2Methods` but is deliberately NOT here: it only focuses when its
 /// `focus` param is explicitly set to `true` (default `false`, `Sources/TerminalController+
 /// Worktree.swift:43`), and `WorktreeTools.swift`'s `worktree_create` tool omits that param
@@ -132,6 +132,47 @@ enum FocusTools {
                 ],
                 required: ["repo"]
             )
+        ),
+        ProgramaTool(
+            name: "focus_browser_webview",
+            socketMethod: "browser.focus_webview",
+            description: "Moves keyboard focus into a browser surface's web view (making first responder), bringing its window forward. This tool may raise/activate the Programa window.",
+            inputSchema: ProgramaToolSchema.object(
+                properties: [
+                    "surface_id": ProgramaToolSchema.string("Browser surface UUID or short ref to focus."),
+                    "window_id": ProgramaToolSchema.windowIdProperty,
+                    "workspace_id": ProgramaToolSchema.workspaceIdProperty,
+                ],
+                required: ["surface_id"]
+            )
+        ),
+        ProgramaTool(
+            name: "focus_browser_element",
+            socketMethod: "browser.focus",
+            description: "Focuses the DOM element matched by a selector inside a browser surface's page (calls its .focus()), selecting its workspace and bringing its window forward. This tool may raise/activate the Programa window.",
+            inputSchema: ProgramaToolSchema.object(
+                properties: [
+                    "selector": ProgramaToolSchema.string("CSS selector identifying the element to focus. Also accepts sel, element_ref, or ref as aliases."),
+                    "retry_attempts": ProgramaToolSchema.integer("Number of times to retry if the selector doesn't resolve yet. Defaults to 3."),
+                    "surface_id": ProgramaToolSchema.string("Browser surface UUID or short ref to target. Defaults to the workspace's focused browser surface."),
+                    "window_id": ProgramaToolSchema.windowIdProperty,
+                    "workspace_id": ProgramaToolSchema.workspaceIdProperty,
+                ],
+                required: ["selector"]
+            )
+        ),
+        ProgramaTool(
+            name: "focus_browser_tab_switch",
+            socketMethod: "browser.tab.switch",
+            description: "Switches which browser tab (surface) is focused within a workspace, selecting the workspace and bringing its window forward. This tool may raise/activate the Programa window.",
+            inputSchema: ProgramaToolSchema.object(properties: [
+                "target_surface_id": ProgramaToolSchema.string("Browser surface UUID or short ref to switch to. Also accepts tab_id as an alias."),
+                "tab_id": ProgramaToolSchema.string("Alias for target_surface_id."),
+                "index": ProgramaToolSchema.integer("0-based index into the workspace's browser tabs (in display order), used when target_surface_id/tab_id is omitted."),
+                "surface_id": ProgramaToolSchema.string("Fallback target when target_surface_id/tab_id/index are all omitted."),
+                "window_id": ProgramaToolSchema.windowIdProperty,
+                "workspace_id": ProgramaToolSchema.workspaceIdProperty,
+            ])
         ),
     ]
 }
