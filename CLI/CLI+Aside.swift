@@ -172,14 +172,16 @@ extension ProgramaCLI {
 
         case "install-mcp", "uninstall-mcp":
             let install = subcommand == "install-mcp"
-            guard let asidePath else {
+            // Removal only needs the client CLIs; the Aside binary may already be gone.
+            if install, asidePath == nil {
                 throw CLIError(message: "Aside CLI not found. Install it from https://docs.aside.com/help/developers")
             }
+            let planAsidePath = asidePath ?? "aside"
             if claudeExecutable == nil, codexExecutable == nil {
                 throw CLIError(message: "Neither Claude Code nor Codex CLI was found on PATH.")
             }
 
-            print("Aside CLI: \(asidePath)")
+            print("Aside CLI: \(asidePath ?? "not found")")
             if let endpoint = asideDevToolsEndpoint() {
                 print("DevTools: \(endpoint)")
             }
@@ -191,7 +193,7 @@ extension ProgramaCLI {
             }
 
             let plan = AsideMCPPlan.build(
-                asidePath: asidePath,
+                asidePath: planAsidePath,
                 claudeExecutable: claudeExecutable,
                 codexExecutable: codexExecutable,
                 withDevTools: withDevTools,
@@ -221,25 +223,45 @@ extension ProgramaCLI {
 
             if !skipConfirm {
                 print("Apply these changes? [Y/n] ", terminator: "")
-                if let response = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-                   !response.isEmpty && response != "y" && response != "yes" {
+                // EOF (closed or non-interactive stdin) counts as "no": never fail open.
+                guard let response = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+                    print("")
+                    print("Aborted (no confirmation on stdin; pass --yes to skip the prompt).")
+                    return
+                }
+                if !response.isEmpty && response != "y" && response != "yes" {
                     print("Aborted.")
                     return
                 }
             }
 
+            var failures: [String] = []
             for entry in pendingCommands {
-                if install, let executable = entry.command.first,
-                   asideIsRegistered(executable: executable, serverName: entry.serverName) {
+                guard let executable = entry.command.first else { continue }
+                let registered = asideIsRegistered(executable: executable, serverName: entry.serverName)
+                if install, registered {
                     print("\(entry.client): \(entry.serverName) already registered, skipping")
                     continue
                 }
+                if !install, !registered {
+                    print("\(entry.client): \(entry.serverName) not registered, skipping")
+                    continue
+                }
                 print("Running: \(entry.command.joined(separator: " "))")
-                try asideRunCommand(entry.command)
+                do {
+                    try asideRunCommand(entry.command)
+                } catch {
+                    // Keep going so one client's failure never leaves the other client's
+                    // registration untouched; report everything at the end.
+                    failures.append("\(entry.client) \(entry.serverName): \(error)")
+                }
             }
             print("")
-            print(install ? "Installed." : "Removed.")
-            return
+            if failures.isEmpty {
+                print(install ? "Installed." : "Removed.")
+                return
+            }
+            throw CLIError(message: (install ? "Some registrations failed:\n  " : "Some removals failed:\n  ") + failures.joined(separator: "\n  "))
 
         default:
             print("Usage: programa aside <status|install-mcp|uninstall-mcp> [--with-devtools] [--yes]")

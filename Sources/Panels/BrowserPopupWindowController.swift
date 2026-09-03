@@ -414,8 +414,8 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
             }
             switch response {
             case .alertFirstButtonReturn:
-                // Open in default browser, cancel popup navigation
-                NSWorkspace.shared.open(url)
+                // Open outside Programa, cancel popup navigation
+                BrowserLinkOpenSettings.openExternally(url)
                 decisionHandler(.cancel)
             case .alertSecondButtonReturn:
                 // Proceed in popup

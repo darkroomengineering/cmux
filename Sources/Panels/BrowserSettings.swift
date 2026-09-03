@@ -295,12 +295,23 @@ enum BrowserLinkOpenSettings {
         return workspace.urlForApplication(withBundleIdentifier: trimmed)
     }
 
+    /// Opens a web link outside Programa. Only http(s) URLs go to the preferred browser;
+    /// every other scheme (mailto:, slack://, file:) keeps its macOS-registered handler.
+    /// The preferred-browser launch is asynchronous, so `true` means the launch was
+    /// dispatched, not that it finished; a launch error is logged, not surfaced.
     @discardableResult
     static func openExternally(_ url: URL, defaults: UserDefaults = .standard, workspace: NSWorkspace = .shared) -> Bool {
+        let scheme = url.scheme?.lowercased()
+        let isWebLink = scheme == "http" || scheme == "https"
         let bundleIdentifier = externalBrowserBundleIdentifier(defaults: defaults)
-        if let appURL = externalBrowserApplicationURL(bundleIdentifier: bundleIdentifier, workspace: workspace) {
+        if isWebLink,
+           let appURL = externalBrowserApplicationURL(bundleIdentifier: bundleIdentifier, workspace: workspace) {
             let configuration = NSWorkspace.OpenConfiguration()
-            workspace.open([url], withApplicationAt: appURL, configuration: configuration)
+            workspace.open([url], withApplicationAt: appURL, configuration: configuration) { _, error in
+                if let error {
+                    NSLog("BrowserLinkOpenSettings.openExternally: launching %@ for %@ failed: %@", appURL.path, url.absoluteString, error.localizedDescription)
+                }
+            }
             return true
         }
         return workspace.open(url)

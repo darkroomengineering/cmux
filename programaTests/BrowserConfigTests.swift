@@ -4168,6 +4168,20 @@ final class BrowserLinkOpenSettingsTests: XCTestCase {
         XCTAssertEqual(workspace.openedWithApplicationURLs.map(\.0), [url])
         XCTAssertEqual(workspace.openedWithApplicationURLs.map(\.1), [workspace.applicationURLOverride])
     }
+
+    func testOpenExternallyKeepsNonWebSchemesOnSystemHandlerEvenWithPreferredBrowser() throws {
+        defaults.set("com.apple.Safari", forKey: BrowserLinkOpenSettings.externalBrowserBundleIdentifierKey)
+        let workspace = BrowserExternalOpenRecordingWorkspace()
+        workspace.applicationURLOverride = URL(fileURLWithPath: "/Applications/Safari.app")
+        let mailto = try XCTUnwrap(URL(string: "mailto:someone@example.com"))
+        let deepLink = try XCTUnwrap(URL(string: "slack://open?team=T1"))
+
+        XCTAssertTrue(BrowserLinkOpenSettings.openExternally(mailto, defaults: defaults, workspace: workspace))
+        XCTAssertTrue(BrowserLinkOpenSettings.openExternally(deepLink, defaults: defaults, workspace: workspace))
+
+        XCTAssertEqual(workspace.openedURLs, [mailto, deepLink])
+        XCTAssertTrue(workspace.openedWithApplicationURLs.isEmpty)
+    }
 }
 
 private final class BrowserExternalOpenRecordingWorkspace: NSWorkspace {
