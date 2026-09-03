@@ -402,9 +402,13 @@ def _assert_non_focus_tool_preserves_selected_workspace(
     )
 
 
-def _assert_browser_tool_flow(mcp: ProgramaMcpClient, workspace_id: str, source_surface_id: str) -> None:
+def _assert_browser_tool_flow(
+    mcp: ProgramaMcpClient, workspace_id: str, source_surface_id: str, selected_workspace_id: str
+) -> None:
     """Exercises the basic browser_* tool flow end-to-end against the real embedded WKWebView:
-    open a split browser surface at a data: URL, read its title back, then close the tab."""
+    open a split browser surface at a data: URL, read its title back, then close the tab. The
+    target workspace is NOT the selected one, so this also checks the flow never moves the
+    app's selection (the negative-space focus policy applied to browser tools)."""
     title = f"programa-mcp-browser-{os.getpid()}"
     data_url = f"data:text/html,<title>{title}</title>"
 
@@ -425,6 +429,13 @@ def _assert_browser_tool_flow(mcp: ProgramaMcpClient, workspace_id: str, source_
     _must(got_title == title, f"browser_get_title expected {title!r} after browser_open_split, got {got_title!r}")
 
     mcp.call_tool("browser_tab_close", {"surface_id": browser_surface_id, "workspace_id": workspace_id})
+
+    after = _current_workspace_id(mcp)
+    _must(
+        after == selected_workspace_id,
+        f"browser_* flow on a different workspace must not change workspace_current "
+        f"-- expected it to stay {selected_workspace_id}, got {after}",
+    )
 
 
 def _assert_resource_read_exposes_sibling_pane_text(mcp: ProgramaMcpClient, surface_id: str, marker: str) -> None:
@@ -499,7 +510,7 @@ def main() -> int:
                 mcp.call_tool("surface_send_text", {"surface_id": other_surface_id, "text": f"echo {marker}\n"})
                 _assert_resource_read_exposes_sibling_pane_text(mcp, other_surface_id, marker)
 
-                _assert_browser_tool_flow(mcp, ws_other, other_surface_id)
+                _assert_browser_tool_flow(mcp, ws_other, other_surface_id, ws_selected)
 
         print("PASS: programa-mcp end-to-end (initialize, tools/list catalog, system_ping, "
               "workspace_list count, focus policy positive+negative space, sibling-pane resource read, "

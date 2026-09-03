@@ -149,7 +149,7 @@ enum FocusTools {
         ProgramaTool(
             name: "focus_browser_element",
             socketMethod: "browser.focus",
-            description: "Focuses the DOM element matched by a selector inside a browser surface's page (calls its .focus()), selecting its workspace and bringing its window forward. This tool may raise/activate the Programa window.",
+            description: "Calls .focus() on the DOM element matched by a selector inside a browser surface's page. It does not select the workspace or raise the window itself, but it runs with focus intent, so the page may end up owning keyboard focus. This tool may raise/activate the Programa window.",
             inputSchema: ProgramaToolSchema.object(
                 properties: [
                     "selector": ProgramaToolSchema.string("CSS selector identifying the element to focus. Also accepts sel, element_ref, or ref as aliases."),
@@ -164,7 +164,7 @@ enum FocusTools {
         ProgramaTool(
             name: "focus_browser_tab_switch",
             socketMethod: "browser.tab.switch",
-            description: "Switches which browser tab (surface) is focused within a workspace, selecting the workspace and bringing its window forward. This tool may raise/activate the Programa window.",
+            description: "Switches which browser tab (surface) is focused within a workspace and moves keyboard focus to it. It does not select the workspace or raise the window; pass workspace_id when the target lives in a workspace other than the selected one. This tool may raise/activate the Programa window.",
             inputSchema: ProgramaToolSchema.object(properties: [
                 "target_surface_id": ProgramaToolSchema.string("Browser surface UUID or short ref to switch to. Also accepts tab_id as an alias."),
                 "tab_id": ProgramaToolSchema.string("Alias for target_surface_id."),

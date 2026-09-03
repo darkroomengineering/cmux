@@ -48,7 +48,7 @@ enum BrowserTools {
         ProgramaTool(
             name: "browser_open_split",
             socketMethod: "browser.open_split",
-            description: "Opens a new browser surface as a split next to a source surface (or reuses an existing sibling browser pane when one is already positioned to the right). Creates UI but never raises/activates the Programa window or moves keyboard focus. Returns the new surface_id.",
+            description: "Opens a new browser surface as a split next to a source surface (or reuses an existing sibling browser pane when one is already positioned to the right). Never raises/activates the Programa window or switches the selected workspace; inside the target workspace the new tab becomes that workspace's focused surface, so the user only sees a change if they are already looking at that workspace. Returns the new surface_id.",
             inputSchema: ProgramaToolSchema.object(properties: [
                 "url": ProgramaToolSchema.string("Initial URL to load. Opens a blank browser tab if omitted."),
                 "respect_external_open_rules": ProgramaToolSchema.boolean("If true, URLs matched by the user's configured external-open rules are opened in the default system browser instead of inside Programa. Defaults to false."),
@@ -857,7 +857,7 @@ enum BrowserTools {
         ProgramaTool(
             name: "browser_tab_new",
             socketMethod: "browser.tab.new",
-            description: "Creates a new browser tab (surface) in an existing pane. Creates UI but never raises/activates the Programa window or moves keyboard focus. Returns the new surface_id.",
+            description: "Creates a new browser tab (surface) in an existing pane. Never raises/activates the Programa window or switches the selected workspace; inside the target workspace the new tab becomes that pane's focused surface. Returns the new surface_id.",
             inputSchema: ProgramaToolSchema.object(properties: [
                 "url": ProgramaToolSchema.string("Initial URL to load. Opens a blank browser tab if omitted."),
                 "pane_id": ProgramaToolSchema.string("Pane UUID or short ref to create the tab in. Also accepts target_pane_id as an alias. Defaults to the pane of surface_id, then the workspace's focused pane."),
@@ -880,7 +880,7 @@ enum BrowserTools {
         ProgramaTool(
             name: "browser_tab_close",
             socketMethod: "browser.tab.close",
-            description: "Closes a browser tab (surface). Fails if it would close the workspace's last surface. Target resolves from target_surface_id/tab_id, then index into the workspace's browser tabs, then surface_id, then the workspace's focused surface.",
+            description: "Closes a browser tab (surface). Fails if it would close the workspace's last surface. Target resolves from target_surface_id/tab_id, then index into the workspace's browser tabs, then surface_id, then the workspace's focused surface. Pass workspace_id when the target lives in a workspace other than the selected one; target_surface_id alone does not route the call.",
             inputSchema: ProgramaToolSchema.object(properties: [
                 "target_surface_id": ProgramaToolSchema.string("Browser surface UUID or short ref to close. Also accepts tab_id as an alias."),
                 "tab_id": ProgramaToolSchema.string("Alias for target_surface_id."),
@@ -1108,7 +1108,7 @@ enum BrowserTools {
         ProgramaTool(
             name: "browser_design_mode_toggle",
             socketMethod: "browser.design_mode.toggle",
-            description: "Toggles Design Mode on the workspace's focused browser panel (or its single browser panel, when a terminal is focused). No surface_id needed.",
+            description: "Toggles Design Mode on the workspace's focused browser panel (or its single browser panel, when a terminal is focused). Inside that workspace it focuses the browser panel and its web view; it never raises/activates the Programa window or switches the selected workspace. No surface_id needed.",
             inputSchema: ProgramaToolSchema.object(properties: [
                 "window_id": ProgramaToolSchema.windowIdProperty,
                 "workspace_id": ProgramaToolSchema.workspaceIdProperty,
