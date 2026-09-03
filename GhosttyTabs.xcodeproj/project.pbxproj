@@ -244,6 +244,7 @@
 		C822996ABCA4BC5A05F03FCA /* WindowTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4637F3FDED9E2BE392AC4FF3 /* WindowTools.swift */; };
 		AC75F9674FB2EF7517981F02 /* WorkspaceTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = D66969AE8B67C77B230B2E36 /* WorkspaceTools.swift */; };
 		C430DEB65092EF8117A6168A /* SurfaceTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFAA29E90AE31696CA8252CC /* SurfaceTools.swift */; };
+		B70A5E77312F14668D08DA3F /* BrowserTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70A5E7355D915609CB34A56 /* BrowserTools.swift */; };
 		D80A3C81B01BA388ED7C0ED3 /* PaneTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76F0C8EF1FDB80FC43431CE5 /* PaneTools.swift */; };
 		43ED49DC65E4836E0C176188 /* NotificationTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F3CC8D1ACECC6F33C965866 /* NotificationTools.swift */; };
 		4171E1405F705E5BB6250035 /* WorktreeTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDFE9E4D904E027662FCF68E /* WorktreeTools.swift */; };
@@ -651,6 +652,7 @@
 		4637F3FDED9E2BE392AC4FF3 /* WindowTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WindowTools.swift"; sourceTree = "<group>"; };
 		D66969AE8B67C77B230B2E36 /* WorkspaceTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WorkspaceTools.swift"; sourceTree = "<group>"; };
 		DFAA29E90AE31696CA8252CC /* SurfaceTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SurfaceTools.swift"; sourceTree = "<group>"; };
+		B70A5E7355D915609CB34A56 /* BrowserTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "BrowserTools.swift"; sourceTree = "<group>"; };
 		76F0C8EF1FDB80FC43431CE5 /* PaneTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PaneTools.swift"; sourceTree = "<group>"; };
 		9F3CC8D1ACECC6F33C965866 /* NotificationTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "NotificationTools.swift"; sourceTree = "<group>"; };
 		FDFE9E4D904E027662FCF68E /* WorktreeTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WorktreeTools.swift"; sourceTree = "<group>"; };
@@ -1120,6 +1122,7 @@
 				4A26A3DD2D18C0FC6478354B /* SnapshotTools.swift */,
 				DFDBEC8463473B25B04AF031 /* ReviewTools.swift */,
 				30DC1E7B0A701824297403A5 /* FocusTools.swift */,
+				B70A5E7355D915609CB34A56 /* BrowserTools.swift */,
 			);
 			path = Tools;
 			sourceTree = "<group>";
@@ -1743,6 +1746,7 @@
 				15C9B43641377E187FF142AA /* SnapshotTools.swift in Sources */,
 				BF28BF135A0A6AFD930B32DB /* ReviewTools.swift in Sources */,
 				261DAC4DEE4230600AC8B240 /* FocusTools.swift in Sources */,
+				B70A5E77312F14668D08DA3F /* BrowserTools.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

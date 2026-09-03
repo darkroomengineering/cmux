@@ -78,13 +78,13 @@ back.
 
 ## Tools
 
-96 tools, named after the socket method they call, with `.` replaced by `_`:
+187 tools, named after the socket method they call, with `.` replaced by `_`:
 `surface.read_text` becomes `surface_read_text`, `review.comment.add` becomes
 `review_comment_add`.
 
 ### The `focus_` prefix
 
-Ten tools can pull macOS focus to Programa and raise its window. They are named with a
+Thirteen tools can pull macOS focus to Programa and raise its window. They are named with a
 `focus_` prefix instead of their method name, so the name alone tells you the tool is
 disruptive before you read its description:
 
@@ -100,6 +100,9 @@ disruptive before you read its description:
 | `focus_pane_last` | `pane.last` |
 | `focus_review_open` | `review.open` |
 | `focus_worktree_open` | `worktree.open` |
+| `focus_browser_webview` | `browser.focus_webview` |
+| `focus_browser_element` | `browser.focus` |
+| `focus_browser_tab_switch` | `browser.tab.switch` |
 
 Every other tool leaves your focus alone. This is enforced by the app, not by the server:
 the socket layer only permits focus changes for the methods in `focusIntentV2Methods`
@@ -129,12 +132,28 @@ different window.
 Resources are read on demand. There are no push notifications when a pane's output
 changes, so poll if you need to follow along.
 
+## Browser tools
+
+Programa's browser panels are per-workspace `WKWebView`s, not a Chromium/CDP surface --
+there is no DevTools Protocol underneath, so a handful of Playwright-shaped tools
+(`browser_viewport_set`, `browser_network_route`, `browser_input_mouse`, and similar) always
+return a `not_supported` error on this platform. They stay in the tool list so calling one
+gets a clear error instead of an unknown-tool failure.
+
+Typical flow: `browser_open_split` (or `browser_tab_new`) to open a tab, `browser_navigate`
+to load a URL, then `browser_snapshot`, `browser_get_text`, or `browser_screenshot` to read
+the page, `browser_click`/`browser_fill`/`browser_press` and friends to interact with it, and
+`browser_tab_close` when you are done.
+
+Reads and interactions never move your focus -- opening or interacting with a browser tab
+never raises the Programa window or steals keyboard focus, the same guarantee the rest of
+the tool table gives you. Only the three `focus_browser_*` tools (see "The `focus_` prefix"
+above) can do that.
+
 ## What is not exposed
 
 Deliberate omissions, not oversights:
 
-- **Browser automation** (`browser.*`, 85 methods). A large Playwright-style surface for
-  Programa's browser panels, unrelated to terminal control. A candidate for a later pass.
 - **Debug methods** (`debug.*`). DEBUG builds only, and mostly UI-test hooks that can
   synthesize keystrokes and activate the app.
 - **App chrome** (`auth.login`, `settings.open`, `feedback.*`, `markdown.open`) and
