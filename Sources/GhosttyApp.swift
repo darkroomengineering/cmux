@@ -2190,7 +2190,7 @@ class GhosttyApp {
                 dlog("link.openURL cmuxBrowser=disabled, opening externally url=\(target.url)")
                 #endif
                 return performOnMain {
-                    NSWorkspace.shared.open(target.url)
+                    BrowserLinkOpenSettings.openExternally(target.url)
                 }
             }
             switch target {
@@ -2199,7 +2199,7 @@ class GhosttyApp {
                 dlog("link.openURL target=external, opening externally url=\(url)")
                 #endif
                 return performOnMain {
-                    NSWorkspace.shared.open(url)
+                    BrowserLinkOpenSettings.openExternally(url)
                 }
             case let .embeddedBrowser(url):
                 if BrowserLinkOpenSettings.shouldOpenExternally(url) {
@@ -2207,7 +2207,7 @@ class GhosttyApp {
                     dlog("link.openURL target=embedded but shouldOpenExternally=true url=\(url)")
                     #endif
                     return performOnMain {
-                        NSWorkspace.shared.open(url)
+                        BrowserLinkOpenSettings.openExternally(url)
                     }
                 }
                 guard let host = BrowserInsecureHTTPSettings.normalizeHost(url.host ?? "") else {
@@ -2215,7 +2215,7 @@ class GhosttyApp {
                     dlog("link.openURL target=embedded but normalizeHost=nil host=\(url.host ?? "nil") url=\(url)")
                     #endif
                     return performOnMain {
-                        NSWorkspace.shared.open(url)
+                        BrowserLinkOpenSettings.openExternally(url)
                     }
                 }
 
@@ -2225,7 +2225,7 @@ class GhosttyApp {
                     dlog("link.openURL target=embedded but hostWhitelist miss host=\(host) url=\(url)")
                     #endif
                     return performOnMain {
-                        NSWorkspace.shared.open(url)
+                        BrowserLinkOpenSettings.openExternally(url)
                     }
                 }
                 let sourceWorkspaceId = callbackTabId
@@ -2262,7 +2262,7 @@ class GhosttyApp {
                                 "tabId=\(sourceWorkspaceId) surfaceId=\(sourcePanelId)"
                             )
                             #endif
-                            NSWorkspace.shared.open(url)
+                            BrowserLinkOpenSettings.openExternally(url)
                             return
                         }
                         let workspace = resolved.workspace
@@ -2279,14 +2279,14 @@ class GhosttyApp {
                             dlog("link.openURL opening in existing browser pane=\(targetPane)")
                             #endif
                             if workspace.newBrowserSurface(inPane: targetPane, url: url, focus: true) == nil {
-                                NSWorkspace.shared.open(url)
+                                BrowserLinkOpenSettings.openExternally(url)
                             }
                         } else {
                             #if DEBUG
                             dlog("link.openURL opening as new browser split from surface=\(sourcePanelId)")
                             #endif
                             if workspace.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, url: url) == nil {
-                                NSWorkspace.shared.open(url)
+                                BrowserLinkOpenSettings.openExternally(url)
                             }
                         }
                     }

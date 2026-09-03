@@ -555,6 +555,15 @@ struct programaApp: App {
                 ) {
                     AppDelegate.shared?.openOpenCodeIntegrationInstaller(debugSource: "menu.installOpenCodeIntegration")
                 }
+
+                Button(
+                    String(
+                        localized: "menu.file.installAsideMCP",
+                        defaultValue: "Install Aside Browser MCP…"
+                    )
+                ) {
+                    AppDelegate.shared?.openAsideMCPInstaller(debugSource: "menu.installAsideMCP")
+                }
             }
 
             // Close tab/workspace

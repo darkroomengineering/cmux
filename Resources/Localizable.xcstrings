@@ -8599,6 +8599,74 @@
         }
       }
     },
+    "settings.browser.externalBrowser": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open External Links With"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外部リンクを開くブラウザ"
+          }
+        }
+      }
+    },
+    "settings.browser.externalBrowser.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Used for terminal links and browser links that open outside Programa."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Programa の外部で開くターミナルリンクやブラウザリンクに使用されます。"
+          }
+        }
+      }
+    },
+    "settings.browser.externalBrowser.systemDefault": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "System Default"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "システムのデフォルト"
+          }
+        }
+      }
+    },
+    "menu.file.installAsideMCP": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install Aside Browser MCP…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aside ブラウザ MCP をインストール…"
+          }
+        }
+      }
+    },
     "settings.browser.externalPatterns": {
       "extractionState": "manual",
       "localizations": {

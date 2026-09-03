@@ -213,6 +213,30 @@ Use the same panel that renders `programa markdown open` for it, so lean on its 
 
 `programa recap list` shows the slugs already saved. Keep the recap itself short and plain, the same way you'd summarize the change in chat.
 
+## Browser work
+
+Two browsers, two jobs. Do not reach for a Chrome extension for either.
+
+- **Local previews, smoke tests, screenshots you read back, DOM checks, console errors:** use programa's embedded browser. It opens beside your pane, keeps its own profile, and never moves the user's focus:
+
+  ```bash
+  programa browser open-split http://localhost:3000            # prints the new surface id
+  programa browser --surface surface:7 snapshot --interactive  # interactive elements only
+  programa browser --surface surface:7 click "button.submit" --snapshot-after
+  programa browser --surface surface:7 screenshot --out /tmp/after.png
+  programa browser --surface surface:7 tab close
+  ```
+
+  `programa browser --help` lists the rest (wait, fill, eval, cookies, console, errors). Network routing, viewport, and raw input injection are not supported on WKWebView and return `not_supported`. Over MCP the same calls are the `browser_*` tools of `programa-mcp`.
+
+- **Logged-in sites, private dashboards, CI logs, anything that needs the user's real browser profile:** use Aside through its MCP server if it is registered (tools from the `aside` server, or `aside-devtools` for raw Chrome DevTools control), or delegate a whole task from the shell:
+
+  ```bash
+  aside "Open the staging dashboard and tell me whether the last deploy is green"
+  ```
+
+  `programa aside status` says whether Aside is installed and registered; `programa aside install-mcp` registers it with Claude Code and Codex. Do not run the installer yourself unless the user asks, it edits their agent config.
+
 ## Reference
 
 - `--workspace`/`--surface`/`--pane`/`--window` accept either a short ref (`workspace:2`, `surface:4`) or a raw UUID; omitted, they default to `$PROGRAMA_WORKSPACE_ID`/`$PROGRAMA_SURFACE_ID`.

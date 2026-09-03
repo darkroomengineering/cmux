@@ -1171,7 +1171,7 @@ final class ProgramaWebView: WKWebView {
             _ = contextMenuDefaultBrowserOpener(url)
             return
         }
-        _ = NSWorkspace.shared.open(url)
+        _ = BrowserLinkOpenSettings.openExternally(url)
     }
 
     private func runContextMenuFallback(

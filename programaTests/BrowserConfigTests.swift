@@ -4125,6 +4125,75 @@ final class BrowserLinkOpenSettingsTests: XCTestCase {
             )
         )
     }
+
+    func testExternalBrowserApplicationURLReturnsNilForEmptyBundleIdentifier() {
+        XCTAssertNil(BrowserLinkOpenSettings.externalBrowserApplicationURL(bundleIdentifier: ""))
+    }
+
+    func testExternalBrowserApplicationURLReturnsNilForUnknownBundleIdentifier() {
+        XCTAssertNil(
+            BrowserLinkOpenSettings.externalBrowserApplicationURL(bundleIdentifier: "com.example.does-not-exist")
+        )
+    }
+
+    func testExternalBrowserApplicationURLResolvesInstalledApplication() throws {
+        let url = try XCTUnwrap(
+            BrowserLinkOpenSettings.externalBrowserApplicationURL(bundleIdentifier: "com.apple.Safari")
+        )
+        XCTAssertTrue(url.path.hasSuffix(".app"))
+    }
+
+    func testOpenExternallyFallsBackToSystemOpenForUnknownBundleIdentifier() {
+        defaults.set("com.example.does-not-exist", forKey: BrowserLinkOpenSettings.externalBrowserBundleIdentifierKey)
+        let workspace = BrowserExternalOpenRecordingWorkspace()
+        let url = try! XCTUnwrap(URL(string: "https://example.com"))
+
+        let opened = BrowserLinkOpenSettings.openExternally(url, defaults: defaults, workspace: workspace)
+
+        XCTAssertTrue(opened)
+        XCTAssertEqual(workspace.openedURLs, [url])
+        XCTAssertTrue(workspace.openedWithApplicationURLs.isEmpty)
+    }
+
+    func testOpenExternallyLaunchesResolvedApplicationForKnownBundleIdentifier() throws {
+        defaults.set("com.apple.Safari", forKey: BrowserLinkOpenSettings.externalBrowserBundleIdentifierKey)
+        let workspace = BrowserExternalOpenRecordingWorkspace()
+        workspace.applicationURLOverride = URL(fileURLWithPath: "/Applications/Safari.app")
+        let url = try XCTUnwrap(URL(string: "https://example.com"))
+
+        let opened = BrowserLinkOpenSettings.openExternally(url, defaults: defaults, workspace: workspace)
+
+        XCTAssertTrue(opened)
+        XCTAssertTrue(workspace.openedURLs.isEmpty)
+        XCTAssertEqual(workspace.openedWithApplicationURLs.map(\.0), [url])
+        XCTAssertEqual(workspace.openedWithApplicationURLs.map(\.1), [workspace.applicationURLOverride])
+    }
+}
+
+private final class BrowserExternalOpenRecordingWorkspace: NSWorkspace {
+    var openedURLs: [URL] = []
+    var openedWithApplicationURLs: [(URL, URL)] = []
+    var applicationURLOverride: URL?
+
+    override func open(_ url: URL) -> Bool {
+        openedURLs.append(url)
+        return true
+    }
+
+    override func urlForApplication(withBundleIdentifier bundleIdentifier: String) -> URL? {
+        applicationURLOverride
+    }
+
+    override func open(
+        _ urls: [URL],
+        withApplicationAt applicationURL: URL,
+        configuration: NSWorkspace.OpenConfiguration,
+        completionHandler: (@Sendable (NSRunningApplication?, Error?) -> Void)? = nil
+    ) {
+        for url in urls {
+            openedWithApplicationURLs.append((url, applicationURL))
+        }
+    }
 }
 
 

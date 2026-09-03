@@ -1445,6 +1445,62 @@ final class TerminalThemeSettingsTests: XCTestCase {
         XCTAssertEqual(reloadRequestCount, 2)
     }
 
+    func testSettingsFileMapsExternalBrowserToManagedDefaults() throws {
+        let defaults = UserDefaults.standard
+        let previousValue = defaults.string(forKey: BrowserLinkOpenSettings.externalBrowserBundleIdentifierKey)
+        defer {
+            restoreDefaultsValue(
+                previousValue,
+                key: BrowserLinkOpenSettings.externalBrowserBundleIdentifierKey,
+                defaults: defaults
+            )
+        }
+
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let settingsURL = directoryURL.appendingPathComponent("settings.json", isDirectory: false)
+        let configURL = directoryURL.appendingPathComponent("config.ghostty", isDirectory: false)
+        let themeStore = TerminalThemeStore(
+            fileManager: .default,
+            managedConfigURL: configURL,
+            configSearchURLs: [configURL]
+        )
+        try writeSettingsFile(
+            """
+            {
+              "browser": {
+                "externalBrowser": "com.apple.Safari"
+              }
+            }
+            """,
+            to: settingsURL
+        )
+
+        _ = ProgramaSettingsFileStore(
+            primaryPath: settingsURL.path,
+            fallbackPath: nil,
+            fileManager: .default,
+            notificationCenter: .default,
+            terminalThemeStore: themeStore,
+            terminalThemeReloadHandler: {},
+            startWatching: false
+        )
+
+        XCTAssertEqual(
+            defaults.string(forKey: BrowserLinkOpenSettings.externalBrowserBundleIdentifierKey),
+            "com.apple.Safari"
+        )
+    }
+
+    private func restoreDefaultsValue(_ value: Any?, key: String, defaults: UserDefaults) {
+        if let value {
+            defaults.set(value, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
     func testAppearanceOverridesRoundTripAllFourDirectives() throws {
         let directoryURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directoryURL) }

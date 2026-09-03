@@ -466,7 +466,7 @@ final class BrowserPanel: Panel, ObservableObject {
         BrowserPasskeyHandoffAlertBuilder.configure(alert)
         let handleResponse: @MainActor @Sendable (NSApplication.ModalResponse) -> Void = { response in
             guard response == .alertFirstButtonReturn else { return }
-            NSWorkspace.shared.open(url)
+            BrowserLinkOpenSettings.openExternally(url)
         }
         if let alertWindow = insecureHTTPAlertWindowProvider() {
             alert.beginSheetModal(for: alertWindow, completionHandler: handleResponse)
@@ -2553,7 +2553,7 @@ final class BrowserPanel: Panel, ObservableObject {
         }
         switch response {
         case .alertFirstButtonReturn:
-            NSWorkspace.shared.open(url)
+            BrowserLinkOpenSettings.openExternally(url)
         case .alertSecondButtonReturn:
             switch intent {
             case .currentTab:

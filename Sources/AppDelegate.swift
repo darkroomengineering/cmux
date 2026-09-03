@@ -4756,6 +4756,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
         return workspace.id
     }
 
+    /// Opens a new workspace and runs `programa aside install-mcp --with-devtools` in it,
+    /// mirroring openOpenCodeIntegrationInstaller: no working-directory override, since
+    /// the installer targets the user's global Claude Code / Codex MCP config, not a project.
+    @discardableResult
+    func openAsideMCPInstaller(event: NSEvent? = nil, debugSource: String = "unspecified") -> UUID? {
+        discardOrphanedMainWindowContexts()
+        guard let context = preferredMainWindowContextForWorkspaceCreation(event: event, debugSource: debugSource) else {
+            openNewMainWindow(nil)
+            return nil
+        }
+        guard let window = resolvedWindow(for: context) else {
+            discardOrphanedMainWindowContext(context)
+            openNewMainWindow(nil)
+            return nil
+        }
+        setActiveMainWindow(window)
+
+        let workspace = context.tabManager.addWorkspace(
+            initialTerminalInput: "programa aside install-mcp --with-devtools\n",
+            select: true
+        )
+        return workspace.id
+    }
+
     private func preferredMainWindowContextForWorkspaceCreation(
         event: NSEvent? = nil,
         debugSource: String = "unspecified"

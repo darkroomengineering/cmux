@@ -217,6 +217,9 @@ enum BrowserLinkOpenSettings {
     static let browserExternalOpenPatternsKey = "browserExternalOpenPatterns"
     static let defaultBrowserExternalOpenPatterns: String = ""
 
+    static let externalBrowserBundleIdentifierKey = "browserExternalBrowserBundleIdentifier"
+    static let defaultExternalBrowserBundleIdentifier: String = ""
+
     static func openTerminalLinksInProgramaBrowser(defaults: UserDefaults = .standard) -> Bool {
         if defaults.object(forKey: openTerminalLinksInProgramaBrowserKey) == nil {
             return defaultOpenTerminalLinksInProgramaBrowser
@@ -279,6 +282,47 @@ enum BrowserLinkOpenSettings {
         }
 
         return false
+    }
+
+    static func externalBrowserBundleIdentifier(defaults: UserDefaults = .standard) -> String {
+        let raw = defaults.string(forKey: externalBrowserBundleIdentifierKey) ?? defaultExternalBrowserBundleIdentifier
+        return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func externalBrowserApplicationURL(bundleIdentifier: String, workspace: NSWorkspace = .shared) -> URL? {
+        let trimmed = bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return workspace.urlForApplication(withBundleIdentifier: trimmed)
+    }
+
+    @discardableResult
+    static func openExternally(_ url: URL, defaults: UserDefaults = .standard, workspace: NSWorkspace = .shared) -> Bool {
+        let bundleIdentifier = externalBrowserBundleIdentifier(defaults: defaults)
+        if let appURL = externalBrowserApplicationURL(bundleIdentifier: bundleIdentifier, workspace: workspace) {
+            let configuration = NSWorkspace.OpenConfiguration()
+            workspace.open([url], withApplicationAt: appURL, configuration: configuration)
+            return true
+        }
+        return workspace.open(url)
+    }
+
+    static func installedBrowsers(workspace: NSWorkspace = .shared) -> [(bundleIdentifier: String, name: String)] {
+        guard let exampleURL = URL(string: "https://example.com") else { return [] }
+        let ownBundleIdentifier = Bundle.main.bundleIdentifier
+        var seen = Set<String>()
+        var results: [(bundleIdentifier: String, name: String)] = []
+        for appURL in workspace.urlsForApplications(toOpen: exampleURL) {
+            guard let bundleIdentifier = Bundle(url: appURL)?.bundleIdentifier else { continue }
+            if bundleIdentifier == ownBundleIdentifier { continue }
+            guard !seen.contains(bundleIdentifier) else { continue }
+            seen.insert(bundleIdentifier)
+            var name = FileManager.default.displayName(atPath: appURL.path)
+            if name.hasSuffix(".app") {
+                name = String(name.dropLast(4))
+            }
+            results.append((bundleIdentifier: bundleIdentifier, name: name))
+        }
+        return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     /// Check whether a hostname matches the configured whitelist.
