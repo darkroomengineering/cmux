@@ -7,6 +7,43 @@ import XCTest
 #endif
 
 final class SessionPersistenceTests: XCTestCase {
+    @MainActor
+    func testWorkspaceSessionSnapshotRestoresPendingReviewComments() throws {
+        let workspace = Workspace()
+        let sourceID = try XCTUnwrap(workspace.focusedPanelId)
+        let panel = try XCTUnwrap(workspace.newReviewSplit(from: sourceID, orientation: .horizontal))
+        let comment = try panel.addComment(filePath: "App.swift", startLine: 4, endLine: 6, text: "Preserve this review")
+        let snapshot = workspace.sessionSnapshot(includeScrollback: false)
+        XCTAssertEqual(snapshot.panels.first(where: { $0.id == panel.id })?.review?.comments, [comment])
+
+        let restored = Workspace()
+        restored.restoreSessionSnapshot(snapshot)
+        let restoredPanel = try XCTUnwrap(restored.panels.values.compactMap { $0 as? ReviewPanel }.first)
+        XCTAssertEqual(restoredPanel.comments.first?.id, comment.id)
+        XCTAssertEqual(restoredPanel.comments.first?.text, comment.text)
+        XCTAssertEqual(restoredPanel.comments.first?.startLine, 4)
+        XCTAssertEqual(restoredPanel.comments.first?.endLine, 6)
+        XCTAssertNotNil(restored.terminalPanel(for: restoredPanel.sourceSurfaceId), "Source routing must remap with the restored terminal")
+        XCTAssertFalse(restored.sendReviewComments(sourceSurfaceId: UUID(), text: "Missing source"))
+    }
+
+    @MainActor
+    func testSnapshotDecoderRejectsDuplicateAndExcessiveReviewDrafts() throws {
+        let workspace = Workspace()
+        let panel = try XCTUnwrap(workspace.newReviewSplit(from: try XCTUnwrap(workspace.focusedPanelId), orientation: .horizontal))
+        let comment = try panel.addComment(filePath: "App.swift", startLine: 1, text: "Draft")
+        var snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        snapshot.windows[0].tabManager.workspaces[0] = workspace.sessionSnapshot(includeScrollback: false)
+        let index = try XCTUnwrap(snapshot.windows[0].tabManager.workspaces[0].panels.firstIndex(where: { $0.id == panel.id }))
+        XCTAssertNotNil(SessionPersistenceStore.decodeSnapshot(from: try JSONEncoder().encode(snapshot)))
+        snapshot.windows[0].tabManager.workspaces[0].panels[index].review?.comments = [comment, comment]
+        XCTAssertNil(SessionPersistenceStore.decodeSnapshot(from: try JSONEncoder().encode(snapshot)))
+        snapshot.windows[0].tabManager.workspaces[0].panels[index].review?.comments = (0...SessionPersistencePolicy.maxReviewCommentsPerPanel).map { _ in
+            ReviewComment(filePath: "App.swift", startLine: 1, text: "Draft")
+        }
+        XCTAssertNil(SessionPersistenceStore.decodeSnapshot(from: try JSONEncoder().encode(snapshot)))
+    }
+
     private struct LegacyPersistedWindowGeometry: Codable {
         let frame: SessionRectSnapshot
         let display: SessionDisplaySnapshot?

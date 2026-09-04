@@ -118,7 +118,7 @@ private struct ReviewCommentWireValue: Sendable {
 }
 
 private struct ReviewSendResult: Sendable {
-    let sentCount: Int
+    let sentCount: Int?
     let sourceSurfaceId: UUID
     let windowId: UUID?
 }
@@ -414,12 +414,16 @@ extension TerminalController {
             guard let panel = self.v2ResolveReviewPanel(params: params, workspace: workspace) else {
                 return .panelNotFound
             }
-            return .value(panel.addComment(
-                filePath: filePath,
-                startLine: startLine,
-                endLine: endLine,
-                text: text
-            ).id)
+            do {
+                return .value(try panel.addComment(
+                    filePath: filePath,
+                    startLine: startLine,
+                    endLine: endLine,
+                    text: text
+                ).id)
+            } catch {
+                return .invalidParams(error.localizedDescription)
+            }
         }
 
         switch outcome {
@@ -555,8 +559,11 @@ extension TerminalController {
         case .panelNotFound:
             return .err(code: "not_found", message: "Review panel not found", data: nil)
         case .value(let sent):
+            guard let sentCount = sent.sentCount else {
+                return .err(code: "unavailable", message: "Review source terminal is unavailable. Pending comments were retained.", data: nil)
+            }
             return .ok([
-                "sent_count": sent.sentCount,
+                "sent_count": sentCount,
                 "target_surface_id": sent.sourceSurfaceId.uuidString,
                 "target_surface_ref": v2Ref(kind: .surface, uuid: sent.sourceSurfaceId),
                 "window_id": v2OrNull(sent.windowId?.uuidString),

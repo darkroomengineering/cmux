@@ -165,6 +165,7 @@ struct ReviewPanelView: View {
 
     @State private var collapsedFilePaths: Set<String> = []
     @State private var composer: InlineComposerState?
+    @State private var commentAdmissionError: String?
     @State private var rowPlanner = ReviewPanelRowPlanner()
 
     private struct InlineComposerState {
@@ -203,6 +204,14 @@ struct ReviewPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .alert(String(localized: "review.comment.addFailed", defaultValue: "Could not add comment"), isPresented: Binding(
+            get: { commentAdmissionError != nil },
+            set: { if !$0 { commentAdmissionError = nil } }
+        )) {
+            Button(String(localized: "common.ok", defaultValue: "OK"), role: .cancel) { commentAdmissionError = nil }
+        } message: {
+            Text(commentAdmissionError ?? "")
+        }
         .background(Color(nsColor: .textBackgroundColor))
         .background {
             if isVisibleInUI {
@@ -512,8 +521,12 @@ struct ReviewPanelView: View {
         guard let state = composer else { return }
         let trimmedText = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
-        panel.addComment(filePath: state.filePath, startLine: state.startLine, endLine: state.endLine, text: trimmedText)
-        composer = nil
+        do {
+            try panel.addComment(filePath: state.filePath, startLine: state.startLine, endLine: state.endLine, text: trimmedText)
+            composer = nil
+        } catch {
+            commentAdmissionError = error.localizedDescription
+        }
     }
 
     // MARK: - Pending comments
@@ -536,6 +549,18 @@ struct ReviewPanelView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
+            if panel.commentDeliveryFailed {
+                Text(String(localized: "review.delivery.unavailable", defaultValue: "The source terminal is unavailable. Your comments are saved here; retry when it is ready or copy them."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(panel.serializedPendingComments(), forType: .string)
+            } label: {
+                Text(String(localized: "review.comments.copy", defaultValue: "Copy comments"))
+                    .frame(minWidth: 44, minHeight: 44)
+            }
         }
     }
 

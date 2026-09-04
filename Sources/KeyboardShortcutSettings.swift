@@ -78,6 +78,7 @@ enum KeyboardShortcutSettings {
         case toggleBrowserDeveloperTools
         case showBrowserJavaScriptConsole
         case openReview
+        case openAgentOverview
 
         var id: String { rawValue }
 
@@ -139,6 +140,7 @@ enum KeyboardShortcutSettings {
             case .toggleBrowserDeveloperTools: return String(localized: "shortcut.toggleBrowserDevTools.label", defaultValue: "Toggle Browser Developer Tools")
             case .showBrowserJavaScriptConsole: return String(localized: "shortcut.showBrowserJSConsole.label", defaultValue: "Show Browser JavaScript Console")
             case .openReview: return String(localized: "shortcut.openReview.label", defaultValue: "Open Review Panel")
+            case .openAgentOverview: return String(localized: "contextMenu.openAgentOverview", defaultValue: "Open Agent Overview")
             }
         }
 
@@ -258,7 +260,7 @@ enum KeyboardShortcutSettings {
             case .showBrowserJavaScriptConsole:
                 // Safari default: Show JavaScript Console.
                 return StoredShortcut(key: "c", command: true, shift: false, option: true, control: false)
-            case .openReview:
+            case .openReview, .openAgentOverview:
                 // Shipped without a default binding: Cmd+Shift+R (the plan's suggested default)
                 // is already taken by `.renameWorkspace` (see docs/keyboard-shortcuts.md), and no
                 // other unclaimed combo was confirmed free across the whole app. Still fully

@@ -622,8 +622,8 @@ extension Workspace {
             baseBranch: baseBranch
         )
         reviewPanel.sendToSourceSurface = { [weak self, weak reviewPanel] text in
-            guard let self, let reviewPanel else { return }
-            self.sendReviewComments(sourceSurfaceId: reviewPanel.sourceSurfaceId, text: text)
+            guard let self, let reviewPanel else { return false }
+            return self.sendReviewComments(sourceSurfaceId: reviewPanel.sourceSurfaceId, text: text)
         }
         panels[reviewPanel.id] = reviewPanel
         panelTitles[reviewPanel.id] = reviewPanel.displayTitle

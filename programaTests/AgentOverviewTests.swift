@@ -78,6 +78,26 @@ final class AgentOverviewHierarchyTests: XCTestCase {
 }
 
 final class AgentOverviewPresentationTests: XCTestCase {
+    func testFilteringPreservesDefaultHierarchyAndMatchesChildrenWithinWorkspaceContext() {
+        let terminal = AgentOverviewTerminalSnapshot(id: UUID(), title: "Compiler", state: .needsInput)
+        let helper = AgentOverviewHelperSnapshot(id: UUID(), title: "Reviewer", state: .failed,
+                                                surfaceId: nil, hasIndependentOutput: false,
+                                                runsWithParent: true, depth: 1)
+        let workspace = AgentOverviewWorkspaceSnapshot(id: UUID(), title: "Pokefolio", state: .working,
+                                                      branchOrPullRequest: nil, folder: "repo", depth: 2,
+                                                      terminals: [terminal], helpers: [helper])
+        let windows = [AgentOverviewWindowSnapshot(id: UUID(), index: 0, workspaces: [workspace])]
+        XCTAssertEqual(AgentOverviewFilter.all.apply(to: windows, search: "  "), windows)
+
+        let attention = AgentOverviewFilter.needsInput.apply(to: windows, search: " POKE ")
+        XCTAssertEqual(attention.first?.workspaces.first?.terminals, [terminal])
+        XCTAssertEqual(attention.first?.workspaces.first?.helpers, [])
+        let failures = AgentOverviewFilter.failed.apply(to: windows, search: "reviewer")
+        XCTAssertEqual(failures.first?.workspaces.first?.helpers, [helper])
+        XCTAssertEqual(failures.first?.workspaces.first?.terminals, [])
+        XCTAssertTrue(AgentOverviewFilter.all.apply(to: windows, search: "unmatched").isEmpty)
+    }
+
     func testTaskStatesUsePlainUserFacingLabels() {
         XCTAssertEqual(AgentOverviewFriendlyState.from(activityState: nil).label, "Idle")
         XCTAssertEqual(AgentOverviewFriendlyState.from(taskState: .working).label, "Working")

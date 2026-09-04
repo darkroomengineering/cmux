@@ -206,8 +206,8 @@ extension Workspace {
                 reviewPanel.sourceSurfaceId = newSourceSurfaceId
             }
             reviewPanel.sendToSourceSurface = { [weak self, weak reviewPanel] text in
-                guard let self, let reviewPanel else { return }
-                self.sendReviewComments(sourceSurfaceId: reviewPanel.sourceSurfaceId, text: text)
+                guard let self, let reviewPanel else { return false }
+                return self.sendReviewComments(sourceSurfaceId: reviewPanel.sourceSurfaceId, text: text)
             }
             installReviewPanelSubscription(reviewPanel)
             reviewPanel.refresh()
@@ -344,7 +344,8 @@ extension Workspace {
             reviewSnapshot = SessionReviewPanelSnapshot(
                 sourceSurfaceId: reviewPanel.sourceSurfaceId,
                 mode: reviewPanel.mode.rawValue,
-                baseBranch: reviewPanel.baseBranch
+                baseBranch: reviewPanel.baseBranch,
+                comments: reviewPanel.comments
             )
         }
 
@@ -589,6 +590,7 @@ extension Workspace {
                 mode: mode,
                 baseBranch: baseBranch
             )
+            reviewPanel.restoreComments(reviewSnapshot.comments ?? [])
             panels[reviewPanel.id] = reviewPanel
             panelTitles[reviewPanel.id] = reviewPanel.displayTitle
             updatePanelDirectory(panelId: reviewPanel.id, directory: directory)

@@ -203,6 +203,48 @@ enum AgentOverviewFormatting {
     }
 }
 
+enum AgentOverviewFilter: String, CaseIterable {
+    case all, needsInput, failed
+
+    var label: String {
+        switch self {
+        case .all: return String(localized: "agentOverview.filter.all", defaultValue: "All")
+        case .needsInput: return AgentOverviewFriendlyState.needsInput.label
+        case .failed: return AgentOverviewFriendlyState.failed.label
+        }
+    }
+
+    func apply(to windows: [AgentOverviewWindowSnapshot], search: String) -> [AgentOverviewWindowSnapshot] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard self != .all || !query.isEmpty else { return windows }
+        func matchesState(_ state: AgentOverviewFriendlyState) -> Bool {
+            self == .all || (self == .needsInput && state == .needsInput) || (self == .failed && state == .failed)
+        }
+        func matchesName(_ name: String) -> Bool {
+            query.isEmpty || name.localizedCaseInsensitiveContains(query)
+        }
+        return windows.compactMap { window in
+            let workspaces = window.workspaces.compactMap { workspace -> AgentOverviewWorkspaceSnapshot? in
+                let workspaceMatches = matchesName(workspace.title)
+                let terminals = workspace.terminals.filter {
+                    matchesState($0.state) && (workspaceMatches || matchesName($0.title))
+                }
+                let helpers = workspace.helpers.filter {
+                    matchesState($0.state) && (workspaceMatches || matchesName($0.title))
+                }
+                guard (workspaceMatches && matchesState(workspace.state)) || !terminals.isEmpty || !helpers.isEmpty else { return nil }
+                return AgentOverviewWorkspaceSnapshot(
+                    id: workspace.id, title: workspace.title, state: workspace.state,
+                    branchOrPullRequest: workspace.branchOrPullRequest, folder: workspace.folder,
+                    depth: 0, terminals: terminals, helpers: helpers
+                )
+            }
+            guard !workspaces.isEmpty else { return nil }
+            return AgentOverviewWindowSnapshot(id: window.id, index: window.index, workspaces: workspaces)
+        }
+    }
+}
+
 @MainActor
 final class AgentOverviewViewModel: ObservableObject {
     @Published private(set) var windows: [AgentOverviewWindowSnapshot] = []
@@ -212,6 +254,26 @@ final class AgentOverviewViewModel: ObservableObject {
     @Published private(set) var outputGate = AgentOverviewOutputGate()
     @Published var messageText = ""
     @Published var isShowingMessageSheet = false
+    @Published var filter = AgentOverviewFilter.all { didSet { reconcileVisibleSelection() } }
+    @Published var search = "" { didSet { reconcileVisibleSelection() } }
+
+    var visibleWindows: [AgentOverviewWindowSnapshot] { filter.apply(to: windows, search: search) }
+
+    private func reconcileVisibleSelection() {
+        var selections: Set<AgentOverviewSelection> = []
+        for workspace in visibleWindows.flatMap(\.workspaces) {
+            selections.insert(.workspace(workspace.id))
+            for terminal in workspace.terminals {
+                selections.insert(.terminal(workspaceId: workspace.id, panelId: terminal.id))
+            }
+            for helper in workspace.helpers {
+                selections.insert(.helper(workspaceId: workspace.id, helperId: helper.id,
+                                          surfaceId: helper.surfaceId, hasIndependentOutput: helper.hasIndependentOutput))
+            }
+        }
+        outputGate.reconcile(availableSelections: selections)
+        if selection == nil { output = "" }
+    }
 
     weak var requestedTabManager: TabManager?
     private var scopedWorkspaceId: UUID?
@@ -233,6 +295,8 @@ final class AgentOverviewViewModel: ObservableObject {
         hasScope = workspaceId != nil
         outputGate.select(nil)
         output = ""
+        filter = .all
+        search = ""
     }
 
     func showAllWorkspaces() {
@@ -435,6 +499,7 @@ final class AgentOverviewViewModel: ObservableObject {
 
         windows = nextWindows
         outputGate.reconcile(availableSelections: availableSelections)
+        reconcileVisibleSelection()
         if outputGate.selection == nil { output = "" }
     }
 
@@ -588,6 +653,21 @@ private struct AgentOverviewRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            HStack {
+                TextField(String(localized: "agentOverview.search", defaultValue: "Search workspaces and agents"), text: $viewModel.search)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel(String(localized: "agentOverview.search", defaultValue: "Search workspaces and agents"))
+                Picker(String(localized: "agentOverview.filter", defaultValue: "Agent state"), selection: $viewModel.filter) {
+                    ForEach(AgentOverviewFilter.allCases, id: \.self) { filter in
+                        Text(filter.label).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 300)
+            }
+            .frame(minHeight: 44)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
             Divider()
             HSplitView {
                 workspaceList
@@ -632,14 +712,16 @@ private struct AgentOverviewRootView: View {
 
     private var workspaceList: some View {
         List {
-            if viewModel.windows.isEmpty {
+            if viewModel.visibleWindows.isEmpty {
                 ContentUnavailableView(
                     String(localized: "agentOverview.empty.title", defaultValue: "No workspaces to show"),
                     systemImage: "rectangle.stack",
-                    description: Text(String(localized: "agentOverview.empty.message", defaultValue: "Open a workspace in Programa, then check again."))
+                    description: Text(viewModel.windows.isEmpty
+                        ? String(localized: "agentOverview.empty.message", defaultValue: "Open a workspace in Programa, then check again.")
+                        : String(localized: "agentOverview.empty.filtered", defaultValue: "Try a different search or agent state."))
                 )
             }
-            ForEach(viewModel.windows) { window in
+            ForEach(viewModel.visibleWindows) { window in
                 Section {
                     ForEach(window.workspaces) { workspace in
                         workspaceRows(workspace)

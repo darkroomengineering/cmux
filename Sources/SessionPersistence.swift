@@ -34,6 +34,7 @@ enum SessionPersistencePolicy {
     static let maxURLStringBytes: Int = 64 * 1024
     static let maxBrowserHistoryEntriesPerDirection: Int = 2_048
     static let maxLogEntriesPerWorkspace: Int = 500
+    static let maxReviewCommentsPerPanel: Int = 2_048
 
     static func sanitizedSidebarWidth(_ candidate: Double?) -> Double {
         let fallback = defaultSidebarWidth
@@ -257,10 +258,8 @@ struct SessionMarkdownPanelSnapshot: Codable, Sendable {
     var filePath: String
 }
 
-/// Session-restore snapshot for a review panel. Deliberately does NOT persist `files`/
-/// `comments`: restoring a review panel re-runs `git diff` fresh (always-correct, simpler than
-/// persisting stale diff content), at the cost of comments-in-flight not surviving an app
-/// restart -- a known, accepted v1 limitation. See docs/plans/diff-review-panel.md §6 step 8.
+/// Session restore preserves pending comments, but re-runs `git diff` to validate their anchors
+/// against fresh content. Missing comments in older snapshots decode as an empty draft list.
 /// `sourceSurfaceId` is the OLD (pre-restore) panel id of the reviewed terminal; it is remapped
 /// to the newly-restored panel id in a post-restore fixup pass (`Workspace+Persistence.swift`,
 /// since the source terminal may live in a pane restored after this one).
@@ -268,6 +267,7 @@ struct SessionReviewPanelSnapshot: Codable, Sendable {
     var sourceSurfaceId: UUID
     var mode: String
     var baseBranch: String
+    var comments: [ReviewComment]? = nil
 }
 
 struct SessionPanelSnapshot: Codable, Sendable {
@@ -872,9 +872,12 @@ enum SessionPersistenceStore {
            ) {
             return false
         }
-        if let review = panel.review,
-           (!isValidString(review.mode) || !isValidString(review.baseBranch)) {
-            return false
+        if let review = panel.review {
+            let comments = review.comments ?? []
+            guard isValidString(review.mode), isValidString(review.baseBranch),
+                  comments.count <= SessionPersistencePolicy.maxReviewCommentsPerPanel,
+                  Set(comments.map(\.id)).count == comments.count,
+                  comments.allSatisfy(\.isValidForPersistence) else { return false }
         }
         return true
     }

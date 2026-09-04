@@ -13,6 +13,20 @@ import UserNotifications
 @testable import Programa
 #endif
 
+final class NotificationPageSelectionTests: XCTestCase {
+    func testArrivalPreservesExistingSelection() {
+        let selected = UUID()
+        XCTAssertEqual(NotificationPageSelection.reconcile(selected, visibleIds: [UUID(), selected]), selected)
+    }
+
+    func testRemovalOrUnreadFilterChoosesRemainingItemAndEmptyListClearsSelection() {
+        let remaining = UUID()
+        XCTAssertEqual(NotificationPageSelection.reconcile(UUID(), visibleIds: [remaining]), remaining)
+        XCTAssertNil(NotificationPageSelection.reconcile(remaining, visibleIds: []))
+        XCTAssertEqual(NotificationPageSelection.reconcile(nil, visibleIds: [remaining]), remaining)
+    }
+}
+
 @MainActor
 final class NotificationDockBadgeTests: XCTestCase {
     private final class NotificationSettingsAlertSpy: NSAlert {

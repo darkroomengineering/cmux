@@ -6704,7 +6704,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
     ]
 
     private static let appShortcutPrecedenceOrderAfterLegacyTabNavigation: [KeyboardShortcutSettings.Action] = [
-        .newSurface, .openBrowser, .openReview, .focusBrowserAddressBar, .browserBack, .browserForward, .browserReload,
+        .newSurface, .openBrowser, .openReview, .openAgentOverview, .focusBrowserAddressBar, .browserBack, .browserForward, .browserReload,
         .toggleBrowserDeveloperTools, .showBrowserJavaScriptConsole, .browserZoomIn,
         .browserZoomOut, .browserZoomReset, .find, .findNext, .findPrevious, .hideFind, .useSelectionForFind,
         .reopenClosedBrowserPanel,
@@ -6885,6 +6885,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUser
             return handleReopenClosedBrowserPanelShortcutAction(event: event)
         case .openReview:
             return handleOpenReviewShortcutAction(event: event)
+        case .openAgentOverview:
+            guard matchConfiguredShortcut(event: event, action: .openAgentOverview) else { return nil }
+            guard let context = preferredMainWindowContextForShortcuts(event: event) else { return true }
+            AgentOverviewWindowController.shared.show(tabManager: context.tabManager, workspaceId: nil)
+            return true
         }
     }
 

@@ -8,6 +8,76 @@ import XCTest
 
 @MainActor
 final class ReviewPanelRowPlannerTests: XCTestCase {
+    func testCommentAdmissionRejectsInvalidAndOversizedDraftsWithoutMutation() throws {
+        let panel = ReviewPanel(workspaceId: UUID(), sourceSurfaceId: UUID(), directory: "/tmp", mode: .uncommitted, baseBranch: "main")
+        let valid = try panel.addComment(filePath: "App.swift", startLine: 0, text: "Deletion anchor")
+        XCTAssertThrowsError(try panel.addComment(filePath: "", startLine: 1, text: "Draft"))
+        XCTAssertThrowsError(try panel.addComment(filePath: "App.swift", startLine: -1, text: "Draft"))
+        XCTAssertThrowsError(try panel.addComment(filePath: "App.swift", startLine: 3, endLine: 2, text: "Draft"))
+        XCTAssertThrowsError(try panel.addComment(filePath: "App.swift", startLine: 1, text: "  "))
+        XCTAssertThrowsError(try panel.addComment(filePath: String(repeating: "a", count: SessionPersistencePolicy.maxPathStringBytes + 1), startLine: 1, text: "Draft"))
+        XCTAssertThrowsError(try panel.addComment(filePath: "App.swift", startLine: 1, text: String(repeating: "é", count: SessionPersistencePolicy.maxMetadataStringBytes / 2 + 1)))
+        XCTAssertEqual(panel.comments, [valid])
+        let boundary = try panel.addComment(filePath: "App.swift", startLine: 1, text: String(repeating: "a", count: SessionPersistencePolicy.maxMetadataStringBytes))
+        XCTAssertTrue(boundary.isValidForPersistence)
+    }
+
+    func testCommentAdmissionRejectsAtCountLimitAndAllowsRetryAfterRemoval() throws {
+        let panel = ReviewPanel(workspaceId: UUID(), sourceSurfaceId: UUID(), directory: "/tmp", mode: .uncommitted, baseBranch: "main")
+        for _ in 0..<SessionPersistencePolicy.maxReviewCommentsPerPanel {
+            try panel.addComment(filePath: "App.swift", startLine: 1, text: "Draft")
+        }
+        XCTAssertThrowsError(try panel.addComment(filePath: "App.swift", startLine: 1, text: "Retry later"))
+        XCTAssertEqual(panel.comments.count, SessionPersistencePolicy.maxReviewCommentsPerPanel)
+        panel.removeComment(id: try XCTUnwrap(panel.comments.first).id)
+        XCTAssertNoThrow(try panel.addComment(filePath: "App.swift", startLine: 1, text: "Retry later"))
+    }
+
+    func testFailedCommentDispatchRetainsDraftsAndCanBeRetried() throws {
+        let panel = ReviewPanel(workspaceId: UUID(), sourceSurfaceId: UUID(), directory: "/tmp", mode: .uncommitted, baseBranch: "main")
+        let comment = try panel.addComment(filePath: "App.swift", startLine: 1, text: "Please fix this")
+
+        XCTAssertNil(panel.sendPendingComments(), "A missing callback must not discard comments")
+        XCTAssertEqual(panel.comments, [comment])
+        XCTAssertTrue(panel.commentDeliveryFailed)
+        panel.sendToSourceSurface = { _ in false }
+        XCTAssertNil(panel.sendPendingComments())
+        XCTAssertEqual(panel.comments, [comment])
+
+        var dispatchedText = ""
+        panel.sendToSourceSurface = { text in
+            dispatchedText = text
+            return true
+        }
+        XCTAssertEqual(panel.sendPendingComments(), 1)
+        XCTAssertTrue(dispatchedText.contains(comment.text))
+        XCTAssertTrue(panel.comments.isEmpty)
+        XCTAssertFalse(panel.commentDeliveryFailed)
+        panel.sendToSourceSurface = nil
+        XCTAssertEqual(panel.sendPendingComments(), 0, "Empty review remains a successful no-op")
+    }
+
+    func testRestoredCommentsSurviveFreshDiffAndRevalidateAnchors() throws {
+        let comment = ReviewComment(filePath: "App.swift", startLine: 1, text: "Keep this draft")
+        let snapshot = SessionReviewPanelSnapshot(sourceSurfaceId: UUID(), mode: "uncommitted", baseBranch: "main", comments: [comment])
+        let restored = try JSONDecoder().decode(SessionReviewPanelSnapshot.self, from: JSONEncoder().encode(snapshot))
+        XCTAssertEqual(restored.comments, [comment])
+        let panel = ReviewPanel(workspaceId: UUID(), sourceSurfaceId: restored.sourceSurfaceId, directory: "/tmp", mode: .uncommitted, baseBranch: restored.baseBranch)
+        panel.restoreComments(try XCTUnwrap(restored.comments))
+        XCTAssertTrue(try XCTUnwrap(panel.comments.first).isStale)
+        panel.apply(snapshot: ReviewDiffSnapshot(files: [makeFile(path: "App.swift", lineText: "changed")], generatedAt: Date()))
+        XCTAssertEqual(panel.comments, [comment])
+        panel.apply(snapshot: ReviewDiffSnapshot(files: [], generatedAt: Date()))
+        XCTAssertEqual(panel.comments.first?.text, comment.text)
+        XCTAssertTrue(try XCTUnwrap(panel.comments.first).isStale)
+    }
+
+    func testLegacyReviewSnapshotRestoresWithoutComments() throws {
+        let data = Data("{\"sourceSurfaceId\":\"00000000-0000-0000-0000-000000000001\",\"mode\":\"uncommitted\",\"baseBranch\":\"main\"}".utf8)
+        let snapshot = try JSONDecoder().decode(SessionReviewPanelSnapshot.self, from: data)
+        XCTAssertNil(snapshot.comments)
+    }
+
     func testRepeatedIdenticalInputReusesRowsWithoutRebuilding() {
         let planner = ReviewPanelRowPlanner()
         let panelID = UUID()

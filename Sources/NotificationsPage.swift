@@ -1,11 +1,19 @@
 import Bonsplit
 import SwiftUI
 
+enum NotificationPageSelection {
+    static func reconcile(_ selectedId: UUID?, visibleIds: [UUID]) -> UUID? {
+        if let selectedId, visibleIds.contains(selectedId) { return selectedId }
+        return visibleIds.first
+    }
+}
+
 struct NotificationsPage: View {
     @EnvironmentObject var notificationStore: TerminalNotificationStore
     @EnvironmentObject var tabManager: TabManager
     @Binding var selection: SidebarSelection
     @FocusState private var focusedNotificationId: UUID?
+    @State private var unreadOnly = false
     @ObservedObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
 
     var body: some View {
@@ -13,12 +21,12 @@ struct NotificationsPage: View {
             header
             Divider()
 
-            if notificationStore.notifications.isEmpty {
+            if visibleNotifications.isEmpty {
                 emptyState
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(notificationStore.notifications) { notification in
+                        ForEach(visibleNotifications) { notification in
                             NotificationRow(
                                 notification: notification,
                                 tabTitle: tabTitle(for: notification.tabId),
@@ -37,6 +45,13 @@ struct NotificationsPage: View {
                                 onClear: {
                                     notificationStore.remove(id: notification.id)
                                 },
+                                onToggleRead: {
+                                    if notification.isRead {
+                                        notificationStore.markUnread(id: notification.id)
+                                    } else {
+                                        notificationStore.markRead(id: notification.id)
+                                    }
+                                },
                                 focusedNotificationId: $focusedNotificationId
                             )
                         }
@@ -47,23 +62,25 @@ struct NotificationsPage: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear(perform: setInitialFocus)
-        .onChange(of: notificationStore.notifications.first?.id) {
-            setInitialFocus()
+        .onAppear { reconcileFocus(initialize: true) }
+        .onChange(of: visibleNotifications.map(\.id)) {
+            reconcileFocus()
         }
+        .onChange(of: selection) { reconcileFocus(initialize: true) }
     }
 
-    private func setInitialFocus() {
-        // Only set focus when the notifications page is visible
-        // to avoid stealing focus from the terminal when notifications arrive
+    private var visibleNotifications: [TerminalNotification] {
+        notificationStore.notifications.filter { !unreadOnly || !$0.isRead }
+    }
+
+    private func reconcileFocus(initialize: Bool = false) {
         guard selection == .notifications else { return }
-        guard let firstId = notificationStore.notifications.first?.id else {
-            focusedNotificationId = nil
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            focusedNotificationId = firstId
-        }
+        // A nil row focus can mean the user is operating a filter or row action.
+        // Incoming notifications must not pull focus away from that control.
+        guard initialize || focusedNotificationId != nil else { return }
+        focusedNotificationId = NotificationPageSelection.reconcile(
+            focusedNotificationId, visibleIds: visibleNotifications.map(\.id)
+        )
     }
 
     private var header: some View {
@@ -73,6 +90,10 @@ struct NotificationsPage: View {
                 .fontWeight(.semibold)
 
             Spacer()
+
+            Toggle(String(localized: "notifications.unreadOnly", defaultValue: "Unread only"), isOn: $unreadOnly)
+                .toggleStyle(.button)
+                .frame(minHeight: 44)
 
             if !notificationStore.notifications.isEmpty {
                 jumpToUnreadButton
@@ -92,7 +113,9 @@ struct NotificationsPage: View {
             Image(systemName: "bell.slash")
                 .symbolRasterSize(32)
                 .foregroundColor(.secondary)
-            Text(String(localized: "notifications.empty.title", defaultValue: "No notifications yet"))
+            Text(unreadOnly
+                 ? String(localized: "notifications.empty.unread", defaultValue: "No unread notifications")
+                 : String(localized: "notifications.empty.title", defaultValue: "No notifications yet"))
                 .font(.headline)
             Text(String(localized: "notifications.empty.description", defaultValue: "Desktop notifications will appear here for quick review."))
                 .font(.subheadline)
@@ -176,7 +199,9 @@ private struct NotificationRow: View {
     let tabTitle: String?
     let onOpen: () -> Void
     let onClear: () -> Void
+    let onToggleRead: () -> Void
     let focusedNotificationId: FocusState<UUID?>.Binding
+    @State private var isExpanded = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -202,11 +227,17 @@ private struct NotificationRow: View {
                                 .foregroundColor(.secondary)
                         }
 
+                        if !notification.subtitle.isEmpty {
+                            Text(notification.subtitle)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundColor(.secondary)
+                        }
+
                         if !notification.body.isEmpty {
                             Text(notification.body)
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
-                                .lineLimit(3)
+                                .lineLimit(isExpanded ? nil : 3)
                         }
 
                         if let tabTitle {
@@ -228,11 +259,35 @@ private struct NotificationRow: View {
             .focused(focusedNotificationId, equals: notification.id)
             .modifier(DefaultActionModifier(isActive: focusedNotificationId.wrappedValue == notification.id))
 
-            Button(action: onClear) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(.secondary)
+            VStack(alignment: .trailing, spacing: 4) {
+                Button(action: onClear) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                        .frame(minWidth: 44, minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "notifications.clear", defaultValue: "Clear notification"))
+
+                Button(action: onToggleRead) {
+                    Text(notification.isRead
+                         ? String(localized: "notifications.markUnread", defaultValue: "Mark unread")
+                         : String(localized: "notifications.markRead", defaultValue: "Mark read"))
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+
+                if !notification.body.isEmpty {
+                    Button {
+                        isExpanded.toggle()
+                    } label: {
+                        Text(isExpanded
+                             ? String(localized: "notifications.showLess", defaultValue: "Show less")
+                             : String(localized: "notifications.showMore", defaultValue: "Show full message"))
+                            .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
         }
         .padding(12)
         .background(

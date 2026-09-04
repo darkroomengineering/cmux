@@ -819,16 +819,18 @@ final class Workspace: Identifiable, ObservableObject {
         panelSubscriptions[reviewPanel.id] = subscription
     }
 
-    func sendReviewComments(sourceSurfaceId: UUID, text: String) {
-        guard let terminalPanel = terminalPanel(for: sourceSurfaceId) else { return }
-        let textToSend = text + "\r"
-        if let surface = terminalPanel.surface.surface {
-            TerminalController.shared.sendSocketText(textToSend, surface: surface)
-            terminalPanel.surface.forceRefresh(reason: "reviewPanel.sendComments")
-        } else {
-            terminalPanel.sendText(textToSend)
+    func sendReviewComments(sourceSurfaceId: UUID, text: String) -> Bool {
+        guard let terminalPanel = terminalPanel(for: sourceSurfaceId) else { return false }
+        // Deferred terminal input can be evicted from its bounded queue. Keep review drafts
+        // until a live surface can accept dispatch rather than treating that queue as delivery.
+        guard let surface = terminalPanel.surface.surface else {
             terminalPanel.surface.requestBackgroundSurfaceStartIfNeeded()
+            return false
         }
+        let textToSend = text + "\r"
+        TerminalController.shared.sendSocketText(textToSend, surface: surface)
+        terminalPanel.surface.forceRefresh(reason: "reviewPanel.sendComments")
+        return true
     }
 
     // MARK: - Panel Access

@@ -28,6 +28,7 @@ final class ReviewPanel: Panel, ObservableObject {
     @Published private(set) var files: [ReviewFileDiff] = []
     private(set) var filesRevision: UInt64 = 0
     @Published private(set) var comments: [ReviewComment] = []
+    @Published private(set) var commentDeliveryFailed = false
     @Published private(set) var isRefreshing: Bool = false
     @Published private(set) var lastError: ReviewDiffError?
     @Published private(set) var lastRefreshedAt: Date?
@@ -42,7 +43,7 @@ final class ReviewPanel: Panel, ObservableObject {
     /// into the reviewed terminal surface via the same path `surface.send_text` uses, then
     /// submits Enter (mirrors `agent.prompt`'s "type the prompt, press Enter" semantics). `nil`
     /// only in contexts where the panel was constructed without a live workspace.
-    var sendToSourceSurface: ((String) -> Void)?
+    var sendToSourceSurface: ((String) -> Bool)?
 
     init(workspaceId: UUID, sourceSurfaceId: UUID, directory: String, mode: ReviewDiffMode, baseBranch: String) {
         self.id = UUID()
@@ -155,9 +156,22 @@ final class ReviewPanel: Panel, ObservableObject {
 
     // MARK: - Comments
 
+    func restoreComments(_ drafts: [ReviewComment]) {
+        // The fresh diff will verify these anchors; do not present restored anchors as current.
+        comments = drafts.map { draft in
+            var draft = draft
+            draft.isStale = true
+            return draft
+        }
+    }
+
     @discardableResult
-    func addComment(filePath: String, startLine: Int, endLine: Int? = nil, text: String) -> ReviewComment {
+    func addComment(filePath: String, startLine: Int, endLine: Int? = nil, text: String) throws -> ReviewComment {
         let comment = ReviewComment(filePath: filePath, startLine: startLine, endLine: endLine, text: text)
+        guard comment.isValidForPersistence else { throw ReviewComment.AdmissionError.invalidComment }
+        guard comments.count < SessionPersistencePolicy.maxReviewCommentsPerPanel else {
+            throw ReviewComment.AdmissionError.tooManyComments
+        }
         comments.append(comment)
         return comment
     }
@@ -182,15 +196,18 @@ final class ReviewPanel: Panel, ObservableObject {
     }
 
     /// Serializes and delivers all pending comments into the source surface via
-    /// `sendToSourceSurface`, then clears them. Returns `false` (no-op) when there is nothing
-    /// pending -- sending zero comments is treated as a no-op, not a failure, mirroring
-    /// `review.send_comments`'s socket response.
+    /// `sendToSourceSurface`, clearing only after dispatch. Nil means the route was unavailable;
+    /// zero is a no-op. Dispatch does not acknowledge that the agent processed the input.
     @discardableResult
-    func sendPendingComments(preamble: String? = nil) -> Int {
+    func sendPendingComments(preamble: String? = nil) -> Int? {
         let pendingCount = comments.count
         let serialized = serializedPendingComments(preamble: preamble)
+        commentDeliveryFailed = false
         guard !serialized.isEmpty else { return 0 }
-        sendToSourceSurface?(serialized)
+        guard sendToSourceSurface?(serialized) == true else {
+            commentDeliveryFailed = true
+            return nil
+        }
         clearSentComments()
         return pendingCount
     }

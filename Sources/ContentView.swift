@@ -4159,6 +4159,15 @@ struct ContentView: View {
             )
         )
 
+        contributions.append(
+            CommandPaletteCommandContribution(
+                commandId: "palette.openAgentOverview",
+                title: constant(String(localized: "contextMenu.openAgentOverview", defaultValue: "Open Agent Overview")),
+                subtitle: constant(String(localized: "agentOverview.allWorkspaces", defaultValue: "All Workspaces")),
+                keywords: ["agent", "overview", "attention", "helper", "status"]
+            )
+        )
+
         let programaConfigDefaultSubtitle = constant(String(localized: "command.cmuxConfig.subtitle", defaultValue: "programa.json"))
         for command in programaConfigStore.loadedCommands {
             let commandName = sanitizeProgramaConfigPaletteText(command.name)
@@ -4208,6 +4217,12 @@ struct ContentView: View {
     }
 
     private func registerCommandPaletteHandlers(_ registry: inout CommandPaletteHandlerRegistry) {
+        registry.register(commandId: "palette.openAgentOverview") {
+            // Let the palette finish restoring focus before presenting the overview.
+            DispatchQueue.main.async {
+                AgentOverviewWindowController.shared.show(tabManager: tabManager, workspaceId: nil)
+            }
+        }
         registry.register(commandId: "palette.newWorkspace") {
             tabManager.addWorkspace()
         }
