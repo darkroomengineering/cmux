@@ -2981,70 +2981,61 @@ final class WorkspaceTerminalFocusRecoveryTests: XCTestCase {
         return nil
     }
 
-    func testHiddenTinySelectedTerminalKeepsFocusReapplyPendingUntilLayoutIsUsable() throws {
-#if DEBUG
-        let originalAppDelegate = AppDelegate.shared
-        let appDelegate = originalAppDelegate ?? AppDelegate()
-        let originalTabManager = appDelegate.tabManager
-        let defaults = UserDefaults.standard
-        let originalWelcomeShown = defaults.object(forKey: WelcomeSettings.shownKey)
-        defaults.set(true, forKey: WelcomeSettings.shownKey)
-        let manager = TabManager()
-        AppDelegate.shared = appDelegate
-        appDelegate.tabManager = manager
-        defer {
-            manager.teardownForWindowClose(notifyOwner: false)
-            if let originalWelcomeShown {
-                defaults.set(originalWelcomeShown, forKey: WelcomeSettings.shownKey)
-            } else {
-                defaults.removeObject(forKey: WelcomeSettings.shownKey)
-            }
-            appDelegate.tabManager = originalTabManager
-            AppDelegate.shared = originalAppDelegate
-        }
+    func testHiddenTinySelectedTerminalKeepsFocusReapplyPendingUntilLayoutIsUsable() {
+        var gate = SuppressedFirstResponderFocusReapplyGate()
+        let usablePortalSize = CGSize(width: 360, height: 220)
+        let usableSurfaceSize = CGSize(width: 180, height: 220)
 
-        let workspace = try XCTUnwrap(manager.selectedWorkspace)
-        let panelId = try XCTUnwrap(workspace.focusedPanelId)
-        let panel = try XCTUnwrap(workspace.terminalPanel(for: panelId))
-        workspace.focusPanel(panelId, trigger: .terminalFirstResponder)
+        gate.schedule()
 
-        let window = makeWindow()
-        defer { window.orderOut(nil) }
-        let contentView = try XCTUnwrap(window.contentView)
-        panel.hostedView.frame = contentView.bounds
-        contentView.addSubview(panel.hostedView)
-        panel.hostedView.setVisibleInUI(true)
-        panel.hostedView.setActive(true)
-        window.makeKeyAndOrderFront(nil)
-        contentView.layoutSubtreeIfNeeded()
-        panel.hostedView.layoutSubtreeIfNeeded()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-
-        let terminalView = try XCTUnwrap(surfaceView(in: panel.hostedView))
-        window.makeFirstResponder(nil)
-        panel.surface.setFocus(false)
-        terminalView.frame = .zero
-        XCTAssertTrue(window.makeFirstResponder(terminalView))
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-
-        XCTAssertTrue(panel.hostedView.isSurfaceViewFirstResponder())
+        XCTAssertTrue(gate.isPending)
         XCTAssertFalse(
-            panel.surface.debugDesiredFocusState(),
-            "A selected terminal must not apply Ghostty focus while its surface is hidden or tiny"
+            gate.allowsFocusReassertion(
+                force: false,
+                isHiddenForFocus: true,
+                portalSize: usablePortalSize,
+                surfaceSize: usableSurfaceSize
+            ),
+            "A hidden selected terminal must defer Ghostty focus until it can accept input"
+        )
+        XCTAssertTrue(
+            gate.isPending,
+            "A focus request suppressed by visibility must survive until the terminal becomes usable"
         )
 
-        terminalView.frame = NSRect(x: 0, y: 0, width: 180, height: 220)
-        terminalView.layoutSubtreeIfNeeded()
-        panel.hostedView.layoutSubtreeIfNeeded()
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        XCTAssertFalse(
+            gate.allowsFocusReassertion(
+                force: false,
+                isHiddenForFocus: false,
+                portalSize: usablePortalSize,
+                surfaceSize: CGSize(width: 1, height: 1)
+            ),
+            "A tiny terminal surface must defer Ghostty focus during layout churn"
+        )
+        XCTAssertTrue(
+            gate.isPending,
+            "A focus request suppressed by incomplete layout must remain pending"
+        )
 
         XCTAssertTrue(
-            panel.surface.debugDesiredFocusState(),
-            "The suppressed focus request must remain pending and apply when layout becomes usable"
+            gate.allowsFocusReassertion(
+                force: false,
+                isHiddenForFocus: false,
+                portalSize: usablePortalSize,
+                surfaceSize: usableSurfaceSize
+            ),
+            "The pending focus request must become eligible once visibility and layout recover"
         )
-#else
-        throw XCTSkip("Debug-only regression test")
-#endif
+        XCTAssertTrue(
+            gate.isPending,
+            "Eligibility alone must not consume the request before Ghostty focus is applied"
+        )
+
+        gate.complete()
+        XCTAssertFalse(
+            gate.isPending,
+            "A successfully applied focus request must clear the pending recovery state"
+        )
     }
 
     func testTerminalFirstResponderConvergesSplitActiveStateWhenSelectionAlreadyMatches() {

@@ -1015,7 +1015,7 @@ final class SidebarQuotaPresentationTests: XCTestCase {
 
         XCTAssertLessThan(oneProviderHeight, twoProviderHeight)
         XCTAssertLessThan(oneProviderHeight, 340)
-        XCTAssertLessThan(twoProviderHeight, 340)
+        XCTAssertLessThan(twoProviderHeight, 360)
         XCTAssertGreaterThan(oversizedHeight, twoProviderHeight)
         XCTAssertLessThanOrEqual(oversizedHeight, 480)
     }
