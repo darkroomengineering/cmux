@@ -435,8 +435,8 @@ Sequential — do not parallelize, since every sub-step touches the same enum/sw
    - `ContentView+CommandPalette.swift:544,554` — label + keywords for `.review`.
    - `Workspace+Persistence.swift:273,457` — session snapshot save/restore. Session-restoring a
      review panel re-runs `git diff` fresh on restore rather than persisting stale diff content —
-     simpler and always-correct, at the cost of comments-in-flight not surviving an app restart
-     for v1 (acceptable; flag as a known limitation, not a bug).
+     pending added comments and their anchors persist across restart, and the fresh diff marks
+     anchors stale when they no longer exist. Unsubmitted inline composer text is not persisted.
    - `Workspace.swift:795` — `surfaceKind(for:)` returns `SurfaceKind.review`.
    - Check `TabItemView.swift:1920` — confirm whether it's keyed on `PanelType` or a different
      enum (`SessionPanelSnapshot` format); add a branch only if actually needed.

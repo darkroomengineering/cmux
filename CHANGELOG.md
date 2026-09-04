@@ -14,15 +14,21 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - Every removal is recorded under `docs/removed/`, with the commit to restore from and what we learned while it was in the app.
 
 ### Added
+- Agent Overview is available from the command palette and an optional configurable shortcut, with name search and All, Needs input, and Failed filters.
+- Notifications now include unread filtering, read/unread actions, subtitles, and expandable messages.
 - Agent Overview now gives one place to see every Programa workspace, worktree, helper, and terminal. Claude helpers appear and finish automatically; terminal output stays hidden until requested. Users can open terminals, send messages, stop work, review changes, and copy output. New helpers open as nested workspaces in the same folder, or use a separate Git worktree only when they explicitly need one.
 - A local Git workspace can now become a persistent worktree folder from its right-click menu. Worktree workspaces created from that menu nest beneath it, can be collapsed, and restore in the same hierarchy without changing or deleting their Git branches.
 - Workspace colors are now remembered by local folder and automatically reused when that folder opens in a new workspace.
 - New setting, off by default: open a browser split beside the terminal whenever a new agent workspace is created (⌘⇧C, `programa` helper agents, and `race`). Also `automation.openBrowserWithAgentSplits` in settings.json.
 
 ### Changed
+- Tagged development builds automatically retain the current build and two recent inactive builds, preserving running apps and concurrent builds during cleanup.
 - Each ship now deletes promoted release candidates older than the two most recent, so the releases page stops accumulating 110 MB prereleases.
 
 ### Fixed
+- Pending review comments survive session restore and remain available for retry or copying when the source terminal cannot accept them.
+- Incoming notifications no longer reset a valid keyboard selection in the Notifications page.
+- Socket and typing-lag CI jobs cache the DerivedData paths they actually build into.
 - Release publishing accepts the previous ten-asset candidate manifests again, so the first ship after the remote daemon removal no longer fails.
 - Remote and local CLI clients now share the v2 JSON-RPC and `programa-relay-auth` contracts, password-protected sockets work through MCP, and remote bootstrap files, tmux wait signals, relay diagnostics, and downloaded daemon artifacts have bounded ownership and lifetime.
 - Session recovery now rejects oversized or structurally invalid snapshots before reconstruction, quarantines corrupt primaries, caps history scanning, elects escrow holders without unlinking live or indeterminate sockets, and terminates timed-out subprocess trees without leaving descendants or pipe readers behind.
