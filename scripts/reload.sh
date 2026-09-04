@@ -16,6 +16,7 @@ LAST_SOCKET_PATH_DIR="$HOME/Library/Application Support/programa"
 LAST_SOCKET_PATH_FILE="${LAST_SOCKET_PATH_DIR}/last-socket-path"
 ENSURE_GHOSTTYKIT_COMMAND="${PROGRAMA_ENSURE_GHOSTTYKIT_COMMAND:-$PWD/scripts/ensure-ghosttykit.sh}"
 APP_LOCATOR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/locate-built-app.sh"
+ORIGINAL_ARGS=("$@")
 
 write_dev_cli_shim() {
   local target="$1"
@@ -143,64 +144,6 @@ tagged_derived_data_path() {
   echo "$HOME/Library/Developer/Xcode/DerivedData/programa-${slug}"
 }
 
-print_tag_cleanup_reminder() {
-  local current_slug="$1"
-  local path=""
-  local tag=""
-  local seen=" "
-  local -a stale_tags=()
-
-  while IFS= read -r -d '' path; do
-    if [[ "$path" == /tmp/programa-* ]]; then
-      tag="${path#/tmp/programa-}"
-    elif [[ "$path" == "$HOME/Library/Developer/Xcode/DerivedData/programa-"* ]]; then
-      tag="${path#$HOME/Library/Developer/Xcode/DerivedData/programa-}"
-    else
-      continue
-    fi
-    if [[ "$tag" == "$current_slug" ]]; then
-      continue
-    fi
-    # Only surface stale debug tag builds.
-    if [[ ! -d "$path/Build/Products/Debug" ]]; then
-      continue
-    fi
-    if [[ "$seen" == *" $tag "* ]]; then
-      continue
-    fi
-    seen="${seen}${tag} "
-    stale_tags+=("$tag")
-  done < <(
-    find /tmp -maxdepth 1 -name 'programa-*' -print0 2>/dev/null
-    find "$HOME/Library/Developer/Xcode/DerivedData" -maxdepth 1 -type d -name 'programa-*' -print0 2>/dev/null
-  )
-
-  echo
-  echo "Tag cleanup status:"
-  echo "  current tag: ${current_slug} (keep this running until you verify)"
-  if [[ "${#stale_tags[@]}" -eq 0 ]]; then
-    echo "  stale tags: none"
-    echo "  stale cleanup: not needed"
-  else
-    echo "  stale tags:"
-    for tag in "${stale_tags[@]}"; do
-      echo "    - ${tag}"
-    done
-    echo "Cleanup stale tags only:"
-    for tag in "${stale_tags[@]}"; do
-      echo "  pkill -f \"Programa DEV ${tag}.app/Contents/MacOS/Programa DEV\""
-      echo "  rm -rf \"$(tagged_derived_data_path "$tag")\" \"/tmp/programa-${tag}\" \"/tmp/programa-debug-${tag}.sock\""
-      echo "  rm -f \"/tmp/programa-debug-${tag}.log\""
-      echo "  rm -f \"$HOME/Library/Application Support/programa/programad-dev-${tag}.sock\""
-    done
-  fi
-  echo "After you verify current tag, cleanup command:"
-  echo "  pkill -f \"Programa DEV ${current_slug}.app/Contents/MacOS/Programa DEV\""
-  echo "  rm -rf \"$(tagged_derived_data_path "$current_slug")\" \"/tmp/programa-${current_slug}\" \"/tmp/programa-debug-${current_slug}.sock\""
-  echo "  rm -f \"/tmp/programa-debug-${current_slug}.log\""
-  echo "  rm -f \"$HOME/Library/Application Support/programa/programad-dev-${current_slug}.sock\""
-}
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag)
@@ -260,8 +203,6 @@ if [[ -z "$TAG" ]]; then
   exit 1
 fi
 
-"$ENSURE_GHOSTTYKIT_COMMAND"
-
 if [[ -n "$TAG" ]]; then
   TAG_ID="$(sanitize_bundle "$TAG")"
   TAG_SLUG="$(sanitize_path "$TAG")"
@@ -275,6 +216,13 @@ if [[ -n "$TAG" ]]; then
     DERIVED_DATA="$(tagged_derived_data_path "$TAG_SLUG")"
   fi
 fi
+
+if [[ "${PROGRAMA_RELOAD_CACHE_MANAGED:-}" != "1" ]]; then
+  exec python3 "$(dirname "$APP_LOCATOR")/tagged-build-cache.py" \
+    "$TAG_SLUG" "$DERIVED_DATA" bash "$0" "${ORIGINAL_ARGS[@]}"
+fi
+
+"$ENSURE_GHOSTTYKIT_COMMAND"
 
 XCODEBUILD_ARGS=(
   -project GhosttyTabs.xcodeproj
@@ -490,10 +438,6 @@ fi
 echo
 echo "App path:"
 echo "  $APP_PATH"
-
-if [[ -n "${TAG_SLUG:-}" ]]; then
-  print_tag_cleanup_reminder "$TAG_SLUG"
-fi
 
 if [[ -x "${CLI_PATH:-}" ]]; then
   echo

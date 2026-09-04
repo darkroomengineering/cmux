@@ -172,6 +172,78 @@ test_cold_entrypoints_prepare_dependency() {
 test_staging_uses_canonical_artifact_and_bundle_identity
 test_cold_entrypoints_prepare_dependency
 
+# Exercise retention against disposable build trees, never the developer's caches.
+python3 - "$ROOT_DIR/scripts/tagged-build-cache.py" "$TMP_DIR" <<'PY' || FAILURES=$((FAILURES + 1))
+import fcntl
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+helper, temporary = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("tagged_cache", helper)
+cache = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cache)
+fixture_home = Path(temporary) / "retention-home"
+root = fixture_home / "Library/Developer/Xcode/DerivedData"
+root.mkdir(parents=True)
+
+def build(tag, timestamp):
+    path = root / f"programa-{tag}"
+    debug = path / "Build/Products/Debug"
+    debug.mkdir(parents=True)
+    (debug / "artifact").write_text("rebuildable")
+    os.utime(debug, (timestamp, timestamp))
+    return path
+
+current = build("current", 1)
+active = build("active", 2)
+old = build("old", 3)
+recent = [build("recent-a", 4), build("recent-b", 5)]
+unknown = root / "programa-not-a-build"
+unknown.mkdir()
+outside = Path(temporary) / "outside-cache"
+outside.mkdir()
+(outside / "precious").write_text("preserve")
+link = root / "programa-linked"
+link.symlink_to(outside, target_is_directory=True)
+cache.prune(root, current, commands=lambda: f"/tmp/{active.name}/Build/Products/Debug/App")
+assert not old.exists(), "old inactive cache should be removed"
+assert all(path.exists() for path in [current, active, unknown, *recent])
+assert link.is_symlink() and (outside / "precious").read_text() == "preserve"
+
+# A process-inspection failure must not remove even an eligible directory.
+old = build("old", 0)
+def unavailable():
+    raise OSError("process table unavailable")
+try:
+    cache.prune(root, current, commands=unavailable)
+except OSError:
+    pass
+else:
+    raise AssertionError("process failure must stop cleanup")
+assert old.exists()
+
+environment = dict(os.environ, HOME=str(fixture_home))
+command = [sys.executable, helper, "current", str(current), sys.executable, "-c"]
+failed = subprocess.run(command + ["raise SystemExit(7)"], env=environment)
+assert failed.returncode == 7 and old.exists(), "failed builds must not prune"
+
+# Another managed build's shared lock defers cleanup without failing reload.
+with (root / ".programa-tagged-builds.lock").open("a+") as lock:
+    fcntl.flock(lock, fcntl.LOCK_SH)
+    completed = subprocess.run(command + ["pass"], env=environment, capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    assert "deferred" in completed.stdout and old.exists()
+
+# Once the concurrent build finishes, successful reload runs retention.
+completed = subprocess.run(command + ["pass"], env=environment, capture_output=True, text=True)
+assert completed.returncode == 0, completed.stderr
+assert current.exists() and not old.exists()
+print("PASS: tagged build retention preserves active, current, recent, and unknown data")
+PY
+
 if [[ "$FAILURES" -ne 0 ]]; then
   echo "FAIL: $FAILURES reload entrypoint regression(s) detected" >&2
   exit 1
