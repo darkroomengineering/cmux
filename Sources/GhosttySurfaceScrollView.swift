@@ -170,6 +170,9 @@ final class GhosttySurfaceScrollView: NSView {
     // (GhosttyTerminalView+RenderStats.swift, Nuclear Review #97 split), written only here.
     private(set) var isActive = true
     private var lastFocusRefreshAt: CFTimeInterval = 0
+    private var pendingAutomaticFirstResponderApply = false
+    private var pendingSuppressedFirstResponderFocusReapply = false
+    // Hidden/tiny focus retry is bounded by layout/visibility signals, not a timer loop.
     private var lastRequestedPortalOcclusionVisible: Bool?
     /// Whether this surface's NSWindow is currently visible (not miniaturized,
     /// not fully occluded, not on an inactive Space). Combined with the
@@ -179,9 +182,6 @@ final class GhosttySurfaceScrollView: NSView {
     private var activeDropZone: DropZone?
     private var pendingDropZone: DropZone?
     private var dropZoneOverlayAnimationGeneration: UInt64 = 0
-    private var pendingAutomaticFirstResponderApply = false
-    // Intentionally no focus retry loops: rely on AppKit first-responder and bonsplit selection.
-
     /// Tracks whether keyboard focus should go to the search field or the terminal
     /// when the window becomes key while the find bar is open.
     enum SearchFocusTarget {
@@ -603,6 +603,7 @@ final class GhosttySurfaceScrollView: NSView {
                   let surface = notification.object as? TerminalSurface,
                   surface === self.surfaceView.terminalSurface else { return }
             self.searchFocusTarget = .searchField
+            self.cancelSuppressedFirstResponderFocusReapply()
             // Explicitly unfocus the terminal so the cursor stops blinking
             // when the search field takes over.
             surface.setFocus(false)
@@ -656,6 +657,9 @@ final class GhosttySurfaceScrollView: NSView {
     override func layout() {
         super.layout()
         synchronizeGeometryAndContent()
+        scheduleSuppressedFirstResponderFocusReapplyIfReady(
+            reason: "becomeFirstResponder.hiddenOrTiny.layout"
+        )
     }
 
     override func viewDidMoveToSuperview() {
@@ -1681,6 +1685,7 @@ final class GhosttySurfaceScrollView: NSView {
         if active {
             scheduleAutomaticFirstResponderApply(reason: "setActive")
         } else {
+            cancelSuppressedFirstResponderFocusReapply()
             resignOwnedFirstResponderIfNeeded(reason: "setActive(false)")
         }
     }
@@ -1915,7 +1920,7 @@ final class GhosttySurfaceScrollView: NSView {
                 "reason=not_visible"
             )
 #endif
-            scheduleAutomaticFirstResponderApply(reason: "ensureFocus.notVisible")
+            scheduleSuppressedFirstResponderFocusReapply(reason: "ensureFocus.notVisible")
             return
         }
         guard !isHiddenForFocus, hasUsablePortalGeometry else {
@@ -1926,7 +1931,7 @@ final class GhosttySurfaceScrollView: NSView {
                 "frame=\(String(format: "%.1fx%.1f", bounds.width, bounds.height))"
             )
 #endif
-            scheduleAutomaticFirstResponderApply(reason: "ensureFocus.hiddenOrTiny")
+            scheduleSuppressedFirstResponderFocusReapply(reason: "ensureFocus.hiddenOrTiny")
             return
         }
 
@@ -2033,19 +2038,11 @@ final class GhosttySurfaceScrollView: NSView {
 
         guard surfaceView.desiredFocus || surfaceOwnsFirstResponder else { return }
         guard surfaceView.isVisibleInUI else { return }
-        // NOTE: recordExternalFocusState(true) is only called in the branches below that
-        // do NOT reach reassertTerminalSurfaceFocus(). Calling it unconditionally here used
-        // to pre-set TerminalSurface.desiredFocusState to true before reassertTerminalSurfaceFocus
-        // -> setFocus(true) ran; setFocus's dedup guard (`focused != desiredFocusState`) then
-        // saw no change and silently skipped the real ghostty_surface_set_focus push, leaving
-        // the surface's actual Ghostty-level focus stuck false after a reparent/split. Each
-        // branch below now has exactly one writer of desiredFocusState for this transition.
         guard let window, window.isKeyWindow else {
-            surfaceView.terminalSurface?.recordExternalFocusState(true)
+            scheduleSuppressedFirstResponderFocusReapply(reason: "clearSuppressReparentFocus.inactiveWindow")
             return
         }
         guard !isHiddenForFocus, hasUsablePortalGeometry else {
-            surfaceView.terminalSurface?.recordExternalFocusState(true)
 #if DEBUG
             dlog(
                 "focus.reparent.resume.defer surface=\(surfaceShort) " +
@@ -2053,7 +2050,7 @@ final class GhosttySurfaceScrollView: NSView {
                 "frame=\(String(format: "%.1fx%.1f", bounds.width, bounds.height))"
             )
 #endif
-            scheduleAutomaticFirstResponderApply(reason: "clearSuppressReparentFocus.hiddenOrTiny")
+            scheduleSuppressedFirstResponderFocusReapply(reason: "clearSuppressReparentFocus.hiddenOrTiny")
             return
         }
         if !surfaceOwnsFirstResponder && !isSurfaceViewFirstResponder() {
@@ -2068,11 +2065,39 @@ final class GhosttySurfaceScrollView: NSView {
 #if DEBUG
         dlog("focus.reparent.resume surface=\(surfaceShort) firstResponder=\(String(describing: window.firstResponder))")
 #endif
-        // reassertTerminalSurfaceFocus() -> setFocus(true) is the sole writer of
-        // desiredFocusState on this path; it both updates the dedup guard and pushes
-        // ghostty_surface_set_focus in one place, so no separate recordExternalFocusState
-        // call is made here (see NOTE above).
-        reassertTerminalSurfaceFocus(reason: "clearSuppressReparentFocus")
+        reassertTerminalSurfaceFocus(reason: "clearSuppressReparentFocus", force: true)
+    }
+
+    func scheduleSuppressedFirstResponderFocusReapply(reason: String) {
+        pendingSuppressedFirstResponderFocusReapply = true
+        scheduleAutomaticFirstResponderApply(reason: reason)
+    }
+
+    func cancelSuppressedFirstResponderFocusReapply() {
+        pendingSuppressedFirstResponderFocusReapply = false
+    }
+
+    func scheduleSuppressedFirstResponderFocusReapplyIfReady(reason: String) {
+        guard pendingSuppressedFirstResponderFocusReapply else { return }
+        guard !pendingAutomaticFirstResponderApply else { return }
+        guard isActive, surfaceView.desiredFocus, surfaceView.isVisibleInUI else { return }
+        guard isSurfaceViewFirstResponder() else { return }
+        let isHiddenForFocus = isHiddenOrHasHiddenAncestor || surfaceView.isHiddenOrHasHiddenAncestor
+        guard !isHiddenForFocus,
+              bounds.width > 1,
+              bounds.height > 1,
+              surfaceView.bounds.width > 1,
+              surfaceView.bounds.height > 1 else {
+            return
+        }
+        guard let window, window.isKeyWindow else { return }
+        guard let tabId = surfaceView.tabId,
+              let panelId = surfaceView.terminalSurface?.id,
+              matchesCurrentTerminalFocusTarget(tabId: tabId, surfaceId: panelId),
+              AppDelegate.shared?.isCommandPaletteEffectivelyVisible(for: window) != true else {
+            return
+        }
+        scheduleAutomaticFirstResponderApply(reason: reason)
     }
 
     /// Returns true if the terminal's actual Ghostty surface view is (or contains) the window first responder.
@@ -2097,7 +2122,34 @@ final class GhosttySurfaceScrollView: NSView {
         }
     }
 
-    private func reassertTerminalSurfaceFocus(reason: String) {
+    private func prepareTerminalSurfaceFocusReassertion(reason: String, force: Bool) -> Bool {
+        let requiresUsableGeometry = pendingSuppressedFirstResponderFocusReapply || force
+        guard requiresUsableGeometry else { return true }
+
+        let portalSize = bounds.size
+        let surfaceSize = surfaceView.bounds.size
+        let hasUsablePortalGeometry = portalSize.width > 1 && portalSize.height > 1
+        let hasUsableSurfaceGeometry = surfaceSize.width > 1 && surfaceSize.height > 1
+        let isHiddenForFocus = isHiddenOrHasHiddenAncestor || surfaceView.isHiddenOrHasHiddenAncestor
+        guard !isHiddenForFocus, hasUsablePortalGeometry, hasUsableSurfaceGeometry else {
+#if DEBUG
+            let surfaceShort = String(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")
+            dlog(
+                "focus.surface.reassert.skip surface=\(surfaceShort) reason=\(reason).hidden_or_tiny " +
+                "hidden=\(isHiddenForFocus ? 1 : 0) force=\(force ? 1 : 0) " +
+                "frame=\(String(format: "%.1fx%.1f", portalSize.width, portalSize.height)) " +
+                "surfaceFrame=\(String(format: "%.1fx%.1f", surfaceSize.width, surfaceSize.height))"
+            )
+#endif
+            pendingSuppressedFirstResponderFocusReapply = true
+            return false
+        }
+
+        return true
+    }
+
+    private func reassertTerminalSurfaceFocus(reason: String, force: Bool = false) {
+        guard prepareTerminalSurfaceFocusReassertion(reason: reason, force: force) else { return }
         guard let terminalSurface = surfaceView.terminalSurface else { return }
         if terminalSurface.surface == nil {
             terminalSurface.requestBackgroundSurfaceStartIfNeeded()
@@ -2105,7 +2157,8 @@ final class GhosttySurfaceScrollView: NSView {
 #if DEBUG
         dlog("focus.surface.reassert surface=\(terminalSurface.id.uuidString.prefix(5)) reason=\(reason)")
 #endif
-        terminalSurface.setFocus(true)
+        terminalSurface.setFocus(true, force: force)
+        pendingSuppressedFirstResponderFocusReapply = false
         refreshSurfaceAfterFocusIfNeeded(reason: reason)
     }
 
@@ -2132,16 +2185,25 @@ final class GhosttySurfaceScrollView: NSView {
             let size = bounds.size
             return size.width > 1 && size.height > 1
         }()
+        let hasUsableSurfaceGeometry: Bool = {
+            let size = surfaceView.bounds.size
+            return size.width > 1 && size.height > 1
+        }()
         let isHiddenForFocus = isHiddenOrHasHiddenAncestor || surfaceView.isHiddenOrHasHiddenAncestor
         let surfaceShort = String(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")
+        let requiresSuppressedSurfaceGeometry = pendingSuppressedFirstResponderFocusReapply
 
         guard isActive else { return }
         guard surfaceView.isVisibleInUI else { return }
-        guard !isHiddenForFocus, hasUsablePortalGeometry else {
+        guard !isHiddenForFocus,
+              hasUsablePortalGeometry,
+              (!requiresSuppressedSurfaceGeometry || hasUsableSurfaceGeometry) else {
 #if DEBUG
             dlog(
                 "focus.apply.skip surface=\(surfaceShort) " +
-                "reason=hidden_or_tiny hidden=\(isHiddenForFocus ? 1 : 0) frame=\(String(format: "%.1fx%.1f", bounds.width, bounds.height))"
+                "reason=hidden_or_tiny hidden=\(isHiddenForFocus ? 1 : 0) " +
+                "frame=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) " +
+                "surfaceFrame=\(String(format: "%.1fx%.1f", surfaceView.bounds.width, surfaceView.bounds.height))"
             )
 #endif
             return
@@ -2193,6 +2255,7 @@ final class GhosttySurfaceScrollView: NSView {
         let surfaceShort = String(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")
         switch searchFocusTarget {
         case .searchField:
+            pendingSuppressedFirstResponderFocusReapply = false
             if let firstResponder = window.firstResponder,
                isCurrentSurfaceSearchFieldResponder(firstResponder) {
                 surfaceView.terminalSurface?.setFocus(false)
@@ -2235,6 +2298,9 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
         case .terminal:
             let result = window.makeFirstResponder(surfaceView)
+            if result, isSurfaceViewFirstResponder() {
+                reassertTerminalSurfaceFocus(reason: "restoreSearchFocus.terminal")
+            }
 #if DEBUG
             dlog(
                 "find.restoreSearchFocus surface=\(surfaceShort) target=terminal " +
@@ -2386,6 +2452,7 @@ final class GhosttySurfaceScrollView: NSView {
             return false
         }
 
+        pendingSuppressedFirstResponderFocusReapply = false
         surfaceView.terminalSurface?.setFocus(false)
         resignOwnedFirstResponderIfNeeded(reason: "yieldPanelFocusIntent")
 #if DEBUG
@@ -2408,6 +2475,7 @@ final class GhosttySurfaceScrollView: NSView {
 
         guard ownsSurfaceResponder || isCurrentSurfaceSearchResponder(firstResponder) else { return }
 
+        pendingSuppressedFirstResponderFocusReapply = false
 #if DEBUG
         dlog(
             "focus.surface.resign surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +

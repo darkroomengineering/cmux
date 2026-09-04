@@ -140,6 +140,12 @@ extension GhosttyNSView {
             // becomeFirstResponder. Suppress onFocus + ghostty_surface_set_focus to prevent
             // the old view from stealing focus and creating model/surface divergence.
             if suppressingReparentFocus {
+                let hiddenInHierarchy = isHiddenOrHasHiddenAncestor
+                if isVisibleInUI && (!hasUsableFocusGeometry || hiddenInHierarchy) {
+                    terminalSurface?.hostedView.scheduleSuppressedFirstResponderFocusReapply(
+                        reason: "becomeFirstResponder.reparent.hiddenOrTiny"
+                    )
+                }
 #if DEBUG
                 dlog("focus.firstResponder SUPPRESSED (reparent) surface=\(terminalSurface?.id.uuidString.prefix(5) ?? "nil")")
 #endif
@@ -161,6 +167,9 @@ extension GhosttyNSView {
                     "frame=\(String(format: "%.1fx%.1f", bounds.width, bounds.height)) hidden=\(hiddenInHierarchy ? 1 : 0)"
                 )
 #endif
+                terminalSurface?.hostedView.scheduleSuppressedFirstResponderFocusReapply(
+                    reason: "becomeFirstResponder.hiddenOrTiny"
+                )
             }
         }
         if result, shouldApplySurfaceFocus, let surface = ensureSurfaceReadyForInput() {
@@ -187,6 +196,7 @@ extension GhosttyNSView {
                 )
             }
             terminalSurface?.recordExternalFocusState(true)
+            terminalSurface?.hostedView.cancelSuppressedFirstResponderFocusReapply()
             ghostty_surface_set_focus(surface, true)
 
             // Ghostty only restarts its vsync display link on display-id changes while focused.
@@ -205,6 +215,7 @@ extension GhosttyNSView {
         let result = super.resignFirstResponder()
         if result {
             desiredFocus = false
+            terminalSurface?.hostedView.cancelSuppressedFirstResponderFocusReapply()
             terminalSurface?.recordExternalFocusState(false)
         }
         if result, let surface = surface {

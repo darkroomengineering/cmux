@@ -505,6 +505,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         super.layout()
         updateSurfaceSize()
         invalidateTextInputCoordinates()
+        terminalSurface?.hostedView.scheduleSuppressedFirstResponderFocusReapplyIfReady(
+            reason: "becomeFirstResponder.hiddenOrTiny.layout"
+        )
     }
 
     override var isOpaque: Bool { false }
