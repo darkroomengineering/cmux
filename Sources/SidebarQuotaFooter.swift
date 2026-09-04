@@ -6,7 +6,7 @@ extension ProviderUsageProvider {
         case .claude:
             String(localized: "sidebar.usage.provider.claude", defaultValue: "Claude")
         case .codex:
-            String(localized: "sidebar.usage.provider.codex", defaultValue: "Codex")
+            String(localized: "sidebar.usage.provider.codex", defaultValue: "OpenAI")
         }
     }
 }
@@ -130,6 +130,13 @@ struct SidebarQuotaFooter: View {
                 .font(.system(size: 12, weight: .semibold))
                 .accessibilityAddTraits(.isHeader)
 
+            if let summaryText = Self.summaryText(snapshot.summary) {
+                Text(summaryText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
             ForEach(snapshot.windows) { window in
                 usageRow(window)
             }
@@ -148,11 +155,8 @@ struct SidebarQuotaFooter: View {
                     .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                Text(Self.percentText(window.usedPercent))
+                Text(Self.remainingText(window.usedPercent))
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                Text(Self.resetText(window.resetsAt))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
             }
 
             GeometryReader { proxy in
@@ -165,17 +169,21 @@ struct SidebarQuotaFooter: View {
                 }
             }
             .frame(height: 4)
+
+            Text(Self.resetDescription(window.resetsAt))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             String.localizedStringWithFormat(
                 String(
                     localized: "sidebar.usage.window.accessibility",
-                    defaultValue: "%1$@, %2$@ used, resets in %3$@"
+                    defaultValue: "%1$@, %2$@, %3$@"
                 ),
                 window.label,
-                Self.percentText(window.usedPercent),
-                Self.resetText(window.resetsAt)
+                Self.remainingText(window.usedPercent),
+                Self.resetDescription(window.resetsAt)
             )
         )
     }
@@ -208,11 +216,68 @@ struct SidebarQuotaFooter: View {
         }
     }
 
-    private static func percentText(_ usedPercent: Int) -> String {
+    private static func remainingText(_ usedPercent: Int) -> String {
         String.localizedStringWithFormat(
-            String(localized: "sidebar.quota.percent", defaultValue: "%@%%"),
-            String(usedPercent)
+            String(localized: "sidebar.usage.window.remaining", defaultValue: "%@%% left"),
+            String(100 - min(max(usedPercent, 0), 100))
         )
+    }
+
+    private static func resetDescription(_ resetsAt: Date) -> String {
+        guard resetsAt.timeIntervalSinceNow > 0 else {
+            return String(localized: "sidebar.usage.window.resetsNow", defaultValue: "Resets now")
+        }
+        return String.localizedStringWithFormat(
+            String(localized: "sidebar.usage.window.resetsIn", defaultValue: "Resets in %@"),
+            resetText(resetsAt)
+        )
+    }
+
+    private static func summaryText(_ summary: ProviderUsageSummary?) -> String? {
+        guard let summary else { return nil }
+        var components: [String] = []
+
+        if let plan = summary.plan {
+            components.append(
+                String.localizedStringWithFormat(
+                    String(localized: "sidebar.usage.summary.plan", defaultValue: "%@ plan"),
+                    plan.capitalized
+                )
+            )
+        }
+        if let credits = summary.credits {
+            if credits.isUnlimited {
+                components.append(
+                    String(
+                        localized: "sidebar.usage.summary.unlimitedCredits",
+                        defaultValue: "Unlimited credits"
+                    )
+                )
+            } else if let balance = credits.balance {
+                components.append(
+                    String.localizedStringWithFormat(
+                        String(
+                            localized: "sidebar.usage.summary.creditBalance",
+                            defaultValue: "%@ credits"
+                        ),
+                        balance
+                    )
+                )
+            }
+        }
+        if let count = summary.resetCreditsAvailable {
+            components.append(
+                String.localizedStringWithFormat(
+                    String(
+                        localized: "sidebar.usage.summary.resetCredits",
+                        defaultValue: "%@ reset credits"
+                    ),
+                    String(count)
+                )
+            )
+        }
+
+        return components.isEmpty ? nil : components.joined(separator: " · ")
     }
 
     private static func resetText(_ resetsAt: Date) -> String {

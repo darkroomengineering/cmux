@@ -63,6 +63,7 @@ Programa is a fork of [cmux](https://github.com/manaflow-ai/cmux); for history p
 - A restart after an update no longer kills every terminal when the new app comes up faster than the background session-holder notices the old one is gone. The app now waits out that window instead of giving up, escrow sockets no longer leak into shell processes (which silently delayed that detection), and a session that falls back anyway keeps its reattach records on disk while its process is still alive instead of deleting them.
 
 ### Changed
+- Provider usage now shows Claude's session and weekly limits plus OpenAI's unified ChatGPT limit, emphasizing remaining capacity, reset timing, and useful plan or credit context instead of model-specific rows.
 - Application lifecycle, command-palette state, CLI and hook dispatch, and browser RPC session state now have dedicated owners, with CI line budgets preventing those entrypoints from growing back into cross-feature coordinators.
 - The local diagnostics logger now keeps one file handle open between records and reopens it only after rotation, removing repeated directory checks and open/seek/close work from socket and session activity.
 - Ghostty is updated to the current upstream implementation with complete Kitty graphics animation and placement support. Programa now builds the fork and helper tools with Zig 0.16.

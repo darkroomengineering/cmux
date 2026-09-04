@@ -75,6 +75,17 @@ struct ProviderUsageWindow: Identifiable, Equatable, Sendable {
     let resetsAt: Date
 }
 
+struct ProviderUsageCredits: Equatable, Sendable {
+    let balance: String?
+    let isUnlimited: Bool
+}
+
+struct ProviderUsageSummary: Equatable, Sendable {
+    let plan: String?
+    let credits: ProviderUsageCredits?
+    let resetCreditsAvailable: Int?
+}
+
 enum ProviderUsageDurationLabel {
     static func format(minutes: Int) -> String {
         let value: Int
@@ -96,6 +107,17 @@ enum ProviderUsageDurationLabel {
 struct ProviderUsageSnapshot: Equatable, Sendable {
     let provider: ProviderUsageProvider
     let windows: [ProviderUsageWindow]
+    let summary: ProviderUsageSummary?
+
+    init(
+        provider: ProviderUsageProvider,
+        windows: [ProviderUsageWindow],
+        summary: ProviderUsageSummary? = nil
+    ) {
+        self.provider = provider
+        self.windows = windows
+        self.summary = summary
+    }
 }
 
 enum ProviderUsageResult: Equatable, Sendable {
@@ -208,13 +230,19 @@ enum ClaudeUsageSnapshotParser {
                 windows: [
                     ProviderUsageWindow(
                         id: "claude.five_hour",
-                        label: ProviderUsageDurationLabel.format(minutes: 300),
+                        label: String(
+                            localized: "sidebar.usage.window.currentSession",
+                            defaultValue: "Current session"
+                        ),
                         usedPercent: snapshot.fiveHour.usedPercent,
                         resetsAt: snapshot.fiveHour.resetsAt
                     ),
                     ProviderUsageWindow(
                         id: "claude.seven_day",
-                        label: ProviderUsageDurationLabel.format(minutes: 10_080),
+                        label: String(
+                            localized: "sidebar.usage.window.weekly",
+                            defaultValue: "Weekly"
+                        ),
                         usedPercent: snapshot.sevenDay.usedPercent,
                         resetsAt: snapshot.sevenDay.resetsAt
                     ),
@@ -473,13 +501,6 @@ struct ClaudeProviderUsageFetcher: ProviderUsageFetching {
 }
 
 enum CodexUsageSnapshotParser {
-    private struct ParsedBucket {
-        let limitID: String
-        let limitName: String?
-        let primary: [String: Any]?
-        let secondary: [String: Any]?
-    }
-
     static func parse(accountData: Data, rateLimitsData: Data) -> ProviderUsageResult {
         guard
             let accountEnvelope = jsonObject(accountData),
@@ -508,94 +529,49 @@ enum CodexUsageSnapshotParser {
             return failure()
         }
 
-        let byLimit: [String: Any]
-        if let rawByLimit = rateResult["rateLimitsByLimitId"] {
-            if rawByLimit is NSNull {
-                byLimit = [:]
-            } else if let parsedByLimit = rawByLimit as? [String: Any] {
-                byLimit = parsedByLimit
-            } else {
-                return failure()
-            }
-        } else {
-            byLimit = [:]
-        }
-
-        var windows: [ProviderUsageWindow] = []
-        var aggregateLimitID: String?
-
+        let aggregate: [String: Any]
         if let rawAggregate = rateResult["rateLimits"], !(rawAggregate is NSNull) {
-            guard let aggregate = parseBucket(rawAggregate, fallbackLimitID: "codex") else {
-                return failure()
+            guard let parsedAggregate = rawAggregate as? [String: Any] else { return failure() }
+            aggregate = parsedAggregate
+        } else {
+            guard let rawByLimit = rateResult["rateLimitsByLimitId"] else {
+                return .unavailable(.codex)
             }
-            aggregateLimitID = aggregate.limitID
-            guard append(bucket: aggregate, isAggregate: true, to: &windows) else {
-                return failure()
+            if rawByLimit is NSNull {
+                return .unavailable(.codex)
             }
-        } else if let mappedAggregate = byLimit["codex"] {
-            guard let aggregate = parseBucket(mappedAggregate, fallbackLimitID: "codex") else {
-                return failure()
-            }
-            aggregateLimitID = aggregate.limitID
-            guard append(bucket: aggregate, isAggregate: true, to: &windows) else {
-                return failure()
-            }
+            guard let byLimit = rawByLimit as? [String: Any] else { return failure() }
+            guard let rawFallback = byLimit["codex"] else { return .unavailable(.codex) }
+            guard let parsedFallback = rawFallback as? [String: Any] else { return failure() }
+            aggregate = parsedFallback
         }
-
-        for limitID in byLimit.keys.sorted() {
-            guard let rawBucket = byLimit[limitID],
-                  let bucket = parseBucket(rawBucket, fallbackLimitID: limitID) else {
+        guard let primary = optionalWindow(aggregate["primary"]),
+              let secondary = optionalWindow(aggregate["secondary"]) else {
+            return failure()
+        }
+        var windows: [ProviderUsageWindow] = []
+        for (name, rawWindow) in [("primary", primary), ("secondary", secondary)] {
+            guard let rawWindow else { continue }
+            guard let window = parseWindow(rawWindow, id: "codex.\(name)") else {
                 return failure()
             }
-            if limitID == "codex" || bucket.limitID == aggregateLimitID {
-                continue
-            }
-            guard append(bucket: bucket, isAggregate: false, to: &windows) else {
-                return failure()
-            }
+            windows.append(window)
         }
 
         guard !windows.isEmpty else {
             return .unavailable(.codex)
         }
-        return .available(ProviderUsageSnapshot(provider: .codex, windows: windows))
+        return .available(
+            ProviderUsageSnapshot(
+                provider: .codex,
+                windows: windows,
+                summary: parseSummary(aggregate: aggregate, rateResult: rateResult)
+            )
+        )
     }
 
     private static func jsonObject(_ data: Data) -> [String: Any]? {
         try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    }
-
-    private static func parseBucket(_ raw: Any, fallbackLimitID: String) -> ParsedBucket? {
-        guard let dictionary = raw as? [String: Any] else { return nil }
-        let limitID = (dictionary["limitId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedLimitID = limitID.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackLimitID
-
-        let limitName: String?
-        if let rawName = dictionary["limitName"] {
-            if rawName is NSNull {
-                limitName = nil
-            } else if let name = rawName as? String {
-                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                limitName = trimmed.isEmpty ? nil : trimmed
-            } else {
-                return nil
-            }
-        } else {
-            limitName = nil
-        }
-
-        guard
-            let primary = optionalWindow(dictionary["primary"]),
-            let secondary = optionalWindow(dictionary["secondary"])
-        else {
-            return nil
-        }
-        return ParsedBucket(
-            limitID: resolvedLimitID,
-            limitName: limitName,
-            primary: primary,
-            secondary: secondary
-        )
     }
 
     /// An outer optional distinguishes an absent/null window from a malformed value.
@@ -605,31 +581,9 @@ enum CodexUsageSnapshotParser {
         return .some(window)
     }
 
-    private static func append(
-        bucket: ParsedBucket,
-        isAggregate: Bool,
-        to windows: inout [ProviderUsageWindow]
-    ) -> Bool {
-        for (name, rawWindow) in [("primary", bucket.primary), ("secondary", bucket.secondary)] {
-            guard let rawWindow else { continue }
-            guard let window = parseWindow(
-                rawWindow,
-                id: "\(isAggregate ? "codex" : bucket.limitID).\(name)",
-                limitName: isAggregate ? nil : (bucket.limitName ?? bucket.limitID)
-            ) else {
-                return false
-            }
-            if !windows.contains(where: { $0.id == window.id }) {
-                windows.append(window)
-            }
-        }
-        return true
-    }
-
     private static func parseWindow(
         _ raw: [String: Any],
-        id: String,
-        limitName: String?
+        id: String
     ) -> ProviderUsageWindow? {
         guard
             let usedPercentNumber = finiteNumber(raw["usedPercent"]),
@@ -639,15 +593,72 @@ enum CodexUsageSnapshotParser {
             return nil
         }
 
+        guard durationNumber > 0,
+              durationNumber < Double(Int.max),
+              resetsAt >= 0,
+              resetsAt <= Date.distantFuture.timeIntervalSince1970 else { return nil }
         let durationMinutes = Int(durationNumber.rounded())
-        guard durationMinutes > 0, resetsAt >= 0 else { return nil }
-        let duration = ProviderUsageDurationLabel.format(minutes: durationMinutes)
+        guard durationMinutes > 0 else { return nil }
+        let usedPercent = Int(min(max(usedPercentNumber, 0), 100).rounded())
         return ProviderUsageWindow(
             id: id,
-            label: limitName.map { "\($0) · \(duration)" } ?? duration,
-            usedPercent: min(max(Int(usedPercentNumber.rounded()), 0), 100),
+            label: semanticLabel(durationMinutes: durationMinutes),
+            usedPercent: usedPercent,
             resetsAt: Date(timeIntervalSince1970: resetsAt)
         )
+    }
+
+    private static func semanticLabel(durationMinutes: Int) -> String {
+        if durationMinutes < 10_080 {
+            return String(
+                localized: "sidebar.usage.window.currentWindow",
+                defaultValue: "Current window"
+            )
+        }
+        if durationMinutes == 10_080 {
+            return String(localized: "sidebar.usage.window.weekly", defaultValue: "Weekly")
+        }
+        return ProviderUsageDurationLabel.format(minutes: durationMinutes)
+    }
+
+    private static func parseSummary(
+        aggregate: [String: Any],
+        rateResult: [String: Any]
+    ) -> ProviderUsageSummary? {
+        let plan = nonEmptyString(aggregate["planType"])
+
+        var credits: ProviderUsageCredits?
+        if let rawCredits = aggregate["credits"] as? [String: Any] {
+            let hasCredits = rawCredits["hasCredits"] as? Bool == true
+            let isUnlimited = rawCredits["unlimited"] as? Bool == true
+            if hasCredits || isUnlimited {
+                credits = ProviderUsageCredits(
+                    balance: nonEmptyString(rawCredits["balance"]),
+                    isUnlimited: isUnlimited
+                )
+            }
+        }
+
+        var resetCreditsAvailable: Int?
+        if let resetCredits = rateResult["rateLimitResetCredits"] as? [String: Any],
+           let count = finiteNumber(resetCredits["availableCount"]),
+           count > 0,
+           count < Double(Int.max) {
+            resetCreditsAvailable = Int(count.rounded())
+        }
+
+        guard plan != nil || credits != nil || resetCreditsAvailable != nil else { return nil }
+        return ProviderUsageSummary(
+            plan: plan,
+            credits: credits,
+            resetCreditsAvailable: resetCreditsAvailable
+        )
+    }
+
+    private static func nonEmptyString(_ raw: Any?) -> String? {
+        guard let value = raw as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func finiteNumber(_ raw: Any?) -> Double? {
@@ -664,7 +675,7 @@ enum CodexUsageSnapshotParser {
             .codex,
             String(
                 localized: "sidebar.usage.error.codexInvalid",
-                defaultValue: "Codex returned invalid usage data."
+                defaultValue: "OpenAI returned invalid usage data."
             )
         )
     }
@@ -692,7 +703,7 @@ struct CodexProviderUsageFetcher: ProviderUsageFetching {
                 .codex,
                 String(
                     localized: "sidebar.usage.error.codexRead",
-                    defaultValue: "Codex usage could not be read."
+                    defaultValue: "OpenAI usage could not be read."
                 )
             )
         }

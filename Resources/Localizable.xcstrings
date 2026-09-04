@@ -10933,13 +10933,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex returned invalid usage data."
+            "value": "OpenAI returned invalid usage data."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codexから無効な使用量データが返されました。"
+            "value": "OpenAIから無効な使用量データが返されました。"
           }
         }
       }
@@ -10950,13 +10950,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex usage could not be read."
+            "value": "OpenAI usage could not be read."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codexの使用量を読み込めませんでした。"
+            "value": "OpenAIの使用量を読み込めませんでした。"
           }
         }
       }
@@ -11001,13 +11001,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex"
+            "value": "OpenAI"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "Codex"
+            "value": "OpenAI"
           }
         }
       }
@@ -11042,6 +11042,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "使用量を更新中"
+          }
+        }
+      }
+    },
+    "sidebar.usage.summary.creditBalance": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ credits"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "クレジット残高 %@"
+          }
+        }
+      }
+    },
+    "sidebar.usage.summary.plan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ plan"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@プラン"
+          }
+        }
+      }
+    },
+    "sidebar.usage.summary.resetCredits": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ reset credits"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リセットクレジット %@件"
+          }
+        }
+      }
+    },
+    "sidebar.usage.summary.unlimitedCredits": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unlimited credits"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "クレジット無制限"
           }
         }
       }
@@ -11086,13 +11154,115 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "%1$@, %2$@ used, resets in %3$@"
+            "value": "%1$@, %2$@, %3$@"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "%1$@、%2$@使用、%3$@後にリセット"
+            "value": "%1$@、%2$@、%3$@"
+          }
+        }
+      }
+    },
+    "sidebar.usage.window.currentSession": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current session"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "現在のセッション"
+          }
+        }
+      }
+    },
+    "sidebar.usage.window.currentWindow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current window"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "現在の利用枠"
+          }
+        }
+      }
+    },
+    "sidebar.usage.window.remaining": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@%% left"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "残り%@%%"
+          }
+        }
+      }
+    },
+    "sidebar.usage.window.resetsIn": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets in %@"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@後にリセット"
+          }
+        }
+      }
+    },
+    "sidebar.usage.window.resetsNow": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resets now"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "今すぐリセット"
+          }
+        }
+      }
+    },
+    "sidebar.usage.window.weekly": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Weekly"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "週間"
           }
         }
       }
