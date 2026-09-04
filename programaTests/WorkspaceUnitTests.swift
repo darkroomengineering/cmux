@@ -2981,6 +2981,63 @@ final class WorkspaceTerminalFocusRecoveryTests: XCTestCase {
         return nil
     }
 
+    func testHiddenTinySelectedTerminalKeepsFocusReapplyPendingUntilLayoutIsUsable() throws {
+#if DEBUG
+        let originalAppDelegate = AppDelegate.shared
+        let appDelegate = originalAppDelegate ?? AppDelegate()
+        let originalTabManager = appDelegate.tabManager
+        let manager = TabManager(autoWelcomeIfNeeded: false)
+        AppDelegate.shared = appDelegate
+        appDelegate.tabManager = manager
+        defer {
+            appDelegate.tabManager = originalTabManager
+            AppDelegate.shared = originalAppDelegate
+        }
+
+        let workspace = try XCTUnwrap(manager.selectedWorkspace)
+        let panelId = try XCTUnwrap(workspace.focusedPanelId)
+        let panel = try XCTUnwrap(workspace.terminalPanel(for: panelId))
+        workspace.focusPanel(panelId, trigger: .terminalFirstResponder)
+
+        let window = makeWindow()
+        defer { window.orderOut(nil) }
+        let contentView = try XCTUnwrap(window.contentView)
+        panel.hostedView.frame = contentView.bounds
+        contentView.addSubview(panel.hostedView)
+        panel.hostedView.setVisibleInUI(true)
+        panel.hostedView.setActive(true)
+        window.makeKeyAndOrderFront(nil)
+        contentView.layoutSubtreeIfNeeded()
+        panel.hostedView.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+        let terminalView = try XCTUnwrap(surfaceView(in: panel.hostedView))
+        window.makeFirstResponder(nil)
+        panel.surface.setFocus(false)
+        terminalView.frame = .zero
+        XCTAssertTrue(window.makeFirstResponder(terminalView))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertTrue(panel.hostedView.isSurfaceViewFirstResponder())
+        XCTAssertFalse(
+            panel.surface.debugDesiredFocusState(),
+            "A selected terminal must not apply Ghostty focus while its surface is hidden or tiny"
+        )
+
+        terminalView.frame = NSRect(x: 0, y: 0, width: 180, height: 220)
+        terminalView.layoutSubtreeIfNeeded()
+        panel.hostedView.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertTrue(
+            panel.surface.debugDesiredFocusState(),
+            "The suppressed focus request must remain pending and apply when layout becomes usable"
+        )
+#else
+        throw XCTSkip("Debug-only regression test")
+#endif
+    }
+
     func testTerminalFirstResponderConvergesSplitActiveStateWhenSelectionAlreadyMatches() {
         let workspace = Workspace()
         guard let leftPanelId = workspace.focusedPanelId,

@@ -108,7 +108,7 @@ final class ClaudeQuotaSnapshotParserTests: XCTestCase {
         }
         XCTAssertEqual(snapshot.provider, .claude)
         XCTAssertEqual(snapshot.windows.map(\.id), ["claude.five_hour", "claude.seven_day"])
-        XCTAssertEqual(snapshot.windows.map(\.label), ["5h", "7d"])
+        XCTAssertEqual(snapshot.windows.map(\.label), ["Current session", "Weekly"])
         XCTAssertEqual(snapshot.windows.map(\.usedPercent), [17, 3])
         XCTAssertEqual(
             snapshot.windows.map { $0.resetsAt.timeIntervalSince1970 },
@@ -188,7 +188,7 @@ final class ClaudeQuotaSnapshotParserTests: XCTestCase {
         guard case let .available(snapshot) = result else {
             return XCTFail("A logged-in Claude session with a fresh safe cache must render usage, got \(result)")
         }
-        XCTAssertEqual(snapshot.windows.map(\.label), ["5h", "7d"])
+        XCTAssertEqual(snapshot.windows.map(\.label), ["Current session", "Weekly"])
     }
 
     func testUnsafeOrStaleClaudeCachesAreRejectedWithoutReadingThroughThem() async throws {
@@ -363,6 +363,7 @@ final class CodexUsageSnapshotParserTests: XCTestCase {
         }
         XCTAssertEqual(snapshot.provider, .codex)
         XCTAssertEqual(snapshot.windows.map(\.id), ["codex.primary", "codex.secondary"])
+        XCTAssertEqual(snapshot.windows.map(\.label), ["Current window", "Weekly"])
         XCTAssertEqual(snapshot.windows.map(\.usedPercent), [0, 100])
         XCTAssertEqual(
             snapshot.windows.map { $0.resetsAt.timeIntervalSince1970 },
@@ -370,19 +371,83 @@ final class CodexUsageSnapshotParserTests: XCTestCase {
         )
     }
 
-    func testIncludesNamedPerLimitBucketsWithoutDuplicatingTheAggregateBucket() throws {
+    func testUsesOnlyUnifiedChatGPTUsageAndIgnoresModelSpecificBuckets() throws {
         let result = CodexUsageSnapshotParser.parse(
             accountData: chatGPTAccountResponse,
             rateLimitsData: rateLimitsResponse(
-                #"{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1785171600},"secondary":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1785171600},"secondary":null},"codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark","primary":{"usedPercent":35,"windowDurationMins":300,"resetsAt":1785175200},"secondary":null}}}"#
+                #"{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1785171600},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1785664800}},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1785171600},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1785664800}},"codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark","primary":{"usedPercent":35,"windowDurationMins":300,"resetsAt":1785175200},"secondary":null}}}"#
             )
         )
 
         guard case let .available(snapshot) = result else {
-            return XCTFail("Expected per-limit buckets to remain displayable, got \(result)")
+            return XCTFail("Expected unified ChatGPT usage to remain available, got \(result)")
         }
-        XCTAssertEqual(snapshot.windows.map(\.id), ["codex.primary", "codex_bengalfox.primary"])
-        XCTAssertEqual(snapshot.windows.map(\.label), ["5h", "GPT-5.3-Codex-Spark · 5h"])
+        XCTAssertEqual(snapshot.windows.map(\.id), ["codex.primary", "codex.secondary"])
+        XCTAssertEqual(snapshot.windows.map(\.label), ["Current window", "Weekly"])
+        XCTAssertEqual(
+            snapshot.windows.map(\.usedPercent),
+            [10, 20],
+            "The meter must match ChatGPT's unified account usage instead of adding model-specific rows"
+        )
+    }
+
+    func testFallsBackToUnifiedCodexBucketWhenTopLevelAggregateIsNullOrAbsent() throws {
+        let unified = #"{"limitId":"codex","primary":{"usedPercent":11,"windowDurationMins":300,"resetsAt":1785171600},"secondary":{"usedPercent":22,"windowDurationMins":10080,"resetsAt":1785664800}}"#
+        let named = #"{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark","primary":{"usedPercent":77,"windowDurationMins":300,"resetsAt":1785175200},"secondary":null}"#
+        let results = [
+            #"{"rateLimits":null,"rateLimitsByLimitId":{"codex":\#(unified),"codex_bengalfox":\#(named)}}"#,
+            #"{"rateLimitsByLimitId":{"codex":\#(unified),"codex_bengalfox":\#(named)}}"#,
+        ]
+
+        for rateResult in results {
+            let result = CodexUsageSnapshotParser.parse(
+                accountData: chatGPTAccountResponse,
+                rateLimitsData: rateLimitsResponse(rateResult)
+            )
+
+            guard case let .available(snapshot) = result else {
+                return XCTFail("The unified codex bucket must remain authoritative when rateLimits is null or absent, got \(result)")
+            }
+            XCTAssertEqual(snapshot.windows.map(\.id), ["codex.primary", "codex.secondary"])
+            XCTAssertEqual(snapshot.windows.map(\.label), ["Current window", "Weekly"])
+            XCTAssertEqual(
+                snapshot.windows.map(\.usedPercent),
+                [11, 22],
+                "Named model buckets must not become extra usage rows during aggregate fallback"
+            )
+        }
+    }
+
+    func testRejectsResetEpochThatCannotBeRepresentedSafelyForPresentation() {
+        let result = CodexUsageSnapshotParser.parse(
+            accountData: chatGPTAccountResponse,
+            rateLimitsData: rateLimitsResponse(
+                #"{"rateLimits":{"limitId":"codex","primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1e100},"secondary":null},"rateLimitsByLimitId":{}}"#
+            )
+        )
+
+        guard case let .failed(.codex, message) = result else {
+            return XCTFail("An unrepresentable reset date must fail before it reaches UI date conversion, got \(result)")
+        }
+        XCTAssertFalse(message.isEmpty)
+    }
+
+    func testParsesPlanAndNonEmptyCreditMetadataWithoutCreatingAnotherUsageRow() throws {
+        let result = CodexUsageSnapshotParser.parse(
+            accountData: chatGPTAccountResponse,
+            rateLimitsData: rateLimitsResponse(
+                #"{"rateLimits":{"limitId":"codex","planType":"pro","primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1785171600},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1785664800},"credits":{"hasCredits":true,"balance":"12.50","unlimited":false}},"rateLimitsByLimitId":{},"rateLimitResetCredits":{"availableCount":3,"credits":[]}}"#
+            )
+        )
+
+        guard case let .available(snapshot) = result else {
+            return XCTFail("Expected account usage with credits to remain available, got \(result)")
+        }
+        XCTAssertEqual(snapshot.windows.count, 2, "Credits are account context, not another rate-limit row")
+        XCTAssertEqual(snapshot.summary?.plan, "pro")
+        XCTAssertEqual(snapshot.summary?.credits?.balance, "12.50")
+        XCTAssertEqual(snapshot.summary?.credits?.isUnlimited, false)
+        XCTAssertEqual(snapshot.summary?.resetCreditsAvailable, 3)
     }
 
     func testAuthenticatedAccountWithNoQuotaWindowsIsExplicitlyUnavailable() {
@@ -432,7 +497,7 @@ final class CodexUsageSnapshotParserTests: XCTestCase {
         guard case let .available(snapshot) = result else {
             return XCTFail("A valid sequential app-server exchange must expose Codex usage, got \(result)")
         }
-        XCTAssertEqual(snapshot.windows.map(\.label), ["5h", "7d"])
+        XCTAssertEqual(snapshot.windows.map(\.label), ["Current window", "Weekly"])
         let events = try fake.events()
         XCTAssertEqual(events.first, "initialize")
         XCTAssertFalse(events.contains("usage-before-initialize-response"))
