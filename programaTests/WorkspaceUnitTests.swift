@@ -2986,10 +2986,19 @@ final class WorkspaceTerminalFocusRecoveryTests: XCTestCase {
         let originalAppDelegate = AppDelegate.shared
         let appDelegate = originalAppDelegate ?? AppDelegate()
         let originalTabManager = appDelegate.tabManager
-        let manager = TabManager(autoWelcomeIfNeeded: false)
+        let defaults = UserDefaults.standard
+        let originalWelcomeShown = defaults.object(forKey: WelcomeSettings.shownKey)
+        defaults.set(true, forKey: WelcomeSettings.shownKey)
+        let manager = TabManager()
         AppDelegate.shared = appDelegate
         appDelegate.tabManager = manager
         defer {
+            manager.teardownForWindowClose(notifyOwner: false)
+            if let originalWelcomeShown {
+                defaults.set(originalWelcomeShown, forKey: WelcomeSettings.shownKey)
+            } else {
+                defaults.removeObject(forKey: WelcomeSettings.shownKey)
+            }
             appDelegate.tabManager = originalTabManager
             AppDelegate.shared = originalAppDelegate
         }
